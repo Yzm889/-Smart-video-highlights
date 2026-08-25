@@ -1,0 +1,14 @@
+{
+  "vision": {
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "在这里填你的视觉模型 API Key",
+    "model": "deepseek-v4-flash-vision-exp"
+  },
+  "tts": {
+    "provider": "mimo",
+    "base_url": "https://api.xiaomimimo.com/v1",
+    "api_key": "在这里填你的 TTS API Key",
+    "model": "mimo-v2.5-tts",
+    "voice": "Mia"
+  }
+}

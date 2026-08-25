@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一帧成片 · FrameCut</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div><h1>一帧成片</h1><div class="sub">FrameCut · AI 节拍短片</div></div>
+  <div id="srv"></div>
+</header>
+<div class="wrap">
+  <div class="card" id="drop">
+    <b>把图片或视频拖到这里，或点此选择文件</b>
+    <div class="hint">支持顺序混排：图片自动加镜头运动(推近/平移/拉远/轻摇)，视频自动裁剪，之间带交叉淡入淡出转场。</div>
+    <input type="file" id="fileInput" multiple accept="image/*,video/*" style="display:none">
+  </div>
+
+  <div class="card">
+    <h2>🎯 智能强卡点（本应用核心）</h2>
+    <div id="bcDrop" class="musdrop">🎬 拖入一段视频（自动识别<b>场景切换</b>与<b>动作停顿帧</b>）</div>
+    <input type="file" id="bcInput" accept="video/*" style="display:none">
+    <div class="hint">然后在下方「🎵 背景音乐」选一首歌（或从「🔎 免费踩点音乐库」搜一首点「使用」），系统会把画面切点<b>自动匹对到音乐大鼓点</b>，硬切生成强卡点短片。</div>
+    <div class="hint" id="bcInfo">还没有选择视频。</div>
+    <div class="actions" style="margin-top:12px;">
+      <button class="btn" id="bcGo" onclick="buildBeatCut()">⚡ 一键强卡点</button>
+      <span class="status" id="bcStatus"></span>
+    </div>
+    <div class="bar" id="bcBar"><i></i></div>
+    <div id="bcResult" style="display:none;">
+      <h2 style="margin-top:14px;">✅ 强卡点完成</h2>
+      <video id="bcPlayer" controls playsinline></video>
+      <div style="margin-top:12px;"><a class="btn ghost" id="bcDl" href="#" download="beatcut.mp4">💾 保存</a></div>
+      <div class="hint" id="bcDiag"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🎵 背景音乐（可选）</h2>
+    <div id="musDrop" class="musdrop">把 mp3/wav 音乐拖到这里，或点此选择背景音乐</div>
+    <input type="file" id="musInput" accept="audio/*,.mp3,.wav" style="display:none">
+    <div class="hint" id="musInfo">不选音乐时：按每段固定时长等分合成，无背景音乐。</div>
+    <div class="hint" id="musInfo2" style="display:none"></div>
+    <div class="hint">已选音乐时：自动分析节拍(BPM)，把每个素材的切换点对齐到音乐节拍。</div>
+  </div>
+
+  <div class="card">
+    <h2>🔎 免费踩点音乐库</h2>
+    <div class="row">
+      <input type="text" id="musSearch" placeholder="搜索：电子 / 轻快 / 打击 / 曲名…" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
+      <button class="btn ghost" onclick="doSearch()">搜索</button>
+    </div>
+    <div class="hint">内置 CC.BY 免费商用曲库（Incompetech / Kevin MacLeod）。搜到后点「预览」试听、点「使用」即可设为背景音乐并参与节拍对齐。</div>
+    <div id="musResults"></div>
+  </div>
+
+  <div class="card">
+    <h2>🤖 AI 文案·字幕·配音</h2>
+    <label><input type="checkbox" id="aiCap" style="width:auto"> 按画面生成中文文案 + 烧字幕 + 配音</label>
+    <label style="margin-left:16px; font-weight:600; color:#0e7a5f;"><input type="checkbox" id="eco" checked style="width:auto"> 💸 省流模式（默认开，用离线模板文案、不调用付费配音）</label>
+    <div class="hint">省流模式＝文案用离线模板、跳过付费 AI 配音，几乎不花钱；关掉才调用 DeepSeek 看图 + 小米 MiMo 配音（会消耗你的 API 余额）。</div>
+
+    <div style="margin-top:10px; padding:10px 12px; background:#f6fbf6; border:1px solid var(--line); border-radius:10px;">
+      <div style="font-weight:600; color:#2e7d32; margin-bottom:6px;">🔑 一键获取 API Key（点击直达官方申请页）</div>
+      <div class="row" style="align-items:flex-end;">
+        <div class="field"><label>视觉模型（看图写文案）</label>
+          <div class="row">
+            <a class="btn mini ghost" target="_blank" href="https://platform.deepseek.com/api_keys">DeepSeek</a>
+            <a class="btn mini ghost" target="_blank" href="https://bailian.console.aliyun.com/"><b>通义·百炼</b></a>
+            <a class="btn mini ghost" target="_blank" href="https://open.bigmodel.cn/">智谱</a>
+            <a class="btn mini ghost" target="_blank" href="https://console.volcengine.com/ark">火山</a>
+            <a class="btn mini ghost" target="_blank" href="https://platform.openai.com/api-keys">OpenAI</a>
+          </div>
+        </div>
+        <div class="field"><label>中文配音 TTS</label>
+          <div class="row">
+            <a class="btn mini ghost" target="_blank" href="https://bailian.console.aliyun.com/">通义·百炼 (DashScope)</a>
+            <a class="btn mini ghost" target="_blank" href="https://platform.openai.com/api-keys">OpenAI tts</a>
+          </div>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:6px;">申请后把 Key 填进上方 ①视觉 / ②TTS 对应框，点「保存」。DeepSeek/通义/智谱/火山支持"看图"；配音推荐<b>通义</b>(DashScope) 或 OpenAI tts。</div>
+    </div>
+
+    <details>
+      <summary style="cursor:pointer; color:#2e7d32; font-size:13px;">⚙️ 配置 AI 接口（视觉与 TTS 可分别用不同的接口/Key）</summary>
+      <div class="row" style="margin-top:8px; border-bottom:1px dashed #ddd; padding-bottom:8px;">
+        <div style="font-weight:600; color:#2e7d32; width:100%;">① 看图写文案（视觉模型）</div>
+        <div class="field" style="flex:1"><label>接口地址 base_url</label><input id="visBase" placeholder="例 https://api.deepseek.com/v1"></div>
+        <div class="field" style="flex:1"><label>API Key</label><input id="visKey" type="password" placeholder="视觉模型的 Key"></div>
+        <div class="field" style="flex:1"><label>视觉模型 model</label><input id="visModel" placeholder="例 gpt-4o / qwen-vl-plus / glm-4v"></div>
+        <div class="field"><label>&nbsp;</label><button class="btn ghost" id="testVis" onclick="testAI('vision')">🧪 测试</button></div>
+        <div class="hint" id="visTestRes" style="width:100%"> </div>
+      </div>
+      <div class="row" style="margin-top:10px; padding-bottom:8px; border-bottom:1px dashed #ddd;">
+        <div style="font-weight:600; color:#2e7d32; width:100%;">② 中文配音 TTS（可留空 = 无配音）</div>
+        <div class="field"><label>供应商 provider</label>
+          <select id="ttsProvider" onchange="ttsProviderHint()">
+            <option value="mimo">小米 MiMo</option>
+            <option value="dashscope">通义千问 DashScope</option>
+            <option value="openai">OpenAI / 兼容</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1"><label>接口地址 base_url（通义可留空）</label><input id="ttsBase" placeholder="通义留空 / OpenAI例 api.openai.com/v1"></div>
+        <div class="field" style="flex:1"><label>API Key</label><input id="ttsKey" type="password" placeholder="TTS 的 Key"></div>
+        <div class="field"><label>TTS 模型 model</label><input id="ttsModel" placeholder="通义例 qwen-audio-turbo / 兼容例 tts-1"></div>
+        <div class="field"><label>音色 voice</label><input id="ttsVoice" value="allmina" style="width:100px"></div>
+        <div class="field"><label>&nbsp;</label><button class="btn ghost" id="testTts" onclick="testAI('tts')">🧪 测试</button></div>
+        <div class="hint">通义音色例：<b>allmina</b>（女声）/ longxiaochun（男声）/ cherry / coffee。OpenAI 例：alloy / onyx / nova。</div>
+        <div class="hint" id="ttsTestRes" style="width:100%"> </div>
+      </div>
+      <div class="hint" id="aiStatus"></div>
+      <div style="margin-top:4px;"><button class="btn ghost" onclick="saveAIConfig()">💾 保存所有 AI 配置</button></div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>📌 时间线（拖入后自动添加；可排序、设时长、删除）</h2>
+    <div id="items"></div>
+    <div class="hint" id="emptyHint">还没有素材。不放也能合成 —— 会自动使用内置 4 张春景图。</div>
+  </div>
+
+  <div class="card">
+    <h2>⚙️ 输出设置</h2>
+    <div class="row">
+      <div class="field"><label>分辨率</label>
+        <select id="res"><option value="1920x1080">1920×1080 横屏</option><option value="1080x1920">1080×1920 竖屏</option><option value="1280x720">1280×720</option></select>
+      </div>
+      <div class="field"><label>帧率</label>
+        <select id="fps"><option value="30">30</option><option value="24">24</option></select>
+      </div>
+      <div class="field"><label>转场</label>
+        <select id="trans"><option value="fade">淡入淡出</option><option value="slideleft">左滑</option><option value="slideright">右滑</option><option value="slideup">上滑</option><option value="circleopen">圆形展开</option><option value="circleclose">圆形收拢</option><option value="smoothup">平滑上移</option><option value="fadeblack">淡出黑场</option><option value="wipeleft">擦除左</option><option value="zoomin">缩放进入</option></select>
+      </div>
+      <div class="field"><label>节拍切换</label>
+        <select id="beatStep"><option value="0.5">每 0.5 拍（极快切）</option><option value="1">每 1 拍</option><option value="2">每 2 拍</option></select>
+      </div>
+      <div class="field"><label>转场方式</label>
+        <select id="hardCutSel"><option value="0">交叉淡入淡出</option><option value="1">硬切（更准踩点）</option></select>
+      </div>
+      <div class="field"><label>默认单张时长(秒)</label><input type="number" id="defDur" value="3" min="1" max="20"></div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <div class="field"><label>一键发布规格</label>
+        <div class="row">
+          <button class="btn mini ghost" onclick="setRes('1080x1920','抖音竖屏')">抖音竖屏</button>
+          <button class="btn mini ghost" onclick="setRes('720x1280','快手竖屏')">快手竖屏</button>
+          <button class="btn mini ghost" onclick="setRes('1920x1080','横屏')">横屏</button>
+          <button class="btn mini ghost" onclick="setRes('1080x1080','方形')">方形</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="actions">
+      <button class="btn" id="go" onclick="build()">🎬 开始合成</button>
+      <button class="btn danger" id="cancelBtn" style="display:none" onclick="cancelBuild()">⏹ 取消</button>
+      <span class="status" id="status"></span>
+    </div>
+    <div class="bar" id="bar"><i></i></div>
+    <div id="result">
+      <h2 style="margin-top:16px;">✅ 合成完成</h2>
+      <video id="player" controls playsinline></video>
+      <div style="margin-top:12px;"><a class="btn ghost" id="dl" href="#" download="spring视频.mp4">💾 保存到本地</a></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🕘 最近生成</h2>
+    <div id="historyList"><div class="hint">还没有生成记录。</div></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
