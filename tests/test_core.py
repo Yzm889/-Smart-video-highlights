@@ -584,8 +584,10 @@ def _beatcut_env(monkeypatch, tmp_path, keep_audio=False):
 
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(S, 'detect_scene_cuts', lambda v, threshold=0.3: [1.0, 3.0, 5.0])
-    monkeypatch.setattr(S, 'detect_motion_points', lambda v, fps_s=4.0, strength='standard': [2.0, 4.0])
-    monkeypatch.setattr(S, 'detect_visual_cues', lambda v, fps_s=4.0, strength='standard': [])
+    # 卡点分析现为「一次抽帧」：mock _analyze_video_frames 与从帧信号提取的内部函数
+    monkeypatch.setattr(S, '_analyze_video_frames', lambda v, fps_s=4.0: {})
+    monkeypatch.setattr(S, '_detect_motion_from_frames', lambda an, min_gap=0.6, strength='standard': [2.0, 4.0])
+    monkeypatch.setattr(S, '_detect_visual_from_frames', lambda an, strength='standard': [])
     monkeypatch.setattr(S, 'detect_strong_beats',
                         lambda m, top_k=None, min_sep=0.25: ([1.0, 2.0, 3.0, 4.0, 5.0], 1.0))
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 6.0)

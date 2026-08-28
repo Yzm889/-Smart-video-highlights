@@ -2192,11 +2192,10 @@ def _analyze_video_frames(video_path, fps_s=4.0):
     return {'times': times, 'motion': motion, 'frac': frac, 'hist': hist, 'bright': bright}
 
 
-def detect_motion_points(video_path, fps_s=4.0, min_gap=0.6, strength='standard'):
-    """帧级动作检测：用像素变化比例(frac)做信号，分位数自适应阈值 + 动作峰 + 停顿帧。
-    strength: soft(柔和)/standard/strong(强力)。返回候选切点秒列表。"""
+def _detect_motion_from_frames(an, min_gap=0.6, strength='standard'):
+    """从已抽帧信号(an=_analyze_video_frames 返回值)检测动作/停顿候选切点。
+    供 _analyze_beatcut 一次抽帧同时算动作+视觉，避免重复全片解码。"""
     import numpy as np
-    an = _analyze_video_frames(video_path, fps_s)
     if not an or len(an['frac']) < 5:
         return []
     times, frac = an['times'], an['frac']
@@ -2227,10 +2226,9 @@ def detect_motion_points(video_path, fps_s=4.0, min_gap=0.6, strength='standard'
     return out
 
 
-def detect_visual_cues(video_path, fps_s=4.0, strength='standard'):
-    """帧级视觉线索：色相直方图突变(镜头/色调切换) + 亮度突变(曝光/场景切换)。"""
+def _detect_visual_from_frames(an, strength='standard'):
+    """从已抽帧信号(an=_analyze_video_frames 返回值)检测镜头/色调/亮度切换候选切点。"""
     import numpy as np
-    an = _analyze_video_frames(video_path, fps_s)
     if not an or len(an['hist']) < 5:
         return []
     times, hist, bright = an['times'], an['hist'], an['bright']
@@ -2257,8 +2255,21 @@ def detect_visual_cues(video_path, fps_s=4.0, strength='standard'):
     return out
 
 
+def detect_motion_points(video_path, fps_s=4.0, min_gap=0.6, strength='standard'):
+    """帧级动作检测：用像素变化比例(frac)做信号，分位数自适应阈值 + 动作峰 + 停顿帧。
+    strength: soft(柔和)/standard/strong(强力)。返回候选切点秒列表。"""
+    return _detect_motion_from_frames(_analyze_video_frames(video_path, fps_s), min_gap, strength)
+
+
+def detect_visual_cues(video_path, fps_s=4.0, strength='standard'):
+    """帧级视觉线索：色相直方图突变(镜头/色调切换) + 亮度突变(曝光/场景切换)。"""
+    return _detect_visual_from_frames(_analyze_video_frames(video_path, fps_s), strength)
+
+
 def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
-    """检测音乐"大鼓点"（强 onset 峰值）。返回(强拍秒列表升序, 每秒拍数估计)。"""
+    """检测音乐"大鼓点"（强 onset 峰值）。返回(强拍秒列表升序, 每秒拍数估计)。
+    强拍用「时间窗分桶」挑选而非全局最强 top_k：否则最强 onset 会集中在音乐前段，
+    视频后段没有强拍可吸附，导致卡点全部落在片头、后半段完全踩不上鼓点。"""
     try:
         import librosa
     except Exception:
@@ -2267,6 +2278,7 @@ def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
         y, sr = librosa.load(music_path, sr=22050, mono=True)
         if len(y) < sr:
             return [], None
+        T = float(len(y)) / sr
         hop = 512
         onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
         times = librosa.times_like(onset_env, sr=sr, hop_length=hop)
@@ -2277,11 +2289,28 @@ def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
             return [], None
         pts = [float(times[p]) for p in peaks]
         vals = [float(onset_env[p]) for p in peaks]
-        # keep the strongest onsets as "大鼓点"
-        if top_k and len(vals) > top_k:
-            idx = sorted(range(len(vals)), key=lambda i: vals[i], reverse=True)[:top_k]
-            idx.sort()
-            pts = [pts[i] for i in idx]
+        # 时间窗分桶：把整段音乐均分 top_k 个窗，每窗取局部最强 onset → 强拍均匀覆盖全曲
+        if top_k and len(pts) > top_k:
+            picked = []
+            seen = set()
+            win = T / top_k
+            for k in range(top_k):
+                w0, w1 = k * win, (k + 1) * win
+                best_i, best_v = -1, -1.0
+                for i in range(len(pts)):
+                    if pts[i] < w0 or pts[i] >= w1:
+                        continue
+                    if vals[i] > best_v:
+                        best_v, best_i = vals[i], i
+                if best_i < 0:
+                    # 空窗（该段音乐平缓无 onset）：不强凑，交给相邻窗
+                    continue
+                if pts[best_i] in seen:
+                    continue
+                picked.append(pts[best_i])
+                seen.add(pts[best_i])
+            if picked:
+                pts = sorted(picked)
         # estimate beats-per-second from inter-peak median
         gaps = [pts[i+1] - pts[i] for i in range(len(pts) - 1) if pts[i+1] - pts[i] > 0.2]
         bps = None
@@ -2293,12 +2322,19 @@ def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
         return [], None
 
 
-def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=0.8, max_seg=9.0, tol=0.35,
-                   visual_cuts=None, strength='standard'):
+def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=None, max_seg=9.0, tol=0.35,
+                   visual_cuts=None, strength='standard', max_cuts=None):
     """把视频切点(场景+动作+视觉线索)加权匹对到最近强拍，生成强卡点时间线。
-    权重：场景切>动作>视觉线索；强力模式更严格吸附强拍；段过长时用强拍网格兜底。"""
+    权重：场景切>动作>视觉线索；强力模式更严格吸附强拍；段过长时用强拍网格兜底。
+    - min_seg 默认按强度自适应（soft 1.5 / standard 1.2 / strong 1.0），避免 1 秒碎切闪屏；
+    - max_cuts 限制最终段数（约 3.5s/段，默认最多 48）：切点超量时均匀抽稀保留首尾，
+      否则卡点会切成几十个 1 秒碎段，观感像画面反复跳。"""
     if not beats:
         beats = []
+    if min_seg is None:
+        min_seg = {'soft': 1.5, 'standard': 1.2, 'strong': 1.0}.get(strength, 1.2)
+    if max_cuts is None:
+        max_cuts = max(6, min(48, int(video_dur / 3.5)))
     # weighted candidates
     cand = []
     for c in (scene_cuts or []):
@@ -2313,6 +2349,20 @@ def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=0.8, max_s
             merged[c] = max(merged[c], w)
         else:
             merged[c] = w
+    # 候选过多时先控制规模：按权重优先 + 时间均匀去重
+    if len(merged) > max_cuts * 3:
+        keep = []
+        ranked = sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))
+        step = video_dur / max_cuts
+        last = -1e9
+        for c, w in ranked:
+            if c - last >= step * 0.9:
+                keep.append(c)
+                last = c
+        if len(keep) < max_cuts:
+            keys = sorted(merged.keys())
+            keep = keys[::max(1, len(keys) // max_cuts)][:max_cuts]
+        merged = {c: merged[c] for c in sorted(keep)}
     cuts = []
     used = set()
     eff_tol = tol * 0.7 if strength == 'strong' else (tol * 1.4 if strength == 'soft' else tol)
@@ -2344,8 +2394,18 @@ def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=0.8, max_s
                     timeline.insert(i, round(nb, 3))
                     continue
             i += 1
-    if video_dur - timeline[-1] < 0.4:
-        timeline.pop()
+    # 段数超限 → 均匀抽稀（保留首尾），避免几十个 1 秒碎段闪屏
+    if len(timeline) - 1 > max_cuts:
+        n = len(timeline) - 1
+        keep_idx = sorted(set([0, n] + [int(round(j * n / max_cuts)) for j in range(1, max_cuts)]))
+        timeline = [timeline[i] for i in keep_idx]
+        tl2 = [timeline[0]]
+        for c in timeline[1:]:
+            if c - tl2[-1] >= min_seg * 0.6:
+                tl2.append(c)
+        if len(tl2) > 1 and video_dur - tl2[-1] < 0.4:
+            tl2.pop()
+        timeline = tl2
     timeline.append(video_dur)
     return timeline
 
@@ -2359,17 +2419,19 @@ def _analyze_beatcut(video_path, music_path, params, progress=None):
     up('检测场景切换', 5)
     strength = params.get('strength', 'standard')
     scene_cuts = detect_scene_cuts(video_path, threshold=float(params.get('sceneTh', 0.30)))
-    up('检测动作/停顿帧', 10)
-    motion_cuts = detect_motion_points(video_path, fps_s=4.0, strength=strength)
-    up('检测镜头/色调切换', 16)
-    visual_cuts = detect_visual_cues(video_path, fps_s=4.0, strength=strength)
+    up('检测动作/镜头切换', 10)
+    # 一次抽帧同时算动作+视觉线索（避免两次全片解码）
+    frames = _analyze_video_frames(video_path, fps_s=4.0)
+    motion_cuts = _detect_motion_from_frames(frames, strength=strength)
+    visual_cuts = _detect_visual_from_frames(frames, strength=strength)
     up('分析音乐大鼓点', 22)
     strong_beats, bps = detect_strong_beats(music_path, top_k=int(params.get('maxCuts', 30)))
     vdur = probe_audio_len(video_path) or 0.0
     if vdur <= 0:
         raise RuntimeError('无法读取视频时长')
     timeline = plan_beat_cuts(scene_cuts, motion_cuts, strong_beats, vdur,
-                              visual_cuts=visual_cuts, strength=strength)
+                              visual_cuts=visual_cuts, strength=strength,
+                              max_cuts=int(params.get('maxCuts', 30)) or None)
     diag = {
         'scene_cuts': scene_cuts,
         'motion_cuts': motion_cuts,
