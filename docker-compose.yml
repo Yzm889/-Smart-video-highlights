@@ -1,0 +1,17 @@
+services:
+  spring-video:
+    build: .
+    image: spring-video:latest
+    container_name: spring-video
+    ports:
+      - "8765:8765"
+    environment:
+      - PORT=8765
+      - HOST=0.0.0.0
+    volumes:
+      # 产物与曲库持久化到宿主机，避免重建容器丢失
+      - ./webui_output:/app/webui_output
+      - ./music_library:/app/music_library
+      # 按需挂载你的 AI 配置（含 api_key 等），不挂载则使用默认/离线模式
+      - ./ai_config.json:/app/ai_config.json
+    restart: unless-stopped

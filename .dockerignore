@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.workbuddy/
+.venv/
+venv/
+webui_output/
+webui_workspace/
+tests/
+*.bat
+*.md
+.DS_Store

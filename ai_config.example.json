@@ -1,4 +1,9 @@
 {
+  "chat": {
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "在这里填你的文本大模型 API Key（用于电影解说稿/剧情生成）",
+    "model": "deepseek-chat"
+  },
   "vision": {
     "base_url": "https://api.deepseek.com/v1",
     "api_key": "在这里填你的视觉模型 API Key",

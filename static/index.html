@@ -8,36 +8,377 @@
 </head>
 <body>
 <header>
-  <div><h1>一帧成片</h1><div class="sub">FrameCut · AI 节拍短片</div></div>
-  <div id="srv"></div>
+  <div class="brand"><h1>一帧成片</h1><div class="sub">FrameCut · AI 节拍短片</div></div>
+  <div class="htools">
+    <div id="srv"></div>
+    <button class="navtoggle" id="navToggle">☰ 菜单</button>
+  </div>
 </header>
-<div class="wrap">
-  <div class="card" id="drop">
+
+<!-- AI 配置就绪状态条：未配置时生成前会拦截提醒，避免静默用免费模板 -->
+<div id="aiBar" class="aibar">
+  <span class="ailabel">AI 配置</span>
+  <span id="aiChat" class="aichip" onclick="jumpToAISection('cloud')" title="点击跳转配置">…</span>
+  <span id="aiVision" class="aichip" onclick="jumpToAISection('cloud')" title="点击跳转配置">…</span>
+  <span id="aiLocal" class="aichip" onclick="jumpToAISection('local')" title="点击跳转配置">…</span>
+  <span id="aiVlm" class="aichip" onclick="jumpToAISection('vlm')" title="点击跳转配置">…</span>
+  <span id="aiWhisper" class="aichip" onclick="jumpToAISection('whisper')" title="点击跳转配置">…</span>
+  <a class="ailink" href="javascript:void(0)" onclick="jumpToAISection('local')">去配置 ›</a>
+</div>
+
+<!-- 生成前置确认弹窗：缺 API 时先提示，避免用户不知情就生成免费模板 -->
+<div id="preflight" class="modal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-ico">⚠️</div>
+    <div class="modal-title" id="pfTitle">未配置 AI</div>
+    <div class="modal-msg" id="pfMsg"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="goPreflightConfig()">去配置</button>
+      <button class="btn ghost" id="pfFree" onclick="closePreflight();continueGen()">仍用本地离线生成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 全局进度条（任何任务进行中浮现于顶部） -->
+<div id="gprog" class="gprog">
+  <div class="gprog-in">
+    <span class="gprog-label" id="gprogLabel">处理中…</span>
+    <span class="gprog-pct" id="gprogPct">0%</span>
+  </div>
+  <div class="gprog-bar"><i id="gprogFill"></i></div>
+  <div class="gprog-phase" id="gprogPhase"></div>
+</div>
+
+<!-- 悬浮预览坞（任务完成后右下角弹出迷你播放器） -->
+<div id="previewDock" class="previewDock"></div>
+
+<!-- 回到顶部 -->
+<button id="scrollTopBtn" class="scrollTopBtn" onclick="scrollTop2()" title="回到顶部">↑</button>
+
+<div class="layout">
+  <!-- 左侧功能导航 -->
+  <aside class="sidenav" id="sidenav">
+    <div class="navtitle">功能导航</div>
+    <nav>
+      <a href="#guideCard" class="navlink" data-target="guideCard"><span class="ni">📖</span>新手引导</a>
+      <a href="#instructCard" class="navlink" data-target="instructCard"><span class="ni">💬</span>指令成片</a>
+      <a href="#drop" class="navlink" data-target="drop"><span class="ni">🖼️</span>上传素材</a>
+      <a href="#beatcutCard" class="navlink" data-target="beatcutCard"><span class="ni">🎯</span>智能强卡点</a>
+      <a href="#narCard" class="navlink" data-target="narCard"><span class="ni">🎬</span>短片解说</a>
+      <a href="#movieCard" class="navlink" data-target="movieCard"><span class="ni">🌐</span>联网解说</a>
+      <a href="#musicCard" class="navlink" data-target="musicCard"><span class="ni">🎵</span>背景音乐</a>
+      <a href="#libCard" class="navlink" data-target="libCard"><span class="ni">🔎</span>踩点曲库</a>
+      <a href="#aiCard" class="navlink" data-target="aiCard"><span class="ni">🤖</span>AI 配置</a>
+      <a href="#timelineCard" class="navlink" data-target="timelineCard"><span class="ni">📌</span>时间线</a>
+      <a href="#outCard" class="navlink" data-target="outCard"><span class="ni">⚙️</span>输出设置</a>
+      <a href="#buildCard" class="navlink" data-target="buildCard"><span class="ni">✨</span>一键合成</a>
+      <a href="#histCard" class="navlink" data-target="histCard"><span class="ni">🕘</span>生成记录</a>
+    </nav>
+    <button class="navtop" onclick="scrollTop2()">↑ 回到顶部</button>
+  </aside>
+
+  <div class="wrap">
+    <!-- 新手引导（可整体折叠：点标题整体收起/展开，下方每步也可单独点开） -->
+    <div class="card guide" id="guideCard">
+      <details class="guide-collapse" open>
+        <summary>📖 新手引导 <span class="gc-toggle">点击标题可整体收起/展开，下方每步也可单独点开</span></summary>
+        <div class="gc-body">
+          <p class="hint">本工具两种用法，<b>都不强制花钱</b>。下面每步可点开/收起，按顺序做即可。</p>
+          <div class="quick-nav">
+            <span class="qn-label">⚡ 快速跳转：</span>
+            <button class="btn mini ghost" onclick="jumpToAISection('local')">🖥 配置本地模型</button>
+            <button class="btn mini ghost" onclick="document.getElementById('narCard').scrollIntoView({behavior:'smooth',block:'start'})">🎬 电影解说</button>
+            <button class="btn mini ghost" onclick="document.getElementById('beatcutCard').scrollIntoView({behavior:'smooth',block:'start'})">🎯 智能强卡点</button>
+            <button class="btn mini ghost" onclick="document.getElementById('buildCard').scrollIntoView({behavior:'smooth',block:'start'})">✨ 一键合成</button>
+          </div>
+
+      <div class="guide-path">
+        <div class="gp-title">🟢 路径 A · 完全免费（本地离线，推荐先试）</div>
+        <p class="hint" style="margin:0 0 8px;">点每步标题展开看详情。本路径要装 2 个模型：📝 文字大脑（必装）+ 👁 看图大脑（选装），名字只差一个 <code>vl</code>，别下错。</p>
+        <div class="steps-acc">
+
+          <details class="step" open>
+            <summary><b class="num">1</b> 安装 Ollama 运行器</summary>
+            <div class="step-body">
+              <p>在本机安装 <b>Ollama</b>（本地大模型运行器）：</p>
+              <div class="codebox"><code id="cmdOllama">https://ollama.com/download</code><button class="btn mini ghost cp" onclick="copyText('cmdOllama')">📋 复制</button></div>
+              <div class="codebox"><code id="cmdOllamaCn">https://ollamacn.github.io/</code><a class="btn mini ghost cp" target="_blank" href="https://ollamacn.github.io/">↗ 打开</a><button class="btn mini ghost cp" onclick="copyText('cmdOllamaCn')">📋 复制</button></div>
+              <span class="hint" style="margin-top:2px;">✅ 推荐：<b>国内站无需科学上网</b>——打开 <code>ollamacn.github.io</code> 后点 Windows 版 <code>OllamaSetup.exe</code> 直接下载（走 fastgit.cc 加速）。官网打不开时优先用它。</span>
+              <p style="margin:6px 0 2px;">官网打不开/下不动？点下面按钮<b>自动检测可用镜像</b>——网页会实时探测哪些镜像能正常打开（自动过滤证书不安全/打不开的），并标出推荐，<b>无需人工替换</b>：</p>
+              <button id="btnScanMirror" class="btn mini" onclick="scanOllamaMirrors()">🔍 自动检测可用镜像</button>
+              <span class="hint inline-note">若检测出的镜像都打不开，<b>请直接去官网下载</b>：<a class="open" href="https://ollama.com/download" target="_blank">https://ollama.com/download</a>（下 Windows 版 <code>OllamaSetup.exe</code>，约 1.46GB）。</span>
+              <div id="ollamaMirrors" class="mirrorlist"><span class="hint">加载中，正在探测可用镜像…</span></div>
+              <p style="margin:6px 0 0;">选一个能打开的镜像，下 <b>Windows 版 <code>OllamaSetup.exe</code></b>（约 1.46GB），一路下一步安装。装好后模型拉取见下方「🌐 国内下载镜像」填代理。</p>
+              <details class="bubble"><summary>本步网络要求（点开）</summary><div class="bubble-body">✅ <b>免科学上网</b>：本步用国内站 <code>ollamacn.github.io</code> 直接下 <code>OllamaSetup.exe</code>，不用代理。只有官网 <code>ollama.com</code> 才需科学上网/代理（打不开就用国内站）。</div></details>
+            </div>
+          </details>
+
+          <details class="step">
+            <summary><b class="num">2</b> 📝 拉取文字大脑（必装）</summary>
+            <div class="step-body">
+              <div style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #4a90d9;background:#f3f8ff;">
+                <details class="bubble warn"><summary>本步网络要求 / 卡住怎么办（点开）</summary><div class="bubble-body">⚠️ 这步<b>需要代理或科学上网</b>（Ollama 从境外拉 qwen 模型）。两条路：<br>① 在「🌐 国内下载镜像」填你<b>正在运行</b>的代理(如 <code>http://127.0.0.1:7890</code>) → 网页点「📥 拉取模型」；<br>② <b>免科学上网</b>：用下方 <code>aria2c -c</code> 断点续传从 hf-mirror 离线导入（卡 97% 不重来，已实测跑通）。<br>🚫 别用 <code>copy /b</code> 合并分卷。卡住/报错就展开下方「续传导入法」。</div></details>
+                💡 <b>两个模型别搞混：</b>名字只差一个 <code>vl</code>，但干的事完全不同——
+                <table style="border-collapse:collapse;width:100%;margin-top:6px;font-size:12px;">
+                  <tr style="background:#e8f0fe;"><th style="border:1px solid #cdd7e5;padding:4px 6px;text-align:left;">命令</th><th style="border:1px solid #cdd7e5;padding:4px 6px;text-align:left;">外号</th><th style="border:1px solid #cdd7e5;padding:4px 6px;text-align:left;">会不会看图</th><th style="border:1px solid #cdd7e5;padding:4px 6px;text-align:left;">干嘛用</th><th style="border:1px solid #cdd7e5;padding:4px 6px;text-align:left;">大小</th><th style="border:1px solid #cdd7e5;padding:4px 6px;text-align:left;">要不要装</th></tr>
+                  <tr><td style="border:1px solid #cdd7e5;padding:4px 6px;"><code>qwen2.5:latest</code></td><td style="border:1px solid #cdd7e5;padding:4px 6px;">📝 文字大脑</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">❌ 只认文字</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">把字幕+梗概写成解说词</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">~4.7GB</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">✅ 必装</td></tr>
+                  <tr><td style="border:1px solid #cdd7e5;padding:4px 6px;"><code>qwen2.5vl:latest</code></td><td style="border:1px solid #cdd7e5;padding:4px 6px;">👁 看图大脑</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">✅ 会看画面</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">逐段看画面写出「真解说」</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">~5-6GB</td><td style="border:1px solid #cdd7e5;padding:4px 6px;">⚪ 选装</td></tr>
+                </table>
+                👉 只想免费出片：只装第一个就够；想让解说「看懂画面」：两个都装。装错或只装一个，网页都会提示缺模型。
+              </div>
+              <p>最简：打开<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">「🤖 AI 配置 → ③ 本地模型」</a>，确认模型为 <code>qwen2.5:latest</code>，点「📥 拉取模型」即<b>网页内一键下载</b>（无需终端）。网络不稳就先在<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('mirror')">「🌐 国内下载镜像」</a>填代理，或把模型改成更小的 <code>qwen2.5:3b</code> 再拉。</p>
+              <div class="codebox"><code id="cmdPull">ollama pull qwen2.5:latest</code><button class="btn mini ghost cp" onclick="copyText('cmdPull')">📋 复制</button></div>
+              <span class="hint" style="display:block;margin-top:4px;">嫌网页慢也可手动终端执行上面命令（复制即可）。想更小更快可填 <code>qwen2.5:3b</code> / <code>qwen2.5:1.5b</code>。</span>
+              <span style="display:block;margin:4px 0;color:#1a7f37;">它<b>只认文字</b>：吃进「字幕 + 梗概」，吐出解说词。免费「省流解说」靠它干活，<b>约 4.7GB</b>，必装。</span>
+              <p>首次会下载约 4.7GB（7B 量化版），耐心等它跑到 100%。若 <code>ollama pull</code> 频繁断流、从头重下（Ollama 单层不支持断点续传），改用更稳的导入法：</p>
+              <div class="hint" style="margin-top:6px;">① 用支持续传的工具先把 GGUF 下下来（免科学上网，<code>-c</code> 断点续传）：<br>
+<code id="cmdAria">aria2c -c -x8 -s8 -o qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf https://hf-mirror.com/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf</code><button class="btn mini ghost cp" onclick="copyText('cmdAria')">📋 复制</button>（满血 q4 第一分卷，约 4GB；再下 <code>-00002-of-00002</code> 第二分卷约 657MB）；<br>
+<span style="color:#b00;">⚠ 坑：HF 上 q4_K_M 已被拆成两个分卷（<code>-00001-of-00002</code>/<code>-00002-of-00002</code>），<b>没有单文件版</b>，旧教程那种 <code>q4_k_m.gguf</code> 链接会 404。嫌麻烦就下单文件 <code>q3_k_m</code>（约 3.6GB，中文够用）：<code id="cmdAria3">aria2c -c -x8 -s8 -o qwen2.5-7b-instruct-q3_k_m.gguf https://hf-mirror.com/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q3_k_m.gguf</code><button class="btn mini ghost cp" onclick="copyText('cmdAria3')">📋 复制</button></span>；<br>
+② <b>分卷不要合并！</b>llama.cpp 的分卷 GGUF 直接 <code>copy /b</code> 拼接会损坏（Ollama 报 <code>split filename pattern</code> 错）。Ollama 原生支持分卷导入：把两个分卷放同目录，Modelfile 写两行 <code>FROM</code> 分别指向它们即可（免合并）；<br>
+③ 新建 <code>Modelfile</code>（无后缀）放同目录：<br>
+满血 q4（两行 FROM，指向两个分卷）：<code>FROM ./qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf</code> + <code>FROM ./qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf</code>；<br>
+或单文件 q3_k_m（一行，最省心）：<code>FROM ./qwen2.5-7b-instruct-q3_k_m.gguf</code>；<br>
+④ <code>ollama create qwen2.5:latest -f Modelfile</code> 导入本地；<br>
+⑤ 之后网页「③ 本地模型」自动识别。视觉模型（qwen2.5vl）直接在网页「⑤ VLM」点「📥 拉取模型」即可，不用手动下 GGUF。</div>
+            </div>
+          </details>
+
+          <details class="step">
+            <summary><b class="num">3</b> 测试本地模型连接</summary>
+            <div class="step-body">
+              <p>回到本页 → 点<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">「🤖 AI 配置 → ③ 本地模型」</a>，已默认指向 <code>http://localhost:11434/v1</code>，点「🧪 测试连接」，显示 ✅ 即成功。</p>
+            </div>
+          </details>
+
+          <details class="step">
+            <summary><b class="num">4</b> 选「省流」模式生成</summary>
+            <div class="step-body">
+              <p>在「🎬 短片解说 / 🌐 联网解说」选 <b>省流</b> 模式 → 纯风景片建议填「视频主题/梗概」→ 点生成。</p>
+              <span class="ok">效果：本地 Whisper 识别台词 + 本地 qwen 离线改写解说 + 系统免费中文配音，<b>全程不花一分钱、不调任何云端</b>。</span>
+            </div>
+          </details>
+
+          <details class="step">
+            <summary><b class="num">5</b> 👁 拉取看图大脑（选装）</summary>
+            <div class="step-body">
+              <details class="bubble warn"><summary>本步网络要求（点开）</summary><div class="bubble-body">⚠️ 同第 2 步：qwen2.5vl 也是 Ollama 从境外拉，需代理/科学上网，或走 aria2c 离线导入（模型名换 <code>qwen2.5vl</code>）。只有想升级「真解说」才装，不装也能出片。</div></details>
+              <p><b>想让免费模式也写出「真解说」？</b>再拉一个能看图的模型：</p>
+              <div class="codebox"><code id="cmdPullVlm">ollama pull qwen2.5vl:latest</code><button class="btn mini ghost cp" onclick="copyText('cmdPullVlm')">📋 复制</button></div>
+              <span style="display:block;margin:4px 0;color:#1a7f37;">它名字只比上面多一个 <code>vl</code>（Vision-Language＝会看图的文字模型），但<b>多了眼睛</b>：吃进「每段的画面截图 + 字幕 + 梗概」，吐出「基于真实画面」的解说。<b>约 5~6GB</b>，只有想升级成「真解说」才需要装。</span>
+              <p>回到<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('vlm')">「🤖 AI 配置 → ⑤ 本地视觉理解 VLM」</a>勾选启用、点「🧪 测试/检测」显示 ✅（或点「拉取」自动执行）。之后短片解说会<b>逐段看画面</b>生成真解说，从「台词复读」升级为「真解说」。</p>
+            </div>
+          </details>
+
+          <details class="step">
+            <summary><b class="num">6</b> 💡 国内镜像（免科学上网）</summary>
+            <div class="step-body">
+              <p>Whisper 权重下载默认已走 <code>hf-mirror.com</code> 镜像；Ollama 拉模型若卡在 0%，去<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('mirror')">「🤖 AI 配置 → 🌐 国内下载镜像」</a>填你的代理地址（如 Clash <code>http://127.0.0.1:7890</code>）即可加速。</p>
+            </div>
+          </details>
+
+        </div>
+      </div>
+
+      <div class="guide-path">
+        <div class="gp-title">🔵 路径 B · 真 AI（更聪明的解说，花少量 API）</div>
+        <details class="bubble"><summary>本路径网络要求（点开）</summary><div class="bubble-body">⚠️ <b>需要科学上网或代理</b>：解说稿发到 DeepSeek/通义等云端，请求小、网络差时反而比下载几个 GB 稳。若请求失败，开科学上网或在「🌐 国内下载镜像」填代理。</div></details>
+        <div class="steps-acc">
+          <details class="step">
+            <summary><b class="num">1</b> 申请 API Key</summary>
+            <div class="step-body"><p>去 <a target="_blank" href="https://platform.deepseek.com/api_keys">DeepSeek</a> 等官网申请 Key（新人有免费额度）。</p></div>
+          </details>
+          <details class="step">
+            <summary><b class="num">2</b> 填写 AI 配置</summary>
+            <div class="step-body"><p>左侧「🤖 AI 配置」→ ① 视觉 填 base_url/Key/model，② TTS 填配音 Key（可留空）→ 点「💾 保存所有 AI 配置」→「🧪 测试」。</p></div>
+          </details>
+          <details class="step">
+            <summary><b class="num">3</b> 切「智能」模式生成</summary>
+            <div class="step-body"><p>在解说卡片把模式切到 <b>智能</b> → 生成。解说稿由云端大模型生成，更自然。</p></div>
+          </details>
+        </div>
+      </div>
+
+          <div class="hint" style="margin-top:8px;">📌 顶部状态条会实时显示「🤖 真AI / 🖥 本地模型 / 👁 画面描述 / 📷 视觉理解 / 🎙 Whisper」是否已配置；没配齐就点生成，页面会先弹出确认，<b>不会偷偷用模板</b>。模型装好后网页会自动识别并调用。</div>
+        </div>
+      </details>
+    </div>
+
+    <!-- Phase 4 · 指令解析层 -->
+    <div class="card" id="instructCard">
+      <h2>💬 指令成片（一句话自动路由）</h2>
+      <div class="hint">输入自然语言，自动路由到对应工作流（默认走省流免费路径，明确要「真AI/花钱」才调用付费接口）：</div>
+      <div class="row" style="margin-top:8px;">
+        <input type="text" id="instructInput" placeholder="例如：帮我解说《盗梦空间》配这首音乐 / 把这段视频剪个强卡点 / 用春景图合成一个竖屏短视频" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
+        <button class="btn" id="instructGo" onclick="runInstruct()">🚀 执行</button>
+        <button class="btn danger" id="instructCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
+      </div>
+      <div class="hint" id="instructHint">支持：解说《片名》· 解说这段视频 · 强卡点/配乐 · 合成/成片（可带「竖屏/横屏」「省流/智能」）。</div>
+      <div class="bar" id="instructBar"><i></i></div>
+      <div class="hint" id="instructStatus"></div>
+      <div id="instructResult" style="display:none;">
+        <video id="instructPlayer" controls playsinline></video>
+        <span class="modebadge" id="instructMode"></span>
+        <div id="instructPartial" class="partial" style="display:none"></div>
+        <div style="margin-top:12px;"><a class="btn ghost" id="instructDl" href="#" download="instruct.mp4">💾 保存</a></div>
+        <div class="hint" id="instructDiag"></div>
+      </div>
+    </div>
+
+    <div class="card" id="drop">
     <b>把图片或视频拖到这里，或点此选择文件</b>
     <div class="hint">支持顺序混排：图片自动加镜头运动(推近/平移/拉远/轻摇)，视频自动裁剪，之间带交叉淡入淡出转场。</div>
     <input type="file" id="fileInput" multiple accept="image/*,video/*" style="display:none">
   </div>
 
-  <div class="card">
+  <div class="card" id="beatcutCard">
     <h2>🎯 智能强卡点（本应用核心）</h2>
     <div id="bcDrop" class="musdrop">🎬 拖入一段视频（自动识别<b>场景切换</b>与<b>动作停顿帧</b>）</div>
     <input type="file" id="bcInput" accept="video/*" style="display:none">
     <div class="hint">然后在下方「🎵 背景音乐」选一首歌（或从「🔎 免费踩点音乐库」搜一首点「使用」），系统会把画面切点<b>自动匹对到音乐大鼓点</b>，硬切生成强卡点短片。</div>
     <div class="hint" id="bcInfo">还没有选择视频。</div>
+    <div class="row" style="margin-top:10px;">
+      <div class="field"><label>卡点强度</label>
+        <select id="bcStrength">
+          <option value="soft">柔和（少切、稳）</option>
+          <option value="standard" selected>标准（推荐）</option>
+          <option value="strong">强力（多切、密）</option>
+        </select>
+      </div>
+      <div class="hint" style="align-self:center;">强力＝捕捉更多动作爆发/镜头切换帧并严格吸附鼓点。</div>
+    </div>
+    <div class="mode-hint" id="bcMusicHint">🎵 未选择背景音乐：强卡点需要一首音乐来对齐鼓点。 <a href="javascript:void(0)" class="jump-link" onclick="document.getElementById('musicCard').scrollIntoView({behavior:'smooth',block:'start'})">🎵 去选背景音乐</a> 或 <a href="javascript:void(0)" class="jump-link" onclick="document.getElementById('libCard').scrollIntoView({behavior:'smooth',block:'start'})">🔎 去免费曲库搜一首</a></div>
+    <div class="row" style="margin-top:10px; align-items:center; gap:6px;">
+      <label style="display:flex; align-items:center; gap:6px; margin:0;">
+        <input type="checkbox" id="bcBeatSync" style="width:auto;" checked>
+        <b>节拍同步模式</b>
+      </label>
+      <span class="hint" style="align-self:center;">按鼓点切段：片段不重样、免重编码防闪跳（修复顺序重复/画面跳闪）</span>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <div class="field"><label>节拍灵敏度</label>
+        <input type="range" id="bcSensitivity" min="0.2" max="0.9" step="0.05" value="0.5" style="width:180px; vertical-align:middle;">
+        <span id="bcSensitivityText" style="margin-left:8px;">0.5</span>
+      </div>
+      <div class="field"><label>片段最小时长(秒)</label>
+        <input type="number" id="bcMinClip" min="0.3" max="2.0" step="0.1" value="0.6" style="width:90px">
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px; align-items:center; gap:6px;">
+      <label style="display:flex; align-items:center; gap:6px; margin:0;">
+        <input type="checkbox" id="bcKeepAudio" style="width:auto;">
+        <b>保留原声</b>
+      </label>
+      <span class="hint" style="align-self:center;">同时保留视频原声（压低）+ 音乐铺底，不勾选则纯音乐。</span>
+      <div class="field" style="margin:0;"><label>转场</label>
+        <select id="bcTransition">
+          <option value="none" selected>硬切（无转场）</option>
+          <option value="fadeblack">黑闪</option>
+          <option value="fadewhite">白闪</option>
+          <option value="dissolve">溶解叠化</option>
+          <option value="fade">淡入淡出</option>
+        </select>
+      </div>
+      <span class="hint" style="align-self:center;">仅智能强卡点模式生效</span>
+      <div class="field" style="margin:0;"><label>转场时长(秒)</label>
+        <input type="number" id="bcTransDur" min="0.1" max="0.6" step="0.05" value="0.2" style="width:70px">
+      </div>
+    </div>
+    <div class="mode-hint" id="bcSyncStatus" style="display:none;"></div>
     <div class="actions" style="margin-top:12px;">
-      <button class="btn" id="bcGo" onclick="buildBeatCut()">⚡ 一键强卡点</button>
+      <button class="btn" id="bcGo" onclick="planBeatCut()">🎯 分析并预览（可微调）</button>
+      <button class="btn btn2" id="bcQuickBtn" onclick="buildBeatCut()">⚡ 直接生成</button>
       <span class="status" id="bcStatus"></span>
     </div>
     <div class="bar" id="bcBar"><i></i></div>
     <div id="bcResult" style="display:none;">
       <h2 style="margin-top:14px;">✅ 强卡点完成</h2>
       <video id="bcPlayer" controls playsinline></video>
+      <span class="modebadge" id="bcMode"></span>
+      <div id="bcPartial" class="partial" style="display:none"></div>
       <div style="margin-top:12px;"><a class="btn ghost" id="bcDl" href="#" download="beatcut.mp4">💾 保存</a></div>
       <div class="hint" id="bcDiag"></div>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="narCard">
+    <h2>🎬 电影解说（AI 剧情解说视频）</h2>
+    <div id="narrGuide" class="narr-guide"></div>
+    <div id="narDrop" class="musdrop">🎞️ 拖入一段电影/动漫/短片片段</div>
+    <input type="file" id="narInput" accept="video/*" style="display:none">
+    <div class="hint">自动<b>分段</b> → 识别<b>台词</b>（本地 Whisper）→ 生成<b>剧情解说稿</b> → 按时间轴<b>配音</b>（省流用系统免费中文配音）+ <b>字幕</b> → 出片。</div>
+    <div class="hint" id="narInfo">还没有选择视频。</div>
+    <div class="row" style="margin-top:10px;">
+      <div class="field"><label>模式</label>
+        <select id="narMode" onchange="onModeChange('narMode')">
+          <option value="eco" selected>省流/本地（免费·本地模型离线解说）</option>
+          <option value="ai">智能（云端真AI解说，花少量API）</option>
+        </select>
+        <button class="btn mini ghost" onclick="scrollToAIConfig('narMode')" title="跳转到对应模式的配置区">⚙️ 配置</button>
+      </div>
+      <div class="mode-hint" id="narModeHint">💡 <b>免费本地模式</b>：需要在「🤖 AI 配置 → 🖥 本地离线模型」里启用本地模型（Ollama + qwen2.5）。未配置时会自动降级为模板解说。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去配置本地模型</a></div>
+      <div class="field"><label>最大分段(秒)</label><input type="number" id="narMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
+      <div class="field" style="flex:1"><label>视频主题/梗概（选填，纯风景片建议填）</label><input id="narTheme" placeholder="例：春天樱花树下散步的治愈短片"></div>
+      <div class="field" style="flex:1"><label>解说要求/风格（选填，会作为前置条件交给模型）</label><input id="narReq" placeholder="例：多点幽默/少升华/语气接地气/强调兄弟情"></div>
+    </div>
+    <div class="hint" style="margin-top:6px;"><label><input type="checkbox" id="narBgm" style="width:auto"> 加配乐（使用上方🎵选中的背景音乐，低音量铺底）</label></div>
+    <div class="actions" style="margin-top:12px;">
+      <button class="btn" id="narGo" onclick="planNarrate()">🎙 分析并预览（可微调）</button>
+      <button class="btn btn2" id="narQuickBtn" onclick="buildNarrate()">⚡ 直接生成</button>
+      <button class="btn danger" id="narCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
+      <span class="status" id="narStatus"></span>
+    </div>
+    <div class="bar" id="narBar"><i></i></div>
+    <div id="narResult" style="display:none;">
+      <h2 style="margin-top:14px;">✅ 解说完成</h2>
+      <video id="narPlayer" controls playsinline></video>
+      <span class="modebadge" id="narBadge"></span>
+      <div id="narPartial" class="partial" style="display:none"></div>
+      <div style="margin-top:12px;"><a class="btn ghost" id="narDl" href="#" download="narration.mp4">💾 保存</a></div>
+      <div class="hint" id="narDiag"></div>
+    </div>
+  </div>
+
+  <div class="card" id="movieCard">
+    <h2>🎬 电影解说（按片名·联网搜索，Phase 3）</h2>
+    <div class="hint">输入电影/动漫名（支持《片名》），自动联网搜索剧情梗概 → LLM 生成解说稿 → 上传正片后按「台词+场景」自动对齐到镜头段，产出解说视频。无网络时也可直接粘贴剧情文本。</div>
+    <div class="row" style="margin-top:10px;">
+      <input type="text" id="movieName" placeholder="电影/动漫名，如：盗梦空间" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
+      <button class="btn ghost" onclick="fillMovieNameFromBraces()">从《》提取</button>
+    </div>
+    <div class="hint" style="margin-top:6px;">可选：粘贴剧情梗概（联网失败/不想联网时用，质量更稳定）</div>
+    <textarea id="moviePlot" rows="3" placeholder="可直接粘贴豆瓣简介/剧情分幕…留空则自动联网搜索" style="width:100%; margin-top:6px; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px; font-family:inherit;"></textarea>
+    <div id="movieDrop" class="musdrop" style="margin-top:10px;">🎞️ （可选）拖入正片/片段，自动按剧情对齐生成解说视频</div>
+    <input type="file" id="movieInput" accept="video/*" style="display:none">
+    <div class="hint" id="movieInfo">未选视频：仅生成解说稿（可在结果区复制）。选了视频：产出带解说配音+字幕的成片。</div>
+    <div class="row" style="margin-top:10px;">
+      <div class="field"><label>模式</label>
+        <select id="movieMode" onchange="onModeChange('movieMode')">
+          <option value="eco" selected>省流/本地（免费·本地模型离线解说）</option>
+          <option value="ai">智能（云端真AI，花少量API）</option>
+        </select>
+        <button class="btn mini ghost" onclick="scrollToAIConfig('movieMode')" title="跳转到对应模式的配置区">⚙️ 配置</button>
+      </div>
+      <div class="mode-hint" id="movieModeHint">💡 <b>免费本地模式</b>：需要在「🤖 AI 配置 → 🖥 本地离线模型」里启用本地模型（Ollama + qwen2.5）。未配置时会自动降级为模板解说。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去配置本地模型</a></div>
+      <div class="field"><label>最大分段(秒)</label><input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
+      <label style="align-self:center;"><input type="checkbox" id="movieBgm" style="width:auto"> 加配乐</label>
+    </div>
+    <div class="actions" style="margin-top:12px;">
+      <button class="btn" id="movieGo" onclick="buildMovieNarrate()">🎬 生成（联网）解说</button>
+      <button class="btn danger" id="movieCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
+      <span class="status" id="movieStatus"></span>
+    </div>
+    <div class="bar" id="movieBar"><i></i></div>
+    <div id="movieResult" style="display:none;">
+      <h2 style="margin-top:14px;">✅ 完成</h2>
+      <video id="moviePlayer" controls playsinline></video>
+      <span class="modebadge" id="movieBadge"></span>
+      <div id="moviePartial" class="partial" style="display:none"></div>
+      <div style="margin-top:12px;"><a class="btn ghost" id="movieDl" href="#" download="movie_narration.mp4">💾 保存</a></div>
+      <div class="hint" id="movieDiag"></div>
+    </div>
+  </div>
+
+  <div class="card" id="musicCard">
     <h2>🎵 背景音乐（可选）</h2>
     <div id="musDrop" class="musdrop">把 mp3/wav 音乐拖到这里，或点此选择背景音乐</div>
     <input type="file" id="musInput" accept="audio/*,.mp3,.wav" style="display:none">
@@ -46,7 +387,7 @@
     <div class="hint">已选音乐时：自动分析节拍(BPM)，把每个素材的切换点对齐到音乐节拍。</div>
   </div>
 
-  <div class="card">
+  <div class="card" id="libCard">
     <h2>🔎 免费踩点音乐库</h2>
     <div class="row">
       <input type="text" id="musSearch" placeholder="搜索：电子 / 轻快 / 打击 / 曲名…" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
@@ -56,11 +397,12 @@
     <div id="musResults"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="aiCard">
     <h2>🤖 AI 文案·字幕·配音</h2>
-    <label><input type="checkbox" id="aiCap" style="width:auto"> 按画面生成中文文案 + 烧字幕 + 配音</label>
-    <label style="margin-left:16px; font-weight:600; color:#0e7a5f;"><input type="checkbox" id="eco" checked style="width:auto"> 💸 省流模式（默认开，用离线模板文案、不调用付费配音）</label>
+    <label><input type="checkbox" id="aiCap" style="width:auto" onchange="updateBuildModeHint()"> 按画面生成中文文案 + 烧字幕 + 配音</label>
+    <label style="margin-left:16px; font-weight:600; color:#0e7a5f;"><input type="checkbox" id="eco" checked style="width:auto" onchange="updateBuildModeHint()"> 💸 省流模式（默认开，用离线模板文案、不调用付费配音）</label>
     <div class="hint">省流模式＝文案用离线模板、跳过付费 AI 配音，几乎不花钱；关掉才调用 DeepSeek 看图 + 小米 MiMo 配音（会消耗你的 API 余额）。</div>
+    <div class="mode-hint" id="buildModeHint">💡 <b>省流模式</b>：文案用离线模板、不调付费API，几乎不花钱。想让文案更聪明可启用 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">🖥 本地模型</a>（免费离线）或 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('cloud')">🌐 云端API</a>（花少量钱）。</div>
 
     <div style="margin-top:10px; padding:10px 12px; background:#f6fbf6; border:1px solid var(--line); border-radius:10px;">
       <div style="font-weight:600; color:#2e7d32; margin-bottom:6px;">🔑 一键获取 API Key（点击直达官方申请页）</div>
@@ -84,8 +426,9 @@
       <div class="hint" style="margin-top:6px;">申请后把 Key 填进上方 ①视觉 / ②TTS 对应框，点「保存」。DeepSeek/通义/智谱/火山支持"看图"；配音推荐<b>通义</b>(DashScope) 或 OpenAI tts。</div>
     </div>
 
-    <details>
-      <summary style="cursor:pointer; color:#2e7d32; font-size:13px;">⚙️ 配置 AI 接口（视觉与 TTS 可分别用不同的接口/Key）</summary>
+    <!-- 折叠口 1：API 云端配置（视觉 + TTS，花少量钱） -->
+    <details id="aiCloudDetails">
+      <summary style="cursor:pointer; color:#2e7d32; font-size:13px;">🌐 API 云端配置（① 看图写文案 + ② 中文配音，花少量钱）</summary>
       <div class="row" style="margin-top:8px; border-bottom:1px dashed #ddd; padding-bottom:8px;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">① 看图写文案（视觉模型）</div>
         <div class="field" style="flex:1"><label>接口地址 base_url</label><input id="visBase" placeholder="例 https://api.deepseek.com/v1"></div>
@@ -94,7 +437,7 @@
         <div class="field"><label>&nbsp;</label><button class="btn ghost" id="testVis" onclick="testAI('vision')">🧪 测试</button></div>
         <div class="hint" id="visTestRes" style="width:100%"> </div>
       </div>
-      <div class="row" style="margin-top:10px; padding-bottom:8px; border-bottom:1px dashed #ddd;">
+      <div class="row" style="margin-top:10px; padding-bottom:8px;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">② 中文配音 TTS（可留空 = 无配音）</div>
         <div class="field"><label>供应商 provider</label>
           <select id="ttsProvider" onchange="ttsProviderHint()">
@@ -111,18 +454,98 @@
         <div class="hint">通义音色例：<b>allmina</b>（女声）/ longxiaochun（男声）/ cherry / coffee。OpenAI 例：alloy / onyx / nova。</div>
         <div class="hint" id="ttsTestRes" style="width:100%"> </div>
       </div>
-      <div class="hint" id="aiStatus"></div>
-      <div style="margin-top:4px;"><button class="btn ghost" onclick="saveAIConfig()">💾 保存所有 AI 配置</button></div>
     </details>
+
+    <!-- 折叠口 2：本地离线模型（免费·不花钱） -->
+    <details id="aiLocalDetails" style="margin-top:12px;" open>
+      <summary style="cursor:pointer; color:#1565c0; font-size:13px;">🖥 本地离线模型（免费·不花钱：③ 本地大脑 + ④ Whisper + ⑤ VLM + ⑥ 国内镜像）</summary>
+      <div class="row" style="margin-top:10px; padding-bottom:8px; border-bottom:1px dashed #ddd;">
+        <div style="font-weight:600; color:#2e7d32; width:100%;">③ 本地模型（免费·离线，Ollama / qwen 等 OpenAI 兼容端点）</div>
+        <div class="field"><label><input type="checkbox" id="localEnabled" style="width:auto" checked> 启用本地模型</label></div>
+        <div class="field" style="flex:1"><label>接口地址 base_url</label><input id="localBase" placeholder="http://localhost:11434/v1"></div>
+        <div class="field" style="flex:1"><label>模型 model</label><input id="localModel" placeholder="qwen2.5:latest"></div>
+        <div class="field"><label>&nbsp;</label>
+          <button class="btn ghost" id="testLocal" onclick="testLocal()">🧪 测试连接</button>
+          <button class="btn ghost" id="pullLocal" onclick="pullLocalModel()">📥 拉取模型</button>
+        </div>
+        <div class="bar" id="localPullBar"><i id="localPullFill"></i></div>
+        <div class="hint" id="localPullPct" style="display:none; width:100%; margin-top:4px;">0%</div>
+        <div class="hint" id="localTestRes" style="width:100%"> </div>
+        <div class="hint" id="localPullRes" style="width:100%">状态加载中…</div>
+        <div class="hint" style="width:100%">📥 点「拉取模型」可<b>网页内一键下载</b> qwen（无需开终端）。⚡ 对 <code>qwen2.5:14b / qwen2.5:7b</code> 会自动优先走<b>国内加速通道</b>（hf-mirror 单文件 + aria2c 多线程 + 本地导入，几 GB 约 3 分钟；失败自动回退官方源）。省流模式会自动调用它离线改写解说词，<b>不花一分钱、不调云端</b>。<a href="javascript:void(0)" class="jump-link" onclick="document.getElementById('guideCard').scrollIntoView({behavior:'smooth',block:'start'})">📖 查看新手引导</a></div>
+      </div>
+      <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
+        <div style="font-weight:600; color:#2e7d32; width:100%;">④ 台词识别模型（Whisper）</div>
+        <details class="bubble"><summary>本步网络要求（点开）</summary><div class="bubble-body">✅ <b>免科学上网</b>：Whisper 权重走 <code>hf-mirror.com</code> 镜像直连。⚠️ 但若你在「🌐 国内下载镜像」的「Ollama 代理」框填了地址、而代理软件没开，会报 <code>10061 连接被拒</code> → 把代理框<b>清空</b>再点下载即可（或先开代理）。<br>ℹ️ 下载时控制台若出现 <code>Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN…</code> —— 这是<b>正常提示、不是报错</b>，只说明没登录、限速稍低，下载照常进行。不用管，等它跑完变「✅ 已下载」即可（想要更快可去 huggingface.co 免费注册拿个 token 填到 ⑥，但个人使用完全不用）。<br>🛟 <b>网页点下载也总失败？</b>用你已验证能下的 <code>aria2c</code> 手动拉：把这 4 个文件下到 <code>C:\Users\XOS\Desktop\spring_video\models\whisper\base\</code>（先建 <code>base</code> 文件夹）即被网页识别为「已下载」：<code>config.json</code>、<code>model.bin</code>、<code>tokenizer.json</code>、<code>vocabulary.txt</code>，地址前缀 <code>https://hf-mirror.com/Systran/faster-whisper-base/resolve/main/</code>。</div></details>
+        <div class="field"><label>模型精度（越大越准、越慢）</label>
+          <select id="whisperModel" onchange="saveWhisper()">
+            <option value="tiny">tiny（最快·最糙）</option>
+            <option value="base" selected>base（默认·平衡）</option>
+            <option value="small">small（更准·推荐）</option>
+            <option value="medium">medium（很准·较慢）</option>
+            <option value="large-v3">large-v3（最准·最慢）</option>
+          </select>
+        </div>
+        <div class="field"><label>&nbsp;</label><button class="btn ghost" id="dlWhisper" onclick="downloadWhisper()">⬇ 下载/预载模型</button></div>
+        <div class="hint" id="whisperStatus" style="width:100%">状态加载中…</div>
+        <div class="cmdbox" id="cmdWhisper"></div>
+        <div class="hint" style="width:100%">模型权重自动存到项目目录 <code>models/whisper/</code>，首次生成时若缺失会自动联网下载（仅一次）。点「下载」可提前预载，下方显示就绪状态与进度。</div>
+      </div>
+      <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
+        <div style="font-weight:600; color:#2e7d32; width:100%;">⑤ 本地视觉理解 VLM（看图写真解说·免费·离线）</div>
+        <details class="bubble"><summary>本步网络要求（点开）</summary><div class="bubble-body">⚠️ <b>同第 2 步（拉文字大脑）</b>：qwen2.5vl 也是 Ollama 从境外拉，需代理/科学上网，或走 aria2c 离线导入（把模型名换成 <code>qwen2.5vl</code>）。只有想升级「真解说」才装，不装也能出片。</div></details>
+        <div class="field"><label><input type="checkbox" id="vlmEnabled" style="width:auto" onchange="saveVlm()"> 启用本地视觉模型</label></div>
+        <div class="field"><label>服务模式</label>
+          <select id="vlmMode" onchange="saveVlm()">
+            <option value="ollama" selected>Ollama（本地原生）</option>
+            <option value="openai">OpenAI 兼容 /v1（多模态）</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1"><label>接口地址 base_url</label><input id="vlmBase" value="http://localhost:11434" placeholder="http://localhost:11434" onchange="saveVlm()"></div>
+        <div class="field" style="flex:1"><label>模型 model</label><input id="vlmModel" value="qwen2.5vl:latest" placeholder="qwen2.5vl:latest" onchange="saveVlm()"></div>
+        <div class="field"><label>&nbsp;</label>
+          <button class="btn ghost" id="testVlm" onclick="testVlm()">🧪 测试/检测</button>
+          <button class="btn ghost" id="pullVlm" onclick="pullVlm()">📥 拉取模型</button>
+        </div>
+        <div class="bar" id="vlmPullBar"><i id="vlmPullFill"></i></div>
+        <div class="hint" id="vlmPullPct" style="display:none; width:100%; margin-top:4px;">0%</div>
+        <div class="hint" id="vlmStatus" style="width:100%">状态加载中…</div>
+        <div class="cmdbox" id="cmdVlm"></div>
+        <div class="hint" style="width:100%">装好 <b>Ollama</b> 后执行 <code id="cmdOllamaVlm">ollama pull qwen2.5vl:latest</code>（可点「拉取」自动执行），开启后「短片解说」会<b>逐段看画面 + 台词 + 梗概</b>生成真解说，从「台词复读」升级为「真解说」，仍不花一分钱。</div>
+        <div class="hint" style="width:100%; color:#b8860b; border:1px dashed #e7c000; background:#fffdf3; padding:8px 10px; border-radius:8px; margin-top:8px;">
+          ⚠️ <b>qwen2.5vl 的定位局限</b>：它只负责「<b>看懂画面</b>」——识别人物 / 场景 / 事件，<b>不擅长写剧情解说词</b>。
+          要写出《赌圣》式剧情解说（点片名、讲人物背景、有年代感），真正的主力是 <b>📝 文字模型</b>（如 <code>qwen2.5:14b</code>）。
+          请到「③ 本地模型」把模型填成文字模型，并执行 <code>ollama pull qwen2.5:14b</code> 部署——解说词质量会明显上一个台阶。
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
+        <div style="font-weight:600; color:#1565c0; width:100%;">🌐 国内下载镜像（免科学上网）</div>
+        <div class="field" style="flex:1"><label>Whisper 走 HF 镜像</label>
+          <select id="mirUseMirror" onchange="saveMirror()">
+            <option value="1" selected>开（默认 hf-mirror.com）</option>
+            <option value="0">关（直连 HuggingFace）</option>
+          </select>
+        </div>
+        <div class="field" style="flex:2"><label>HF 镜像地址</label><input id="mirHf" value="https://hf-mirror.com" placeholder="https://hf-mirror.com" onchange="saveMirror()"></div>
+        <div class="field" style="flex:2"><label>Ollama 代理(可选)</label><input id="mirProxy" placeholder="http://127.0.0.1:7890" onchange="saveMirror()"></div>
+        <details class="bubble warn"><summary>这框是「总开关」（点开必看）</summary><div class="bubble-body">这框同时管 <b>Ollama 模型</b> 和 <b>Whisper</b> 的下载通道：<br>· 填了代理 → 两者都走代理（代理软件要<b>开着</b>）；<br>· <b>留空</b> → Whisper 直连镜像(免科学上网)、Ollama 直连境外(可能拉不动)。<br>👉 没开代理软件就<b>别填</b>，否则 Whisper 报 <code>10061</code>。</div></details>
+        <div class="hint" style="width:100%; color:#b8860b;">⚠️ 这框是 Ollama 模型 和 Whisper 的「<b>总开关</b>」：<b>填了代理就必须开着代理软件</b>，否则 Whisper 会 <code>10061</code>；想免科学上网就<b>留空</b> + 用上方红框离线导入 Ollama 模型。</div>
+        <div class="hint" style="width:100%">🪞 <b>Whisper 权重来自 HuggingFace</b>：点「下载/预载」会自动走上方镜像，<b>无需科学上网</b>。若下载报 <b>10061 连接被拒</b>，几乎都是「代理未开」或「镜像在你网络连不上」——把下方<b>代理</b>填成你正在运行的代理（如 Clash 的 <code>http://127.0.0.1:7890</code>），或留空让它直连镜像。该代理<b>对 Whisper 下载同样生效</b>。Ollama 拉模型同理，或手动执行：
+          <div class="codebox"><code id="cmdProxy">set HTTPS_PROXY=http://127.0.0.1:7890 &amp;&amp; ollama pull qwen2.5vl:latest</code><button class="btn mini ghost cp" onclick="copyText('cmdProxy')">📋 复制</button></div></div>
+      </div>
+    </details>
+
+    <div class="hint" id="aiStatus"></div>
+    <div style="margin-top:4px;"><button class="btn ghost" onclick="saveAIConfig()">💾 保存所有 AI 配置</button></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="timelineCard">
     <h2>📌 时间线（拖入后自动添加；可排序、设时长、删除）</h2>
     <div id="items"></div>
     <div class="hint" id="emptyHint">还没有素材。不放也能合成 —— 会自动使用内置 4 张春景图。</div>
   </div>
 
-  <div class="card">
+  <div class="card" id="outCard">
     <h2>⚙️ 输出设置</h2>
     <div class="row">
       <div class="field"><label>分辨率</label>
@@ -154,7 +577,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="buildCard">
     <div class="actions">
       <button class="btn" id="go" onclick="build()">🎬 开始合成</button>
       <button class="btn danger" id="cancelBtn" style="display:none" onclick="cancelBuild()">⏹ 取消</button>
@@ -164,14 +587,22 @@
     <div id="result">
       <h2 style="margin-top:16px;">✅ 合成完成</h2>
       <video id="player" controls playsinline></video>
+      <span class="modebadge" id="buildMode"></span>
+      <div id="buildPartial" class="partial" style="display:none"></div>
       <div style="margin-top:12px;"><a class="btn ghost" id="dl" href="#" download="spring视频.mp4">💾 保存到本地</a></div>
     </div>
   </div>
 
-  <div class="card">
-    <h2>🕘 最近生成</h2>
+  <div class="card" id="histCard">
+    <h2>🕘 最近生成 <button class="btn mini ghost" onclick="clearHistory()">🗑 清空</button></h2>
     <div id="historyList"><div class="hint">还没有生成记录。</div></div>
   </div>
+</div>
+</div>
+
+<!-- 人机协同：方案预览与微调面板 -->
+<div class="modal" id="planModal" style="display:none; align-items:flex-start; overflow:auto;">
+  <div class="plan-box" id="planBox"></div>
 </div>
 
 <script src="/static/app.js"></script>
