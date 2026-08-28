@@ -17,3 +17,5 @@ spring10s.mp4
 # ---- 系统 / 编辑器 ----
 .DS_Store
 Thumbs.db
+# ---- local models (large runtime files, excluded) ----
+models/
