@@ -123,3 +123,24 @@ avToggle/scrollspy；新增顶部 9 步骤条：①开始②素材③音乐④�
 - 
 ode --check static/app.js → OK；HTML 标签平衡、goStep 目标全部有效
 - 浏览器实测：顶部按钮切换 5 步链路、卡片内跳转、AI 配置跳转、刷新 lastStep 记忆全部通过
+
+---
+
+## 本轮已完成（功能实用性升级 · 卡点引擎）
+
+### 🎯 强拍均匀化（修复「卡点全挤片头 / 后段踩不上鼓点」）
+- detect_strong_beats 由「全局最强 top_k」改为「**时间窗分桶**」：整段音乐均分 top_k 窗，每窗取局部最强 onset。
+- 实测（118s《赌圣》+ glitter-blast）：强拍分布 0-30/30-60/60-90/90-118s 由 **17/10/3/0** → **10/10/9/1**。
+- 空窗不强凑（音乐平缓段交给相邻窗）。
+
+### 🎯 切点密度控制（修复「几十个 1 秒碎段闪屏」）
+- plan_beat_cuts：min_seg 按强度自适应（soft 1.5 / standard 1.2 / strong 1.0）；新增 max_cuts 段数上限（默认约 3.5s/段，≤48，前端 maxCuts 直接生效）；候选过多先按权重+时间均匀去重；timeline 段数超限后**均匀抽稀保留首尾**。
+- 实测：118s 视频由 **70 个 1s 碎段** → **32 段 2-5s 合理节奏**。
+
+### 🎯 抽帧合并（性能减半）
+- _analyze_beatcut 一次 _analyze_video_frames 同时算动作+视觉（新增 _detect_motion_from_frames / _detect_visual_from_frames，对外 detect_motion_points / detect_visual_cues 保留兼容）。
+- 实测：118s 分析耗时 **133s → 69s**。
+
+### ✅ 验证
+- 长视频分析 + 4s 短视频完整渲染（出片正常）实测通过。
+- python -m pytest tests -q → 48 passed（测试 mock 同步到共享抽帧实现）。
