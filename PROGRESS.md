@@ -98,3 +98,28 @@
 ## 临时文件
 - 已清理 `_beat_test.py` / `_beat_test2.py` / `_text_test.py` / `_scan.py` / `_check.py` / `webui_output/_t`、`_t2`、`_dl14b`。
 - 保留了 4 个用户成片：`webui_output/20260827-{103807,112405,125858,130200}`。
+
+---
+
+## 本轮已完成（总结性优化 + 顶部导航重构）
+
+### A. 🧹 全面检测 / 修复 / 备份
+- **后端 bug 修复**：_render_beatcut 中 silent_dur = probe_audio_len(silent) or timeline[-1]（原 dur 未定义，probe 失败会 NameError 崩溃）。
+- **pyflakes 清零**：重复 import ssl / 函数内重复 numpy / 未使用变量（w/h/fps、voice_ok）/ 无占位 f-string，python -m pyflakes webui_server.py → 无输出。
+- **前后端 API 一致性**：24 条路由两端完全对齐（do_POST/do_GET 分支 vs fetch 调用）。
+- **HTML 结构**：div/details/select/table 等全平衡，navlink→卡片目标全部有效。
+- **备份**：文件快照 C:/Users/XOS/Desktop/spring_video__backup_20260828（18 文件，不含 models）；git 提交 checkpoints。
+
+### B. 🎛 顶部步骤导航重构（侧边栏 → 顶部，按执行步骤切换页面）
+- 移除左侧 sidenav/
+avToggle/scrollspy；新增顶部 9 步骤条：①开始②素材③音乐④卡点⑤解说⑥AI⑦输出⑧合成⑨记录。
+- 13 个功能卡片按 data-step 分组，切换步骤只显示对应卡片（showStep）。
+- 所有跳转统一收敛：卡片内链接 / AI 配置跳转（jumpToAISection）/ 引导页快速跳转 → goStep('卡片id')。
+- 记忆键升级 lastCard → lastStep：刷新/重开回到上次步骤；settings（EXT 组 14 项）记忆保留。
+- 移动端断点适配（720/980）；git 仓库 models/ 移出（.gitignore 排除，本地保留）。
+
+### C. ✅ 验证
+- python -m pytest tests -q → 48 passed（约 21s）
+- 
+ode --check static/app.js → OK；HTML 标签平衡、goStep 目标全部有效
+- 浏览器实测：顶部按钮切换 5 步链路、卡片内跳转、AI 配置跳转、刷新 lastStep 记忆全部通过
