@@ -261,7 +261,34 @@ header h1 { background: linear-gradient(90deg,#fff,#e6fff5 60%,#d7f0ff); -webkit
 .navtoggle:hover { background: rgba(255,255,255,.28); }
 
 /* ---------- Layout: sidebar + content ---------- */
-.layout { display: flex; align-items: flex-start; max-width: 1340px; margin: 0 auto; gap: 8px; }
+/* ---- 顶部步骤导航：按执行步骤切换页面 ---- */
+.topnav {
+  position: sticky; top: 88px; z-index: 45;
+  display: flex; align-items: center; gap: 6px;
+  max-width: 1340px; margin: 0 auto; padding: 8px 22px;
+  background: linear-gradient(180deg, rgba(255,255,255,.94), rgba(255,255,255,.78));
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.stepbtn {
+  flex: 0 0 auto; white-space: nowrap;
+  padding: 8px 15px; border-radius: 999px;
+  border: 1px solid var(--line); background: #fff;
+  color: var(--muted); font-size: 13px; font-weight: 700; cursor: pointer;
+  transition: all .18s;
+}
+.stepbtn:hover { color: var(--accent); border-color: var(--accent); }
+.stepbtn.active {
+  background: linear-gradient(120deg, #0ea07a, #14b8a6); border-color: transparent;
+  color: #fff; box-shadow: 0 6px 16px -6px rgba(16,185,129,.6);
+}
+/* 步骤视图：只显示当前步骤的卡片组 */
+.card[data-step] { display: none; }
+.card[data-step].active { display: block; }
+
+.layout { max-width: 1340px; margin: 0 auto; }
 .wrap { flex: 1; min-width: 0; max-width: none; margin: 0; }
 
 /* ---------- Sidebar nav ---------- */
@@ -380,9 +407,12 @@ header h1 { background: linear-gradient(90deg,#fff,#e6fff5 60%,#d7f0ff); -webkit
   .card { padding: 16px 16px; }
   header { padding: 14px 16px; }
   .row { flex-direction: column; align-items: stretch; }
+  .topnav { top: 58px; padding: 7px 10px; gap: 5px; }
+  .stepbtn { padding: 7px 12px; font-size: 12.5px; }
 }
 @media(max-width: 980px){
   .layout { flex-direction: column; }
+  .topnav { top: 64px; padding: 8px 14px; }
   .sidenav {
     position: sticky; top: 64px; z-index: 55; width: auto; margin: 12px 12px 0;
     max-height: none; overflow: visible;

@@ -11,9 +11,21 @@
   <div class="brand"><h1>一帧成片</h1><div class="sub">FrameCut · AI 节拍短片</div></div>
   <div class="htools">
     <div id="srv"></div>
-    <button class="navtoggle" id="navToggle">☰ 菜单</button>
   </div>
 </header>
+
+<!-- 顶部步骤导航：按执行步骤切换页面（移动端可横向滑动） -->
+<nav class="topnav" id="topnav" aria-label="步骤导航">
+  <button class="stepbtn active" data-step="start" title="新手指引 / 指令成片">① 开始</button>
+  <button class="stepbtn" data-step="upload" title="拖入视频 / 图片素材">② 素材</button>
+  <button class="stepbtn" data-step="music" title="背景音乐 / 踩点曲库">③ 音乐</button>
+  <button class="stepbtn" data-step="beatcut" title="智能强卡点（本应用核心）">④ 卡点</button>
+  <button class="stepbtn" data-step="narrate" title="短片解说 / 联网解说">⑤ 解说</button>
+  <button class="stepbtn" data-step="ai" title="AI 文案 / 配音 / 模型配置">⑥ AI</button>
+  <button class="stepbtn" data-step="output" title="时间线 / 输出设置">⑦ 输出</button>
+  <button class="stepbtn" data-step="build" title="一键合成">⑧ 合成</button>
+  <button class="stepbtn" data-step="history" title="最近生成记录">⑨ 记录</button>
+</nav>
 
 <!-- AI 配置就绪状态条：未配置时生成前会拦截提醒，避免静默用免费模板 -->
 <div id="aiBar" class="aibar">
@@ -56,30 +68,9 @@
 <button id="scrollTopBtn" class="scrollTopBtn" onclick="scrollTop2()" title="回到顶部">↑</button>
 
 <div class="layout">
-  <!-- 左侧功能导航 -->
-  <aside class="sidenav" id="sidenav">
-    <div class="navtitle">功能导航</div>
-    <nav>
-      <a href="#guideCard" class="navlink" data-target="guideCard"><span class="ni">📖</span>新手引导</a>
-      <a href="#instructCard" class="navlink" data-target="instructCard"><span class="ni">💬</span>指令成片</a>
-      <a href="#drop" class="navlink" data-target="drop"><span class="ni">🖼️</span>上传素材</a>
-      <a href="#beatcutCard" class="navlink" data-target="beatcutCard"><span class="ni">🎯</span>智能强卡点</a>
-      <a href="#narCard" class="navlink" data-target="narCard"><span class="ni">🎬</span>短片解说</a>
-      <a href="#movieCard" class="navlink" data-target="movieCard"><span class="ni">🌐</span>联网解说</a>
-      <a href="#musicCard" class="navlink" data-target="musicCard"><span class="ni">🎵</span>背景音乐</a>
-      <a href="#libCard" class="navlink" data-target="libCard"><span class="ni">🔎</span>踩点曲库</a>
-      <a href="#aiCard" class="navlink" data-target="aiCard"><span class="ni">🤖</span>AI 配置</a>
-      <a href="#timelineCard" class="navlink" data-target="timelineCard"><span class="ni">📌</span>时间线</a>
-      <a href="#outCard" class="navlink" data-target="outCard"><span class="ni">⚙️</span>输出设置</a>
-      <a href="#buildCard" class="navlink" data-target="buildCard"><span class="ni">✨</span>一键合成</a>
-      <a href="#histCard" class="navlink" data-target="histCard"><span class="ni">🕘</span>生成记录</a>
-    </nav>
-    <button class="navtop" onclick="scrollTop2()">↑ 回到顶部</button>
-  </aside>
-
   <div class="wrap">
     <!-- 新手引导（可整体折叠：点标题整体收起/展开，下方每步也可单独点开） -->
-    <div class="card guide" id="guideCard">
+    <div class="card guide active" id="guideCard" data-step="start">
       <details class="guide-collapse" open>
         <summary>📖 新手引导 <span class="gc-toggle">点击标题可整体收起/展开，下方每步也可单独点开</span></summary>
         <div class="gc-body">
@@ -87,9 +78,9 @@
           <div class="quick-nav">
             <span class="qn-label">⚡ 快速跳转：</span>
             <button class="btn mini ghost" onclick="jumpToAISection('local')">🖥 配置本地模型</button>
-            <button class="btn mini ghost" onclick="document.getElementById('narCard').scrollIntoView({behavior:'smooth',block:'start'})">🎬 电影解说</button>
-            <button class="btn mini ghost" onclick="document.getElementById('beatcutCard').scrollIntoView({behavior:'smooth',block:'start'})">🎯 智能强卡点</button>
-            <button class="btn mini ghost" onclick="document.getElementById('buildCard').scrollIntoView({behavior:'smooth',block:'start'})">✨ 一键合成</button>
+            <button class="btn mini ghost" onclick="goStep('narCard')">🎬 电影解说</button>
+            <button class="btn mini ghost" onclick="goStep('beatcutCard')">🎯 智能强卡点</button>
+            <button class="btn mini ghost" onclick="goStep('buildCard')">✨ 一键合成</button>
           </div>
 
       <div class="guide-path">
@@ -204,7 +195,7 @@
     </div>
 
     <!-- Phase 4 · 指令解析层 -->
-    <div class="card" id="instructCard">
+    <div class="card" id="instructCard" data-step="start">
       <h2>💬 指令成片（一句话自动路由）</h2>
       <div class="hint">输入自然语言，自动路由到对应工作流（默认走省流免费路径，明确要「真AI/花钱」才调用付费接口）：</div>
       <div class="row" style="margin-top:8px;">
@@ -224,13 +215,13 @@
       </div>
     </div>
 
-    <div class="card" id="drop">
+    <div class="card" id="drop" data-step="upload">
     <b>把图片或视频拖到这里，或点此选择文件</b>
     <div class="hint">支持顺序混排：图片自动加镜头运动(推近/平移/拉远/轻摇)，视频自动裁剪，之间带交叉淡入淡出转场。</div>
     <input type="file" id="fileInput" multiple accept="image/*,video/*" style="display:none">
   </div>
 
-  <div class="card" id="beatcutCard">
+  <div class="card" id="beatcutCard" data-step="beatcut">
     <h2>🎯 智能强卡点（本应用核心）</h2>
     <div id="bcDrop" class="musdrop">🎬 拖入一段视频（自动识别<b>场景切换</b>与<b>动作停顿帧</b>）</div>
     <input type="file" id="bcInput" accept="video/*" style="display:none">
@@ -246,7 +237,7 @@
       </div>
       <div class="hint" style="align-self:center;">强力＝捕捉更多动作爆发/镜头切换帧并严格吸附鼓点。</div>
     </div>
-    <div class="mode-hint" id="bcMusicHint">🎵 未选择背景音乐：强卡点需要一首音乐来对齐鼓点。 <a href="javascript:void(0)" class="jump-link" onclick="document.getElementById('musicCard').scrollIntoView({behavior:'smooth',block:'start'})">🎵 去选背景音乐</a> 或 <a href="javascript:void(0)" class="jump-link" onclick="document.getElementById('libCard').scrollIntoView({behavior:'smooth',block:'start'})">🔎 去免费曲库搜一首</a></div>
+    <div class="mode-hint" id="bcMusicHint">🎵 未选择背景音乐：强卡点需要一首音乐来对齐鼓点。 <a href="javascript:void(0)" class="jump-link" onclick="goStep('musicCard')">🎵 去选背景音乐</a> 或 <a href="javascript:void(0)" class="jump-link" onclick="goStep('libCard')">🔎 去免费曲库搜一首</a></div>
     <div class="row" style="margin-top:10px; align-items:center; gap:6px;">
       <label style="display:flex; align-items:center; gap:6px; margin:0;">
         <input type="checkbox" id="bcBeatSync" style="width:auto;" checked>
@@ -300,7 +291,7 @@
     </div>
   </div>
 
-  <div class="card" id="narCard">
+  <div class="card" id="narCard" data-step="narrate">
     <h2>🎬 电影解说（AI 剧情解说视频）</h2>
     <div id="narrGuide" class="narr-guide"></div>
     <div id="narDrop" class="musdrop">🎞️ 拖入一段电影/动漫/短片片段</div>
@@ -338,7 +329,7 @@
     </div>
   </div>
 
-  <div class="card" id="movieCard">
+  <div class="card" id="movieCard" data-step="narrate">
     <h2>🎬 电影解说（按片名·联网搜索，Phase 3）</h2>
     <div class="hint">输入电影/动漫名（支持《片名》），自动联网搜索剧情梗概 → LLM 生成解说稿 → 上传正片后按「台词+场景」自动对齐到镜头段，产出解说视频。无网络时也可直接粘贴剧情文本。</div>
     <div class="row" style="margin-top:10px;">
@@ -378,7 +369,7 @@
     </div>
   </div>
 
-  <div class="card" id="musicCard">
+  <div class="card" id="musicCard" data-step="music">
     <h2>🎵 背景音乐（可选）</h2>
     <div id="musDrop" class="musdrop">把 mp3/wav 音乐拖到这里，或点此选择背景音乐</div>
     <input type="file" id="musInput" accept="audio/*,.mp3,.wav" style="display:none">
@@ -387,7 +378,7 @@
     <div class="hint">已选音乐时：自动分析节拍(BPM)，把每个素材的切换点对齐到音乐节拍。</div>
   </div>
 
-  <div class="card" id="libCard">
+  <div class="card" id="libCard" data-step="music">
     <h2>🔎 免费踩点音乐库</h2>
     <div class="row">
       <input type="text" id="musSearch" placeholder="搜索：电子 / 轻快 / 打击 / 曲名…" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
@@ -397,7 +388,7 @@
     <div id="musResults"></div>
   </div>
 
-  <div class="card" id="aiCard">
+  <div class="card" id="aiCard" data-step="ai">
     <h2>🤖 AI 文案·字幕·配音</h2>
     <label><input type="checkbox" id="aiCap" style="width:auto" onchange="updateBuildModeHint()"> 按画面生成中文文案 + 烧字幕 + 配音</label>
     <label style="margin-left:16px; font-weight:600; color:#0e7a5f;"><input type="checkbox" id="eco" checked style="width:auto" onchange="updateBuildModeHint()"> 💸 省流模式（默认开，用离线模板文案、不调用付费配音）</label>
@@ -472,7 +463,7 @@
         <div class="hint" id="localPullPct" style="display:none; width:100%; margin-top:4px;">0%</div>
         <div class="hint" id="localTestRes" style="width:100%"> </div>
         <div class="hint" id="localPullRes" style="width:100%">状态加载中…</div>
-        <div class="hint" style="width:100%">📥 点「拉取模型」可<b>网页内一键下载</b> qwen（无需开终端）。⚡ 对 <code>qwen2.5:14b / qwen2.5:7b</code> 会自动优先走<b>国内加速通道</b>（hf-mirror 单文件 + aria2c 多线程 + 本地导入，几 GB 约 3 分钟；失败自动回退官方源）。省流模式会自动调用它离线改写解说词，<b>不花一分钱、不调云端</b>。<a href="javascript:void(0)" class="jump-link" onclick="document.getElementById('guideCard').scrollIntoView({behavior:'smooth',block:'start'})">📖 查看新手引导</a></div>
+        <div class="hint" style="width:100%">📥 点「拉取模型」可<b>网页内一键下载</b> qwen（无需开终端）。⚡ 对 <code>qwen2.5:14b / qwen2.5:7b</code> 会自动优先走<b>国内加速通道</b>（hf-mirror 单文件 + aria2c 多线程 + 本地导入，几 GB 约 3 分钟；失败自动回退官方源）。省流模式会自动调用它离线改写解说词，<b>不花一分钱、不调云端</b>。<a href="javascript:void(0)" class="jump-link" onclick="goStep('guideCard')">📖 查看新手引导</a></div>
       </div>
       <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">④ 台词识别模型（Whisper）</div>
@@ -539,13 +530,13 @@
     <div style="margin-top:4px;"><button class="btn ghost" onclick="saveAIConfig()">💾 保存所有 AI 配置</button></div>
   </div>
 
-  <div class="card" id="timelineCard">
+  <div class="card" id="timelineCard" data-step="output">
     <h2>📌 时间线（拖入后自动添加；可排序、设时长、删除）</h2>
     <div id="items"></div>
     <div class="hint" id="emptyHint">还没有素材。不放也能合成 —— 会自动使用内置 4 张春景图。</div>
   </div>
 
-  <div class="card" id="outCard">
+  <div class="card" id="outCard" data-step="output">
     <h2>⚙️ 输出设置</h2>
     <div class="row">
       <div class="field"><label>分辨率</label>
@@ -577,7 +568,7 @@
     </div>
   </div>
 
-  <div class="card" id="buildCard">
+  <div class="card" id="buildCard" data-step="build">
     <div class="actions">
       <button class="btn" id="go" onclick="build()">🎬 开始合成</button>
       <button class="btn danger" id="cancelBtn" style="display:none" onclick="cancelBuild()">⏹ 取消</button>
@@ -593,7 +584,7 @@
     </div>
   </div>
 
-  <div class="card" id="histCard">
+  <div class="card" id="histCard" data-step="history">
     <h2>🕘 最近生成 <button class="btn mini ghost" onclick="clearHistory()">🗑 清空</button></h2>
     <div id="historyList"><div class="hint">还没有生成记录。</div></div>
   </div>

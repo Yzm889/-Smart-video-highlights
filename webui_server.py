@@ -74,7 +74,6 @@ OLLAMA_INSTALL_MIRRORS = [
 def probe_ollama_mirror(base, timeout=10):
     """探测单个 GitHub 加速镜像是否可用（能正常打开 Ollama releases 页、且证书安全）。
     返回 (ok, note)。证书不安全/超时/连接失败都会被判为不可用，正好过滤掉 ghproxy.net 这类坑。"""
-    import ssl
     import ssl, urllib.request, urllib.error
     base = (base or '').strip().rstrip('/')
     if not base:
@@ -2262,7 +2261,6 @@ def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
     """检测音乐"大鼓点"（强 onset 峰值）。返回(强拍秒列表升序, 每秒拍数估计)。"""
     try:
         import librosa
-        import numpy as np
     except Exception:
         return [], None
     try:
@@ -2453,7 +2451,7 @@ def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=
             rc, o, e = ffmpeg_run(cmd)
     if rc != 0:
         raise RuntimeError('卡点拼接失败: ' + e.decode('utf-8', 'ignore')[-400:])
-    silent_dur = probe_audio_len(silent) or vdur
+    silent_dur = probe_audio_len(silent) or timeline[-1]
     up('合成配乐', 55)
     final = os.path.join(run_dir, 'final.mp4')
     keep_audio = bool(params.get('keepAudio'))
@@ -2498,7 +2496,6 @@ def detect_beats(audio_path, sensitivity=0.5):
     """检测音乐节拍点(秒，升序)。sensitivity∈(0,1) 越高越灵敏；检测失败返回 []。"""
     try:
         import librosa
-        import numpy as np
     except Exception:
         return []
     try:
@@ -3038,8 +3035,6 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     - narr[i] 对应 segs[i]（镜头段时间轴），作为该段字幕与配音文案。
     - tts_paths: [(audio_path, start_sec)]，按各自起始时间对齐到时间轴。
     - music_path: 可选 BGM，循环铺底、低音量。"""
-    w = int(params.get('w', 1280)); h = int(params.get('h', 720))
-    fps = int(params.get('fps', 30))
     vdur = probe_audio_len(video_path) or 10.0
     # 1) 烧字幕：解说词按段显示
     srt = os.path.join(run_dir, 'narr.srt')
@@ -4088,9 +4083,7 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
        durations: optional per-clip display durations (from assemble) for exact subtitle/narration timing
        Returns final mp4 path. Raises on failure."""
     run_dir = os.path.dirname(video_path)
-    w = int(params.get('w', W)); h = int(params.get('h', H))
     voice_over = bool(captions)
-    voice_ok = False
     narration_path = None
     srt_path = None
 
@@ -4161,7 +4154,7 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
                                      '-c:a', 'aac', '-b:a', '160k', narration_path]
             rc, o, e = ffmpeg_run(cmd)
             if rc == 0 and os.path.exists(narration_path) and os.path.getsize(narration_path) > 500:
-                voice_ok = True
+                pass
             else:
                 narration_path = None
 
@@ -4174,7 +4167,7 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
         # video + narration as main audio, music as quieter bg
         cmd = ['-y', '-stream_loop', '-1', '-i', music, '-i', narration_path, '-i', video_path,
                '-filter_complex',
-               f'[0:a]volume=0.45[bg0];[1:a]aformat=fltp[na];[bg0][na]amix=inputs=2:normalize=0[aout]',
+               '[0:a]volume=0.45[bg0];[1:a]aformat=fltp[na];[bg0][na]amix=inputs=2:normalize=0[aout]',
                '-map', '2:v:0', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
                '-shortest', '-movflags', '+faststart', final]
     elif narration_path and os.path.exists(narration_path):

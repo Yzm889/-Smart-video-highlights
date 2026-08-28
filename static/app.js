@@ -12,6 +12,9 @@ $('defDur').addEventListener('change', () => { clearEmpty(); });
 // ---- remember last-used settings across sessions (localStorage) ----
 (function(){
   const KEY = 'springStudio.settings';
+  // 追加记忆的控件：强卡点 / 短片解说 / 联网解说 参数（刷新后不丢失）
+  const EXT = ['bcStrength','bcSensitivity','bcMinClip','bcBeatSync','bcKeepAudio','bcTransition',
+               'narMaxSeg','movieMaxSeg','narTheme','narReq','narMode','movieMode','narBgm','movieBgm'];
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
     if (saved.res && $('res').querySelector('option[value="'+saved.res+'"]')) $('res').value = saved.res;
@@ -21,11 +24,22 @@ $('defDur').addEventListener('change', () => { clearEmpty(); });
     if (saved.hardCutSel) $('hardCutSel').value = saved.hardCutSel;
     if (saved.defDur) $('defDur').value = saved.defDur;
     if ($('aiCap')) $('aiCap').checked = !!saved.aiCap;
+    EXT.forEach(id => {
+      const el = $(id); if (!el) return;
+      const v = saved[id];
+      if (v === undefined || v === null) return;
+      if (el.type === 'checkbox') el.checked = !!v;
+      else el.value = v;
+      if (id === 'bcSensitivity' && $('bcSensitivityText')) $('bcSensitivityText').textContent = v;
+    });
   } catch(e){}
   function save(){
-    try { localStorage.setItem(KEY, JSON.stringify({ res:$('res').value, fps:$('fps').value, trans:$('trans').value, beatStep:$('beatStep').value, hardCutSel:$('hardCutSel').value, defDur:$('defDur').value, aiCap: $('aiCap')?$('aiCap').checked:false })); } catch(e){}
+    const o = { res:$('res').value, fps:$('fps').value, trans:$('trans').value, beatStep:$('beatStep').value, hardCutSel:$('hardCutSel').value, defDur:$('defDur').value, aiCap: $('aiCap')?$('aiCap').checked:false };
+    EXT.forEach(id => { const el=$(id); if (el) o[id] = el.type==='checkbox' ? el.checked : el.value; });
+    try { localStorage.setItem(KEY, JSON.stringify(o)); } catch(e){}
   }
-  ['res','fps','trans','beatStep','hardCutSel','defDur','aiCap'].forEach(id => { const el=$(id); if(el) el.addEventListener('change', save); });
+  const ids = ['res','fps','trans','beatStep','hardCutSel','defDur','aiCap'].concat(EXT);
+  ids.forEach(id => { const el=$(id); if(el) el.addEventListener('change', save); });
 })();
 
 // ---- background music upload ----
@@ -49,7 +63,7 @@ function updateMusicHint(){
     hint.style.borderColor = '#a7f3d0';
     hint.style.color = '#065f46';
   } else {
-    hint.innerHTML = '🎵 未选择背景音乐：强卡点需要一首音乐来对齐鼓点。 <a href="javascript:void(0)" class="jump-link" onclick="document.getElementById(\'musicCard\').scrollIntoView({behavior:\'smooth\',block:\'start\'})">🎵 去选背景音乐</a> 或 <a href="javascript:void(0)" class="jump-link" onclick="document.getElementById(\'libCard\').scrollIntoView({behavior:\'smooth\',block:\'start\'})">🔎 去免费曲库搜一首</a>';
+    hint.innerHTML = '🎵 未选择背景音乐：强卡点需要一首音乐来对齐鼓点。 <a href="javascript:void(0)" class="jump-link" onclick="goStep(\'musicCard\')">🎵 去选背景音乐</a> 或 <a href="javascript:void(0)" class="jump-link" onclick="goStep(\'libCard\')">🔎 去免费曲库搜一首</a>';
     hint.style.background = '';
     hint.style.borderColor = '';
     hint.style.color = '';
@@ -699,31 +713,40 @@ function gPreview(file, name){
   while (dock.children.length > 3) dock.firstElementChild.remove();
 }
 
-// ---- 侧栏导航：平滑滚动 + 滚动高亮（scrollspy） ----
+// ---- 顶部步骤导航：按执行步骤切换页面（卡片按 data-step 分组显示/隐藏） ----
+const STEP_CARDS = {
+  start: ['guideCard', 'instructCard'],
+  upload: ['drop'],
+  music: ['musicCard', 'libCard'],
+  beatcut: ['beatcutCard'],
+  narrate: ['narCard', 'movieCard'],
+  ai: ['aiCard'],
+  output: ['timelineCard', 'outCard'],
+  build: ['buildCard'],
+  history: ['histCard'],
+};
+function showStep(step){
+  if (!STEP_CARDS[step]) return;
+  Object.entries(STEP_CARDS).forEach(([s, ids]) => {
+    const on = (s === step);
+    ids.forEach(id => { const el = document.getElementById(id); if (el) el.classList.toggle('active', on); });
+  });
+  document.querySelectorAll('.stepbtn').forEach(b => b.classList.toggle('active', b.dataset.step === step));
+  try { localStorage.setItem('springStudio.lastStep', step); } catch(e){}
+}
+function goStep(targetId){
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  const step = el.getAttribute('data-step');
+  if (step) showStep(step);
+  setTimeout(() => { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 60);
+}
 (function(){
-  const links = Array.from(document.querySelectorAll('.navlink'));
-  const map = {};
-  links.forEach(l => { const el = document.getElementById(l.dataset.target); if (el) map[l.dataset.target] = el; });
-  links.forEach(l => l.addEventListener('click', e => {
-    e.preventDefault();
-    const el = map[l.dataset.target];
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    document.getElementById('sidenav').classList.remove('open');
-  }));
-  if ('IntersectionObserver' in window){
-    const obs = new IntersectionObserver(entries => {
-      entries.forEach(en => {
-        if (en.isIntersecting){
-          links.forEach(l => l.classList.remove('active'));
-          const a = links.find(l => l.dataset.target === en.target.id);
-          if (a) a.classList.add('active');
-        }
-      });
-    }, { rootMargin: '-45% 0px -50% 0px', threshold: 0 });
-    Object.values(map).forEach(el => obs.observe(el));
-  }
-  const tg = document.getElementById('navToggle');
-  if (tg) tg.addEventListener('click', () => document.getElementById('sidenav').classList.toggle('open'));
+  let init = 'start';
+  try { init = localStorage.getItem('springStudio.lastStep') || 'start'; } catch(e){}
+  if (!STEP_CARDS[init]) init = 'start';
+  showStep(init);
+  document.querySelectorAll('.stepbtn').forEach(b => b.addEventListener('click', () => showStep(b.dataset.step)));
   const st = document.getElementById('scrollTopBtn');
   const onScroll = () => { if (st) st.classList.toggle('show', window.scrollY > 420); };
   window.addEventListener('scroll', onScroll, { passive: true });
@@ -733,6 +756,7 @@ function scrollTop2(){ window.scrollTo({ top: 0, behavior: 'smooth' }); }
 
 // ---- 模式选择 → 一键跳转到对应配置区 ----
 function jumpToAISection(section){
+  showStep('ai');
   const card = $('aiCard');
   if (!card) return;
   card.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -795,7 +819,7 @@ function setBCVideo(file){
 })();
 async function buildBeatCut(){
   if(!BC_VIDEO){ $('bcStatus').innerHTML='❌ 请先拖入视频到上方区域'; $('bcDrop').classList.add('shake'); setTimeout(()=>$('bcDrop').classList.remove('shake'),600); return; }
-  if(!MUSIC){ $('bcStatus').innerHTML='❌ 请先选择背景音乐 — <a href="javascript:void(0)" onclick="document.getElementById(\'musicCard\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" style="color:#1d4ed8;text-decoration:underline;">🎵 去选音乐</a> 或 <a href="javascript:void(0)" onclick="document.getElementById(\'libCard\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" style="color:#1d4ed8;text-decoration:underline;">🔎 免费曲库</a>';
+  if(!MUSIC){ $('bcStatus').innerHTML='❌ 请先选择背景音乐 — <a href="javascript:void(0)" onclick="goStep(\'musicCard\')" style="color:#1d4ed8;text-decoration:underline;">🎵 去选音乐</a> 或 <a href="javascript:void(0)" onclick="goStep(\'libCard\')" style="color:#1d4ed8;text-decoration:underline;">🔎 免费曲库</a>';
     const h=$('bcMusicHint'); if(h){ h.style.background='#fef2f2'; h.style.borderColor='#fca5a5'; h.style.color='#991b1b'; setTimeout(()=>updateMusicHint(),1500); } return; }
   const go=$('bcQuickBtn')||$('bcGo'); go.disabled=true; $('bcResult').style.display='none';
   const syncSt=$('bcSyncStatus'); if(syncSt){ syncSt.style.display='none'; syncSt.style.background=''; syncSt.textContent=''; }
