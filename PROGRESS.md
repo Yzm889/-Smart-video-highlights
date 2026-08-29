@@ -1,6 +1,6 @@
 # 项目进度存档（2026-08-29 更新）
 
-> **当前状态：全部完成、104 测试通过、可正常出片。解说已切到本地 14B 模型。GPU 硬编已启用。**
+> **当前状态：全部完成、116 测试通过、可正常出片。解说已切到本地 14B 模型。GPU 硬编已启用。存储管理面板已上线（用户自主清理，不自动删）。**
 
 ---
 
@@ -589,3 +589,26 @@ ode --check static/app.js → OK；HTML 标签平衡、goStep 目标全部有效
 ### ✅ 验证
 - 长视频分析 + 4s 短视频完整渲染（出片正常）实测通过。
 - python -m pytest tests -q → 48 passed（测试 mock 同步到共享抽帧实现）。
+
+---
+
+## ✅ 第三十轮（本轮）已完成：存储管理面板（用户自主清理，不自动删）
+
+> 用户需求：上一轮排查发现包体涨到 4G+，用户决定**不做自动清理，改为页面展示占用 + 用户自主删除**。本轮落地该面板。
+
+### 背景（实测真实画像）
+恢复上下文时发现旧摘要/日志与真实文件系统不符：那个 2.86GB 的 `run-*/src_video.mp4` 残留已不在，当前真正的大头是 `webui_workspace`（1.4GB：上传会话成品 ~1GB + music/asr 临时）。故面板按**真实目录**分组，而非照旧清单。
+
+### 实现
+- 后端 `webui_server.py` 新增 `_storage_scan()`：按档位分组扫描
+  - `keep`（不可删）：成片 `webui_output/2026*`、`.git` 历史
+  - `safe`（可清理）：`run-*` 残留帧/缩略图、`webui_workspace/uploads` 会话成品、`asr_*.wav`、`music_*.mp3/wav`、`up_*_*` 上传残留、`analysis_cache`
+  - `review`（删需重下）：`models/`
+  - 返回 `total_bytes` / `reclaimable_bytes` / `free_bytes` + 每组 items（name/rel/size/mtime）
+- 删除安全：**路径白名单** `_STORAGE_ALLOW`（正则，仅限上述相对路径），`_storage_resolve_deletable` 先做 `..`/绝对路径/越界校验，再 `commonpath` 二次兜住；成片与 `.git` 不在白名单 → 永远拒绝。新增 `GET /api/storage` 与 `POST /api/storage/delete`。
+- 前端：顶部导航加「🧹 存储」按钮（data-step=storage）；`storageCard` 展示分组占用卡片、可回收总量、逐条「🗑 删除」（confirm）、「🧹 一键清理可回收项」（仅删 safe 档，confirm 后并发删除）。打开存储页自动刷新。
+
+### ✅ 验证
+- `py_compile` + `node --check` 通过；`pytest` **116 passed**（+2 新例：扫描结构、白名单/穿越拒绝）；`pyflakes webui_server.py` 干净。
+- 冒烟：`_storage_scan()` 实跑返回 9 组、可回收 ~1.86GB；`_storage_resolve_deletable` 对 run 目录返回路径、对 `../webui_server.py` 与成片目录均返回 None。
+- 严格遵循用户决策：**未自动删除任何文件**，清理动作完全由用户在面板内触发。
