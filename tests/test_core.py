@@ -1733,3 +1733,53 @@ def test_generate_narration_no_template_padding(monkeypatch):
     assert out[1] == '他转身迎战群敌' and out[2] == '微风拂过落英缤纷'
     assert not any('镜头缓缓推进' in l for l in out), '不得回填模板'
 
+
+# ---------------------------------------------------------------------------
+# 第三十三轮：配音时长自适应（解说词字数/语速贴合画面时长）
+# ---------------------------------------------------------------------------
+def test_target_chars_scales_with_duration():
+    """字数随画面时长线性增长，且有上下限保护（极短镜头也说得完整句）。"""
+    import webui_server as S
+    lo, hi = S._target_chars(10.0)
+    # 10s * 4.6字/秒 = 46 字基准 → 区间应落在 36~49 附近
+    assert 30 <= lo <= 45 and 40 <= hi <= 55
+    assert lo < hi
+    # 超长镜头被 _NAR_MAX_CHARS 封顶：再长也不会继续堆字（60s 与 600s 同上限）
+    assert S._target_chars(600.0) == S._target_chars(60.0)
+    assert S._target_chars(600.0)[0] <= S._NAR_MAX_CHARS
+    # 极短镜头仍有最小字数，保证是一句完整的话
+    assert S._target_chars(0.2)[0] >= 8
+
+
+def test_fit_voice_speeds_up_instead_of_truncating():
+    """配音偏长时先提速贴合，而不是直接腰斩；超速才标记截断。"""
+    import webui_server as S
+    # 配音 10s / 画面 8s → 需 1.25x，在 1.35 上限内 → 不截断
+    f = S._fit_voice(10.0, 8.0)
+    assert abs(f['speed'] - 1.25) < 0.01 and f['trim'] is False
+    assert f['over'] > 0
+    # 配音 20s / 画面 8s → 需 2.5x，超过上限 → 标记截断并封顶加速
+    f2 = S._fit_voice(20.0, 8.0)
+    assert f2['speed'] == S._NAR_MAX_SPEED and f2['trim'] is True
+    # 配音短于画面 → 不加速（宁可留白也不拖慢口播），over 为负
+    f3 = S._fit_voice(3.0, 8.0)
+    assert f3['speed'] == 1.0 and f3['trim'] is False and f3['over'] < 0
+    # 配音恰好贴合 → 无需处理
+    f4 = S._fit_voice(8.0, 8.0)
+    assert f4['speed'] == 1.0 and f4['trim'] is False
+
+
+def test_clamp_line_cuts_at_punctuation_not_midword():
+    """超长解说按句读截断，绝不把句子切在半截；有句读优先，无句读才硬切。"""
+    import webui_server as S
+    long_txt = '瑞克在医院醒来发现空无一人。他走出病房看到满地狼藉。这时远处传来脚步声。'
+    out = S._clamp_line(long_txt, 16)
+    assert len(out) <= 16
+    # 应落在自然句读处（以标点结尾），而不是把词切一半
+    assert out.endswith(('。', '！', '？', '；', '，', '、'))
+    # 未超长时原样返回
+    assert S._clamp_line('很短的一句话。', 50) == '很短的一句话。'
+    # 极端：完全无标点的长文本也要被截到上限内
+    no_punc = '这是一个完全没有标点符号的长句子用来测试硬切分支是否正常工作'
+    assert len(S._clamp_line(no_punc, 10)) <= 10
+

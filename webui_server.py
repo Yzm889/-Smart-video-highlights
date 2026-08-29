@@ -1073,7 +1073,10 @@ def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
         imp = b.get('importance', 'advance')
         tag = {'key': '（关键/高光，可展开）', 'transition': '（过渡）', 'mood': '（氛围）'}.get(imp, '')
         t = (txt or '').strip()[:80]
-        seg_brief.append('第%d段 %s %s' % (i + 1, tag, ('台词：' + t if t else '无台词画面')))
+        # 带上「建议字数」：模型按画面时长决定写多长，配音才念得完也填得满（贴合时间轴）
+        lo, hi = _target_chars(s1 - s0)
+        seg_brief.append('第%d段 %s[建议%d~%d字] %s'
+                         % (i + 1, tag, lo, hi, ('台词：' + t if t else '无台词画面')))
     ctx = []
     if name:
         ctx.append('视频：' + name)
@@ -1091,6 +1094,8 @@ def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
                 '（可用“此时/紧接着/可没想到/而另一边/偏偏这时候”等承接），不要每段都另起炉灶；\n'
               + '- 重点是【讲剧情本身】：这段发生了什么、人物做了什么说了什么、事态怎么变，像讲故事，不是描述画面；\n'
               + '- 详略有当：标“关键/高光”的多讲（可两句），过渡镜头一句带过，不要平均用力、不要每段一样长；\n'
+              + '- 【字数严格对应时长】每段标注了“建议N~M字”，这是该镜头的配音容量：\n'
+                '  写太长会念不完被截断，写太短画面会空着。请让每行字数落在该区间内（允许 ±10% 浮动）；\n'
               + '- 除非某镜头真的是剧情转折/高光，否则【不要】总结“这反映了/象征着/揭示了/暗示了”这类意义升华；\n'
               + '- 台词只转述大意，不原样照搬；不编造剧情里没有的事实；不堆“高潮/悬念/震撼”等空泛词。\n'
               + req_line
@@ -4436,6 +4441,73 @@ def _analyze_narrate(video_path, params, run_dir, progress=None):
     return segs, narr, asr, diag, mode, outline
 
 
+# ---------------------------------------------------------------------------
+# 配音时长自适应（解决「解说词念不完被腰斩 / 念完还剩一大段画面空窗」的时间轴错位）
+# ---------------------------------------------------------------------------
+_NAR_CPS = 4.6          # 中文口播经验语速：字/秒（SAPI 与云端 TTS 实测的折中值）
+_NAR_MIN_CHARS = 12     # 极短镜头也至少说满一句话，避免只剩半句
+_NAR_MAX_CHARS = 95     # 单段解说上限，避免长镜头堆字导致语速被迫过快
+_NAR_MAX_SPEED = 1.35   # atempo 最大加速倍率，超过会有明显失真
+_NAR_MIN_SPEED = 1.03   # 低于此倍率听不出差别，不必重编码
+
+
+def _target_chars(dur):
+    """把画面时长换算成解说词目标字数区间 (lo, hi)。
+
+    配音时长 ≈ 字数 / _NAR_CPS；让字数贴合时长，解说才不会溢出到下一个镜头
+    （溢出会被 atrim 腰斩）也不会念完还剩大片空窗。"""
+    try:
+        dur = float(dur)
+    except Exception:
+        dur = 5.0
+    if dur <= 0:
+        dur = 5.0
+    base = max(_NAR_MIN_CHARS * 1.0, min(float(_NAR_MAX_CHARS), dur * _NAR_CPS))
+    return (int(round(base * 0.80)), int(round(base * 1.05)))
+
+
+def _fit_voice(voice_len, span_len):
+    """给出让配音贴合画面时长的策略。
+
+    返回 {'speed': 建议 atempo 倍率, 'trim': 加速后是否仍需截断, 'over': 溢出秒数(负=空窗)}。
+    - 配音长于画面：适度加速（上限 _NAR_MAX_SPEED），仍超则标记 trim 交给下游裁剪。
+    - 配音短于画面：不加速（宁可留白也不拖慢口播），over 为负数表示空窗时长。"""
+    try:
+        voice_len = float(voice_len); span_len = float(span_len)
+    except Exception:
+        return {'speed': 1.0, 'trim': False, 'over': 0.0}
+    if span_len <= 0.3:
+        return {'speed': 1.0, 'trim': False, 'over': voice_len}
+    over = voice_len - span_len
+    if over <= 0:
+        return {'speed': 1.0, 'trim': False, 'over': over}
+    need = voice_len / span_len
+    if need <= _NAR_MAX_SPEED:
+        return {'speed': round(need, 3), 'trim': False, 'over': over}
+    return {'speed': _NAR_MAX_SPEED, 'trim': True, 'over': over}
+
+
+def _clamp_line(text, max_chars):
+    """把解说词按【句读】截断到 max_chars 字以内，绝不把句子切在半截词中间。
+
+    优先在句号/感叹/疑问/分号处断开；没有句读时退到逗号/顿号；都没有才硬切。
+    超长解说若不截断，配音会被 atrim 在段末腰斩——听众听到一半就没了。"""
+    t = (text or '').strip()
+    if max_chars is None or max_chars <= 0 or len(t) <= max_chars:
+        return t
+    import re as _re
+    window = t[:max_chars]
+    # 从后往前找最近的自然断点
+    for pat in (r'[。！？；]', r'[，、,;:]', r'\s'):
+        hits = list(_re.finditer(pat, window))
+        if hits:
+            cut = hits[-1].end()
+            # 断点太靠前（丢掉超过 40% 内容）就不值得断，宁可硬切保留更多信息
+            if cut >= max_chars * 0.6:
+                return window[:cut].strip()
+    return window.strip()
+
+
 def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None):
     """解说渲染阶段：按给定镜头段与解说稿逐段配音→混音→烧字幕→配乐。返回 final 路径。"""
     def up(ph, pct):
@@ -4451,20 +4523,35 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
         if not (txt and txt.strip()):
             continue
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
+        span_len = max(0.0, seg_span[1] - seg_span[0])
+        # 配音前先按画面时长做字数硬上限兜底：给足 _NAR_MAX_SPEED 的加速余量，
+        # 超出的部分宁可精简，也不要让配音被 atrim 在段末腰斩（听众只听到半句）
+        hard_cap = int(round(_target_chars(span_len)[1] * _NAR_MAX_SPEED))
+        spoken = _clamp_line(txt, hard_cap) or txt
         clip = None
         if use_mimo:
             np_ = os.path.join(run_dir, f'narr{i}.mp3')
-            if ai_tts(txt, np_):
+            if ai_tts(spoken, np_):
                 clip = np_
         if clip is None:
             wv = os.path.join(run_dir, f'narr{i}.wav')
-            if sapi_tts(txt, wv):
+            if sapi_tts(spoken, wv):
                 clip = wv
         if clip is not None:
+            # 配音时长自适应：念不完就用 atempo 适度提速贴合镜头，避免跨段重叠/腰斩
+            v_len = probe_audio_len(clip) or max(0.5, span_len)
+            fit = _fit_voice(v_len, span_len)
+            if fit['speed'] > _NAR_MIN_SPEED:
+                fast = os.path.join(run_dir, f'narr{i}_fit.mp3')
+                rc, _o, _e = ffmpeg_run(['-y', '-i', clip, '-vn',
+                                         '-filter:a', 'atempo=%.3f' % fit['speed'],
+                                         '-c:a', 'libmp3lame', '-q:a', '4', fast])
+                if rc == 0 and os.path.exists(fast):
+                    clip = fast
+                    v_len = probe_audio_len(clip) or (v_len / fit['speed'])
             tts_paths.append((clip, seg_span[0], seg_span[1]))
             # 字幕只在「这句话正在被念」时显示：一行字挂满整个镜头段会让后段才发生的
             # 画面内容提前出现在段首，观感像字幕与时间轴错位
-            v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
             voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
     up('混音+烧字幕+配乐', 60)
     final = _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
