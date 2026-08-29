@@ -14,8 +14,12 @@ __pycache__/
 !demo.mp4
 spring10s.mp4
 
-# ---- 系统 / 编辑器 ----
+# ---- 系统 / 编辑器 / 会话工具 ----
 .DS_Store
 Thumbs.db
+.zcode/
+.workbuddy/
+.pytest_cache/
 # ---- local models (large runtime files, excluded) ----
 models/
+material_library/
