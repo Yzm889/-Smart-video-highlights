@@ -325,6 +325,13 @@
       <div class="field" style="flex:1"><label>视频主题/梗概（选填，纯风景片建议填）</label><input id="narTheme" placeholder="例：春天樱花树下散步的治愈短片"></div>
       <div class="field" style="flex:1"><label>解说要求/风格（选填，会作为前置条件交给模型）</label><input id="narReq" placeholder="例：多点幽默/少升华/语气接地气/强调兄弟情"></div>
     </div>
+    <details class="bubble" style="margin-top:10px;">
+      <summary>🎭 剧情驱动剪辑（粘贴你的剧情，按时序剪分镜 + 写解说，不靠 AI 识别画面）</summary>
+      <div class="bubble-body">
+        <textarea id="narPlot" rows="7" placeholder="例：&#10;1. 灾变前的最后时光&#10;故事开始时，副警长瑞克和搭档肖恩在巡逻车里聊天，随后瑞克中枪昏迷。&#10;&#10;2. 末日后苏醒&#10;瑞克在医院中醒来，发现医院空无一人，世界已变。&#10;&#10;3. 初识丧尸与幸存者&#10;瑞克回到家，开枪打死第一个行尸，被摩根父子所救。"></textarea>
+        <div class="hint" style="margin-top:6px;">填了剧情就走「剧情驱动」：系统把你的剧情按句拆成解说词，并<b>按时序铺到视频分镜</b>上（有台词时按台词语义精确对齐）。这样解说讲的就是你的故事，而不是 AI 瞎猜画面导致的割裂感。<b>留空则仍是原来的「AI 识别画面」模式。</b></div>
+      </div>
+    </details>
     <div class="hint" style="margin-top:6px;"><label><input type="checkbox" id="narBgm" style="width:auto"> 加配乐（使用上方🎵选中的背景音乐，低音量铺底）</label></div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="narGo" onclick="planNarrate()">🎙 分析并预览（可微调）</button>

@@ -1058,19 +1058,21 @@ async function buildNarrate(){
   if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
   const ok = await preflight('narrate'); if(!ok) return;
   const go=$('narQuickBtn')||$('narGo'); go.disabled=true; $('narResult').style.display='none';
-  $('narStatus').textContent='上传视频…';
-  gStart('🎬 生成短片解说');
+  const plot = ($('narPlot') && $('narPlot').value.trim()) ? $('narPlot').value.trim() : '';
+  $('narStatus').textContent = plot ? '🎭 剧情驱动剪辑中（按你的剧情剪分镜+写解说）…' : '上传视频…';
+  gStart(plot ? '🎭 剧情驱动剪辑' : '🎬 生成短片解说');
   const videoObj = NAR_VIDEO.mlib ? {name: NAR_VIDEO.name, mlib: NAR_VIDEO.mlib} : await videoToBody(NAR_VIDEO);
   const body = { video: videoObj,
                  params:{maxSeg: parseFloat($('narMaxSeg').value)||25, w:1280, h:720, fps:30,
                          name: NAR_VIDEO.name, theme: ($('narTheme') ? $('narTheme').value.trim() : ''),
                          req: ($('narReq') ? $('narReq').value.trim() : '')} };
+  if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/narrate_movie（movie 名为空，纯按剧情）
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
     else { body.music={name:MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer()))}; }
   }
   try{
-    const r=await fetch('/api/narrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const r=await fetch(plot ? '/api/narrate_movie' : '/api/narrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const out=await r.json();
     if(!out.ok) throw new Error(out.error||'失败');
     await pollNarrate(out.runid);
@@ -1379,9 +1381,10 @@ async function planNarrate(){
   if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; return; }
   if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再分析'; return; }
   const params={w:1280,h:720,fps:30, maxSeg: parseFloat(($('narMaxSeg')||{}).value)||25};
-  await _startPlan('narrate', params);
+  const plot = ($('narPlot') && $('narPlot').value.trim()) ? $('narPlot').value.trim() : '';
+  await _startPlan('narrate', params, plot);
 }
-async function _startPlan(type, params){
+async function _startPlan(type, params, plot){
   const video = (type==='beatcut') ? BC_VIDEO : NAR_VIDEO;
   const st = (type==='beatcut') ? $('bcStatus') : $('narStatus');
   const mainBtn = (type==='beatcut') ? $('bcGo') : $('narGo');
@@ -1391,6 +1394,7 @@ async function _startPlan(type, params){
   try{
     const videoObj = video.mlib ? {name:video.name, mlib:video.mlib} : await videoToBody(video);
     const body={ type, params, video: videoObj };
+    if(plot){ body.plot = plot; }   // 🎭 剧情驱动：透传到 /api/plan，分析阶段按剧情剪分镜+写解说
     if(type==='beatcut'){ body.music = await _planMusicBodyAsync(); }
     else if(MUSIC){ body.music = await _planMusicBodyAsync(); }
     const r=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

@@ -4578,8 +4578,17 @@ def llm_movie_script(movie_name, plot_text, economy=False):
       剧情切句 → 本地模型(若可用) → 片名模板。"""
     import re as _re
     def _split_sentences(text):
-        lines = [l.strip() for l in _re.split(r'[\n。！？!?]', text or '') if len(l.strip()) > 4]
-        return [{'desc': l[:30], 'keywords': list(set(l))[:5]} for l in lines[:12]]
+        """把剧情文本按句拆成解说事件；去掉「1. 2.」等分幕编号前缀，避免解说词带序号。"""
+        lines = []
+        for l in _re.split(r'[\n。！？!?]', text or ''):
+            l = l.strip()
+            if len(l) <= 4:
+                continue
+            l = _re.sub(r'^(?:第?\d+[\.、)．:：]|\[\d+\]|（\d+）)\s*', '', l).strip()
+            if len(l) <= 4:
+                continue
+            lines.append({'desc': l[:30], 'keywords': list(set(l))[:5]})
+        return lines[:12]
 
     def _parse_events(content):
         """从 LLM 文本中提取并规范化 JSON 解说事件数组；失败返回 []。"""
@@ -4731,36 +4740,30 @@ def align_script_to_segments(events, segs, asr):
     return [(segs[i][0], desc) for i, desc in assigned]
 
 
-def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, music_path=None):
-    """Phase 3 主流程：联网搜索剧情 → LLM 生成解说稿 → (上传电影时)ASR+语义对齐 → 配音+字幕+配乐成片。
-    未上传视频时只产出解说稿（progress['script']）。"""
+def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_name='', events=None):
+    """🎭 剧情驱动核心：分段 → ASR台词 → 按用户剧情生成解说事件 → 按时序对齐到分镜 → 映射每段解说。
+    返回 (segs, narr, asr, frames, mode, events)。供 narrate_movie 与 规划分析(narrate 剧情模式)复用，
+    避免两份逐行重复实现各自漂移。
+
+    与「AI 识别画面」模式的关键区别：解说词来自【用户剧情】，而非 VLM 看画面；
+    这样解说讲的就是用户的故事，彻底消除「只匹配画面、不识主体内容」的割裂感。"""
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
-    up('联网搜索剧情', 4)
-    if not plot:
-        hits = web_search((movie_name or '') + ' 剧情 简介 豆瓣 梗概 分幕')
-        plot = '\n'.join(t for t, _, _ in hits) or ''
-    up('LLM 生成解说稿', 14)
-    # 省流优先：默认 economy=True（离线切句/模板 0 元），只有显式「真AI」才调用付费 LLM
-    events = llm_movie_script(movie_name, plot, economy=not ai_enabled('chat'))
-    if not events:
-        raise RuntimeError('无法生成解说稿（请检查网络，或在指令里粘贴剧情文本）')
-    if not video_path:
-        if progress:
-            progress['done'] = True; progress['pct'] = 100
-            progress['file'] = ''; progress['script'] = events
-            progress['mode'] = compute_mode(params, needs_chat=True)
-        return None, {'events': events, 'no_video': True}
     up('场景分段', 22)
     segs = _segment_timeline(video_path, max_seg=float(params.get('maxSeg', 25)))
     if not segs:
         raise RuntimeError('无法分析视频时长')
     up('识别台词(本地Whisper)', 32)
     asr = asr_segments(video_path)
-    up('解说↔片段对齐', 46)
+    if events is None:
+        up('按剧情生成解说事件', 42)
+        events = llm_movie_script(movie_name, plot, economy=not ai_enabled('chat'))
+    if not events:
+        raise RuntimeError('无法从剧情生成解说事件（请检查剧情文本或本地模型）')
+    up('剧情↔片段对齐', 52)
     aligned = align_script_to_segments(events, segs, asr)
-    # 未匹配事件按顺序补到空闲镜头段，保证覆盖面
+    # 未匹配事件按顺序补到空闲镜头段，保证剧情全覆盖
     taken = {s for s, _ in aligned}
     free = [i for i in range(len(segs)) if segs[i][0] not in taken]
     extra = []
@@ -4776,7 +4779,45 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         for i, (s0, s1) in enumerate(segs):
             if abs(s0 - start) < 0.01:
                 seg_narr[i] = desc; break
-    narr = seg_narr
+    # 🎭 剧情驱动兜底：若仍有空段（剧情句数 < 镜头数，且无台词可语义对齐），
+    # 把剧情句按时间均匀铺满全片，保证整段视频都有解说、且剧情按时序展开，
+    # 不再出现「片尾大段静音 / 解说只挤在开头」的割裂感。
+    if any(not x.strip() for x in seg_narr):
+        descs = [ev['desc'] for ev in events]
+        k = len(descs)
+        for i in range(len(segs)):
+            if not seg_narr[i].strip() and k:
+                seg_narr[i] = descs[min(k - 1, round(i * k / len(segs)))]
+    return segs, seg_narr, asr, {}, 'movie', events
+
+
+def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, music_path=None):
+    """Phase 3 主流程：联网搜索剧情 → LLM 生成解说稿 → (上传电影时)ASR+语义对齐 → 配音+字幕+配乐成片。
+    未上传视频时只产出解说稿（progress['script']）。"""
+    def up(ph, pct):
+        if progress:
+            progress['phase'] = ph; progress['pct'] = pct
+    up('联网搜索剧情', 4)
+    if not plot:
+        hits = web_search((movie_name or '') + ' 剧情 简介 豆瓣 梗概 分幕')
+        plot = '\n'.join(t for t, _, _ in hits) or ''
+    if not video_path:
+        # 仅解说稿：直接按剧情产出事件（不分析视频）
+        events = llm_movie_script(movie_name, plot, economy=not ai_enabled('chat'))
+        if not events:
+            raise RuntimeError('无法生成解说稿（请检查网络，或在指令里粘贴剧情文本）')
+        if progress:
+            progress['done'] = True; progress['pct'] = 100
+            progress['file'] = ''; progress['script'] = events
+            progress['mode'] = compute_mode(params, needs_chat=True)
+        return None, {'events': events, 'no_video': True}
+    # 有视频：剧情驱动分镜 + 配音（movie_name 可空＝用户粘贴剧情模式）
+    up('LLM 生成解说稿', 14)
+    events = llm_movie_script(movie_name, plot, economy=not ai_enabled('chat'))
+    if not events:
+        raise RuntimeError('无法生成解说稿（请检查网络，或在指令里粘贴剧情文本）')
+    segs, narr, asr, _frames, mode, events = _narrate_by_plot(
+        video_path, plot, params, run_dir, progress, movie_name=movie_name, events=events)
     up('逐段配音', 58)
     tts_paths = []
     voice_spans = {}   # 字幕窗口跟随配音（与短片解说一致：有声才显字、念完即收）
@@ -4807,7 +4848,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         progress['script'] = events
         progress['mode'] = compute_mode(params, needs_chat=True)
     diag = {'events': len(events), 'segments': len(segs), 'asr_lines': len(asr),
-            'aligned': len(aligned), 'voice_clips': len(tts_paths), 'narration': narr}
+            'aligned': sum(1 for x in narr if x.strip()), 'voice_clips': len(tts_paths), 'narration': narr}
     return final, diag
 
 
@@ -5011,7 +5052,16 @@ def _analyze_plan_job(req, prog):
         elif ptype == 'narrate':
             if not vp:
                 raise RuntimeError('请先上传视频')
-            segs, narr, asr, diag, mode = _analyze_narrate(vp, params, run_dir, prog)
+            plot = (req.get('plot') or '').strip()
+            if plot:
+                # 🎭 剧情驱动：不靠 AI 识别画面，按用户剧情剪分镜 + 写解说
+                segs, narr, asr, _frames, _mode, events = _narrate_by_plot(
+                    vp, plot, params, run_dir, prog, movie_name='')
+                diag = {'segments': len(segs), 'asr_lines': len(asr),
+                        'narration': narr, 'plot_driven': True, 'events': len(events)}
+                mode = 'movie'
+            else:
+                segs, narr, asr, diag, mode = _analyze_narrate(vp, params, run_dir, prog)
             music_path = _resolve_music(req.get('music'))
             # 额外保存「未合并的细粒度候选镜头」与台词：用户改完解说词后
             # 需要按新解说重新匹配分镜（/api/narrate/align），合并后的环节粒度太粗无法重排

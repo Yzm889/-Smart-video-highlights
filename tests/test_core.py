@@ -1615,3 +1615,33 @@ def test_align_falls_back_to_algo_when_model_unavailable(monkeypatch):
     monkeypatch.setattr(S, '_llm_text', lambda *a, **k: None)
     segs, src = S._align_shots_to_lines(_shots(12), ['甲。', '乙。', '丙。'])
     assert src == 'algo' and len(segs) == 3
+
+
+def test_plot_driven_events_from_user_story():
+    """🎭 剧情驱动：用户粘贴的分幕剧情能离线拆成解说事件，且去掉「1. 2.」分幕编号。"""
+    import webui_server as S
+    plot = ('1. 灾变前的最后时光\n'
+            '故事开始时，副警长瑞克和搭档肖恩在巡逻车里聊天，随后瑞克中枪昏迷。\n'
+            '2. 末日后苏醒\n瑞克在医院中醒来，发现医院空无一人，世界已变。\n'
+            '3. 初识丧尸与幸存者\n瑞克回到家，开枪打死第一个行尸，被摩根父子所救。')
+    events = S.llm_movie_script('', plot, economy=True)
+    assert len(events) >= 3, '剧情应拆出多个解说事件'
+    # 编号前缀被去掉：不应出现「1. / 2. / 3.」
+    assert not any(ev['desc'].startswith(('1.', '2.', '3.')) for ev in events)
+    assert all(ev['desc'].strip() for ev in events)
+
+
+def test_plot_driven_alignment_monotonic_and_full():
+    """剧情事件按时间顺序对齐到分镜，且覆盖到视频段（不乱序、不越界）。"""
+    import webui_server as S
+    plot = ('1. 灾变前的最后时光\n瑞克和肖恩在巡逻车里聊天。\n'
+            '2. 末日后苏醒\n瑞克在医院醒来。\n'
+            '3. 初识丧尸\n瑞克开枪打死行尸。')
+    events = S.llm_movie_script('', plot, economy=True)
+    segs = [(0.0, 5.0), (5.0, 10.0), (10.0, 15.0), (15.0, 20.0), (20.0, 25.0)]
+    aligned = S.align_script_to_segments(events, segs, [])
+    starts = [s for s, _ in aligned]
+    assert starts == sorted(starts), '剧情事件必须按时间顺序对齐到分镜'
+    assert all(d for _, d in aligned), '每个事件都分配到非空解说词'
+    # 事件数 <= 段数时，所有段都被覆盖（无剧情空缺）
+    assert len(set(starts)) == len(segs)
