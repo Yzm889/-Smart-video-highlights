@@ -636,3 +636,12 @@ header h1 { background: linear-gradient(90deg,#fff,#e6fff5 60%,#d7f0ff); -webkit
 .st-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid #f0f0f0; }
 .st-item:last-child { border-bottom:none; }
 .st-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#334155; }
+
+/* 解说方案：主线/过渡标记 */
+.seg-tag { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; line-height:18px;
+  margin-left:6px; white-space:nowrap; font-weight:600; }
+.tag-main { background:#e8f0ff; color:#1d4ed8; }
+.tag-key { background:#fde8e8; color:#c0392b; }
+.tag-fill { background:#eef1f4; color:#7a8699; }
+.tag-cut { background:#fff3e0; color:#b26a00; }
+.plan-row { flex-wrap:wrap; }

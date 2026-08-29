@@ -310,7 +310,7 @@ def test_generate_narration_vlm_branch_when_enabled(monkeypatch):
     monkeypatch.setattr(S, 'vlm_enabled', lambda: True)
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: False)
     monkeypatch.setattr(S, 'local_vlm_narrate',
-                        lambda per_seg, frames, params: (['画面里主角拔剑出鞘', '他转身迎战群敌'], True))
+                        lambda per_seg, frames, params, *a, **k: (['画面里主角拔剑出鞘', '他转身迎战群敌'], True))
     segs = [(0.0, 5.0), (5.0, 10.0)]
     asr = [{'start': 1.0, 'end': 3.0, 'text': '你好'}]
     out, used_local = S.generate_narration(segs, asr, {'economy': True}, frames={0: 'f.jpg', 1: 'f.jpg'})
@@ -323,7 +323,7 @@ def test_generate_narration_vlm_fallback_on_error(monkeypatch):
     import webui_server as S
     monkeypatch.setattr(S, 'vlm_enabled', lambda: True)
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: False)
-    monkeypatch.setattr(S, 'local_vlm_narrate', lambda per_seg, frames, params: (_ for _ in ()).throw(RuntimeError('offline')))
+    monkeypatch.setattr(S, 'local_vlm_narrate', lambda per_seg, frames, params, *a, **k: (_ for _ in ()).throw(RuntimeError('offline')))
     segs = [(0.0, 5.0), (5.0, 10.0)]
     asr = [{'start': 1.0, 'end': 3.0, 'text': '真实台词内容'}]
     out, used_local = S.generate_narration(segs, asr, {'economy': True}, frames={0: 'f.jpg'})
@@ -1409,7 +1409,7 @@ def test_analyze_plan_accepts_mlib_video(monkeypatch, tmp_path):
     open(os.path.join(mdir, 'v.mp4'), 'wb').write(b'vv')
     monkeypatch.setattr(S, 'MATERIAL_DIR', mdir)
     monkeypatch.setattr(S, '_analyze_narrate',
-                        lambda v, p, rd, prog=None: ([(0.0, 6.0)], ['n'], [], {}, None))
+                        lambda v, p, rd, prog=None: ([(0.0, 6.0)], ['n'], [], {}, None, []))
     monkeypatch.setattr(S, '_plan_thumbs', lambda v, segs, rd: {})
     monkeypatch.setattr(S, '_resolve_music', lambda m: None)
     run_dir = str(tmp_path / 'run')
@@ -1645,3 +1645,91 @@ def test_plot_driven_alignment_monotonic_and_full():
     assert all(d for _, d in aligned), '每个事件都分配到非空解说词'
     # 事件数 <= 段数时，所有段都被覆盖（无剧情空缺）
     assert len(set(starts)) == len(segs)
+
+
+# ---------------------------------------------------------------------------
+# 第三十二轮：内容感知主线浓缩 + 生成层去模板回填
+# ---------------------------------------------------------------------------
+def test_cap_seg_duration_splits_long_segments():
+    """超长镜头必须被切开，避免单条解说扛过长画面导致时间轴错位。"""
+    import webui_server as S
+    out = S._cap_seg_duration([(0.0, 30.0)], 14.0)
+    assert len(out) >= 2
+    for (a, b) in out:
+        assert b - a <= 14.0 + 1e-6
+
+
+def test_condense_merges_transitions_and_drops_micro_filler(monkeypatch):
+    """内容感知浓缩：长过渡段并入主线、纯填充微段被剪除、按时长上限防错位。"""
+    import webui_server as S
+    # 6 个细粒度段：advance / transition(无台词) / advance / key / mood(无台词,2s) / advance
+    fine = [(0.0, 4.0), (4.0, 8.0), (8.0, 10.0), (10.0, 20.0), (20.0, 22.0), (22.0, 30.0)]
+    asr = [{'start': 1.0, 'end': 3.0, 'text': 'x'},       # seg0 有台词
+           {'start': 8.5, 'end': 9.5, 'text': 'y'},        # seg2 有台词
+           {'start': 11.0, 'end': 12.0, 'text': 'z'},       # seg3 有台词
+           {'start': 23.0, 'end': 24.0, 'text': 'w'}]       # seg5 有台词
+    beat_plan = {'summary': '', 'beats': [
+        {'i': 1, 'importance': 'advance'}, {'i': 2, 'importance': 'transition'},
+        {'i': 3, 'importance': 'advance'}, {'i': 4, 'importance': 'key'},
+        {'i': 5, 'importance': 'mood'}, {'i': 6, 'importance': 'advance'}]}
+    segs, outline = S._condense_segs(fine, asr, {}, beat_plan=beat_plan)
+    # 过渡段(4-8,无台词)被并入相邻主线 → 不单独成段
+    assert (4.0, 8.0) not in segs, '长过渡应并入相邻主线'
+    # key 段(10-20, 10s)在 14s 上限内，必须保留
+    assert (10.0, 20.0) in segs, '关键段应保留'
+    # 纯填充微段(20-22,2s 无台词)在 _condense 中保留并标记 keep=False，由调用方剪辑主线时剪除
+    assert (20.0, 22.0) in segs, '纯填充微段在 condense 输出中保留（供前端展示可剪）'
+    filler_idx = segs.index((20.0, 22.0))
+    assert outline[filler_idx]['keep'] is False, '纯填充微段应标记 keep=False（剪辑主线时剔除）'
+    assert len(outline) == len(segs)
+    assert all(o['importance'] in ('key', 'advance', 'transition', 'mood') for o in outline)
+
+
+def test_condense_offline_fallback_uses_merge_and_cap(monkeypatch):
+    """无模型时退化为 _merge_segs + 时长上限，且单条解说时长受控。"""
+    import webui_server as S
+    monkeypatch.setattr(S, '_local_model_available', lambda: False)
+    monkeypatch.setattr(S, 'vlm_enabled', lambda: False)
+    fine = [(0.0, 5.0), (5.0, 10.0), (10.0, 40.0)]
+    segs, outline = S._condense_segs(fine, [], {}, beat_plan=None)
+    for (a, b) in segs:
+        assert b - a <= 16.0 + 1e-6, '离线兜底也须按时长上限防时间轴错位'
+    assert len(outline) == len(segs)
+
+
+def test_fill_missing_lines_continues_in_voice(monkeypatch):
+    """行数不足时按上文口吻续写，不回填模板（风格一致）。"""
+    import webui_server as S
+    captured = {}
+    def fake_llm(prompt, system=None, timeout=180):
+        captured['prompt'] = prompt
+        return '瑞克在医院醒来，发现世界已变。\n他开枪打死第一个行尸。'
+    monkeypatch.setattr(S, '_llm_text', fake_llm)
+    existing = ['副警长瑞克在巡逻车里和肖恩聊天。']
+    remaining = [(10.0, 15.0, ''), (15.0, 20.0, '')]
+    filled = S._fill_missing_lines(existing, remaining, {})
+    assert len(filled) == 2
+    assert '瑞克' in filled[0]
+    # 续写提示里必须带「前面已写内容」以延续口吻
+    assert '副警长瑞克' in captured['prompt']
+
+
+def test_generate_narration_no_template_padding(monkeypatch):
+    """本地文本路径行数不足时改用续写而非模板回填（风格一致、内容匹配）。"""
+    import webui_server as S
+    monkeypatch.setattr(S, 'vlm_enabled', lambda: False)
+    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
+    # 主生成只回 1 行（模型偶尔偷懒）→ 触发续写补齐
+    monkeypatch.setattr(S, 'local_llm_chat',
+                        lambda prompt, system=None, timeout=180: '春天来了樱花盛开')
+    # 续写补齐剩余 2 行
+    monkeypatch.setattr(S, '_llm_text',
+                        lambda prompt, system=None, timeout=180: '他转身迎战群敌\n微风拂过落英缤纷')
+    segs = [(0.0, 5.0), (5.0, 10.0), (10.0, 15.0)]
+    asr = []
+    out, used_local = S.generate_narration(segs, asr, {}, frames={})
+    assert len(out) == 3, '行数不足必须续写补齐到镜头数'
+    assert out[0] == '春天来了樱花盛开'
+    assert out[1] == '他转身迎战群敌' and out[2] == '微风拂过落英缤纷'
+    assert not any('镜头缓缓推进' in l for l in out), '不得回填模板'
+

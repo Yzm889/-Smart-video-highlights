@@ -1463,7 +1463,7 @@ function renderPlanModal(){
       return _planRowHtml(i, s, e, true, '', _findThumb(e), true);
     }).join('');
   } else {
-    rowsHtml = (plan.segs||[]).map((s,i)=>_planRowHtml(i, s.start, s.end, true, s.caption||'', s.thumb||'', false)).join('');
+    rowsHtml = (plan.segs||[]).map((s,i)=>_planRowHtml(i, s.start, s.end, s.keep!==false, s.caption||'', s.thumb||'', false, s.importance, s.keep)).join('');
   }
   const timelineHtml = isBeat ? _renderTimeline() : '';
   const addCutHtml = isBeat ? _addCutBarHtml() : '';
@@ -1515,10 +1515,16 @@ function renderPlanModal(){
   $('planModal').style.display='flex';
 }
 
-function _planRowHtml(i, s, e, on, caption, thumb, isBeat){
+function _planRowHtml(i, s, e, on, caption, thumb, isBeat, importance, keep){
   const th = thumb ? '<img src="/media/'+thumb+'?t='+Date.now()+'">' : '<img>';
   let capField='';
+  let tag='';
   if(!isBeat){
+    const imp = importance||'advance';
+    if(imp==='transition'||imp==='mood') tag='<span class="seg-tag tag-fill">过渡/氛围</span>';
+    else if(imp==='key') tag='<span class="seg-tag tag-key">主线·关键</span>';
+    else tag='<span class="seg-tag tag-main">主线</span>';
+    if(keep===false) tag+='<span class="seg-tag tag-cut">可剪</span>';
     capField = '<input type="text" class="cap" value="'+_esc(caption)+'" placeholder="解说词">'
       + '<button type="button" class="mini-btn shrink" title="缩短为一句">✂ 减词</button>'
       + '<button type="button" class="mini-btn ess" title="锁定为必要片段">🔒</button>';
@@ -1527,6 +1533,7 @@ function _planRowHtml(i, s, e, on, caption, thumb, isBeat){
     + '<input type="checkbox" class="on" '+(on?'checked':'')+'>'
     + th
     + '<span class="time">'+_fmtTime(s)+' ~ '+_fmtTime(e)+'</span>'
+    + tag
     + capField
     + '</div>';
 }

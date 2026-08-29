@@ -1021,7 +1021,7 @@ def _map_lines_to_segs(lines, n):
     return out
 
 
-def local_vlm_narrate(per_seg, frames, params):
+def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
     """本地真解说（连贯真人版 · 整稿生成 + 少升华 + 前置要求 + 自优化）：
     ① _plot_brief 视觉理解；② _beat_plan 详略规划（重要镜头展开、过渡镜头带过）；
     ③ 一次生成「像真人一样从头讲到尾」的连贯解说整稿（一行对应一个镜头、自然衔接、
@@ -1036,10 +1036,17 @@ def local_vlm_narrate(per_seg, frames, params):
     theme = (params.get('theme') or '').strip()
     name = (params.get('name') or '').strip()
     req = (params.get('req') or '').strip()
-    plot = _plot_brief(frames, per_seg, params)
-    beat = _beat_plan(per_seg, plot, params)
-    summary = beat.get('summary', '')
-    beats = beat.get('beats', [])
+    if plot is None and frames:
+        plot = _plot_brief(frames, per_seg, params)
+    if beat_outline is not None:
+        # 复用分段层已规划好的主线/过渡，避免重复调用模型
+        beats = [{'i': i + 1, 'importance': o.get('importance', 'advance'), 'role': ''}
+                 for i, o in enumerate(beat_outline)]
+        summary = ''
+    else:
+        beat = _beat_plan(per_seg, plot, params)
+        summary = beat.get('summary', '')
+        beats = beat.get('beats', [])
     use_local_text = _local_model_available()
 
     def _write(p, s_, timeout=300):
@@ -3916,19 +3923,9 @@ def _segment_timeline(video_path, max_seg=25.0):
     return segs
 
 
-def _local_narrate(per_seg, params):
+def _local_narrate(per_seg, params, plot=None):
     """省流 + 本地模型：用本地 qwen/ollama 等离线生成/改写每段解说词（0 元、不调云端）。
-    返回 (lines, True)。无台词画面时依赖 params 里的 theme/name 给出像样文案。"""
-    templates = [
-        '镜头缓缓推进，故事就此展开。',
-        '画面一转，新的转折正在发生。',
-        '气氛渐起，关键情节悄然铺开。',
-        '人物登场，冲突拉开了序幕。',
-        '悬念浮现，让人忍不住屏息。',
-        '节奏陡然加快，高潮正在靠近。',
-        '真相逼近，谜底即将揭晓。',
-        '余波未平，故事仍在继续。',
-    ]
+    返回 (lines, True)。行数不足时按上文口吻续写（见 _fill_missing_lines），不回填模板。"""
     theme = (params.get('theme') or '').strip()
     name = (params.get('name') or '').strip()
     brief = '\n'.join(
@@ -3948,14 +3945,53 @@ def _local_narrate(per_seg, params):
                           system='你是资深电影解说博主，擅长把剧情讲得生动有感染力，让观众想看下去。')
     lines = [l.strip().strip('"').strip() for l in text.splitlines() if l.strip()]
     if len(lines) < len(per_seg):
-        for i, (s0, s1, txt) in enumerate(per_seg):
-            if i < len(lines):
-                continue
-            lines.append(txt[:40] if txt else templates[i % len(templates)])
+        # 行数不足：按上文口吻续写缺失镜头（不再回填模板，避免风格断裂/内容错配）
+        filled = _fill_missing_lines(lines, per_seg[len(lines):], params, plot=plot)
+        lines = lines + filled
+    if len(lines) < len(per_seg):
+        # 终极兜底：把已有行按镜头数分布（不复制、不模板）
+        lines = _map_lines_to_segs(lines, len(per_seg))
     return lines[:len(per_seg)], True
 
 
-def generate_narration(segs, asr, params, frames=None):
+def _fill_missing_lines(existing, remaining, params, plot=None):
+    """解说行数不足时，按上文口吻补写剩余镜头的解说（避免回填模板导致风格断裂/内容错配）。
+    返回补写的行列表（长度 ≤ len(remaining)）；模型不可用返回 []。"""
+    if not remaining:
+        return []
+    name = (params.get('name') or '').strip()
+    theme = (params.get('theme') or '').strip()
+    req = (params.get('req') or '').strip()
+    ctx = []
+    if name:
+        ctx.append('视频：' + name)
+    if theme:
+        ctx.append('主题/梗概：' + theme)
+    if plot:
+        ctx.append('【剧情理解】' + plot)
+    prompt = ('你正在为一段视频写中文电影解说稿，已经写好了前面的段落（请保持口吻一致）：\n'
+              + ('\n'.join('·' + l for l in existing) if existing else '（前面还没有内容）') + '\n\n'
+              '请继续为下面 %d 个镜头环节各写一句解说，承接上文、自然衔接、讲剧情不描述画面：\n' % len(remaining)
+              + '\n'.join('%d. %s-%ss %s' % (i + 1, int(s0), int(s1),
+                                            ('台词：' + t[:80] if t else '无台词画面'))
+                          for i, (s0, s1, t) in enumerate(remaining))
+              + '\n严格按镜头顺序输出 %d 行，不要编号、不要解释。' % len(remaining))
+    sys_ = '你是资深电影解说博主，口气自然、像真人聊天讲故事一样。'
+    if req:
+        prompt += '\n【额外要求】' + req
+    try:
+        out = _llm_text(prompt, system=sys_, timeout=180)
+    except Exception:
+        return []
+    if not out:
+        return []
+    lines = _split_nar_lines(out)
+    if not lines:
+        return []
+    return lines[:len(remaining)] if len(lines) >= len(remaining) else lines
+
+
+def generate_narration(segs, asr, params, frames=None, plot=None, beat_outline=None):
     """返回 (narr_list, used_local)。
     离线(省流)优先级：本地 VLM(看图+台词+梗概→真解说) > 本地文本模型(台词改写) > 真实台词/模板。
     智能(云端)：有视觉端点则附画面描述，否则纯台词交给 DeepSeek 写解说。"""
@@ -3985,13 +4021,13 @@ def generate_narration(segs, asr, params, frames=None):
     if vlm_enabled():
         # ① 本地 VLM 真解说（看画面，从「复读」变「真解说」）
         try:
-            return local_vlm_narrate(per_seg, frames, params)
+            return local_vlm_narrate(per_seg, frames, params, plot=plot, beat_outline=beat_outline)
         except Exception:
             pass
     if local_llm_enabled():
         # ② 本地文本模型改写（无画面理解）
         try:
-            return _local_narrate(per_seg, params)
+            return _local_narrate(per_seg, params, plot=plot)
         except Exception:
             pass
     if not ai_enabled('chat'):
@@ -4042,7 +4078,7 @@ def generate_narration(segs, asr, params, frames=None):
             'model': cfg.get('model'),
             'messages': [{'role': 'user', 'content': instr + (plot_ctx + '\n\n' if plot_ctx else '') + brief}],
             'max_tokens': 1800,
-            'temperature': 0.8,
+            'temperature': 0.5,
         }
         url = (cfg.get('base_url', '').rstrip('/')) + '/chat/completions'
         req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'),
@@ -4051,12 +4087,14 @@ def generate_narration(segs, asr, params, frames=None):
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = _json.loads(resp.read().decode('utf-8'))
         lines = [l.strip().strip('"').strip() for l in data['choices'][0]['message']['content'].splitlines() if l.strip()]
-        if len(lines) >= len(per_seg):
-            return lines[:len(per_seg)], False
-        out = list(lines)
-        for i in range(len(out), len(per_seg)):
-            out.append(templates[i % len(templates)])
-        return out, False
+        if len(lines) < len(per_seg):
+            # 行数不足：按上文口吻续写缺失镜头（不再回填模板，避免风格断裂/内容错配）
+            filled = _fill_missing_lines(lines, per_seg[len(lines):], params, plot=plot)
+            lines = lines + filled
+        if len(lines) < len(per_seg):
+            # 终极兜底：把已有行按镜头数分布（不复制、不模板）
+            lines = _map_lines_to_segs(lines, len(per_seg))
+        return lines[:len(per_seg)], False
     except Exception:
         return [templates[i % len(templates)] for i in range(len(per_seg))], False
 
@@ -4090,6 +4128,103 @@ def _merge_segs(segs, max_keep=None):
     if cur_s is not None:
         merged.append((cur_s, cur_e))
     return merged
+
+
+# ---------------------------------------------------------------------------
+# 内容感知 · 主线剪辑与解说密度调控（解决「密度异常 / 时间轴错位 / 不剪主线」）
+# ---------------------------------------------------------------------------
+_IMP_ORDER = {'transition': 0, 'mood': 1, 'advance': 2, 'key': 3}
+
+def _max_imp(a, b):
+    return a if _IMP_ORDER.get(a, 1) >= _IMP_ORDER.get(b, 1) else b
+
+def _cap_seg_duration(segs, cap):
+    """把超过 cap 秒的镜头段在内部均分切开，避免单条解说词扛过长画面导致时间轴错位。"""
+    out = []
+    for (s, e) in segs:
+        if e - s <= cap + 1e-6:
+            out.append((s, e)); continue
+        n = max(2, int(-(-(e - s) // cap)) or 2)  # 向上取整，保证每片 <= cap
+        for j in range(n):
+            out.append((s + (e - s) * j / n, s + (e - s) * (j + 1) / n))
+    return out
+
+def _split_unit_at_gaps(fine_segs, members, cap):
+    """把总时长超 cap 的成员组合，按内部成员边界切成 ≤cap 的子段（保留场景切点，不硬切）。"""
+    out = []
+    cur_s = fine_segs[members[0]][0]; cur_e = cur_s; cur_dur = 0.0
+    for m in members:
+        s, e = fine_segs[m]
+        if cur_dur + (e - s) > cap and cur_dur > 0:
+            out.append((cur_s, cur_e)); cur_s = s; cur_dur = 0.0
+        cur_e = e; cur_dur += (e - s)
+    if cur_dur > 0:
+        out.append((cur_s, cur_e))
+    return out or [(fine_segs[members[0]][0], fine_segs[members[-1]][1])]
+
+def _condense_segs(fine_segs, asr, params, plot=None, beat_plan=None, frames=None):
+    """把细粒度场景段浓缩为「解说环节」：
+
+    - 有模型时：依 _beat_plan 的重要性，把连续的 transition/mood（且无台词）并入相邻主线段，
+      实现「密度正常 + 聚焦主线」——过渡段不再被平等解说；纯填充微段(<2.5s 无台词、非主线)标记 keep=False 供剪辑主干时剪除。
+    - 所有段按重要性施加时长上限（key/advance ≤14s，过渡 ≤20s），保证解说词贴合当前画面（时间轴匹配）。
+    - 无模型时退化为 _merge_segs + 时长上限（纯离线也不至于单条解说扛 30s）。
+
+    返回 (condensed_segs, outline)；outline 为 [{start,end,importance,keep}]，长度 == len(condensed)。"""
+    if not fine_segs:
+        return [], []
+    n = len(fine_segs)
+    has_dlg = [bool(_asr_text_in(asr, s, e).strip()) for (s, e) in fine_segs]
+    if beat_plan is None and (_local_model_available() or vlm_enabled()):
+        per_seg = [(s0, s1, _asr_text_in(asr, s0, s1)) for (s0, s1) in fine_segs]
+        if plot is None and frames:
+            plot = _plot_brief(frames, per_seg, params)
+        beat_plan = _beat_plan(per_seg, plot, params)
+    if not beat_plan or not isinstance(beat_plan.get('beats'), list):
+        # 离线兜底：时间均分 + 时长上限
+        merged = _merge_segs(fine_segs)
+        capped = _cap_seg_duration(merged, 16.0)
+        return capped, [{'start': s, 'end': e, 'importance': 'advance', 'keep': True} for (s, e) in capped]
+    imp = []
+    for i in range(n):
+        b = beat_plan['beats'][i] if i < len(beat_plan['beats']) and isinstance(beat_plan['beats'][i], dict) else {}
+        v = str(b.get('importance', 'advance') or 'advance')
+        imp.append(v if v in _IMP_ORDER else 'advance')
+    # 分组：长过渡(无台词)并入相邻主线段（密度正常、聚焦主线）；
+    # 纯填充微段(<2.5s 无台词、非主线)单独成段并标记 keep=False（剪辑主线时从成片剪除）。
+    groups = []          # (members, unit_imp, keep)
+    cur, cur_imp = None, None
+    for i in range(n):
+        dur = fine_segs[i][1] - fine_segs[i][0]
+        is_filler = imp[i] in ('transition', 'mood')
+        is_micro = is_filler and not has_dlg[i] and dur < 2.5
+        if is_micro:
+            if cur is not None:
+                groups.append((list(cur), cur_imp, True))
+            groups.append(([i], imp[i], False))   # 可剪：渲染时不进成片
+            cur, cur_imp = None, None
+            continue
+        merge = cur is not None and is_filler and not has_dlg[i]
+        if merge:
+            cur.append(i); cur_imp = _max_imp(cur_imp, imp[i])
+        else:
+            if cur is not None:
+                groups.append((list(cur), cur_imp, True))
+            cur, cur_imp = [i], imp[i]
+    if cur is not None:
+        groups.append((list(cur), cur_imp, True))
+    condensed, outline = [], []
+    for members, uimp, keep in groups:
+        s0 = fine_segs[members[0]][0]; s1 = fine_segs[members[-1]][1]
+        cap = 14.0 if uimp in ('key', 'advance') else 20.0
+        if s1 - s0 > cap:
+            sub = _split_unit_at_gaps(fine_segs, members, cap)
+        else:
+            sub = [(s0, s1)]
+        for (a, b) in sub:
+            condensed.append((a, b))
+            outline.append({'start': a, 'end': b, 'importance': uimp, 'keep': keep})
+    return condensed, outline
 
 
 def _narrate_candidate_shots(video_path, params):
@@ -4250,41 +4385,55 @@ def _align_shots_to_lines(shots, lines, asr=None, params=None, use_model=True):
 
 
 def _narrate_analysis(video_path, params, run_dir, progress=None):
-    """解说分析公共层：分段→合并环节→ASR台词→(可选)关键帧→解说稿。
+    """解说分析公共层：分段→ASR台词→(可选)关键帧→内容感知主线浓缩→解说稿。
     「人机协同分析(/api/plan)」与「直接生成解说(narrate_video)」共用此流程，
-    避免两份逐行重复的实现各自漂移。返回 (segs, narr, asr, frames, mode)。"""
+    避免两份逐行重复的实现各自漂移。
+    返回 (segs, narr, asr, frames, mode, outline)；outline 为 [{start,end,importance,keep}]，
+    标记每个解说环节是主线(key/advance)还是过渡/氛围(transition/mood)，供「剪辑主线」使用。"""
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
     up('场景分段', 4)
-    segs = _segment_timeline(video_path, max_seg=float(params.get('maxSeg', 25)))
-    if not segs:
+    fine = _segment_timeline(video_path, max_seg=float(params.get('maxSeg', 25)))
+    if not fine:
         raise RuntimeError('无法分析视频时长')
-    # 合并过碎镜头段为「剧情环节」（环节数按时长自适应，约 10s/环节），避免逐段解说重复、更贴近真人电影解说
-    segs = _merge_segs(segs)
     up('识别台词(本地Whisper)', 10)
     asr = asr_segments(video_path)
     need_frames = vlm_enabled() or ai_enabled('vision')   # 任一视觉能力可用就抽帧（自动选路）
     frames = {}
     if need_frames:
         up('抽取关键帧(供视觉理解)', 16)
-        frames = extract_segment_frames(video_path, segs, os.path.join(run_dir, 'frames'))
-    up('生成解说稿', 20)
-    narr, used_local = generate_narration(segs, asr, params, frames=frames)
+        frames = extract_segment_frames(video_path, fine, os.path.join(run_dir, 'frames'))
+    # 内容感知主线浓缩：复用视觉理解 + 节拍规划，按重要性合并过渡段、剪纯填充微段、按时长上限防时间轴错位
+    up('规划主线与解说密度', 18)
+    per_seg = [(s0, s1, _asr_text_in(asr, s0, s1)) for (s0, s1) in fine]
+    plot = _plot_brief(frames, per_seg, params) if frames else None
+    beat_plan = _beat_plan(per_seg, plot, params) if (_local_model_available() or vlm_enabled()) else None
+    segs, outline = _condense_segs(fine, asr, params, plot=plot, beat_plan=beat_plan, frames=frames)
+    if not segs:
+        segs = fine
+        outline = [{'start': s, 'end': e, 'importance': 'advance', 'keep': True} for (s, e) in fine]
+    # 剪辑主线：剪除纯填充微段（keep=False），让成片聚焦主线、密度正常
+    kept = [(s, o) for s, o in zip(segs, outline) if o.get('keep', True)]
+    if kept:
+        segs = [s for s, _ in kept]
+        outline = [o for _, o in kept]
+    up('生成解说稿', 22)
+    narr, used_local = generate_narration(segs, asr, params, frames=frames, plot=plot, beat_outline=outline)
     mode = None
     if vlm_enabled() and frames:
         mode = 'vlm'
     elif used_local:
         mode = 'local'
-    return segs, narr, asr, frames, mode
+    return segs, narr, asr, frames, mode, outline
 
 
 def _analyze_narrate(video_path, params, run_dir, progress=None):
-    """解说分析阶段：分段→ASR台词→解说稿→(可选)关键帧。返回 (segs, narr, asr, diag, mode)。
+    """解说分析阶段：分段→ASR台词→解说稿→(可选)关键帧。返回 (segs, narr, asr, diag, mode, outline)。
     拆出供「人机协同」复用：用户可在预览界面编辑每段解说词/删除段后再渲染。"""
-    segs, narr, asr, frames, mode = _narrate_analysis(video_path, params, run_dir, progress)
+    segs, narr, asr, frames, mode, outline = _narrate_analysis(video_path, params, run_dir, progress)
     diag = {'segments': len(segs), 'asr_lines': len(asr), 'narration': narr}
-    return segs, narr, asr, diag, mode
+    return segs, narr, asr, diag, mode, outline
 
 
 def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None):
@@ -4332,7 +4481,7 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
 def narrate_video(video_path, params, run_dir, progress=None, music_path=None):
     """电影解说主流程：分段→ASR→解说稿→SAPI/MiMo配音→混音→字幕→成片。
     music_path: 可选背景音乐，混入成品（按 Phase 2「配乐」要求）。"""
-    segs, narr, asr, frames, mode = _narrate_analysis(video_path, params, run_dir, progress)
+    segs, narr, asr, frames, mode, _outline = _narrate_analysis(video_path, params, run_dir, progress)
     if progress and mode:
         progress['mode'] = mode
     final, vc = _render_narrate(video_path, segs, narr, params, run_dir, progress=progress,
@@ -5018,11 +5167,15 @@ def _plan_to_ui(plan, run_dir):
         ui['cuts'] = [{'t': round(t, 3)} for t in tl[1:-1]]
     else:  # narrate
         ui['mode'] = plan.get('mode')
+        outline = plan.get('outline') or []
         ui['segs'] = []
         for i, (s0, s1) in enumerate(plan['segs']):
+            o = outline[i] if i < len(outline) else {}
             ui['segs'].append({'i': i, 'start': s0, 'end': s1,
                                'caption': plan['narr'][i] if i < len(plan['narr']) else '',
-                               'thumb': rel(plan.get('thumbs', {}).get(i))})
+                               'thumb': rel(plan.get('thumbs', {}).get(i)),
+                               'importance': o.get('importance', 'advance'),
+                               'keep': o.get('keep', True)})
     return ui
 
 
@@ -5061,13 +5214,13 @@ def _analyze_plan_job(req, prog):
                         'narration': narr, 'plot_driven': True, 'events': len(events)}
                 mode = 'movie'
             else:
-                segs, narr, asr, diag, mode = _analyze_narrate(vp, params, run_dir, prog)
+                segs, narr, asr, diag, mode, outline = _analyze_narrate(vp, params, run_dir, prog)
             music_path = _resolve_music(req.get('music'))
             # 额外保存「未合并的细粒度候选镜头」与台词：用户改完解说词后
             # 需要按新解说重新匹配分镜（/api/narrate/align），合并后的环节粒度太粗无法重排
             shots = _narrate_candidate_shots(vp, params)
             plan = {'type': 'narrate', 'video': vp, 'segs': segs, 'narr': narr,
-                    'shots': shots, 'asr': asr, 'run_dir': run_dir,
+                    'shots': shots, 'asr': asr, 'run_dir': run_dir, 'outline': outline,
                     'params': params, 'music': music_path, 'diag': diag, 'mode': mode,
                     'thumbs': _plan_thumbs(vp, segs, run_dir)}
         else:
