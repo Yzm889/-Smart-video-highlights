@@ -913,6 +913,38 @@ def _split_nar_sentences(line):
     return [p.strip() for p in parts if p.strip()]
 
 
+def _split_nar_clauses(line):
+    """二级切分：句内再按逗号/分号/顿号切小句（句子数仍不够镜头数时兜底）。"""
+    import re as _re
+    parts = _re.split(r'(?<=[，,；;、])', line)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _split_into_k(text, k):
+    """把一段文字尽量均分成 k 份，优先在标点处断开（极端兜底：只有一句话却要覆盖多个镜头）。"""
+    if k <= 1 or not text:
+        return [text]
+    n = len(text)
+    cuts, prev = [], 0
+    for i in range(1, k):
+        want = prev + max(1, round((n - prev) / (k - i + 1)))
+        pos = None
+        for j in range(min(want + 6, n - 1), max(prev + 1, want - 6), -1):
+            if text[j - 1] in '。！？!?，,；;、':
+                pos = j
+                break
+        if pos is None:
+            pos = min(n - 1, max(prev + 1, want))
+        cuts.append(pos)
+        prev = pos
+    out, last = [], 0
+    for c in cuts:
+        out.append(text[last:c].strip())
+        last = c
+    out.append(text[last:].strip())
+    return [x for x in out if x] or [text]
+
+
 def _distribute_sents(sents, n):
     """把 m 个短句按镜头数 n 均匀分布拼接（每镜头至少一句，多句的合并）。"""
     m = len(sents)
@@ -926,25 +958,66 @@ def _distribute_sents(sents, n):
 
 
 def _map_lines_to_segs(lines, n):
-    """把整稿行映射回 n 个镜头：行数相等直接一一对应；不足时按句切分后均匀分布；过多则线性就近取行。"""
+    """把整稿行映射回 n 个镜头：行数相等直接一一对应；不足时按句 → 小句 → 字数逐级拆细后均匀分布；过多则线性就近取行。
+
+    ⚠️ 关键不变量：**绝不把同一句原文复制给所有镜头**。旧实现在「模型只输出 1 行且句数不足」
+    时会走进兜底循环，让 n 段拿到完全相同的解说——表现为「整片解说只有一句话反复出现」。
+    现改为逐级拆细：按句 → 按逗号小句 → 按字数均分，尽量让每段拿到不同内容。"""
+    if n <= 0:
+        return []
     m = len(lines)
     if m == 0:
         return ['' for _ in range(n)]
     if m == n:
         return list(lines)
-    if m < n:
-        sents = []
-        for l in lines:
-            sents.extend(_split_nar_sentences(l))
-        if len(sents) >= n:
-            return _distribute_sents(sents, n)
+
+    # ① 句子池
+    sents = []
+    for l in lines:
+        sents.extend(_split_nar_sentences(l))
+
+    # ② 句数不够 → 再按小句（逗号/分号/顿号）拆
+    if len(sents) < n:
+        clauses = []
+        for s in sents:
+            clauses.extend(_split_nar_clauses(s))
+        if len(clauses) > len(sents):
+            sents = clauses
+
+    # ③ 仍不够 → 反复把最长的可断条目在中点附近的标点处劈开，直到凑够 n 条。
+    #    只在标点处断开、绝不硬切字符——否则会把「便利店」劈成「便利」+「店想」这类半个词。
+    guard = 0
+    while len(sents) < n and guard < 256:
+        guard += 1
+        best = None
+        for i, s in enumerate(sents):
+            if len(s) < 12:
+                continue
+            half = len(s) // 2
+            for j in range(half, len(s) - 3):
+                if s[j] in '，,；;、。！？!?':
+                    if best is None or len(s) > len(sents[best[0]]):
+                        best = (i, j + 1)
+                    break
+        if best is None:
+            break
+        i, cut = best
+        a, b = sents[i][:cut].strip(), sents[i][cut:].strip()
+        if not a or not b:
+            break
+        sents[i:i + 1] = [a, b]
+
+    if len(sents) >= n:
+        return _distribute_sents(sents, n)
+
+    # ④ 极端兜底：只剩一句。若这句够长就按字数均分（每段 >=8 字才切，避免切成「这是一/个男子在」
+    #    这种读不通的碎片）；太短则原样重复——宁可重复，也不产出看不懂的半截话。
+    if len(sents) == 1 and len(sents[0]) >= max(8 * n, 16):
+        return _distribute_sents(_split_into_k(sents[0], n), n)
+
     out = []
     for i in range(n):
-        if n <= 1:
-            src = 0
-        else:
-            src = min(m - 1, int(round(i * (m - 1) / max(1, n - 1))))
-        out.append(lines[src])
+        out.append(sents[i % len(sents)])
     return out
 
 
@@ -1014,9 +1087,24 @@ def local_vlm_narrate(per_seg, frames, params):
               + '- 除非某镜头真的是剧情转折/高光，否则【不要】总结“这反映了/象征着/揭示了/暗示了”这类意义升华；\n'
               + '- 台词只转述大意，不原样照搬；不编造剧情里没有的事实；不堆“高潮/悬念/震撼”等空泛词。\n'
               + req_line
-              + '直接输出 %d 行解说词，不要编号、不要解释。' % n)
+              + '直接输出 %d 行解说词，不要编号、不要解释。\n' % n
+              + '- 【格式】必须用换行分隔成 %d 行，**不要写成一整段话**；每行只讲对应镜头的内容。' % n)
     out = _write(prompt, sys_)
     lines = _split_nar_lines(out)
+
+    # —— 行数不足时重试一次：模型常把整稿写成一整段（无换行），
+    #    旧逻辑会直接把这一句复制给所有镜头 → 整片解说只剩一句话。
+    if len(lines) < n and n >= 2:
+        retry = ('你刚才输出的内容没有按行分开（只解析出 %d 行），但需要恰好 %d 行，'
+                 '一行对应一个镜头。\n请把下面的解说稿**原样拆成 %d 行**并输出：'
+                 '保持原有文字与顺序，只做换行拆分，不要新增、不要删减、不要改写，'
+                 '不要编号、不要解释。\n\n' % (len(lines), n, n)
+                 + '\n'.join(lines))
+        out_r = _write(retry, sys_, timeout=300)
+        if out_r and out_r.strip():
+            lines_r = _split_nar_lines(out_r)
+            if len(lines_r) > len(lines):
+                lines = lines_r
 
     # —— 自优化：让模型自查衔接/重复/详略并输出优化稿（整稿成形且用强文字模型时）——
     if use_local_text and len(lines) >= max(2, (n + 1) // 2):

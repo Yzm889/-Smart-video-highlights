@@ -1488,3 +1488,46 @@ def test_encoder_preset_unified_source_pin():
                             'webui_server.py'), encoding='utf-8').read()
     assert "'fast'" not in src, "发现旧的 'fast' preset，8 处编码应统一为 veryfast/GPU 档位"
     assert src.count('video_encode_args(') >= 9, '应为 1 处定义 + 8 处调用'
+
+
+# ---------------------------------------------------------------------------
+# 解说稿「行 → 镜头」映射：模型把整稿写成一整段时，不得塌缩成「整片只有一句」
+# ---------------------------------------------------------------------------
+def test_map_lines_one_paragraph_not_collapsed():
+    """回归：模型输出单段落（无换行）但句数够时，应拆成各镜头独立的句子，不能全等。"""
+    import webui_server as S
+    one_para = ('这位年轻人走进便利店，走到一台自动售货机前，想要买一瓶汽水，但是却发现这台机器只收港币。'
+                '此时，年轻人身上的钱却都不是港币，他有些焦急地看向旁边。'
+                '旁边的大叔看他着急，便热心地帮他换了一些港币。'
+                '拿到港币后，年轻人赶紧投币，终于买到了汽水。'
+                '他开心地打开汽水喝了起来。')
+    mapped = S._map_lines_to_segs(S._split_nar_lines(one_para), 5)
+    assert len(mapped) == 5
+    assert len(set(mapped)) == 5, '解说塌缩：5 个镜头拿到相同内容（整片只剩一句）'
+
+
+def test_map_lines_short_paragraph_no_midword_split():
+    """句数不足时按小句拆，但只能在标点处断开——不得把「便利店」劈成「便利」+「店想」。"""
+    import webui_server as S
+    text = '男子走进便利店想买汽水，掏出人民币却被机器拒收。无奈之下他向路人求助，折腾半天才买到。'
+    mapped = S._map_lines_to_segs(S._split_nar_lines(text), 5)
+    assert len(set(mapped)) > 1, '短段落也不应全部塌缩成一句'
+    # 不变量：每个片段都必须以标点结尾。硬切字符会产生「男子走进便利」这种不以标点收尾的半截词。
+    for chunk in mapped:
+        assert chunk[-1] in '。！？!?，,；;、', '出现从词中间硬切的碎片（不以标点结尾）：%r' % chunk
+
+
+def test_map_lines_exact_and_overflow():
+    import webui_server as S
+    lines = ['甲。', '乙。', '丙。']
+    assert S._map_lines_to_segs(lines, 3) == lines
+    assert len(S._map_lines_to_segs(lines, 5)) == 5
+    assert S._map_lines_to_segs([], 4) == ['', '', '', '']
+
+
+def test_split_nar_clauses_and_into_k():
+    import webui_server as S
+    cl = S._split_nar_clauses('他走进店里，掏出钱，却发现机器不收。')
+    assert len(cl) >= 2 and cl[0].endswith('，')
+    k = S._split_into_k('一二三四五六七八九十', 3)
+    assert len(k) == 3 and ''.join(k) == '一二三四五六七八九十'
