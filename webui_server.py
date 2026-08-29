@@ -12,7 +12,7 @@ webui_server.py — 春天短视频工坊 · 本地图形化 WebUI 后端
 """
 import os, sys, json, math, random, shutil, subprocess, threading, time, base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKDIR = os.path.join(HERE, 'webui_workspace')
@@ -28,6 +28,18 @@ _TLS = threading.local()   # 每个任务线程绑定自己的 runid，供 ffmpe
 class AbortError(Exception):
     """任务被用户取消时抛出。"""
     pass
+
+
+def _aborted():
+    """协作式取消：检查当前任务线程是否被用户取消。
+    分析/解说稿生成/配音等无 ffmpeg 的长阶段，ffmpeg_run 感知不到 abort 标志，
+    需要在阶段间调用本函数并主动抛 AbortError，让「取消」按钮秒级生效。
+    非任务线程（测试/主线程）无 runid 绑定，恒为 False。"""
+    rid = getattr(_TLS, 'runid', None)
+    if not rid:
+        return False
+    p = PROGRESS.get(rid)
+    return bool(p and p.get('abort'))
 FONT_PATH = "C:/Windows/Fonts/msyh.ttc"
 AI_CONFIG_PATH = os.path.join(HERE, 'ai_config.json')
 HISTORY_PATH = os.path.join(HERE, 'history.json')
@@ -91,7 +103,7 @@ def probe_ollama_mirror(base, timeout=10):
         if 'Ollama' in data:
             return True, '可用（页面含 Ollama，建议点开确认）'
         return False, '未返回有效版本页'
-    except urllib.error.HTTPError as e:
+    except _urlerr.HTTPError as e:
         return False, 'HTTP %d' % e.code
     except urllib.error.URLError as e:
         rs = str(getattr(e, 'reason', e))
@@ -958,6 +970,8 @@ def local_vlm_narrate(per_seg, frames, params):
     use_local_text = _local_model_available()
 
     def _write(p, s_, timeout=300):
+        if _aborted():
+            raise AbortError('用户取消了任务')
         if use_local_text:
             try:
                 return local_llm_chat(p, system=s_, timeout=timeout)
@@ -1196,10 +1210,392 @@ def compute_mode(params, needs_chat=True):
     return 'free' if econ else 'ai'
 
 
+# ---------------------------------------------------------------------------
+# 📺 B 站素材：搜索 + 下载 MP4（yt-dlp 搜索 + playurl 直连/yt-dlp 双引擎下载）。
+# 说明：无需跳转第三方提取站；下载仅供个人在拥有权限的内容上使用（版权自负）。
+# 风控说明：B 站对匿名请求有 WAF（412）——引擎失败时给出明确提示；
+# 在 ai_config.json 配 `bili.cookie`（浏览器登录 Cookie）后更稳且可下更高清晰度。
+# ---------------------------------------------------------------------------
+import urllib.request as _urlreq, urllib.error as _urlerr, http.cookiejar as _cjar
+BILI_DIR = os.path.join(OUTDIR, 'bili')
+BILI_PULL = {'running': False, 'ok': None, 'pct': 0, 'msg': '', 'file': '', 'title': '', 'abort': False}
+_BILI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+_BILI_HDRS = {'User-Agent': _BILI_UA, 'Referer': 'https://www.bilibili.com/',
+              'Accept': 'application/json, text/plain, */*', 'Accept-Language': 'zh-CN,zh;q=0.9'}
+
+
+def bili_cfg():
+    """B 站配置：可选 cookie（用户从浏览器复制的整段 Cookie 头，登录态更稳/清晰度更高）。"""
+    cfg = load_ai_config().get('bili') or {}
+    return {'cookie': (cfg.get('cookie') or '').strip()}
+
+
+def _bili_cookie_header():
+    """返回请求用的 Cookie 头：优先 ai_config 的 bili.cookie；否则自动访问 B 站首页收割 buvid3。"""
+    ck = bili_cfg().get('cookie')
+    if ck:
+        return ck
+    jar = _cjar.CookieJar()
+    opener = _urlreq.build_opener(_urlreq.HTTPCookieProcessor(jar))
+    for k, v in _BILI_HDRS.items():
+        opener.addheaders.append((k, v))
+    opener.open('https://www.bilibili.com/', timeout=15).read()
+    return '; '.join('%s=%s' % (c.name, c.value) for c in jar)
+
+
+def _bili_cookiefile():
+    """把 Cookie 头写成 Netscape cookie 文件（yt-dlp 用）。"""
+    os.makedirs(WORKDIR, exist_ok=True)
+    cf = os.path.join(WORKDIR, 'bili_cookies.txt')
+    with open(cf, 'w', encoding='utf-8') as f:
+        f.write('# Netscape HTTP Cookie File\n')
+        for pair in _bili_cookie_header().split(';'):
+            if '=' in pair:
+                k, _, v = pair.strip().partition('=')
+                if k.strip():
+                    f.write('.bilibili.com\tTRUE\t/\tTRUE\t2100000000\t%s\t%s\n' % (k.strip(), v))
+    return cf
+
+
+def _bili_get_json(url):
+    req = _urlreq.Request(url, headers=dict(_BILI_HDRS, **{'Cookie': _bili_cookie_header()}))
+    with _urlreq.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode('utf-8'))
+
+
+def _bili_valid_bvid(bvid):
+    import re as _re
+    return bool(_re.match(r'^BV[0-9A-Za-z]{10}$', bvid or ''))
+
+
+def bili_search(keyword, n=8):
+    """yt-dlp bilisearch 搜索 B 站视频（已实测可用，需 buvid3 cookie——见 _bili_cookiefile）。
+    返回 [{bvid,title,author,duration,pic}]；失败抛异常（含 412 风控提示）。"""
+    import yt_dlp
+    opts = {'quiet': True, 'no_warnings': True, 'skip_download': True, 'noplaylist': True,
+            'playlistend': max(1, min(12, int(n))), 'socket_timeout': 20,
+            'cookiefile': _bili_cookiefile(), 'http_headers': dict(_BILI_HDRS)}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info('bilisearch%d:%s' % (int(n), keyword), download=False)
+    except Exception as e:
+        msg = str(e)
+        if '412' in msg:
+            raise RuntimeError('B 站风控拦截（412）：请稍后再试；或在 ai_config.json 配 bili.cookie 后重试')
+        raise
+    out = []
+    for e in (info or {}).get('entries') or []:
+        if not e or not e.get('id'):
+            continue
+        out.append({'bvid': e.get('id'), 'title': (e.get('title') or '')[:90],
+                    'author': (e.get('uploader') or '')[:40],
+                    'duration': int(e.get('duration') or 0),
+                    'pic': ((e.get('thumbnails') or [{}])[-1].get('url') or '')})
+    return out
+
+
+def _safe_filename(name):
+    import re as _re
+    return _re.sub(r'[\\/:*?"<>|]', '_', name or '')[:120] or 'video'
+
+
+def _bili_download_direct(bvid):
+    """引擎①：playurl html5 直连（未登录通常 480p；不依赖 yt-dlp 下载）。
+    返回 (相对 OUTDIR 的文件路径, 标题)。"""
+    v = _bili_get_json('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid)
+    if v.get('code') != 0:
+        raise RuntimeError('读取视频信息失败：%s' % (v.get('message') or v.get('code')))
+    cid = v['data']['cid']
+    title = v['data'].get('title') or bvid
+    BILI_PULL.update({'title': title[:60], 'pct': 5, 'msg': '获取播放地址…'})
+    p = _bili_get_json('https://api.bilibili.com/x/player/playurl?bvid=%s&cid=%s&qn=64&platform=html5&high_quality=1'
+                       % (bvid, cid))
+    if p.get('code') != 0:
+        raise RuntimeError('获取播放地址失败：%s' % (p.get('message') or p.get('code')))
+    durl = (p['data'].get('durl') or [{}])[0]
+    url = durl.get('url') or ''
+    if not url:
+        raise RuntimeError('未取得视频直链（可能需要登录/大会员）')
+    size = durl.get('size') or 0
+    req = _urlreq.Request(url, headers=dict(_BILI_HDRS, **{'Cookie': _bili_cookie_header()}))
+    final = os.path.join(BILI_DIR, _safe_filename(bvid + '.mp4'))
+    done = 0
+    with _urlreq.urlopen(req, timeout=30) as resp, open(final, 'wb') as f:
+        while True:
+            b = resp.read(256 * 1024)
+            if not b:
+                break
+            f.write(b)
+            done += len(b)
+            if done > UPLOAD_TOTAL_MAX:
+                raise RuntimeError('文件超过 2GB 上限')
+            if size:
+                BILI_PULL['pct'] = min(95, int(done * 100 // size))
+            BILI_PULL['msg'] = '下载中 %.1fMB' % (done / 1048576)
+            if BILI_PULL.get('abort'):
+                raise AbortError('用户取消了下载')
+    return os.path.relpath(final, OUTDIR).replace('\\', '/'), title
+
+
+def _bili_download_ytdlp(bvid):
+    """引擎②（兜底）：yt-dlp 内置 B 站提取器，自行处理更多边角（登录 cookie 同样生效）。"""
+    import yt_dlp
+
+    def hook(d):
+        if d.get('status') == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            if total:
+                BILI_PULL['pct'] = min(95, int((d.get('downloaded_bytes') or 0) * 100 // total))
+            BILI_PULL['msg'] = '下载中（yt-dlp）…'
+        else:
+            BILI_PULL['msg'] = '合并音视频…'
+        if BILI_PULL.get('abort'):
+            raise yt_dlp.utils.DownloadCancelled('用户取消了下载')
+
+    opts = {'format': 'bv*[height<=720]+ba/b[height<=720]/b', 'merge_output_format': 'mp4',
+            'outtmpl': os.path.join(BILI_DIR, '%(id)s.%(ext)s'),
+            'ffmpeg_location': os.path.dirname(ffmpeg_exe()),
+            'noplaylist': True, 'cookiefile': _bili_cookiefile(), 'socket_timeout': 20, 'retries': 2,
+            'progress_hooks': [hook], 'quiet': True, 'no_warnings': True, 'http_headers': dict(_BILI_HDRS)}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info('https://www.bilibili.com/video/' + bvid, download=True)
+    fp = ((info or {}).get('requested_downloads') or [{}])[0].get('filepath')
+    if not fp or not os.path.isfile(fp):
+        raise RuntimeError('yt-dlp 未产出文件')
+    return os.path.relpath(fp, OUTDIR).replace('\\', '/'), (info.get('title') or bvid)
+
+
+def _bili_download_thread(bvid):
+    """下载编排：引擎①直连 → 失败自动切引擎②yt-dlp → 都失败给风控提示。"""
+    BILI_PULL.update({'running': True, 'ok': None, 'pct': 1, 'msg': '读取视频信息…', 'file': '',
+                      'title': '', 'abort': False})
+    os.makedirs(BILI_DIR, exist_ok=True)
+    try:
+        try:
+            rel, title = _bili_download_direct(bvid)
+        except AbortError:
+            raise
+        except Exception as e1:
+            if BILI_PULL.get('abort'):
+                raise AbortError('用户取消了下载')
+            last_err = str(e1)
+            BILI_PULL.update({'pct': 3, 'msg': '直连失败（%s），改用 yt-dlp 引擎…' % last_err[:60]})
+            rel, title = _bili_download_ytdlp(bvid)
+        BILI_PULL.update({'running': False, 'ok': True, 'pct': 100, 'file': rel, 'title': title[:60],
+                          'msg': '完成：%s' % title[:50]})
+    except AbortError:
+        BILI_PULL.update({'running': False, 'ok': False, 'msg': '已取消下载'})
+    except Exception as e:
+        msg = str(e)[:180]
+        if '412' in msg or '风控' in msg:
+            msg += ' —— 触发了 B 站风控：请等几分钟再试；或在 ai_config.json 配 bili.cookie（浏览器登录 Cookie）后重试，登录态更稳且清晰度更高。'
+        BILI_PULL.update({'running': False, 'ok': False, 'msg': msg})
+
+
+def _bili_start_download(bvid):
+    """校验并启动下载线程；已有下载进行中时拒绝（简单串行，避免并发写同一进度槽）。"""
+    if not _bili_valid_bvid(bvid):
+        return {'ok': False, 'error': 'BV 号格式不正确'}
+    if BILI_PULL.get('running'):
+        return {'ok': False, 'error': '已有下载在进行中，请先等待或取消'}
+    threading.Thread(target=_bili_download_thread, args=(bvid,), daemon=True).start()
+    return {'ok': True}
+
+
+# ---------------------------------------------------------------------------
+# 🖼 封面生成：从成片智能选帧（对比度+细节打分）+ 大字标题合成封面图。
+# 发抖音/B站都需要封面——出片后一键生成，可换帧/改标题/换版式。
+# ---------------------------------------------------------------------------
+COVER_CANDIDATES = 8
+
+
+def _cover_score(im):
+    """封面帧打分：对比度(灰度std) + 细节(边缘能量) - 过曝过暗惩罚，分越高越"有内容"。"""
+    import numpy as np
+    g = np.asarray(im.convert('L'), dtype=np.float32)
+    contrast = float(g.std())
+    edges = np.asarray(im.convert('L').filter(ImageFilter.FIND_EDGES), dtype=np.float32)
+    detail = float(edges.mean())
+    ext = float((g < 8).mean() + (g > 247).mean())
+    return round(contrast * 0.6 + detail * 2.0 - ext * 40.0, 1)
+
+
+def _cover_candidates(video_path, run_dir, n=COVER_CANDIDATES, max_side=640):
+    """均匀抽 n 帧做候选（预览小图存 run_dir/cover_cand，带打分）。返回按时间序的候选列表。"""
+    vdur = probe_audio_len(video_path) or 0.0
+    if vdur <= 0:
+        raise RuntimeError('无法读取视频时长')
+    cand_dir = os.path.join(run_dir, 'cover_cand')
+    os.makedirs(cand_dir, exist_ok=True)
+    out = []
+    for k in range(n):
+        ts = round(vdur * (k + 0.5) / n, 2)
+        fp = os.path.join(cand_dir, 'cand_%02d.jpg' % k)
+        rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.2f' % ts, '-i', video_path,
+                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,%d):-2' % max_side,
+                                 '-q:v', '4', '-an', fp])
+        if rc == 0 and os.path.isfile(fp):
+            try:
+                score = _cover_score(Image.open(fp))
+            except Exception:
+                score = 0.0
+            out.append({'ts': ts, 'thumb': os.path.relpath(fp, OUTDIR).replace('\\', '/'),
+                        'score': score})
+    return out
+
+
+def _cover_render(video_path, ts, title, sub, style, out_path, w_cap=1920):
+    """抽全分辨率帧 + 叠加标题/副标题 → 封面图。style: 0 居中大字 / 1 底部条幅 / 2 左上角。"""
+    tmp = out_path + '.frame.jpg'
+    rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.2f' % ts, '-i', video_path,
+                             '-frames:v', '1', '-q:v', '2', '-an', tmp])
+    if rc != 0 or not os.path.isfile(tmp):
+        raise RuntimeError('抽帧失败（该时间点可能超出视频范围）')
+    im = Image.open(tmp).convert('RGB')
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    if im.width > w_cap:
+        im = im.resize((w_cap, int(im.height * w_cap / im.width)), Image.LANCZOS)
+    draw = ImageDraw.Draw(im, 'RGBA')
+    W, H = im.size
+    fs = max(28, W // 16)
+
+    def font(size):
+        try:
+            return ImageFont.truetype(FONT_PATH, size)
+        except Exception:
+            return ImageFont.load_default()
+
+    def wrap(text, fnt, maxw, maxlines=3):
+        lines, cur = [], ''
+        for ch in text:
+            if draw.textlength(cur + ch, font=fnt) <= maxw or not cur:
+                cur += ch
+            else:
+                lines.append(cur)
+                cur = ch
+        if cur:
+            lines.append(cur)
+        return lines[:maxlines]
+
+    t = _clean_caption(title)
+    lines = wrap(t, font(fs), int(W * 0.86)) if t else []
+    lh = int(fs * 1.3)
+    if style == 1 and lines:   # 底部条幅：半透明黑条 + 白字
+        bh = int(H * 0.08) * len(lines) + int(H * 0.04)
+        overlay = Image.new('RGBA', im.size, (0, 0, 0, 0))
+        ImageDraw.Draw(overlay).rectangle([0, H - bh, W, H], fill=(0, 0, 0, 150))
+        im = Image.alpha_composite(im.convert('RGBA'), overlay).convert('RGB')
+        draw = ImageDraw.Draw(im, 'RGBA')
+        y = H - bh + int(H * 0.02)
+        for ln in lines:
+            draw.text((int(W * 0.04), y), ln, font=font(fs), fill=(255, 255, 255, 255))
+            y += lh
+    else:                       # 居中大字 / 左上角：白字黑描边
+        y = (H - len(lines) * lh) // 2 if style == 0 else int(H * 0.06)
+        for ln in lines:
+            x = int((W - draw.textlength(ln, font=font(fs))) // 2) if style == 0 else int(W * 0.05)
+            draw.text((x, y), ln, font=font(fs), fill=(255, 255, 255, 255),
+                      stroke_width=max(2, fs // 14), stroke_fill=(0, 0, 0, 220))
+            y += lh
+    if sub:
+        f_sub = font(max(20, fs // 2))
+        sw = draw.textlength(sub, font=f_sub)
+        sx = int((W - sw) // 2) if style != 2 else int(W * 0.05)
+        sy = min(int(H * 0.9), y + int(fs * 0.2))
+        draw.text((max(4, sx), sy), sub, font=f_sub, fill=(255, 255, 255, 230),
+                  stroke_width=2, stroke_fill=(0, 0, 0, 200))
+    im.save(out_path, quality=90)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# 🗂 本地素材库：独立文件夹 material_library/，素材持久保存、刷新/重启不丢。
+# 上传（小文件 base64 / 大文件复用分片协议）、从成片目录存入（如 B 站下载的视频）、
+# 删除；任务请求里 video/item 传 {name, mlib} 即可直接使用库内素材（copy 进 run_dir）。
+# ---------------------------------------------------------------------------
+MATERIAL_DIR = os.path.join(HERE, 'material_library')
+
+
+def _material_path(name):
+    """素材库内文件的安全路径（防穿越 + 必须存在）；非法返回 None。"""
+    return _safe_join(MATERIAL_DIR, name)
+
+
+def material_list():
+    """列出素材库中的视频/图片素材（按名称排序）。"""
+    if not os.path.isdir(MATERIAL_DIR):
+        os.makedirs(MATERIAL_DIR, exist_ok=True)
+    out = []
+    for fn in sorted(os.listdir(MATERIAL_DIR)):
+        p = os.path.join(MATERIAL_DIR, fn)
+        if not os.path.isfile(p):
+            continue
+        ext = os.path.splitext(fn)[1].lower()
+        if ext in ('.mp4', '.mov', '.webm', '.avi', '.mkv', '.m4v'):
+            kind = 'video'
+        elif ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'):
+            kind = 'image'
+        else:
+            continue
+        try:
+            out.append({'name': fn, 'kind': kind, 'size': os.path.getsize(p),
+                        'mtime': int(os.path.getmtime(p))})
+        except OSError:
+            pass
+    return out
+
+
+def material_save_file(src_path):
+    """把一个已存在的文件复制进素材库（重名自动加 (1)(2) 序号）。返回最终文件名。"""
+    os.makedirs(MATERIAL_DIR, exist_ok=True)
+    base = os.path.basename(src_path)
+    stem, ext = os.path.splitext(base)
+    candidate, i = base, 1
+    while os.path.exists(os.path.join(MATERIAL_DIR, candidate)):
+        candidate = '%s(%d)%s' % (stem, i, ext)
+        i += 1
+    shutil.copy2(src_path, os.path.join(MATERIAL_DIR, candidate))
+    return candidate
+
+
+def material_save_bytes(name, data):
+    """上传的字节存入素材库（保留原始文件名，重名自动加序号）。返回 (最终文件名|None, error)。"""
+    base = os.path.basename(_safe_filename(name or ''))
+    if not base or not data:
+        return None, '文件名或内容为空'
+    os.makedirs(MATERIAL_DIR, exist_ok=True)
+    stem, ext = os.path.splitext(base)
+    candidate, i = base, 1
+    while os.path.exists(os.path.join(MATERIAL_DIR, candidate)):
+        candidate = '%s(%d)%s' % (stem, i, ext)
+        i += 1
+    with open(os.path.join(MATERIAL_DIR, candidate), 'wb') as f:
+        f.write(data)
+    return candidate, ''
+
+
+def material_delete(name):
+    fp = _material_path(name)
+    if not fp:
+        return False, '素材不存在'
+    try:
+        os.remove(fp)
+    except OSError as e:
+        return False, str(e)[:80]
+    return True, ''
+
+
+_HIST_LOCK = threading.RLock()   # history.json 读写锁（可重入：add_history 持锁时会再调 load_history）；防丢条目、防读到半写文件
+
+
 def load_history(limit=50):
     try:
-        with open(HISTORY_PATH, 'r', encoding='utf-8') as f:
-            items = json.load(f)
+        with _HIST_LOCK:
+            with open(HISTORY_PATH, 'r', encoding='utf-8') as f:
+                items = json.load(f)
         if not isinstance(items, list):
             items = []
     except Exception:
@@ -1207,19 +1603,238 @@ def load_history(limit=50):
     return items[:limit]
 
 
+def _record_history(req, prog, kind=''):
+    """统一写生成历史（⑨记录）。此前只有一键合成写历史，强卡点/解说/联网解说/
+    按方案渲染的成片都不会出现在记录里。失败静默，不影响出片主流程。
+    容量淘汰遵循 add_history 的规则（超 100 条丢弃最旧并清理其成片文件）。"""
+    try:
+        if not prog.get('file'):
+            return
+        f = os.path.join(OUTDIR, prog['file'])
+        add_history({
+            'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'file': prog['file'],
+            'duration': round(float(probe_audio_len(f) or 0.0), 2),
+            'music': (req.get('music') or {}).get('name') if isinstance(req.get('music'), dict) else None,
+            'voice': False, 'captions': [],
+            'kind': kind,
+        })
+    except Exception:
+        pass
+
+
+def _safe_join(base, name):
+    """拼接文件路径并校验结果仍落在 base 目录内。防 /media/../ 等目录穿越
+    读到 ai_config.json 等敏感文件（默认只绑 127.0.0.1 风险低，但 Docker 部署
+    HOST=0.0.0.0 时必须兜住）。返回可读文件的绝对路径；穿越/不存在返回 None。"""
+    try:
+        if not name or name.startswith(('/', '\\')) or ':' in name:
+            return None
+        base_abs = os.path.abspath(base)
+        full = os.path.abspath(os.path.join(base_abs, name))
+        if os.path.commonpath([base_abs, full]) != base_abs:
+            return None
+        return full if os.path.isfile(full) else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 📤 大文件分片上传：>64MB 的视频走「分片 base64」而非一次性 base64 JSON——
+# 旧路径会把整个文件膨胀 1.37 倍塞进一个 JSON（334MB 视频 ≈ 446MB 请求体 + GB 级内存峰值）。
+# 三接口：init(开会话) → chunk(乱序写分片) → done(按序合并)。小文件仍走 base64 旧路径。
+# ---------------------------------------------------------------------------
+UPLOAD_DIR = os.path.join(WORKDIR, 'uploads')
+UPLOAD_CHUNK_MAX = 8 * 1024 * 1024          # 单分片解码后上限
+UPLOAD_TOTAL_MAX = 2 * 1024 * 1024 * 1024   # 单文件总量上限 2GB
+
+
+def _upload_dir_of(upload_id):
+    """校验 upload_id（仅字母数字与连字符，≤64 位）并返回其暂存目录；非法返回 None。"""
+    import re as _re
+    if not upload_id or len(upload_id) > 64:
+        return None
+    if not _re.match(r'^up-[0-9A-Za-z-]+$', upload_id):
+        return None
+    return os.path.join(UPLOAD_DIR, upload_id)
+
+
+def _upload_prune():
+    """清理超 24 小时未动的上传会话（用户中途放弃的残片）；
+    活跃会话数超过 100 时再清最旧的——防 HOST=0.0.0.0 部署下被会话数量滥用撑爆磁盘。"""
+    try:
+        if not os.path.isdir(UPLOAD_DIR):
+            return
+        now = time.time()
+        entries = []
+        for fn in os.listdir(UPLOAD_DIR):
+            p = os.path.join(UPLOAD_DIR, fn)
+            try:
+                entries.append((os.path.getmtime(p), p))
+            except OSError:
+                pass
+        entries.sort()
+        keep = []
+        for mt, p in entries:
+            if now - mt > 86400:
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                keep.append(p)
+        excess = len(keep) - 100
+        for p in (keep[:excess] if excess > 0 else []):
+            shutil.rmtree(p, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _upload_chunk_write(upload_id, idx, data_bytes):
+    """写一个分片（每片一个 part 文件，乱序到达也安全）。返回 (ok, error)。"""
+    d = _upload_dir_of(upload_id)
+    if d is None:
+        return False, '非法 upload_id'
+    if not os.path.isdir(d):
+        return False, '上传会话不存在或已过期，请重新开始上传'
+    try:
+        idx = int(idx)
+    except Exception:
+        return False, '非法分片序号'
+    if idx < 0 or idx > 4096:
+        return False, '非法分片序号'
+    if len(data_bytes) > UPLOAD_CHUNK_MAX:
+        return False, '分片过大'
+    try:
+        used = 0
+        for fn in os.listdir(d):
+            try:
+                used += os.path.getsize(os.path.join(d, fn))
+            except OSError:
+                pass
+        if used + len(data_bytes) > UPLOAD_TOTAL_MAX:
+            return False, '文件超过 2GB 上限'
+        with open(os.path.join(d, 'part_%04d' % idx), 'wb') as f:
+            f.write(data_bytes)
+    except OSError as e:
+        return False, '分片写入失败：%s' % str(e)[:80]
+    return True, ''
+
+
+def _upload_have_parts(upload_id):
+    """断点续传：返回会话中已到齐的分片序号（升序）。会话非法/不存在返回 None。"""
+    d = _upload_dir_of(upload_id)
+    if d is None or not os.path.isdir(d):
+        return None
+    have = []
+    for fn in os.listdir(d):
+        if fn.startswith('part_'):
+            try:
+                have.append(int(fn.split('_')[1]))
+            except (IndexError, ValueError):
+                pass
+    return sorted(have)
+
+
+def _upload_finalize(upload_id, name, chunks):
+    """按序合并分片为成品文件 final__<name>。返回 (final_path|None, error)。"""
+    d = _upload_dir_of(upload_id)
+    if d is None:
+        return None, '非法 upload_id'
+    try:
+        chunks = int(chunks)
+    except Exception:
+        return None, '非法分片数'
+    if chunks < 1 or chunks > 4096:
+        return None, '非法分片数'
+    parts = []
+    for i in range(chunks):
+        p = os.path.join(d, 'part_%04d' % i)
+        if not os.path.isfile(p):
+            return None, '缺少分片 %d/%d，请重新上传该分片' % (i + 1, chunks)
+        parts.append(p)
+    base = os.path.basename(name or 'video.mp4') or 'video.mp4'
+    final = os.path.join(d, 'final__' + base)
+    total = 0
+    try:
+        with open(final, 'wb') as out:
+            for p in parts:
+                with open(p, 'rb') as f:
+                    while True:
+                        b = f.read(4 * 1024 * 1024)
+                        if not b:
+                            break
+                        out.write(b)
+                        total += len(b)
+                        if total > UPLOAD_TOTAL_MAX:
+                            raise RuntimeError('文件超过 2GB 上限')
+    except Exception as e:
+        try:
+            os.remove(final)
+        except OSError:
+            pass
+        return None, str(e)[:120]
+    for p in parts:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return final, ''
+
+
+def _upload_final_path(upload_id, name):
+    """分片合并后的成品文件路径；校验归属与存在，非法/不存在返回 None。"""
+    d = _upload_dir_of(upload_id)
+    if d is None:
+        return None
+    base = os.path.basename(name or 'video.mp4') or 'video.mp4'
+    fp = os.path.join(d, 'final__' + base)
+    return fp if os.path.isfile(fp) else None
+
+
+def _resolve_upload_video(vobj, run_dir, prefix='src'):
+    """视频对象统一落盘到 run_dir，两种形态并存：
+    {name, data(base64)} 旧路径（小文件）；{name, upload_id} 分片上传（大文件——
+    直接移动合并成品，省一次整文件拷贝）。返回本地文件路径；无效返回 None。"""
+    if not vobj:
+        return None
+    ext = os.path.splitext(vobj.get('name') or 'x.mp4')[1] or '.mp4'
+    if vobj.get('mlib'):
+        src = _material_path(vobj.get('mlib'))
+        if not src:
+            return None
+        fp = os.path.join(run_dir, prefix + ext)
+        shutil.copy2(src, fp)   # 素材库持久保留，任务用拷贝
+        return fp
+    if vobj.get('data'):
+        fp = os.path.join(run_dir, prefix + ext)
+        open(fp, 'wb').write(base64.b64decode(vobj.get('data', '')))
+        return fp
+    src = _upload_final_path(vobj.get('upload_id'), vobj.get('name'))
+    if src:
+        fp = os.path.join(run_dir, prefix + ext)
+        shutil.move(src, fp)
+        try:
+            d = _upload_dir_of(vobj.get('upload_id'))
+            if d and os.path.isdir(d) and not os.listdir(d):
+                os.rmdir(d)
+        except OSError:
+            pass
+        return fp
+    return None
+
+
 def add_history(entry):
     try:
-        items = load_history(500)
-        items.insert(0, entry)
-        # 容量上限：超过 MAX_HISTORY_KEEP 条时，丢弃最旧记录并清理其磁盘文件，防止 webui_output 无限涨盘
-        MAX_HISTORY_KEEP = 100
-        if len(items) > MAX_HISTORY_KEEP:
-            dropped = items[MAX_HISTORY_KEEP:]
-            items = items[:MAX_HISTORY_KEEP]
-            for old in dropped:
-                _remove_history_file(old.get('file'))
-        with open(HISTORY_PATH, 'w', encoding='utf-8') as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
+        with _HIST_LOCK:
+            items = load_history(500)
+            items.insert(0, entry)
+            # 容量上限：超过 MAX_HISTORY_KEEP 条时，丢弃最旧记录并清理其磁盘文件，防止 webui_output 无限涨盘
+            MAX_HISTORY_KEEP = 100
+            if len(items) > MAX_HISTORY_KEEP:
+                dropped = items[MAX_HISTORY_KEEP:]
+                items = items[:MAX_HISTORY_KEEP]
+                for old in dropped:
+                    _remove_history_file(old.get('file'))
+            with open(HISTORY_PATH, 'w', encoding='utf-8') as f:
+                json.dump(items, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
@@ -1302,6 +1917,7 @@ def ensure_deps():
     if not has('PIL'): missing.append('Pillow')
     if not has('numpy'): missing.append('numpy')
     if not has('imageio_ffmpeg'): missing.append('imageio-ffmpeg')
+    if not has('yt_dlp'): missing.append('yt-dlp')
     if missing:
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
                                '--no-input'] + missing)
@@ -1521,10 +2137,22 @@ def ensure_default_images():
 # ---------------------------------------------------------------------------
 # 合成引擎
 # ---------------------------------------------------------------------------
-def ffmpeg_run(args, input_data=None):
+def _parse_time_str(t):
+    """'HH:MM:SS.cc' → 秒（float）；格式不符返回 None。"""
+    try:
+        hh, mm, ss = t.split(':')
+        return int(hh) * 3600 + int(mm) * 60 + float(ss)
+    except Exception:
+        return None
+
+
+def ffmpeg_run(args, input_data=None, on_progress=None):
     """运行 ffmpeg。若当前任务线程绑定了 runid（见 _spawn），则把进程注册到
     RUN_PROCS，并每 0.3s 检查 PROGRESS[runid]['abort']；用户取消时立即终止进程
-    并抛 AbortError，使整条流水线真正中断。"""
+    并抛 AbortError，使整条流水线真正中断。
+    on_progress(seconds_done)：可选回调——从 stderr 的 time= 统计行解析当前解码/编码
+    位置（需命令不带 -nostats），供长视频把阶段进度做平滑推进。"""
+    import re as _re
     exe = ffmpeg_exe()
     runid = getattr(_TLS, 'runid', None)
     proc = subprocess.Popen([exe] + args, stdin=subprocess.PIPE,
@@ -1534,11 +2162,25 @@ def ffmpeg_run(args, input_data=None):
             RUN_PROCS[runid] = proc
 
     err_chunks = []
+    tail = ''
 
     def _read_stderr():
+        nonlocal tail
         try:
             for chunk in iter(lambda: proc.stderr.read(65536), b''):
                 err_chunks.append(chunk)
+                if on_progress is not None:
+                    tail = (tail + chunk.decode('utf-8', 'ignore'))[-2000:]
+                    m = None
+                    for m in _re.finditer(r'time=(\d+):(\d+):(\d+(?:\.\d+)?)', tail):
+                        pass
+                    if m:
+                        sec = _parse_time_str('%s:%s:%s' % m.groups())
+                        if sec is not None:
+                            try:
+                                on_progress(sec)
+                            except Exception:
+                                pass
         except Exception:
             pass
 
@@ -2116,15 +2758,135 @@ def build_srt(captions, starts, durs, out_path):
 
 
 # ---------------------------------------------------------------------------
+# 🗂 分析缓存：场景切点/帧信号按「文件指纹+参数+分析版本」落盘复用，避免重复全片解码。
+# 收益：人机协同反复调 strength/maxCuts 重看方案从分钟级变秒级；
+#       卡点+解说连续作业共享同一套场景切点（解说分段不再单独全片再扫一遍）。
+# 原则：任何缓存读写失败都静默回退实时分析，缓存只影响速度、不影响正确性。
+# ---------------------------------------------------------------------------
+ANALYSIS_VERSION = 1        # 分析逻辑变更时 +1，旧缓存自动全部失效
+ANALYSIS_CACHE_DIR = os.path.join(WORKDIR, 'analysis_cache')
+ANALYSIS_CACHE_KEEP = 200   # 最多保留条数，超出按修改时间清最旧
+
+
+def _file_fp(path, min_size=4096):
+    """缓存键用的文件指纹 'size:mtime'。文件不存在或小于 min_size（测试假文件/
+    异常输入）返回空串，空指纹一律直连实时分析，杜绝把 mock 数据写进缓存。"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ''
+    if st.st_size < min_size:
+        return ''
+    return f'{st.st_size}:{int(st.st_mtime)}'
+
+
+def _analysis_cache_path(key):
+    import hashlib
+    return os.path.join(ANALYSIS_CACHE_DIR, hashlib.md5(key.encode('utf-8')).hexdigest() + '.json')
+
+
+def _analysis_cache_load(key):
+    try:
+        p = _analysis_cache_path(key)
+        if os.path.exists(p):
+            with open(p, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict) and data.get('key') == key:
+                return data.get('value')
+    except Exception:
+        pass
+    return None
+
+
+def _analysis_cache_save(key, value):
+    try:
+        os.makedirs(ANALYSIS_CACHE_DIR, exist_ok=True)
+        p = _analysis_cache_path(key)
+        tmp = p + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump({'key': key, 'value': value}, f, ensure_ascii=False)
+        os.replace(tmp, p)   # 原子替换：避免 Windows 下并发读到半写文件
+        _analysis_cache_trim()
+    except Exception:
+        pass
+
+
+def _analysis_cache_trim():
+    """缓存条数超过 ANALYSIS_CACHE_KEEP 时按修改时间清最旧。"""
+    try:
+        if not os.path.isdir(ANALYSIS_CACHE_DIR):
+            return
+        entries = []
+        for fn in os.listdir(ANALYSIS_CACHE_DIR):
+            if not fn.endswith('.json'):
+                continue
+            p = os.path.join(ANALYSIS_CACHE_DIR, fn)
+            try:
+                entries.append((os.path.getmtime(p), p))
+            except OSError:
+                pass
+        if len(entries) > ANALYSIS_CACHE_KEEP:
+            entries.sort()
+            for _, p in entries[:len(entries) - ANALYSIS_CACHE_KEEP]:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
+def _cached_scene_cuts(video_path, threshold=0.30, progress=None):
+    """场景切点（带磁盘缓存）。键含阈值+版本+文件指纹：改参数、换文件、
+    文件内容被替换（size/mtime 变化）都会自动重新分析。"""
+    fp = _file_fp(video_path)
+    if not fp:
+        return detect_scene_cuts(video_path, threshold=threshold)
+    key = f'scene_v{ANALYSIS_VERSION}_th{threshold:g}_{fp}'
+    hit = _analysis_cache_load(key)
+    if isinstance(hit, list):
+        return [float(x) for x in hit]
+    kw = {'progress': progress} if progress is not None else {}
+    cuts = detect_scene_cuts(video_path, threshold=threshold, **kw)
+    _analysis_cache_save(key, cuts)   # 空结果也缓存：确属「无切点」的视频不必反复扫
+    return cuts
+
+
+def _cached_frame_signals(video_path, fps_s=4.0, progress=None):
+    """帧信号（带磁盘缓存）：缓存 _analyze_video_frames 的信号 dict。
+    键用「实际生效的 fps」（长视频会被 _adaptive_fps 降帧），避免键名与缓存内容不一致。"""
+    fp = _file_fp(video_path)
+    if not fp:
+        return _analyze_video_frames(video_path, fps_s=fps_s, progress=progress)
+    fps_eff = _adaptive_fps(probe_audio_len(video_path) or 0.0, fps_s)
+    key = f'frames_v{ANALYSIS_VERSION}_fps{fps_eff:g}_{fp}'
+    hit = _analysis_cache_load(key)
+    if isinstance(hit, dict) and hit.get('times'):
+        return hit
+    an = _analyze_video_frames(video_path, fps_s=fps_eff, progress=progress)
+    if an and an.get('times'):
+        _analysis_cache_save(key, an)
+    return an
+
+
+# ---------------------------------------------------------------------------
 # 🎯 智能强卡点引擎：场景切换/动作停顿帧 ↔ 音乐大鼓点 匹对
 # 全部本地计算（ffmpeg scene 检测 + librosa 强拍检测 + numpy 帧差），不花 API 钱
 # ---------------------------------------------------------------------------
-def detect_scene_cuts(video_path, threshold=0.30):
-    """用 ffmpeg scene 滤镜检测视频场景切换点，返回切点秒列表（升序）。"""
+def detect_scene_cuts(video_path, threshold=0.30, progress=None):
+    """用 ffmpeg scene 滤镜检测视频场景切换点，返回切点秒列表（升序）。
+    progress（可选 dict）：场景解码阶段按 time= 统计平滑推进 pct（5→24）。"""
     import re
-    rc, out, err = ffmpeg_run(['-hide_banner', '-nostats', '-i', video_path,
+    vdur = probe_audio_len(video_path) or 0.0
+
+    def on_progress(sec):
+        if progress and vdur > 0:
+            progress['phase'] = '检测场景切换（全片解码）'
+            progress['pct'] = min(24, 5 + int(sec * 19 / vdur))
+
+    rc, out, err = ffmpeg_run(['-hide_banner', '-i', video_path,
                                '-vf', f"select='gt(scene,{threshold})',showinfo",
-                               '-an', '-f', 'null', '-'])
+                               '-an', '-f', 'null', '-'], on_progress=on_progress)
     cuts = []
     for m in re.finditer(r'pts_time:([0-9.]+)', err.decode('utf-8', 'ignore')):
         t = float(m.group(1))
@@ -2134,21 +2896,61 @@ def detect_scene_cuts(video_path, threshold=0.30):
     return cuts
 
 
-def _analyze_video_frames(video_path, fps_s=4.0):
+# ---------------------------------------------------------------------------
+# 长视频抽帧保护：总帧数封顶 + 分析帧长边降采样。
+# 依据：下游阈值全是分位数/IQR 相对阈值(_detect_motion_from_frames/_detect_visual_from_frames)，
+# 分辨率缩放不影响检测；切点最小间隔 min_gap 0.5~0.6s，fps≥2 的时间粒度足够。
+# ---------------------------------------------------------------------------
+_ANALYZE_MAX_SIDE = 640     # 分析帧长边上限（1080p 一帧 ~6MB → 640p ~0.7MB，管道 I/O 大减）
+_ANALYZE_MAX_FRAMES = 1800  # 单次分析总帧数上限，超出按视频时长自适应降 fps
+
+
+def _scaled_dims(w, h, max_side=_ANALYZE_MAX_SIDE):
+    """把分析帧按长边等比压到 max_side 以内（宽高取偶），已达标则原样返回。"""
+    w, h = int(w), int(h)
+    m = max(w, h)
+    if m <= max_side or m <= 0:
+        return w, h
+    f = max_side / float(m)
+    w2 = max(2, int(w * f) // 2 * 2)
+    h2 = max(2, int(h * f) // 2 * 2)
+    return w2, h2
+
+
+def _adaptive_fps(duration_s, fps_s=4.0, max_frames=_ANALYZE_MAX_FRAMES):
+    """长视频自适应降 fps：总帧数 ≤ max_frames 封顶（下限 0.5——1 小时视频恰为 1800 帧；
+    0.5s 粒度对切点候选足够，精确切点由独立的场景检测全片解码承担）。
+    短视频（≤max_frames/fps_s 秒）与未知时长不受影响，fps 原样透传。"""
+    if not duration_s or duration_s <= 0:
+        return fps_s
+    return round(min(float(fps_s), max(0.5, max_frames / float(duration_s))), 3)
+
+
+def _analyze_video_frames(video_path, fps_s=4.0, progress=None):
     """流式抽帧，一次管道同时算 4 类信号：
        motion(均值帧差) / frac(像素变化比例,更灵敏) / hist(色相直方图突变) / bright(亮度)。
-    返回 dict：{times, motion, frac, hist, bright}（等长，首帧 motion/frac/hist 为 0）。"""
+    返回 dict：{times, motion, frac, hist, bright}（等长，首帧 motion/frac/hist 为 0）。
+    长视频保护：复用同一次探测的 stderr 顺带解析时长，自动降 fps 封顶总帧数，
+    并把分析帧长边压到 _ANALYZE_MAX_SIDE（不加参数、不多跑一次 ffmpeg）。"""
     import subprocess as _sp
     import numpy as np
     import re
     exe = ffmpeg_exe()
     rc, out, err = ffmpeg_run(['-i', video_path])
-    m = re.search(r'(\d{2,4})x(\d{2,4})', err.decode('utf-8', 'ignore'))
+    err_text = err.decode('utf-8', 'ignore')
+    m = re.search(r'(\d{2,4})x(\d{2,4})', err_text)
     if not m:
         return None
-    w, h = int(m.group(1)), int(m.group(2))
-    fb = w * h * 3  # rgb24
-    proc = _sp.Popen([exe, '-hide_banner', '-i', video_path, '-vf', f'fps={fps_s}',
+    md = re.search(r'Duration:\s*(\d+):(\d{2}):(\d+(?:\.\d+)?)', err_text)
+    vdur = (int(md.group(1)) * 3600 + int(md.group(2)) * 60 + float(md.group(3))) if md else 0.0
+    fps_s = _adaptive_fps(vdur, fps_s)
+    w, h = _scaled_dims(int(m.group(1)), int(m.group(2)))
+    expected = max(1, int(vdur * fps_s))
+    fb = w * h * 3  # rgb24（降采样后）
+    if progress:
+        progress['phase'] = '检测动作/镜头切换（逐帧分析）'
+        progress['pct'] = 25
+    proc = _sp.Popen([exe, '-hide_banner', '-i', video_path, '-vf', f'fps={fps_s},scale={w}:{h}',
                       '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-vcodec', 'rawvideo', '-'],
                      stdout=_sp.PIPE, stderr=_sp.DEVNULL)
     times, motion, frac, hist, bright = [], [], [], [], []
@@ -2184,6 +2986,8 @@ def _analyze_video_frames(video_path, fps_s=4.0):
             bright.append(float(gray.mean()))
             times.append(t)
             t += 1.0 / fps_s
+            if progress and len(times) % 20 == 0:   # 每 20 帧推进一次，长视频不再长期停在固定百分比
+                progress['pct'] = min(44, 25 + int(len(times) * 19 / expected))
     finally:
         try:
             proc.kill()
@@ -2266,60 +3070,67 @@ def detect_visual_cues(video_path, fps_s=4.0, strength='standard'):
     return _detect_visual_from_frames(_analyze_video_frames(video_path, fps_s), strength)
 
 
+def _music_onset_peaks(music_path, delta=0.18, wait=0.25, sr=22050, hop=512):
+    """librosa onset 峰值检测公共层：「智能强卡点」与「节拍同步」两引擎共用同一套
+    加载+onset 包络+峰值挑选，避免两份逐行重复的 librosa 代码各自漂移。
+    返回 (峰值秒列表, 峰值onset强度列表, 音乐总时长)；librosa 不可用/失败返回 ([], [], 0.0)。
+    注意：librosa peak_pick 的 wait 单位是「帧」不是秒（hop=512@22050Hz ≈ 23ms/帧）。"""
+    try:
+        import librosa
+    except Exception:
+        return [], [], 0.0
+    try:
+        y, sr = librosa.load(music_path, sr=sr, mono=True)
+        if len(y) < sr:
+            return [], [], 0.0
+        T = float(len(y)) / sr
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+        times = librosa.times_like(onset_env, sr=sr, hop_length=hop)
+        peaks = librosa.util.peak_pick(onset_env, pre_max=8, post_max=8, pre_avg=8,
+                                       post_avg=8, delta=delta, wait=wait)
+        pts = [float(times[p]) for p in peaks]
+        vals = [float(onset_env[p]) for p in peaks]
+        return pts, vals, T
+    except Exception:
+        return [], [], 0.0
+
+
 def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
     """检测音乐"大鼓点"（强 onset 峰值）。返回(强拍秒列表升序, 每秒拍数估计)。
     强拍用「时间窗分桶」挑选而非全局最强 top_k：否则最强 onset 会集中在音乐前段，
     视频后段没有强拍可吸附，导致卡点全部落在片头、后半段完全踩不上鼓点。"""
-    try:
-        import librosa
-    except Exception:
+    pts, vals, T = _music_onset_peaks(music_path, delta=0.18, wait=min_sep)
+    if not pts:
         return [], None
-    try:
-        y, sr = librosa.load(music_path, sr=22050, mono=True)
-        if len(y) < sr:
-            return [], None
-        T = float(len(y)) / sr
-        hop = 512
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-        times = librosa.times_like(onset_env, sr=sr, hop_length=hop)
-        # peaks
-        peaks = librosa.util.peak_pick(onset_env, pre_max=8, post_max=8, pre_avg=8,
-                                       post_avg=8, delta=0.18, wait=min_sep)
-        if len(peaks) == 0:
-            return [], None
-        pts = [float(times[p]) for p in peaks]
-        vals = [float(onset_env[p]) for p in peaks]
-        # 时间窗分桶：把整段音乐均分 top_k 个窗，每窗取局部最强 onset → 强拍均匀覆盖全曲
-        if top_k and len(pts) > top_k:
-            picked = []
-            seen = set()
-            win = T / top_k
-            for k in range(top_k):
-                w0, w1 = k * win, (k + 1) * win
-                best_i, best_v = -1, -1.0
-                for i in range(len(pts)):
-                    if pts[i] < w0 or pts[i] >= w1:
-                        continue
-                    if vals[i] > best_v:
-                        best_v, best_i = vals[i], i
-                if best_i < 0:
-                    # 空窗（该段音乐平缓无 onset）：不强凑，交给相邻窗
+    # 时间窗分桶：把整段音乐均分 top_k 个窗，每窗取局部最强 onset → 强拍均匀覆盖全曲
+    if top_k and len(pts) > top_k:
+        picked = []
+        seen = set()
+        win = T / top_k
+        for k in range(top_k):
+            w0, w1 = k * win, (k + 1) * win
+            best_i, best_v = -1, -1.0
+            for i in range(len(pts)):
+                if pts[i] < w0 or pts[i] >= w1:
                     continue
-                if pts[best_i] in seen:
-                    continue
-                picked.append(pts[best_i])
-                seen.add(pts[best_i])
-            if picked:
-                pts = sorted(picked)
-        # estimate beats-per-second from inter-peak median
-        gaps = [pts[i+1] - pts[i] for i in range(len(pts) - 1) if pts[i+1] - pts[i] > 0.2]
-        bps = None
-        if gaps:
-            import numpy as np
-            bps = 1.0 / float(np.median(gaps))
-        return pts, bps
-    except Exception:
-        return [], None
+                if vals[i] > best_v:
+                    best_v, best_i = vals[i], i
+            if best_i < 0:
+                # 空窗（该段音乐平缓无 onset）：不强凑，交给相邻窗
+                continue
+            if pts[best_i] in seen:
+                continue
+            picked.append(pts[best_i])
+            seen.add(pts[best_i])
+        if picked:
+            pts = sorted(picked)
+    # estimate beats-per-second from inter-peak median
+    gaps = [pts[i+1] - pts[i] for i in range(len(pts) - 1) if pts[i+1] - pts[i] > 0.2]
+    bps = None
+    if gaps:
+        import numpy as np
+        bps = 1.0 / float(np.median(gaps))
+    return pts, bps
 
 
 def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=None, max_seg=9.0, tol=0.35,
@@ -2416,22 +3227,24 @@ def _analyze_beatcut(video_path, music_path, params, progress=None):
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
-    up('检测场景切换', 5)
     strength = params.get('strength', 'standard')
-    scene_cuts = detect_scene_cuts(video_path, threshold=float(params.get('sceneTh', 0.30)))
-    up('检测动作/镜头切换', 10)
-    # 一次抽帧同时算动作+视觉线索（避免两次全片解码）
-    frames = _analyze_video_frames(video_path, fps_s=4.0)
-    motion_cuts = _detect_motion_from_frames(frames, strength=strength)
-    visual_cuts = _detect_visual_from_frames(frames, strength=strength)
-    up('分析音乐大鼓点', 22)
-    strong_beats, bps = detect_strong_beats(music_path, top_k=int(params.get('maxCuts', 30)))
     vdur = probe_audio_len(video_path) or 0.0
     if vdur <= 0:
         raise RuntimeError('无法读取视频时长')
+    # maxCuts 服务端钳制 3~96：API/指令路径可绕过前端滑条范围，极端值会生成上百段拖垮渲染
+    max_cuts = max(3, min(96, int(params.get('maxCuts', 30) or 30)))
+    up('检测场景切换', 5)
+    scene_cuts = _cached_scene_cuts(video_path, threshold=float(params.get('sceneTh', 0.30)), progress=progress)
+    up('检测动作/镜头切换', 25)
+    # 一次抽帧同时算动作+视觉线索（避免两次全片解码）；结果带磁盘缓存，重跑方案秒级返回
+    frames = _cached_frame_signals(video_path, 4.0, progress=progress)
+    motion_cuts = _detect_motion_from_frames(frames, strength=strength)
+    visual_cuts = _detect_visual_from_frames(frames, strength=strength)
+    up('分析音乐大鼓点', 45)
+    strong_beats, bps = detect_strong_beats(music_path, top_k=max_cuts)
     timeline = plan_beat_cuts(scene_cuts, motion_cuts, strong_beats, vdur,
                               visual_cuts=visual_cuts, strength=strength,
-                              max_cuts=int(params.get('maxCuts', 30)) or None)
+                              max_cuts=max_cuts)
     diag = {
         'scene_cuts': scene_cuts,
         'motion_cuts': motion_cuts,
@@ -2444,14 +3257,25 @@ def _analyze_beatcut(video_path, music_path, params, progress=None):
     return timeline, diag, vdur
 
 
-def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=None, diag=None):
-    """卡点渲染阶段：按给定切点时间线切片→拼接(硬切/转场)→配乐(纯音乐/保留原声)。返回 final 路径。"""
+def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=None, diag=None, pct_base=30):
+    """卡点渲染阶段：按给定切点时间线切片→拼接(硬切/转场)→配乐(纯音乐/保留原声)。返回 final 路径。
+    pct_base：进度起点——直连生成时分析阶段已占 0~50，渲染从 50 起（避免进度回跳）；
+    人机协同确认渲染没有分析阶段，维持默认 30。"""
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
-    up('按鼓点切片', 30)
+    span0, span1 = pct_base, 95
+
+    def rp(frac):
+        return int(span0 + (span1 - span0) * frac)
+
+    nseg = max(1, len(timeline) - 1)
+    up('按鼓点切片', rp(0.0))
     segs = []
     for i in range(len(timeline) - 1):
+        if _aborted():
+            raise AbortError('用户取消了任务')
+        up('按鼓点切片 %d/%d' % (i + 1, nseg), rp((i + 1) / nseg * 0.6))
         seg = os.path.join(run_dir, f'bc{i}.mp4')
         segs.append(seg)
         seg_dur = timeline[i + 1] - timeline[i]
@@ -2552,31 +3376,16 @@ def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=
 def beat_cut_video(video_path, music_path, run_dir, params, progress=None):
     """智能强卡点主流程：分析→对齐→硬切拼接→配乐。返回 final 路径与诊断信息。"""
     timeline, diag, vdur = _analyze_beatcut(video_path, music_path, params, progress)
-    final = _render_beatcut(video_path, music_path, timeline, params, run_dir, progress, diag)
+    final = _render_beatcut(video_path, music_path, timeline, params, run_dir, progress, diag, pct_base=50)
     return final, diag
 def detect_beats(audio_path, sensitivity=0.5):
     """检测音乐节拍点(秒，升序)。sensitivity∈(0,1) 越高越灵敏；检测失败返回 []。"""
-    try:
-        import librosa
-    except Exception:
+    # 灵敏度越高 → delta 越小 → 检出越多拍点；wait=15 帧约 0.35s 最小拍间隔
+    delta = max(0.02, 0.30 - 0.25 * float(sensitivity))
+    pts, _vals, T = _music_onset_peaks(audio_path, delta=delta, wait=15)
+    if not pts:
         return []
-    try:
-        y, sr = librosa.load(audio_path, sr=22050, mono=True)
-        if len(y) < sr:
-            return []
-        hop = 512
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-        times = librosa.times_like(onset_env, sr=sr, hop_length=hop)
-        # 灵敏度越高 → delta 越小 → 检出越多拍点
-        delta = max(0.02, 0.30 - 0.25 * float(sensitivity))
-        peaks = librosa.util.peak_pick(onset_env, pre_max=8, post_max=8, pre_avg=8,
-                                       post_avg=8, delta=delta, wait=15)
-        pts = [float(times[p]) for p in peaks]
-        T = float(len(y)) / sr
-        pts = [t for t in pts if t < T - 0.05]
-        return pts
-    except Exception:
-        return []
+    return [t for t in pts if t < T - 0.05]
 
 
 def generate_beat_sync_video(video_path, audio_path, output_path, beat_sensitivity=0.5,
@@ -2793,8 +3602,11 @@ def asr_segments(video_path):
 
 
 def _segment_timeline(video_path, max_seg=25.0):
-    """解说分段：场景切分优先，无切点则按 max_seg 均分。返回 [(start,end)]。"""
-    sc = detect_scene_cuts(video_path, threshold=0.25)
+    """解说分段：场景切分优先，无切点则按 max_seg 均分。返回 [(start,end)]。
+    max_seg 服务端钳制到 4~600 秒：API/指令路径可绕过前端 min=8 的限制，
+    极端值（如 0.5s）会切出成百上千个碎段，直接拖垮解说稿生成与配音。"""
+    max_seg = min(600.0, max(4.0, float(max_seg or 25.0)))
+    sc = _cached_scene_cuts(video_path, threshold=0.25)   # 与卡点共享场景切点缓存
     vdur = probe_audio_len(video_path) or 0.0
     if vdur <= 0:
         return []
@@ -2857,7 +3669,6 @@ def generate_narration(segs, asr, params, frames=None):
     """返回 (narr_list, used_local)。
     离线(省流)优先级：本地 VLM(看图+台词+梗概→真解说) > 本地文本模型(台词改写) > 真实台词/模板。
     智能(云端)：有视觉端点则附画面描述，否则纯台词交给 DeepSeek 写解说。"""
-    economy = bool(params.get('economy', True))
     frames = frames or {}
     templates = [
         '镜头缓缓推进，故事就此展开。',
@@ -2869,30 +3680,37 @@ def generate_narration(segs, asr, params, frames=None):
         '真相逼近，谜底即将揭晓。',
         '余波未平，故事仍在继续。',
     ]
-    # 每段聚合台词
-    per_seg = []
-    for (s0, s1) in segs:
-        txt = ' '.join(x['text'] for x in asr if x['start'] >= s0 - 0.5 and x['end'] <= s1 + 0.5)
-        per_seg.append((s0, s1, txt.strip()))
-    if economy or not ai_enabled('chat'):
-        # 离线优先：① 本地 VLM 真解说（看画面，从「复读」变「真解说」）
-        if vlm_enabled():
-            try:
-                return local_vlm_narrate(per_seg, frames, params)
-            except Exception:
-                pass
+    # 每段聚合台词：按台词中点归到唯一镜头段（bisect 二分）。
+    # 旧条件「整句须落在段内」会把骑跨段边界的台词两段都分不到而丢失，模型拿到的剧情信息变少。
+    import bisect as _bisect
+    seg_starts = [s0 for (s0, _s1) in segs]
+    seg_txt = ['' for _ in segs]
+    for x in asr:
+        mid = (x['start'] + x['end']) / 2.0
+        j = _bisect.bisect_right(seg_starts, mid) - 1
+        j = max(0, min(len(segs) - 1, j))
+        seg_txt[j] += (' ' if seg_txt[j] else '') + x['text']
+    per_seg = [(s0, s1, t.strip()) for (s0, s1), t in zip(segs, seg_txt)]
+    # 自动选路（不再区分省流/智能）：① 本地模型（免费）优先 ② 配置了云端 key 才用云端 ③ 台词/模板兜底
+    if vlm_enabled():
+        # ① 本地 VLM 真解说（看画面，从「复读」变「真解说」）
+        try:
+            return local_vlm_narrate(per_seg, frames, params)
+        except Exception:
+            pass
+    if local_llm_enabled():
         # ② 本地文本模型改写（无画面理解）
-        if local_llm_enabled():
-            try:
-                return _local_narrate(per_seg, params)
-            except Exception:
-                pass
-        # ③ 真实台词 / 模板（最差，不假装理解）
+        try:
+            return _local_narrate(per_seg, params)
+        except Exception:
+            pass
+    if not ai_enabled('chat'):
+        # ③ 真实台词 / 模板兜底（未部署任何模型时保底出片）
         out = []
         for i, (s0, s1, txt) in enumerate(per_seg):
             out.append(txt[:40] if txt else templates[i % len(templates)])
         return out, False
-    # 智能模式：云端 LLM 生成「连贯剧情解说稿」（先整体理解剧情，再分段输出，而非逐段描述画面）
+    # ④ 云端 LLM 生成「连贯剧情解说稿」（在 AI 配置里填了 key = 明确同意使用；先整体理解剧情，再分段输出）
     try:
         import urllib.request, json as _json
         cfg = chat_cfg()
@@ -2953,13 +3771,17 @@ def generate_narration(segs, asr, params, frames=None):
         return [templates[i % len(templates)] for i in range(len(per_seg))], False
 
 
-def _merge_segs(segs, max_keep=6):
-    """合并过碎/过多镜头段到最多 max_keep 个「剧情环节」。
+def _merge_segs(segs, max_keep=None):
+    """合并过碎/过多镜头段到「剧情环节」。
     影视片段常被场景切分切成很多 4~8 秒的短镜头，逐段解说必然重复；
-    按总时长均分成少量环节后，每环节一句解说、连贯推进，配合字幕/配音更接近真人电影解说。"""
+    按总时长均分成少量环节后，每环节一句解说、连贯推进，配合字幕/配音更接近真人电影解说。
+    max_keep 缺省按时长自适应（约每 10 秒一个环节，4~14 个）：固定 ≤6 会让长视频
+    一行解说扛 20~40 秒画面——字幕密度不够，且内容晚于段首出现，观感像"时间轴错位"。"""
     if not segs:
         return segs
     n = len(segs)
+    if max_keep is None:
+        max_keep = max(4, min(14, int(segs[-1][1] / 10)))
     if n <= max_keep:
         return segs
     vdur = segs[-1][1]
@@ -2980,9 +3802,10 @@ def _merge_segs(segs, max_keep=6):
     return merged
 
 
-def _analyze_narrate(video_path, params, run_dir, progress=None):
-    """解说分析阶段：分段→ASR台词→解说稿→(可选)关键帧。返回 (segs, narr, asr, diag, mode)。
-    拆出供「人机协同」复用：用户可在预览界面编辑每段解说词/删除段后再渲染。"""
+def _narrate_analysis(video_path, params, run_dir, progress=None):
+    """解说分析公共层：分段→合并环节→ASR台词→(可选)关键帧→解说稿。
+    「人机协同分析(/api/plan)」与「直接生成解说(narrate_video)」共用此流程，
+    避免两份逐行重复的实现各自漂移。返回 (segs, narr, asr, frames, mode)。"""
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
@@ -2990,11 +3813,11 @@ def _analyze_narrate(video_path, params, run_dir, progress=None):
     segs = _segment_timeline(video_path, max_seg=float(params.get('maxSeg', 25)))
     if not segs:
         raise RuntimeError('无法分析视频时长')
-    # 合并过碎镜头段为「剧情环节」（≤6 个），避免逐段解说重复、更贴近真人电影解说
-    segs = _merge_segs(segs, max_keep=6)
+    # 合并过碎镜头段为「剧情环节」（环节数按时长自适应，约 10s/环节），避免逐段解说重复、更贴近真人电影解说
+    segs = _merge_segs(segs)
     up('识别台词(本地Whisper)', 10)
     asr = asr_segments(video_path)
-    need_frames = vlm_enabled() or ((not params.get('economy', True)) and ai_enabled('vision'))
+    need_frames = vlm_enabled() or ai_enabled('vision')   # 任一视觉能力可用就抽帧（自动选路）
     frames = {}
     if need_frames:
         up('抽取关键帧(供视觉理解)', 16)
@@ -3002,10 +3825,17 @@ def _analyze_narrate(video_path, params, run_dir, progress=None):
     up('生成解说稿', 20)
     narr, used_local = generate_narration(segs, asr, params, frames=frames)
     mode = None
-    if vlm_enabled() and frames and progress:
+    if vlm_enabled() and frames:
         mode = 'vlm'
-    elif used_local and progress:
+    elif used_local:
         mode = 'local'
+    return segs, narr, asr, frames, mode
+
+
+def _analyze_narrate(video_path, params, run_dir, progress=None):
+    """解说分析阶段：分段→ASR台词→解说稿→(可选)关键帧。返回 (segs, narr, asr, diag, mode)。
+    拆出供「人机协同」复用：用户可在预览界面编辑每段解说词/删除段后再渲染。"""
+    segs, narr, asr, frames, mode = _narrate_analysis(video_path, params, run_dir, progress)
     diag = {'segments': len(segs), 'asr_lines': len(asr), 'narration': narr}
     return segs, narr, asr, diag, mode
 
@@ -3017,22 +3847,32 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
             progress['phase'] = ph; progress['pct'] = pct
     up('逐段配音', 30)
     tts_paths = []
-    use_mimo = (not params.get('economy', True)) and _tts_available()
+    voice_spans = {}   # seg_idx -> (start, end)：字幕窗口跟随配音（有声才显字、念完即收）
+    use_mimo = _tts_available()   # 自动：配置了云端 TTS key 即视为同意使用，否则免费 SAPI
     for i, txt in enumerate(narr):
+        if _aborted():
+            raise AbortError('用户取消了任务')
         if not (txt and txt.strip()):
             continue
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
+        clip = None
         if use_mimo:
             np_ = os.path.join(run_dir, f'narr{i}.mp3')
             if ai_tts(txt, np_):
-                tts_paths.append((np_, seg_span[0], seg_span[1]))
-                continue
-        wv = os.path.join(run_dir, f'narr{i}.wav')
-        if sapi_tts(txt, wv):
-            tts_paths.append((wv, seg_span[0], seg_span[1]))
+                clip = np_
+        if clip is None:
+            wv = os.path.join(run_dir, f'narr{i}.wav')
+            if sapi_tts(txt, wv):
+                clip = wv
+        if clip is not None:
+            tts_paths.append((clip, seg_span[0], seg_span[1]))
+            # 字幕只在「这句话正在被念」时显示：一行字挂满整个镜头段会让后段才发生的
+            # 画面内容提前出现在段首，观感像字幕与时间轴错位
+            v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
+            voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
     up('混音+烧字幕+配乐', 60)
     final = _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
-                                     music_path=music_path)
+                                     music_path=music_path, voice_spans=voice_spans)
     if progress:
         progress['done'] = True
         progress['pct'] = 100
@@ -3045,28 +3885,9 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
 def narrate_video(video_path, params, run_dir, progress=None, music_path=None):
     """电影解说主流程：分段→ASR→解说稿→SAPI/MiMo配音→混音→字幕→成片。
     music_path: 可选背景音乐，混入成品（按 Phase 2「配乐」要求）。"""
-    def up(ph, pct):
-        if progress:
-            progress['phase'] = ph; progress['pct'] = pct
-    up('场景分段', 4)
-    segs = _segment_timeline(video_path, max_seg=float(params.get('maxSeg', 25)))
-    if not segs:
-        raise RuntimeError('无法分析视频时长')
-    # 合并过碎镜头段为「剧情环节」（≤6 个），避免逐段解说重复、更贴近真人电影解说
-    segs = _merge_segs(segs, max_keep=6)
-    up('识别台词(本地Whisper)', 10)
-    asr = asr_segments(video_path)
-    need_frames = vlm_enabled() or ((not params.get('economy', True)) and ai_enabled('vision'))
-    frames = {}
-    if need_frames:
-        up('抽取关键帧(供视觉理解)', 16)
-        frames = extract_segment_frames(video_path, segs, os.path.join(run_dir, 'frames'))
-    up('生成解说稿', 20)
-    narr, used_local = generate_narration(segs, asr, params, frames=frames)
-    if vlm_enabled() and frames and progress:
-        progress['mode'] = 'vlm'
-    elif used_local and progress:
-        progress['mode'] = 'local'
+    segs, narr, asr, frames, mode = _narrate_analysis(video_path, params, run_dir, progress)
+    if progress and mode:
+        progress['mode'] = mode
     final, vc = _render_narrate(video_path, segs, narr, params, run_dir, progress=progress,
                                 music_path=music_path, mode=progress.get('mode') if progress else None)
     diag = {'segments': len(segs), 'asr_lines': len(asr), 'voice_clips': vc,
@@ -3092,21 +3913,33 @@ def _clean_caption(text):
     return t
 
 
-def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None):
+def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None,
+                             voice_spans=None):
     """把解说配音按时间轴混入原视频，烧录解说字幕，可选叠加背景音乐，输出 final.mp4。
     - narr[i] 对应 segs[i]（镜头段时间轴），作为该段字幕与配音文案。
     - tts_paths: [(audio_path, start_sec)]，按各自起始时间对齐到时间轴。
+    - voice_spans: 可选 {seg_idx: (start,end)}，字幕窗口跟随配音（有声才显字、念完即收）；
+      缺省整段显示（兼容旧行为）。
     - music_path: 可选 BGM，循环铺底、低音量。"""
     vdur = probe_audio_len(video_path) or 10.0
-    # 1) 烧字幕：解说词按段显示
+    # 1) 烧字幕：解说词按段显示；有配音时间窗时字随声走
     srt = os.path.join(run_dir, 'narr.srt')
     with open(srt, 'w', encoding='utf-8') as f:
         def ts(sec):
             hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60); ms = int((sec % 1) * 1000)
             return f'{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}'
-        for i, (s0, s1) in enumerate(segs, 1):
-            cap = _clean_caption(narr[i - 1] if i - 1 < len(narr) else '')
-            f.write(f'{i}\n{ts(s0)} --> {ts(s1)}\n{cap}\n\n')
+        seq = 0
+        for i, (s0, s1) in enumerate(segs):
+            cap = _clean_caption(narr[i] if i < len(narr) else '')
+            if not cap:
+                continue
+            w0, w1 = s0, s1
+            vs = (voice_spans or {}).get(i)
+            if vs:
+                w0 = max(s0, vs[0])
+                w1 = min(s1, max(vs[1], w0 + 0.8))   # 至少显示 0.8s，避免一闪而过
+            seq += 1
+            f.write(f'{seq}\n{ts(w0)} --> {ts(w1)}\n{cap}\n\n')
     esc = srt.replace('\\', '/').replace(':', '\\:')
     vsub = os.path.join(run_dir, 'vsub.mp4')
     rc, o, e = ffmpeg_run(['-y', '-i', video_path,
@@ -3464,7 +4297,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         plot = '\n'.join(t for t, _, _ in hits) or ''
     up('LLM 生成解说稿', 14)
     # 省流优先：默认 economy=True（离线切句/模板 0 元），只有显式「真AI」才调用付费 LLM
-    events = llm_movie_script(movie_name, plot, economy=bool(params.get('economy', True)))
+    events = llm_movie_script(movie_name, plot, economy=not ai_enabled('chat'))
     if not events:
         raise RuntimeError('无法生成解说稿（请检查网络，或在指令里粘贴剧情文本）')
     if not video_path:
@@ -3500,21 +4333,28 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     narr = seg_narr
     up('逐段配音', 58)
     tts_paths = []
-    use_mimo = (not bool(params.get('economy', True))) and _tts_available()
+    voice_spans = {}   # 字幕窗口跟随配音（与短片解说一致：有声才显字、念完即收）
+    use_mimo = _tts_available()   # 自动：配置了云端 TTS key 即视为同意使用
     for i, txt in enumerate(narr):
         if not txt.strip():
             continue
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
+        clip = None
         if use_mimo:
             np_ = os.path.join(run_dir, f'narr{i}.mp3')
             if ai_tts(txt, np_):
-                tts_paths.append((np_, seg_span[0], seg_span[1])); continue
-        wv = os.path.join(run_dir, f'narr{i}.wav')
-        if sapi_tts(txt, wv):
-            tts_paths.append((wv, seg_span[0], seg_span[1]))
+                clip = np_
+        if clip is None:
+            wv = os.path.join(run_dir, f'narr{i}.wav')
+            if sapi_tts(txt, wv):
+                clip = wv
+        if clip is not None:
+            tts_paths.append((clip, seg_span[0], seg_span[1]))
+            v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
+            voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
     up('混音+烧字幕+配乐', 70)
     final = _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
-                                     music_path=music_path)
+                                     music_path=music_path, voice_spans=voice_spans)
     if progress:
         progress['done'] = True; progress['pct'] = 100
         progress['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/') if final else ''
@@ -3597,18 +4437,27 @@ def dispatch_build(req, prog):
         work = []
         for idx, it in enumerate(items):
             if it['kind'] == 'image':
-                data = base64.b64decode(it.get('data', ''))
                 ext = os.path.splitext(it.get('name', 'x.jpg'))[1] or '.jpg'
                 fp = os.path.join(WORKDIR, f'up_{len(work)}_{idx}_img{ext}')
                 os.makedirs(WORKDIR, exist_ok=True)
-                open(fp, 'wb').write(data)
-                work.append({'kind': 'image', 'src': fp, 'dur': it.get('dur', 3), 'motion': len(work) % 4})
+                if it.get('mlib'):
+                    msrc = _material_path(it.get('mlib'))
+                    if not msrc:
+                        raise RuntimeError('素材库中找不到 %s，请刷新素材库' % it.get('mlib'))
+                    shutil.copy2(msrc, fp)
+                else:
+                    data = base64.b64decode(it.get('data', ''))
+                    open(fp, 'wb').write(data)
+                # name 保留用户原始文件名：省流文案直接对用户展示，不能露出 up_N 内部名
+                work.append({'kind': 'image', 'src': fp, 'name': it.get('name', ''), 'dur': it.get('dur', 3), 'motion': len(work) % 4})
             else:
-                data = base64.b64decode(it.get('data', ''))
+                # 视频素材两种形态：base64（小文件）或分片上传 upload_id（大文件，直接 move 免二次拷贝）
                 fp = os.path.join(WORKDIR, f'up_{len(work)}_{idx}_vid.mp4')
                 os.makedirs(WORKDIR, exist_ok=True)
-                open(fp, 'wb').write(data)
-                work.append({'kind': 'video', 'src': fp, 'dur': it.get('dur', 3)})
+                src = _resolve_upload_video(it, WORKDIR, f'up_{len(work)}_{idx}_vid')
+                if src is None:
+                    raise RuntimeError('素材 %s 缺少数据（data/upload_id），请重新上传' % (it.get('name') or idx))
+                work.append({'kind': 'video', 'src': src, 'name': it.get('name', ''), 'dur': it.get('dur', 3)})
         if not work:
             defaults = ensure_default_images()
             single = params.get('singleDur', 3) or 3
@@ -3618,11 +4467,11 @@ def dispatch_build(req, prog):
         if params.get('ai_captions') and work:
             prog['phase'] = '按画面生成文案'
             prog['pct'] = 4
-            economy = bool(params.get('economy'))
+            economy = not ai_enabled('vision')   # 自动：配置了云端视觉 key 用 AI 文案，否则离线模板
             captions = []
             for w_ in work:
                 if economy:
-                    cap = offline_caption(w_.get('src', ''), 0, len(work))
+                    cap = offline_caption(w_.get('name') or w_.get('src', ''), 0, len(work))
                 else:
                     cap = ai_describe_image(w_['src'], w_.get('src', ''))
                 captions.append(cap)
@@ -3696,13 +4545,12 @@ def _analyze_plan_job(req, prog):
         run_dir = prog['run_dir']
         ptype = req.get('type') or 'beatcut'
         params = req.get('params') or {}
-        vp = None
+        # 视频两种形态：base64（小文件）或分片上传/素材库引用（长视频走这两者——此前漏接导致长视频分析预览报错）
         vobj = req.get('video') or {}
-        if vobj.get('data'):
-            vdata = base64.b64decode(vobj.get('data', ''))
-            ext = os.path.splitext(vobj.get('name', 'x.mp4'))[1] or '.mp4'
-            vp = os.path.join(run_dir, 'src_video' + ext)
-            open(vp, 'wb').write(vdata)
+        vp = _resolve_upload_video(vobj, run_dir, 'src_video')
+        had_video = bool(vobj.get('data') or vobj.get('upload_id') or vobj.get('mlib'))
+        if had_video and not vp:
+            raise RuntimeError('视频读取失败（上传会话可能已过期，请重新分析）')
         if ptype == 'beatcut':
             if not vp:
                 raise RuntimeError('请先上传视频')
@@ -3725,6 +4573,10 @@ def _analyze_plan_job(req, prog):
         else:
             raise RuntimeError('未知分析类型: ' + str(ptype))
         PLANS[prog['runid']] = plan
+        # 用户可能分析后不确认：只保留最近 30 个方案，防止长驻进程内存增长
+        if len(PLANS) > 30:
+            for k in list(PLANS.keys())[:-30]:
+                PLANS.pop(k, None)
         prog['plan_ready'] = True
         prog['plan'] = _plan_to_ui(plan, run_dir)
         prog['phase'] = '规划完成，请在下方微调后点击「按我的调整合成」'
@@ -3795,6 +4647,7 @@ def _render_plan_job(req, prog):
         prog['diag']['segments'] = len(tl2) - 1 if plan['type'] == 'beatcut' else len(segs)
         if plan['type'] == 'narrate':
             prog['diag']['voice_clips'] = voice_clips
+        _record_history(req, prog, 'plan-' + plan['type'])
         PLANS.pop(src_runid, None)
     except Exception as e:
         import traceback
@@ -3808,9 +4661,9 @@ def dispatch_beatcut(req, prog):
     try:
         run_dir = prog.get('run_dir') or os.path.join(OUTDIR, time.strftime('%Y%m%d-%H%M%S'))
         os.makedirs(run_dir, exist_ok=True)
-        vdata = base64.b64decode(req.get('video', {}).get('data', ''))
-        vp = os.path.join(run_dir, 'src_video' + (os.path.splitext(req.get('video', {}).get('name', 'x.mp4'))[1] or '.mp4'))
-        open(vp, 'wb').write(vdata)
+        vp = _resolve_upload_video(req.get('video'), run_dir, 'src_video')
+        if not vp:
+            raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
         mp = _resolve_music(req.get('music'))
         if not mp:
             raise RuntimeError('请先选择背景音乐')
@@ -3832,6 +4685,7 @@ def dispatch_beatcut(req, prog):
                 'warning': ret['warning'],
             }
             prog['mode'] = 'free'  # 节拍同步为离线模板，无需 LLM
+            _record_history(req, prog, 'beatsync')
         else:
             final, diag = beat_cut_video(vp, mp, run_dir, params, prog)
             prog['done'] = True
@@ -3839,6 +4693,7 @@ def dispatch_beatcut(req, prog):
             prog['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
             prog['diag'] = diag
             prog['mode'] = 'free'  # 强卡点为离线节拍模板，无需 LLM
+            _record_history(req, prog, 'beatcut')
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -3856,9 +4711,9 @@ def dispatch_narrate(req, prog):
     try:
         run_dir = prog.get('run_dir') or os.path.join(OUTDIR, time.strftime('%Y%m%d-%H%M%S'))
         os.makedirs(run_dir, exist_ok=True)
-        vdata = base64.b64decode(req.get('video', {}).get('data', ''))
-        vp = os.path.join(run_dir, 'src' + (os.path.splitext(req.get('video', {}).get('name', 'x.mp4'))[1] or '.mp4'))
-        open(vp, 'wb').write(vdata)
+        vp = _resolve_upload_video(req.get('video'), run_dir, 'src')
+        if not vp:
+            raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
         music_path = _resolve_music(req.get('music'))
         final, diag = narrate_video(vp, req.get('params', {}), run_dir, prog, music_path=music_path)
         prog['done'] = True
@@ -3866,6 +4721,7 @@ def dispatch_narrate(req, prog):
         prog['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
         prog['diag'] = diag
         prog['mode'] = prog.get('mode') or compute_mode(req.get('params', {}), needs_chat=True)
+        _record_history(req, prog, 'narrate')
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -3883,12 +4739,9 @@ def dispatch_movie(req, prog):
     try:
         run_dir = prog.get('run_dir') or os.path.join(OUTDIR, time.strftime('%Y%m%d-%H%M%S'))
         os.makedirs(run_dir, exist_ok=True)
-        vp = None
-        vobj = req.get('video')
-        if vobj and vobj.get('data'):
-            vdata = base64.b64decode(vobj.get('data', ''))
-            vp = os.path.join(run_dir, 'src' + (os.path.splitext(vobj.get('name', 'x.mp4'))[1] or '.mp4'))
-            open(vp, 'wb').write(vdata)
+        vp = _resolve_upload_video(req.get('video'), run_dir, 'src')
+        if vp is None and req.get('video'):
+            raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
         music_path = _resolve_music(req.get('music'))
         final, diag = narrate_movie(req.get('movie', ''), req.get('plot', ''), vp,
                                     req.get('params', {}), run_dir, prog, music_path=music_path)
@@ -3897,6 +4750,7 @@ def dispatch_movie(req, prog):
         if final:
             prog['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
         prog['diag'] = diag
+        _record_history(req, prog, 'movie')
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -4193,7 +5047,7 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
 
     # 2) TTS narration for each caption (only if TTS configured & succeeded)
     narration_path = None
-    if voice_over and _tts_available() and not params.get('economy'):
+    if voice_over and _tts_available():
         clips = []
         for i, cap in enumerate(captions if N else []):
             if not (cap and cap.strip()):
@@ -4278,30 +5132,52 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def _read_json(self, length):
-        """按 Content-Length 分块读取并解析 JSON 请求体。"""
+    def _read_json(self, length, max_len=300 * 1024 * 1024):
+        """按 Content-Length 分块读取并解析 JSON 请求体。
+        超过 max_len 时也必须把请求体读完（排空）再返回 None——提前关连接的话，
+        客户端还在发送会收到 WinError 10053 连接中断，看不到友好的「请求过大」。
+        用 list 收集 + b''.join 一次拼接：旧写法 raw += chunk 是 O(n²) 拷贝，大文件上传显著变慢。"""
         if length <= 0:
             return {}
-        raw = b''
+        if length > max_len:
+            remaining = length
+            try:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(4 * 1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except Exception:
+                pass
+            return None
+        parts = []
         remaining = length
         while remaining > 0:
             chunk = self.rfile.read(min(1024 * 1024, remaining))
             if not chunk:
                 break
-            raw += chunk
+            parts.append(chunk)
             remaining -= len(chunk)
+        raw = b''.join(parts)
         return json.loads(raw.decode('utf-8'))
 
     def _spawn(self, fn, req):
         """登记一个后台任务并启动线程，返回 runid 供前端轮询。
-        每个任务拥有独立的 run_dir（OUTDIR/runid），产物互不干扰；并把 runid 绑定到
+        每个任务拥有独立的 run_dir（OUTDIR/runid-时间戳），产物互不干扰；并把 runid 绑定到
         任务线程的 TLS，使 ffmpeg_run 能注册进程并响应「取消」。"""
         RUNSEQ[0] += 1
         runid = 'run-%d' % RUNSEQ[0]
-        run_dir = os.path.join(OUTDIR, runid)
+        # 目录名带时间戳：服务重启后 RUNSEQ 归零会复用 run-N 名字，
+        # 否则新任务会写进旧目录覆盖成片，历史记录（⑨记录）也随之指向错误文件
+        run_dir = os.path.join(OUTDIR, '%s-%s' % (runid, time.strftime('%Y%m%d-%H%M%S')))
         os.makedirs(run_dir, exist_ok=True)
         prog = {'phase': '排队', 'pct': 0, 'done': False, 'runid': runid, 'run_dir': run_dir}
         PROGRESS[runid] = prog
+        # 防内存泄漏：PROGRESS 只增不减（diag/解说稿可能不小），长驻进程只保留最近 100 条
+        if len(PROGRESS) > 100:
+            for k in list(PROGRESS.keys())[:-100]:
+                if k not in RUN_PROCS:
+                    PROGRESS.pop(k, None)
 
         def _runner():
             _TLS.runid = runid
@@ -4347,8 +5223,8 @@ class Handler(BaseHTTPRequestHandler):
             name = path[len('/media/'):].split('?')[0]
             # first look in run output dir, then the folder containing built-in assets
             for base in (OUTDIR, HERE):
-                full = os.path.join(base, name)
-                if os.path.isfile(full):
+                full = _safe_join(base, name)
+                if full:
                     ext = os.path.splitext(full)[1].lower()
                     self._send(200, open(full, 'rb').read(), MIME.get(ext, 'application/octet-stream'))
                     return
@@ -4356,8 +5232,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith('/music_lib/'):
             name = path[len('/music_lib/'):].split('?')[0]
-            full = os.path.join(MUSIC_DIR, name)
-            if os.path.isfile(full):
+            full = _safe_join(MUSIC_DIR, name)
+            if full:
                 self._send(200, open(full, 'rb').read(), MIME.get('.mp3', 'audio/mpeg'))
                 return
             self._send(404, b'not found')
@@ -4379,6 +5255,34 @@ class Handler(BaseHTTPRequestHandler):
                            'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/material/list':
+            self._send(200, json.dumps({'ok': True, 'items': material_list()}).encode('utf-8'),
+                       'application/json')
+            return
+        if path.startswith('/material_lib/'):
+            # 中文文件名：URL 里的百分号编码必须解码后再查文件（/media 一直是 ASCII 名所以没暴露过）
+            name = unquote(path[len('/material_lib/'):].split('?')[0])
+            full = _safe_join(MATERIAL_DIR, name)
+            if full:
+                ext = os.path.splitext(full)[1].lower()
+                self._send(200, open(full, 'rb').read(), MIME.get(ext, 'application/octet-stream'))
+                return
+            self._send(404, b'not found')
+            return
+        if path == '/api/bili/search':
+            kw = parse_qs(urlparse(self.path).query).get('kw', [''])[0].strip()
+            if not kw:
+                self._send(200, json.dumps({'ok': False, 'error': '缺少关键词'}).encode('utf-8'), 'application/json')
+                return
+            try:
+                res = bili_search(kw, 8)
+                self._send(200, json.dumps({'ok': True, 'results': res}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/bili/status':
+            self._send(200, json.dumps({'ok': True, **BILI_PULL}).encode('utf-8'), 'application/json')
             return
         if path == '/api/progress':
             runid = parse_qs(urlparse(self.path).query).get('run', [None])[0]
@@ -4470,12 +5374,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/build':
             try:
                 length = int(self.headers.get('Content-Length', 0))
-                if length > 220 * 1024 * 1024:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>220MB)'}).encode('utf-8'), 'application/json')
-                    return
-                req = self._read_json(length)
+                req = self._read_json(length, max_len=220 * 1024 * 1024)
                 if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求体读取失败'}).encode('utf-8'), 'application/json')
+                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>220MB)或读取失败'}).encode('utf-8'), 'application/json')
                     return
                 runid = self._spawn(dispatch_build, req)
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
@@ -4629,15 +5530,182 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
             return
+        if path == '/api/cover':
+            # 封面生成：ts 为空 → 智能选帧（返回全部候选缩略图供换帧）；带 ts → 按当前设置重渲染
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                fp = _safe_join(OUTDIR, data.get('file') or '')
+                if not fp:
+                    raise RuntimeError('视频不存在或不在产物目录内')
+                run_dir = os.path.dirname(fp)
+                rel = lambda p: os.path.relpath(p, OUTDIR).replace('\\', '/')
+                title = str(data.get('title') or '')[:80]
+                sub = str(data.get('sub') or '')[:40]
+                style = max(0, min(2, int(data.get('style') or 0)))
+                cand_dir = os.path.join(run_dir, 'cover_cand')
+                list_json = os.path.join(cand_dir, 'list.json')
+                cands = []
+                if os.path.isfile(list_json):
+                    try:
+                        with open(list_json, 'r', encoding='utf-8') as f:
+                            cands = json.load(f)
+                    except Exception:
+                        cands = []
+                ts = data.get('ts')
+                if ts is None or not cands:
+                    cands = _cover_candidates(fp, run_dir)
+                    if not cands:
+                        raise RuntimeError('候选帧抽取失败')
+                    ts = max(cands, key=lambda c: c['score'])['ts']
+                    try:
+                        os.makedirs(cand_dir, exist_ok=True)
+                        with open(list_json, 'w', encoding='utf-8') as f:
+                            json.dump(cands, f, ensure_ascii=False)
+                    except Exception:
+                        pass
+                else:
+                    ts = round(float(ts), 2)
+                cover = os.path.join(run_dir, 'cover.jpg')
+                _cover_render(fp, ts, title, sub, style, cover)
+                for c in cands:
+                    c['thumb'] = rel(os.path.join(cand_dir, os.path.basename(c['thumb'])))
+                self._send(200, json.dumps({'ok': True, 'cover': rel(cover), 'ts': ts, 'title': title,
+                                            'candidates': cands}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/material/upload':
+            # 小文件（≤64MB 由前端判定）直接 base64 存入素材库
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=220 * 1024 * 1024) or {}
+                name, err = material_save_bytes(data.get('name') or '',
+                                                base64.b64decode(data.get('data', '') or ''))
+                self._send(200, json.dumps({'ok': bool(name), 'name': name, 'error': err}).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/material/from_upload':
+            # 大文件：把分片上传会话的成品 move 进素材库
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                src = _upload_final_path(data.get('upload_id'), data.get('name'))
+                if not src:
+                    raise RuntimeError('上传会话不存在或未完成')
+                name = material_save_file(src)
+                try:
+                    d = _upload_dir_of(data.get('upload_id'))
+                    if d and os.path.isdir(d):
+                        shutil.rmtree(d, ignore_errors=True)
+                except OSError:
+                    pass
+                self._send(200, json.dumps({'ok': True, 'name': name}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/material/save_from_media':
+            # 把产物目录里的文件（如 B 站下载的视频）复制进素材库
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                src = _safe_join(OUTDIR, data.get('file') or '')
+                if not src:
+                    raise RuntimeError('源文件不存在')
+                name = material_save_file(src)
+                self._send(200, json.dumps({'ok': True, 'name': name}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/material/delete':
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                ok, err = material_delete(data.get('name') or '')
+                self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/bili/download':
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                self._send(200, json.dumps(_bili_start_download((data.get('bvid') or '').strip())).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/bili/cancel':
+            try:
+                BILI_PULL['abort'] = True
+                self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/upload/init':
+            # 大视频分片上传第一步：开会话；带 upload_id 则为断点续传（返回已到齐分片列表，
+            # 前端跳过这些分片——会话在磁盘上，服务重启后也能续传）。顺手清理超 24h 的废弃会话。
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                have = None
+                uid = data.get('upload_id')
+                if uid:
+                    d = _upload_dir_of(uid)
+                    if d is not None and os.path.isdir(d) and any(
+                            fn.startswith('final__') for fn in os.listdir(d)):
+                        uid = None   # 该会话已完成（成品待任务取走）→ 按新会话处理，避免重传覆盖
+                    else:
+                        have = _upload_have_parts(uid)
+                        if have is None:
+                            uid = None   # 会话过期/非法 → 按新会话处理
+                if uid is None:
+                    uid = 'up-%d-%s' % (int(time.time() * 1000), ''.join(random.choice('0123456789abcdef') for _ in range(6)))
+                    d = _upload_dir_of(uid)
+                    if d is None:
+                        raise RuntimeError('会话 id 生成失败')
+                    os.makedirs(d, exist_ok=True)
+                    have = []
+                # 清理放在会话创建之后：新会话也计入数量上限（否则长期停在 上限+1）
+                _upload_prune()
+                self._send(200, json.dumps({'ok': True, 'upload_id': uid, 'have': have}).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/upload/chunk':
+            # 单分片：base64 解码后 ≤8MB，写 part 文件（乱序到达安全）
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=16 * 1024 * 1024)
+                if data is None:
+                    raise RuntimeError('分片过大或读取失败')
+                ok, err = _upload_chunk_write(data.get('upload_id'), data.get('idx'),
+                                              base64.b64decode(data.get('data', '') or ''))
+                self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/upload/done':
+            # 收尾：按序合并分片。成品留在会话目录，由任务 dispatch 取走（move，免二次拷贝）
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                final, err = _upload_finalize(data.get('upload_id'), data.get('name'), data.get('chunks'))
+                self._send(200, json.dumps({'ok': bool(final), 'error': err,
+                                            'size': os.path.getsize(final) if final else 0}).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
         if path == '/api/beatcut':
             try:
                 length = int(self.headers.get('Content-Length', 0))
-                if length > 300 * 1024 * 1024:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大'}).encode('utf-8'), 'application/json')
-                    return
-                req = self._read_json(length)
+                req = self._read_json(length, max_len=300 * 1024 * 1024)
                 if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求体读取失败'}).encode('utf-8'), 'application/json')
+                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
                     return
                 runid = self._spawn(dispatch_beatcut, req)
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
@@ -4647,12 +5715,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/narrate':
             try:
                 length = int(self.headers.get('Content-Length', 0))
-                if length > 300 * 1024 * 1024:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大'}).encode('utf-8'), 'application/json')
-                    return
-                req = self._read_json(length)
+                req = self._read_json(length, max_len=300 * 1024 * 1024)
                 if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求体读取失败'}).encode('utf-8'), 'application/json')
+                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
                     return
                 runid = self._spawn(dispatch_narrate, req)
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
@@ -4662,12 +5727,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/narrate_movie':
             try:
                 length = int(self.headers.get('Content-Length', 0))
-                if length > 300 * 1024 * 1024:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大'}).encode('utf-8'), 'application/json')
-                    return
-                req = self._read_json(length)
+                req = self._read_json(length, max_len=300 * 1024 * 1024)
                 if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求体读取失败'}).encode('utf-8'), 'application/json')
+                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
                     return
                 runid = self._spawn(dispatch_movie, req)
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
@@ -4678,12 +5740,9 @@ class Handler(BaseHTTPRequestHandler):
             # 人机协同·分析：分析素材生成「规划方案」，等待用户在预览界面微调
             try:
                 length = int(self.headers.get('Content-Length', 0))
-                if length > 300 * 1024 * 1024:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大'}).encode('utf-8'), 'application/json')
-                    return
-                req = self._read_json(length)
+                req = self._read_json(length, max_len=300 * 1024 * 1024)
                 if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求体读取失败'}).encode('utf-8'), 'application/json')
+                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
                     return
                 runid = self._spawn(_analyze_plan_job, req)
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')

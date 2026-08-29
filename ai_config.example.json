@@ -1,4 +1,5 @@
 {
+  "_说明": "复制本文件为 ai_config.json 后按需填写（ai_config.json 已被 .gitignore 排除，不会进版本库）。全部留空也能跑：省流模式走本地模型/免费模板，不调任何付费接口。",
   "chat": {
     "base_url": "https://api.deepseek.com/v1",
     "api_key": "在这里填你的文本大模型 API Key（用于电影解说稿/剧情生成）",
@@ -15,5 +16,29 @@
     "api_key": "在这里填你的 TTS API Key",
     "model": "mimo-v2.5-tts",
     "voice": "Mia"
+  },
+  "local": {
+    "enabled": false,
+    "base_url": "http://localhost:11434/v1",
+    "model": "qwen2.5:latest",
+    "api_key": ""
+  },
+  "whisper": {
+    "model": "base"
+  },
+  "vlm": {
+    "enabled": false,
+    "mode": "ollama",
+    "base_url": "http://localhost:11434",
+    "model": "qwen2.5vl:latest",
+    "api_key": ""
+  },
+  "mirror": {
+    "use_hf_mirror": true,
+    "hf_endpoint": "https://hf-mirror.com",
+    "ollama_proxy": ""
+  },
+  "bili": {
+    "cookie": ""
   }
 }
