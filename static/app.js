@@ -13,8 +13,8 @@ $('defDur').addEventListener('change', () => { clearEmpty(); });
 (function(){
   const KEY = 'springStudio.settings';
   // 追加记忆的控件：强卡点 / 短片解说 / 联网解说 参数（刷新后不丢失）
-  const EXT = ['bcStrength','bcSensitivity','bcMinClip','bcBeatSync','bcKeepAudio','bcTransition',
-               'narMaxSeg','movieMaxSeg','narTheme','narReq','narMode','movieMode','narBgm','movieBgm'];
+  const EXT = ['bcStrength','bcSensitivity','bcMinClip','bcBeatSync','bcKeepAudio','bcTransition','bcTransDur',
+               'narMaxSeg','movieMaxSeg','narTheme','narReq','narBgm','movieBgm'];
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
     if (saved.res && $('res').querySelector('option[value="'+saved.res+'"]')) $('res').value = saved.res;
@@ -72,25 +72,11 @@ function updateMusicHint(){
 function updateBuildModeHint(){
   const hint = $('buildModeHint');
   if (!hint) return;
-  const eco = $('eco'), aiCap = $('aiCap');
-  const ecoOn = eco ? eco.checked : true;
+  const aiCap = $('aiCap');
   const aiOn = aiCap ? aiCap.checked : false;
-  if (ecoOn) {
-    hint.innerHTML = '💡 <b>省流模式</b>：文案用离线模板、不调付费API，几乎不花钱。想让文案更聪明可启用 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'local\')">🖥 本地模型</a>（免费离线）或 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'cloud\')">🌐 云端API</a>（花少量钱）。';
-    hint.style.background = '';
-    hint.style.borderColor = '';
-    hint.style.color = '';
-  } else if (aiOn) {
-    hint.innerHTML = '⚠️ <b>真AI模式</b>：将调用 DeepSeek 看图写文案 + 小米 MiMo 配音，会消耗API余额。请确保已配置 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'cloud\')">🌐 云端API（视觉+TTS）</a>，否则生成前会弹窗提醒。';
-    hint.style.background = '#fffbeb';
-    hint.style.borderColor = '#fde68a';
-    hint.style.color = '#92400e';
-  } else {
-    hint.innerHTML = 'ℹ️ <b>基础合成模式</b>：不生成AI文案、不配音，只做素材拼接+转场+配乐。如需AI文案请勾选上方「按画面生成中文文案」。';
-    hint.style.background = '#f0f9ff';
-    hint.style.borderColor = '#bae6fd';
-    hint.style.color = '#075985';
-  }
+  hint.innerHTML = '🤖 <b>自动路径</b>：本地模型（免费）优先 → 配置了云端 key 时用云端增强 → 都没有时离线模板兜底。'
+    + (aiOn ? '已勾选「按画面生成中文文案」：有可用的看图能力（本地视觉理解或云端视觉 API）时自动生成，否则用离线模板。'
+            : '未勾选「按画面生成中文文案」：不会生成 AI 文案。');
 }
 musDrop.addEventListener('click', () => mi.click());
 mi.addEventListener('change', e => { if (mi.files.length) setMusic(mi.files[0]); mi.value=''; });
@@ -178,7 +164,7 @@ function loadAIConfig(){
     if(res.vision_available) st.push('视觉✅'); else st.push('视觉(离线)');
     if(res.tts_available) st.push('配音✅'); else st.push('配音未配');
     $('aiStatus').textContent = st.join(' · ');
-  }).catch(()=>{});
+  }).catch(e=>console.warn('加载 AI 配置失败', e));
 }
 function ttsProviderHint(){
   const p = $('ttsProvider').value;
@@ -250,7 +236,7 @@ function testLocal(){
 function saveWhisper(){
   fetch('/api/ai/config', { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ whisper: { model: $('whisperModel').value.trim() } }) })
-    .then(()=>loadWhisperStatus()).catch(()=>{});
+    .then(()=>loadWhisperStatus()).catch(e=>console.warn('Whisper 配置保存失败', e));
 }
 function downloadWhisper(){
   const btn = $('dlWhisper'); if(btn){ btn.textContent='⏳ 下载中…'; btn.disabled=true; }
@@ -277,7 +263,7 @@ function loadWhisperStatus(){
     if(btn){ btn.disabled = !!res.downloading; btn.textContent = res.downloading ? '⏳ 下载中…' : '⬇ 下载/预载模型'; }
     // 自动续轮询：下载中持续刷新
     if(res.downloading) setTimeout(loadWhisperStatus, 2000);
-  }).catch(()=>{});
+  }).catch(e=>console.warn('加载 Whisper 状态失败', e));
 }
 
 // ---- 本地视觉理解 VLM：启用保存 / 拉取 / 检测轮询 ----
@@ -286,7 +272,7 @@ function saveVlm(){
     body: JSON.stringify({ vlm: {
       enabled: $('vlmEnabled').checked, mode: $('vlmMode').value.trim(),
       base_url: $('vlmBase').value.trim(), model: $('vlmModel').value.trim() } }) })
-    .then(()=>loadVlmStatus()).catch(()=>{});
+    .then(()=>loadVlmStatus()).catch(e=>console.warn('VLM 配置保存失败', e));
 }
 function testVlm(){
   const btn = $('testVlm'); if(btn){ btn.textContent='⏳ 检测中…'; btn.disabled=true; }
@@ -335,7 +321,7 @@ function loadVlmStatus(){
     // 同步顶栏芯片
     const chip = $('aiVlm'); if(chip){ chip.className = 'aichip ' + (res.ready ? 'ok' : 'no');
       chip.textContent = res.ready ? '📷 视觉理解 已就绪' : '📷 视觉理解 未部署'; }
-  }).catch(()=>{});
+  }).catch(e=>console.warn('加载 VLM 状态失败', e));
 }
 // ---- 本地模型（文字解说）：网页内一键拉取 + 状态轮询 ----
 function pullLocalModel(){
@@ -387,7 +373,7 @@ function loadLocalStatus(){
     if(res.pulling) setTimeout(loadLocalStatus, 2000);
     const chip = $('aiLocal'); if(chip){ chip.className = 'aichip ' + (res.ready ? 'ok' : 'no');
       chip.textContent = res.ready ? '🖥 本地模型 已就绪' : '🖥 本地模型 未部署'; }
-  }).catch(()=>{});
+  }).catch(e=>console.warn('加载本地模型状态失败', e));
 }
 // ---- 本地视觉理解 VLM：网页内一键拉取（按钮此前未接，这里补上）----
 function pullVlm(){
@@ -462,7 +448,7 @@ function loadHistory(){
       d.querySelector('button.del').addEventListener('click', () => deleteHistory(h.file));
       box.appendChild(d);
     });
-  }).catch(()=>{});
+  }).catch(e=>console.warn('加载历史记录失败', e));
 }
 function deleteHistory(file){
   if(!confirm('确定删除这条生成记录及其成片文件？')) return;
@@ -563,7 +549,7 @@ function loadAiStatus(){
       wsp.textContent = s.whisper_ready ? ('🎙 Whisper ' + s.whisper_model) : ('🎙 Whisper ' + s.whisper_model + ' 未下载'); }
     renderNarrGuide(s);
     loadLocalStatus(); loadVlmStatus();
-  }).catch(()=>{});
+  }).catch(e=>console.warn('加载 AI 就绪状态失败', e));
 }
 
 // 解说模型引导：提示 qwen2.5vl 的局限 + 引导部署「文字模型」写剧情解说
@@ -571,7 +557,7 @@ function renderNarrGuide(s){
   const ng = $('narrGuide');
   if (!ng) return;
   const g = s.narr_guide || {};
-  const esc = (x) => String(x||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const esc = escapeHtml;   // 统一转义入口（escapeHtml 额外转义引号，更安全）
   if (g.local_ok){
     ng.className = 'narr-guide ok';
     ng.innerHTML = '✅ 解说稿由本地<b>文字模型</b> <code>'+esc(g.local_model)+'</code> 生成（剧情解说质量最佳）。'
@@ -608,8 +594,8 @@ function preflight(task){
         _pfTarget = (explicit && (missing.indexOf('LLM') >= 0 || missing.indexOf('Vision') >= 0 || missing.indexOf('真AI') >= 0)) ? 'cloud' : 'local';
         $('pfTitle').textContent = (explicit ? '已选真AI 但未配置 ' : '尚未配置 ') + missing + ' API';
         $('pfMsg').innerHTML = explicit
-          ? '你选择了「<b>真AI</b>」模式，但 <b>' + missing + ' API</b> 还没配置，无法生成。<br>请先去「🤖 AI 配置」填好 Key，或把模式切回「省流(免费)」再生成。'
-          : '你还没有配置 <b>' + missing + ' API</b>。直接点「生成」会用 <b>本地离线模式</b>：本地 faster-whisper 识别真实台词 + SAPI 免费配音（不调任何付费接口，有显卡会用 GPU 加速）。<br>想让免费模式解说词更聪明：在「🤖 AI 配置 → ③ 本地模型」部署本机 Ollama+qwen 离线改写；或在「⑤ 本地视觉理解 VLM」部署 qwen2.5vl，省流模式会<b>逐段看画面</b>生成真解说（仍不花一分钱）；或点「仍用本地离线生成」继续。';
+          ? '你选择了「<b>真AI</b>」模式，但 <b>' + missing + ' API</b> 还没配置，无法生成。<br>请先去「🤖 AI 配置」填好 Key；不填也没关系，会自动使用免费本地路径。'
+          : '你还没有配置 <b>' + missing + ' API</b>。直接点「生成」会用 <b>本地离线模式</b>：本地 faster-whisper 识别真实台词 + SAPI 免费配音（不调任何付费接口，有显卡会用 GPU 加速）。<br>想让免费模式解说词更聪明：在「🤖 AI 配置 → ③ 本地模型」部署本机 Ollama+qwen 离线改写；或在「⑤ 本地视觉理解 VLM」部署 qwen2.5vl，会自动<b>逐段看画面</b>生成真解说（仍不花一分钱）；或点「仍用本地离线生成」继续。';
         $('preflight').style.display = 'flex';
       } else {
         resolve(true);
@@ -641,6 +627,7 @@ function gStart(label){
   $('gprog').classList.add('show');
 }
 function gSet(pct, phase){
+  const gc = $('gprogCancel'); if (gc) gc.style.display = _currentRunid ? '' : 'none';
   pct = Math.min(99, Math.max(1, pct || 0));
   $('gprogFill').style.width = pct + '%';
   $('gprogPct').textContent = Math.floor(pct) + '%';
@@ -794,6 +781,62 @@ function cancelRun(){
 }
 function cancelBuild(){ cancelRun(); }
 
+// 大视频走分片上传（>64MB）：旧路径把整文件 base64 塞进一个 JSON，体积膨胀 1.37 倍且有内存峰值；
+// 分片路径每片 4MB、3 路并发提交，后端按序合并。小文件维持 base64 旧路径（少 3 个请求）。
+// 断点续传：同一文件（名+大小+mtime）的会话 id 记在 localStorage——刷新页面/换标签页后已传分片不重传；
+// 会话在服务端磁盘上，服务重启也能续传（24h 内）。续传键只保留最近 6 个，防 localStorage 堆积。
+async function uploadChunksOnly(file){
+  const KEY = 'springStudio.up.' + file.name + '.' + file.size + '.' + (file.lastModified||0);
+  let uid = null;
+  try { uid = localStorage.getItem(KEY) || null; } catch(e){}
+  let init = await fetch('/api/upload/init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,size:file.size, upload_id: uid})}).then(r=>r.json());
+  if(!init.ok && uid){
+    try { localStorage.removeItem(KEY); } catch(e){}
+    uid = null;   // 会话过期/被清理 → 重新开会话
+    init = await fetch('/api/upload/init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,size:file.size})}).then(r=>r.json());
+  }
+  if(!init.ok) throw new Error(init.error||'上传初始化失败');
+  uid = init.upload_id;
+  const have = init.have || [];
+  try {
+    localStorage.setItem(KEY, uid);
+    const ks = Object.keys(localStorage).filter(k => k.indexOf('springStudio.up.') === 0);
+    for (let k = 0; k < ks.length - 6; k++) { try { localStorage.removeItem(ks[k]); } catch(e){} }
+  } catch(e){}
+  const CH=4*1024*1024, n=Math.ceil(file.size/CH);
+  const todo = [];
+  for(let i=0;i<n;i++) if(have.indexOf(i) < 0) todo.push(i);
+  const total = todo.length;
+  let doneN = 0, failed = null;
+  // 3 路并发上传：本地回环下顺序小片传输时 FileReader+base64 编码是瓶颈，并发可显著提速
+  async function worker(){
+    while(todo.length && !failed){
+      const i = todo.shift();
+      try {
+        const data = await new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result.split(',')[1]); fr.onerror=()=>rej(new Error('读取分片失败')); fr.readAsDataURL(file.slice(i*CH,(i+1)*CH)); });
+        const r = await fetch('/api/upload/chunk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uid, idx:i, data})}).then(r=>r.json());
+        if(!r.ok) throw new Error(r.error||'分片上传失败');
+        doneN++;
+        gSet(2 + Math.round(doneN*20/total), '📤 视频上传中 ' + doneN + '/' + total + (have.length ? '（已续传 ' + have.length + ' 片）' : ''));
+      } catch(e){ if(!failed) failed = e; }
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  if(failed) throw failed;
+  const fin = await fetch('/api/upload/done',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uid, name:file.name, chunks:n})}).then(r=>r.json());
+  if(!fin.ok) throw new Error(fin.error||'上传收尾失败');
+  try { localStorage.removeItem(KEY); } catch(e){}
+  return uid;
+}
+
+async function videoToBody(file){
+  if(file.size <= 64*1024*1024){
+    return { name:file.name, data: toB64(new Uint8Array(await file.arrayBuffer())) };
+  }
+  const uid = await uploadChunksOnly(file);
+  return { name:file.name, upload_id: uid };
+}
+
 // ---- 🎯 智能强卡点 ----
 let BC_VIDEO = null;
 let _bcRunid = null;
@@ -819,6 +862,7 @@ function setBCVideo(file){
 })();
 async function buildBeatCut(){
   if(!BC_VIDEO){ $('bcStatus').innerHTML='❌ 请先拖入视频到上方区域'; $('bcDrop').classList.add('shake'); setTimeout(()=>$('bcDrop').classList.remove('shake'),600); return; }
+  if(BC_VIDEO.size > 2*1024*1024*1024){ $('bcStatus').textContent='❌ 视频过大（'+(BC_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
   if(!MUSIC){ $('bcStatus').innerHTML='❌ 请先选择背景音乐 — <a href="javascript:void(0)" onclick="goStep(\'musicCard\')" style="color:#1d4ed8;text-decoration:underline;">🎵 去选音乐</a> 或 <a href="javascript:void(0)" onclick="goStep(\'libCard\')" style="color:#1d4ed8;text-decoration:underline;">🔎 免费曲库</a>';
     const h=$('bcMusicHint'); if(h){ h.style.background='#fef2f2'; h.style.borderColor='#fca5a5'; h.style.color='#991b1b'; setTimeout(()=>updateMusicHint(),1500); } return; }
   const go=$('bcQuickBtn')||$('bcGo'); go.disabled=true; $('bcResult').style.display='none';
@@ -838,7 +882,8 @@ async function buildBeatCut(){
     params.beat_sensitivity = parseFloat($('bcSensitivity').value) || 0.5;
     params.min_clip_dur = parseFloat($('bcMinClip').value) || 0.6;
   }
-  const body = { video:{name:BC_VIDEO.name, data: toB64(new Uint8Array(await BC_VIDEO.arrayBuffer()))}, music:null, params };
+  const videoObj = BC_VIDEO.mlib ? {name: BC_VIDEO.name, mlib: BC_VIDEO.mlib} : await videoToBody(BC_VIDEO);
+  const body = { video: videoObj, music:null, params };
   if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
   else { body.music={name:MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer()))}; }
   try{
@@ -847,11 +892,13 @@ async function buildBeatCut(){
     if(!out.ok) throw new Error(out.error||'失败');
     _bcRunid=out.runid;
     await pollBeatCut(_bcRunid);
-  }catch(e){ $('bcStatus').textContent='❌ '+e.message; }
+  }catch(e){ $('bcStatus').textContent='❌ '+netErrMsg(e); }
   go.disabled=false;
 }
 function pollBeatCut(runid){
   return new Promise(resolve=>{
+    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
+    _currentRunid = runid; const cb=$('bcCancel'); if(cb) cb.style.display='';
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
         const b=$('bcBar').querySelector('i');
@@ -860,6 +907,7 @@ function pollBeatCut(runid){
         gSet(p.pct, p.phase);
         if(p.done){
           clearInterval(iv); $('bcBar').style.display='none';
+          _currentRunid=null; if(cb) cb.style.display='none';
           if(p.error){ renderPartial('bcPartial', p.partial); $('bcStatus').textContent='❌ '+p.error; gErr(p.error); resolve(); return; }
           $('bcStatus').textContent='✅ 完成'; gDone();
           $('bcResult').style.display='block';
@@ -867,6 +915,7 @@ function pollBeatCut(runid){
           setModeBadge('bcMode', p.mode);
           gPreview(p.file, '强卡点短片');
           $('bcDl').href='/media/'+p.file;
+          _coverCtx.bc = {file: p.file}; const _ccb=$('bcCoverBtn'); if(_ccb) _ccb.style.display='';
           const d=p.diag||{};
           let txt;
           if(d.mode==='beat_sync'){
@@ -887,9 +936,9 @@ function pollBeatCut(runid){
           resolve(); return;
         }
         $('bcStatus').textContent = (p.phase||'分析中')+'… '+(p.pct||0)+'%';
-      }).catch(()=>{});
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); $('bcBar').style.display='none'; _currentRunid=null; if(cb) cb.style.display='none'; $('bcStatus').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     },400);
-    setTimeout(()=>{ clearInterval(iv); resolve(); }, 600000);
+    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('bcStatus').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 
@@ -907,17 +956,18 @@ function setNarVideo(file){
   if(!file.type.startsWith('video/')){ $('narInfo').textContent='❌ 只支持视频'; return; }
   NAR_VIDEO = file;
   $('narDrop').textContent = '🎞️ 已选：' + file.name;
-  $('narInfo').textContent = '已选视频，点「生成解说」开始（省流=免费配音）。';
+  $('narInfo').textContent = '已选视频，点「生成解说」开始（默认免费配音）。';
 }
 async function buildNarrate(){
   if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; $('narDrop').classList.add('shake'); setTimeout(()=>$('narDrop').classList.remove('shake'),600); return; }
+  if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
   const ok = await preflight('narrate'); if(!ok) return;
   const go=$('narQuickBtn')||$('narGo'); go.disabled=true; $('narResult').style.display='none';
   $('narStatus').textContent='上传视频…';
   gStart('🎬 生成短片解说');
-  const mode=$('narMode').value;
-  const body = { video:{name:NAR_VIDEO.name, data: toB64(new Uint8Array(await NAR_VIDEO.arrayBuffer()))},
-                 params:{economy: mode!=='ai', maxSeg: parseFloat($('narMaxSeg').value)||25, w:1280, h:720, fps:30,
+  const videoObj = NAR_VIDEO.mlib ? {name: NAR_VIDEO.name, mlib: NAR_VIDEO.mlib} : await videoToBody(NAR_VIDEO);
+  const body = { video: videoObj,
+                 params:{maxSeg: parseFloat($('narMaxSeg').value)||25, w:1280, h:720, fps:30,
                          name: NAR_VIDEO.name, theme: ($('narTheme') ? $('narTheme').value.trim() : ''),
                          req: ($('narReq') ? $('narReq').value.trim() : '')} };
   if($('narBgm').checked && MUSIC){
@@ -929,11 +979,12 @@ async function buildNarrate(){
     const out=await r.json();
     if(!out.ok) throw new Error(out.error||'失败');
     await pollNarrate(out.runid);
-  }catch(e){ $('narStatus').textContent='❌ '+e.message; }
+  }catch(e){ $('narStatus').textContent='❌ '+netErrMsg(e); }
   go.disabled=false;
 }
 function pollNarrate(runid){
   return new Promise(resolve=>{
+    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     _currentRunid = runid; const cb=$('narCancel'); if(cb) cb.style.display='';
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
@@ -951,6 +1002,7 @@ function pollNarrate(runid){
           setModeBadge('narBadge', p.mode);
           gPreview(p.file, '电影解说');
           $('narDl').href='/media/'+p.file;
+          _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
           const d=p.diag||{};
           let txt='分段 '+(d.segments||0)+' · 台词 '+(d.asr_lines||0)+' 条 · 配音 '+(d.voice_clips||0)+' 段';
           if(d.narration){ txt += ' · 解说：' + d.narration.join(' / '); }
@@ -958,9 +1010,9 @@ function pollNarrate(runid){
           resolve(); return;
         }
         $('narStatus').textContent = (p.phase||'处理中')+'… '+(p.pct||0)+'%';
-      }).catch(()=>{});
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); $('narBar').style.display='none'; _currentRunid=null; if(cb) cb.style.display='none'; $('narStatus').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     },400);
-    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; resolve(); }, 900000);
+    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('narStatus').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 
@@ -988,13 +1040,14 @@ async function buildMovieNarrate(){
   const name = ($('movieName').value || '').trim();
   const plot = ($('moviePlot').value || '').trim();
   if(!name && !plot && !MOVIE_VIDEO){ $('movieStatus').textContent='❌ 请填片名 / 剧情，或上传视频'; return; }
+  if(MOVIE_VIDEO && MOVIE_VIDEO.size > 2*1024*1024*1024){ $('movieStatus').textContent='❌ 视频过大（'+(MOVIE_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
   const ok = await preflight('movie'); if(!ok) return;
   const go = $('movieGo'); go.disabled = true; $('movieResult').style.display = 'none';
   $('movieStatus').textContent = '提交任务…';
   gStart('🌐 联网解说生成');
   const body = { movie: name, plot: plot,
-    params: { economy: $('movieMode').value !== 'ai', maxSeg: parseFloat($('movieMaxSeg').value) || 25, w:1280, h:720, fps:30 } };
-  if(MOVIE_VIDEO){ body.video = { name: MOVIE_VIDEO.name, data: toB64(new Uint8Array(await MOVIE_VIDEO.arrayBuffer())) }; }
+    params: { maxSeg: parseFloat($('movieMaxSeg').value) || 25, w:1280, h:720, fps:30 } };
+  if(MOVIE_VIDEO){ body.video = await videoToBody(MOVIE_VIDEO); }
   if($('movieBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
     else { body.music = { name: MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer())) }; }
@@ -1009,6 +1062,7 @@ async function buildMovieNarrate(){
 }
 function pollMovie(runid){
   return new Promise(resolve => {
+    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     _currentRunid = runid; const cb=$('movieCancel'); if(cb) cb.style.display='';
     const iv = setInterval(() => {
       fetch('/api/progress?run=' + runid).then(r => r.json()).then(p => {
@@ -1035,9 +1089,9 @@ function pollMovie(runid){
           resolve(); return;
         }
         $('movieStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%';
-      }).catch(() => {});
+      }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('movieBar').style.display = 'none'; _currentRunid=null; if(cb) cb.style.display='none'; $('movieStatus').textContent = '❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
-    setTimeout(() => { clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; resolve(); }, 900000);
+    setTimeout(() => { clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('movieStatus').textContent = '⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 
@@ -1051,8 +1105,8 @@ async function runInstruct(){
   gStart('💬 指令成片');
   const ctx = {};
   if(MUSIC){ ctx.music = MUSIC.catalogId ? { source:'catalog', catalogId: MUSIC.catalogId, name: MUSIC.name } : { name: MUSIC.name }; }
-  if(NAR_VIDEO) ctx.video = { name: NAR_VIDEO.name, data: toB64(new Uint8Array(await NAR_VIDEO.arrayBuffer())) };
-  else if(BC_VIDEO) ctx.video = { name: BC_VIDEO.name, data: toB64(new Uint8Array(await BC_VIDEO.arrayBuffer())) };
+  if(NAR_VIDEO) ctx.video = NAR_VIDEO.mlib ? {name:NAR_VIDEO.name, mlib:NAR_VIDEO.mlib} : await videoToBody(NAR_VIDEO);
+  else if(BC_VIDEO) ctx.video = BC_VIDEO.mlib ? {name:BC_VIDEO.name, mlib:BC_VIDEO.mlib} : await videoToBody(BC_VIDEO);
   const items = [];
   for(const it of ITEMS){
     if(it.file && it.file.size <= 150 * 1024 * 1024){
@@ -1071,6 +1125,7 @@ async function runInstruct(){
 }
 function pollInstruct(runid){
   return new Promise(resolve => {
+    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     _currentRunid = runid; const cb=$('instructCancel'); if(cb) cb.style.display='';
     const iv = setInterval(() => {
       fetch('/api/progress?run=' + runid).then(r => r.json()).then(p => {
@@ -1099,9 +1154,9 @@ function pollInstruct(runid){
           resolve(); return;
         }
         $('instructStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%';
-      }).catch(() => {});
+      }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('instructBar').style.display = 'none'; _currentRunid=null; if(cb) cb.style.display='none'; $('instructStatus').textContent = '❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
-    setTimeout(() => { clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; resolve(); }, 900000);
+    setTimeout(() => { clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('instructStatus').textContent = '⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 
@@ -1115,14 +1170,23 @@ async function build(){
   const beatStep = parseFloat($('beatStep').value) || 1;
   const hardCut = $('hardCutSel').value === '1';
   const aiCap = $('aiCap').checked;
-  const eco = $('eco') ? $('eco').checked : true;
-  const body = { items: [], music: null, params: { w:rw, h:rh, fps:+$('fps').value, transition:$('trans').value, singleDur:+$('defDur').value||3, beatStep, hardCut, ai_captions: aiCap, economy: eco } };
+  const body = { items: [], music: null, params: { w:rw, h:rh, fps:+$('fps').value, transition:$('trans').value, singleDur:+$('defDur').value||3, beatStep, hardCut, ai_captions: aiCap } };
   for (const it of ITEMS){
-    if (it.file.size > 150 * 1024 * 1024){
-      stopBar(); $('cancelBtn').style.display='none'; $('status').textContent='❌ 文件过大：'+it.name+'（>150MB）'; go.disabled=false; return;
+    if (it.mlib){   // 素材库条目：文件已在服务器，只传引用
+      body.items.push({ kind:it.kind, name:it.name, dur:it.dur, mlib: it.mlib });
+      continue;
     }
-    const buf = await it.file.arrayBuffer();
-    body.items.push({ kind:it.kind, name:it.name, dur:it.dur, data: toB64(new Uint8Array(buf)) });
+    if (it.file.size > 2*1024*1024*1024){
+      stopBar(); $('cancelBtn').style.display='none'; $('status').textContent='❌ 文件过大：'+it.name+'（>2GB）'; gErr('文件过大'); go.disabled=false; return;
+    }
+    // 视频素材 >64MB 走分片上传（与卡点/解说同一协议）；图片与小视频维持 base64
+    if (it.kind === 'video' && it.file.size > 64*1024*1024){
+      const v = await videoToBody(it.file);
+      body.items.push({ kind:it.kind, name:it.name, dur:it.dur, upload_id: v.upload_id });
+    } else {
+      const buf = await it.file.arrayBuffer();
+      body.items.push({ kind:it.kind, name:it.name, dur:it.dur, data: toB64(new Uint8Array(buf)) });
+    }
   }
   if (MUSIC){
     let mp = null;
@@ -1147,6 +1211,7 @@ async function build(){
 function pollRun(runid){
   return new Promise((resolve) => {
     let t0 = Date.now();
+    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     const iv = setInterval(() => {
       fetch('/api/progress?run=' + runid).then(r=>r.json()).then(p => {
         if (p.pct) setBar(p.pct);
@@ -1161,14 +1226,15 @@ function pollRun(runid){
           $('player').src = '/media/' + p.file + '?t=' + Date.now();
           setModeBadge('buildMode', p.mode);
           $('dl').href = '/media/' + p.file;
+          _coverCtx.build = {file: p.file}; const _bcb=$('buildCoverBtn'); if(_bcb) _bcb.style.display='';
           gPreview(p.file, '合成视频');
           resolve(); return;
         }
         $('status').textContent = (p.phase||'合成中') + '… ' + (p.pct||0) + '%（已 ' + sec + ' 秒）';
-      }).catch(()=>{});
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); stopBar(); $('status').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
     // safety: don't poll forever
-    setTimeout(()=>{ clearInterval(iv); stopBar(); $('status').textContent='⚠️ 超时，请查看结果后重试'; resolve(); }, 600000);
+    setTimeout(()=>{ clearInterval(iv); stopBar(); $('status').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 
@@ -1185,8 +1251,6 @@ function updateModeHint(selectId){
   }
 }
 // 页面加载时初始化模式提示（脚本在 body 末尾加载，DOM 已就绪，直接执行）
-updateModeHint('narMode');
-updateModeHint('movieMode');
 updateMusicHint();
 updateBuildModeHint();
 
@@ -1205,6 +1269,7 @@ async function _planMusicBodyAsync(){
 
 async function planBeatCut(){
   if(!BC_VIDEO){ $('bcStatus').innerHTML='❌ 请先拖入视频到上方区域'; return; }
+  if(BC_VIDEO.size > 2*1024*1024*1024){ $('bcStatus').textContent='❌ 视频过大（'+(BC_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再分析'; return; }
   if(!MUSIC){ $('bcStatus').innerHTML='❌ 请先选择背景音乐'; return; }
   const params={w:1280,h:720,fps:30,sceneTh:0.30,maxCuts:30, strength: $('bcStrength').value};
   if($('bcKeepAudio')){ params.keepAudio = $('bcKeepAudio').checked; }
@@ -1217,6 +1282,7 @@ async function planBeatCut(){
 }
 async function planNarrate(){
   if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; return; }
+  if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再分析'; return; }
   const params={w:1280,h:720,fps:30, maxSeg: parseFloat(($('narMaxSeg')||{}).value)||25};
   await _startPlan('narrate', params);
 }
@@ -1225,38 +1291,43 @@ async function _startPlan(type, params){
   const st = (type==='beatcut') ? $('bcStatus') : $('narStatus');
   const mainBtn = (type==='beatcut') ? $('bcGo') : $('narGo');
   if(mainBtn) mainBtn.disabled=true;
-  st.textContent='🔍 分析中…（首次可能较慢）';
-  const body={ type, params, video:{name:video.name, data: toB64(new Uint8Array(await video.arrayBuffer()))} };
-  if(type==='beatcut'){ body.music = await _planMusicBodyAsync(); }
-  else if(MUSIC){ body.music = await _planMusicBodyAsync(); }
+  st.textContent='🔍 分析中…（首次可能较慢，大视频需先分片上传）';
+  _currentRunid = null;
   try{
+    const videoObj = video.mlib ? {name:video.name, mlib:video.mlib} : await videoToBody(video);
+    const body={ type, params, video: videoObj };
+    if(type==='beatcut'){ body.music = await _planMusicBodyAsync(); }
+    else if(MUSIC){ body.music = await _planMusicBodyAsync(); }
     const r=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const out=await r.json();
     if(!out.ok) throw new Error(out.error||'分析失败');
     await _pollPlan(out.runid, type);
-  }catch(e){ st.textContent='❌ '+e.message; }
+  }catch(e){ st.textContent='❌ '+netErrMsg(e); }
   if(mainBtn) mainBtn.disabled=false;
 }
 function _pollPlan(runid, type){
   return new Promise(resolve=>{
+    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     const st=(type==='beatcut')?$('bcStatus'):$('narStatus');
     const mainBtn = (type==='beatcut') ? $('bcGo') : $('narGo');
     const done = ()=>{ if(mainBtn) mainBtn.disabled=false; };
+    _currentRunid = runid; const cb=$((type==='beatcut')?'bcCancel':'narCancel'); if(cb) cb.style.display='';
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
         if(p.plan_ready && p.plan){
           clearInterval(iv);
+          _currentRunid=null; if(cb) cb.style.display='none';
           _planRunid=runid; _planType=type;
           openPlanEditor(runid, p.plan);
           st.textContent='✅ 规划完成，请在弹窗中微调后点击「按我的调整合成」';
           done(); resolve(); return;
         }
-        if(p.error){ st.textContent='❌ '+p.error; clearInterval(iv); done(); resolve(); return; }
-        if(p.done){ st.textContent='❌ '+(p.error||'分析失败'); clearInterval(iv); done(); resolve(); return; }
+        if(p.error){ st.textContent='❌ '+p.error; clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; done(); resolve(); return; }
+        if(p.done){ st.textContent='❌ '+(p.error||'分析失败'); clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; done(); resolve(); return; }
         st.textContent=(p.phase||'分析中')+'… '+(p.pct||0)+'%';
-      }).catch(()=>{});
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='❌ 与服务失去连接（服务可能已重启），请重新分析'; done(); resolve(); } });
     },400);
-    setTimeout(()=>{ clearInterval(iv); done(); resolve(); }, 600000);
+    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='⚠️ 分析超时未返回（长视频解说分析可能需要 30 分钟以上），请稍后在⑨记录查看或重试'; done(); resolve(); }, 3600000);
   });
 }
 
@@ -1412,7 +1483,7 @@ function _shortenCaption(s){
   return m.length>14 ? m.slice(0,14)+'…' : m;
 }
 
-function _esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+const _esc = escapeHtml;   // 统一转义入口（escapeHtml 额外转义引号，属性值里更安全）
 function _updatePlanSum(){
   const rows=[...$('planBox').querySelectorAll('.plan-row')];
   const keep=rows.filter(r=>r.querySelector('.on').checked).length;
@@ -1459,20 +1530,23 @@ async function confirmPlan(){
 }
 function _pollRender(runid, type){
   return new Promise(resolve=>{
+    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     const st=(type==='beatcut')?$('bcStatus'):$('narStatus');
+    _currentRunid = runid; const cb=$((type==='beatcut')?'bcCancel':'narCancel'); if(cb) cb.style.display='';
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
         if(p.done){
           clearInterval(iv);
+          _currentRunid=null; if(cb) cb.style.display='none';
           if(p.error){ st.textContent='❌ '+p.error; resolve(); return; }
           st.textContent='✅ 完成（已按你的调整合成）';
           _showPlanResult(type, p);
           resolve(); return;
         }
         st.textContent=(p.phase||'合成中')+'… '+(p.pct||0)+'%';
-      }).catch(()=>{});
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; resolve(); } });
     },400);
-    setTimeout(()=>{ clearInterval(iv); resolve(); }, 900000);
+    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 function _showPlanResult(type, p){
@@ -1481,6 +1555,7 @@ function _showPlanResult(type, p){
     g('bcResult').style.display='block';
     g('bcPlayer').src='/media/'+p.file+'?t='+Date.now();
     g('bcDl').href='/media/'+p.file;
+    _coverCtx.bc = {file: p.file}; const _ccb=$('bcCoverBtn'); if(_ccb) _ccb.style.display='';
     setModeBadge('bcMode','human');
     gPreview(p.file,'强卡点短片');
     const d=p.diag||{};
@@ -1489,6 +1564,7 @@ function _showPlanResult(type, p){
     g('narResult').style.display='block';
     g('narPlayer').src='/media/'+p.file+'?t='+Date.now();
     g('narDl').href='/media/'+p.file;
+    _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
     setModeBadge('narBadge','human');
     gPreview(p.file,'电影解说');
     const d=p.diag||{};
@@ -1499,3 +1575,206 @@ function closePlanModal(){
   const m=$('planModal'); if(m) m.style.display='none';
 }
 
+function closePlanModal(){
+  const m=$('planModal'); if(m) m.style.display='none';
+}
+
+// ---- 📺 B 站素材：搜索 + 下载（后端 /api/bili/*：yt-dlp 搜索 + playurl/yt-dlp 双引擎下载）----
+function biliSearch(){
+  const kw = ($('biliKw').value||'').trim();
+  const box = $('biliResults'), btn = $('biliSearchBtn');
+  if(!kw){ box.style.display='block'; box.innerHTML='<div class="hint">请输入关键词</div>'; return; }
+  btn.disabled = true; btn.textContent='⏳ 搜索中…';
+  box.style.display='block'; box.innerHTML='<div class="hint">⏳ 正在搜索 B 站（约 3~8 秒）…</div>';
+  fetch('/api/bili/search?kw=' + encodeURIComponent(kw)).then(r=>r.json()).then(res=>{
+    btn.disabled = false; btn.textContent='🔍 搜 B 站';
+    if(!res.ok){ box.innerHTML='<div class="hint">❌ '+(res.error||'搜索失败')+'</div>'; return; }
+    if(!(res.results||[]).length){ box.innerHTML='<div class="hint">没找到，换个关键词试试。</div>'; return; }
+    box.innerHTML = '';
+    (res.results||[]).forEach(it=>{
+      const mins = Math.floor((it.duration||0)/60), secs = (it.duration||0)%60;
+      const d = document.createElement('div');
+      d.className = 'item'; d.style.marginBottom='6px';
+      d.innerHTML = `<img class="thumb" src="${it.pic||''}" referrerpolicy="no-referrer" alt="">
+        <div class="meta"><div class="name">${it.title||it.bvid}</div><div class="kind">${it.author||''} · ${mins}:${String(secs).padStart(2,'0')}</div></div>
+        <button class="btn mini" id="biliDl_${it.bvid}">⬇ 下载 MP4</button>
+        <a class="btn mini ghost" href="https://www.bilibili.com/video/${it.bvid}" target="_blank" rel="noopener">↗</a>`;
+      box.appendChild(d);
+      d.querySelector('button').addEventListener('click', ()=>biliDownload(it.bvid, d));
+    });
+  }).catch(e=>{ btn.disabled=false; btn.textContent='🔍 搜 B 站'; box.innerHTML='<div class="hint">❌ 搜索请求失败：'+e.message+'</div>'; });
+}
+let _biliTimer = null;
+// 把浏览器底层网络错误翻译成人话（Failed to fetch = 请求根本没到达服务器）
+function netErrMsg(e){
+  const m = (e && e.message) || String(e);
+  if (m.indexOf('Failed to fetch') >= 0 || m.indexOf('NetworkError') >= 0 || m.indexOf('Load failed') >= 0)
+    return '无法连接服务器——请确认服务已启动且当前没有正在重启，然后刷新页面重试';
+  return m;
+}
+function biliCancel(){ fetch('/api/bili/cancel', {method:'POST'}); }
+function biliDownload(bvid, row){
+  const btn = document.getElementById('biliDl_'+bvid);
+  if(btn){ btn.disabled=true; btn.textContent='⏳ 提交…'; }
+  fetch('/api/bili/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({bvid})}).then(r=>r.json()).then(res=>{
+    if(!res.ok){ if(btn){ btn.disabled=false; btn.textContent='⬇ 下载 MP4'; } alert('❌ '+(res.error||'下载未启动')); return; }
+    if(btn) btn.textContent='⏳ 下载中…';
+    const bar = document.createElement('div'); bar.className='hint'; row.appendChild(bar);
+    if(_biliTimer) clearInterval(_biliTimer);
+    _biliTimer = setInterval(()=>{
+      fetch('/api/bili/status').then(r=>r.json()).then(st=>{
+        if(st.running){
+          bar.innerHTML = '⏳ ' + (st.msg||'') + ' ' + (st.pct||0) + '% <button class="btn mini danger" onclick="biliCancel()">⏹ 取消</button>';
+          return;
+        }
+        clearInterval(_biliTimer);
+        if(!st.ok){ bar.textContent='❌ '+st.msg; if(btn){btn.disabled=false; btn.textContent='⬇ 重试下载';} return; }
+        bar.innerHTML = '✅ ' + (st.title||'已下载');
+        const act = document.createElement('div'); act.style.marginTop='4px';
+        act.innerHTML = `<button class="btn mini">➕ 加入素材</button>
+          <button class="btn mini ghost">🎬 设为解说视频</button>
+          <button class="btn mini ghost">🎯 设为卡点视频</button>
+          <button class="btn mini ghost">🗂 存入素材库</button>
+          <a class="btn mini ghost" href="/media/${st.file}" download>💾 保存</a>`;
+        row.appendChild(act);
+        const [bItems, bNar, bBc, bMlib] = act.querySelectorAll('button');
+        bItems.addEventListener('click', ()=>biliToItems(st.file, bItems));
+        bNar.addEventListener('click', ()=>biliToSlot(st.file, 'nar', bNar));
+        bBc.addEventListener('click', ()=>biliToSlot(st.file, 'bc', bBc));
+        bMlib.addEventListener('click', ()=>{
+          fetch('/api/material/save_from_media', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({file: st.file})}).then(r=>r.json()).then(x=>{
+            bMlib.textContent = x.ok ? '✅ 已入库' : '❌ '+(x.error||'失败');
+            if(x.ok) mlibList();
+          }).catch(()=>{ bMlib.textContent='❌ 失败'; });
+        });
+      }).catch(()=>{});
+    }, 900);
+  }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='⬇ 下载 MP4'; } alert('❌ '+e.message); });
+}
+async function biliFetchFile(rel){
+  const r = await fetch('/media/' + rel);
+  const blob = await r.blob();
+  return new File([blob], rel.split('/').pop(), {type:'video/mp4'});
+}
+function biliToItems(rel, btn){
+  if(btn){ btn.disabled=true; btn.textContent='⏳ 载入…'; }
+  biliFetchFile(rel).then(f=>{
+    ITEMS.push({ id:'it'+Date.now(), name:f.name, kind:'video', dur: parseInt(($('defDur')||{}).value)||3, url:URL.createObjectURL(f), file:f });
+    render();
+    if(btn) btn.textContent='✅ 已加入素材';
+  }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='➕ 加入素材'; } alert('❌ '+e.message); });
+}
+function biliToSlot(rel, which, btn){
+  if(btn){ btn.disabled=true; btn.textContent='⏳ 载入…'; }
+  biliFetchFile(rel).then(f=>{
+    if(which==='nar'){ setNarVideo(f); goStep('narCard'); }
+    else { setBCVideo(f); goStep('beatcutCard'); }
+    if(btn) btn.textContent='✅ 已设置';
+  }).catch(e=>{ if(btn){ btn.disabled=false; } alert('❌ '+e.message); });
+}
+
+// ---- 🖼 封面生成：智能选帧 + 大字标题（后端 /api/cover，三种版式可换帧）----
+const _coverCtx = {};   // boxId -> {file, title, sub, style, ts, cands}
+function makeCover(rel, boxId, defaultTitle){
+  const box = $(boxId); box.style.display='block'; box.innerHTML='<div class="hint">⏳ 正在智能选帧生成封面…</div>';
+  _coverCtx[boxId] = { file: rel, title: defaultTitle||'', sub:'', style:0, ts:null };
+  fetch('/api/cover', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({file: rel, title: defaultTitle||''})})
+    .then(r=>r.json()).then(res=>{
+      if(!res.ok){ box.innerHTML='<div class="hint">❌ '+(res.error||'生成失败')+'</div>'; return; }
+      Object.assign(_coverCtx[boxId], { ts: res.ts, cands: res.candidates||[] });
+      _coverDraw(boxId, res.cover);
+    }).catch(e=>{ box.innerHTML='<div class="hint">❌ '+e.message+'</div>'; });
+}
+function _coverDraw(boxId, cover){
+  const st = _coverCtx[boxId], box = $(boxId);
+  const styleNames = ['居中大字','底部条幅','左上角'];
+  const cands = (st.cands||[]).map(c =>
+    `<button class="btn mini ghost" style="${Math.abs(c.ts-st.ts)<0.011?'outline:2px solid #1d4ed8':''}" onclick="coverPickFrame('${boxId}',${c.ts})" title="换用这一帧">🎞 ${c.ts.toFixed(1)}s</button>`).join(' ');
+  box.innerHTML = `
+    <img src="/media/${cover}?t=${Date.now()}" style="max-width:320px;border-radius:8px;display:block;margin:6px 0;" alt="封面预览">
+    <div class="row" style="gap:6px; align-items:center; margin:4px 0;">
+      <input type="text" id="${boxId}_title" placeholder="封面标题（可留空）" value="${(st.title||'').replace(/"/g,'&quot;')}" style="flex:1" oninput="coverSetTitle('${boxId}', this.value)">
+      <select id="${boxId}_style" onchange="coverSetStyle('${boxId}', this.value)">
+        ${styleNames.map((nm,i)=>`<option value="${i}" ${st.style===i?'selected':''}>${nm}</option>`).join('')}
+      </select>
+    </div>
+    <div class="row" style="gap:6px; flex-wrap:wrap; margin:4px 0; align-items:center;">
+      <button class="btn mini" onclick="coverUpdate('${boxId}')">🖼 按当前设置重做</button>
+      ${cands}
+      <a class="btn mini" href="/media/${cover}?t=${Date.now()}" download="cover.jpg">⬇ 下载封面</a>
+    </div>`;
+}
+function coverSetTitle(boxId, v){ if(_coverCtx[boxId]) _coverCtx[boxId].title = v; }
+function coverSetStyle(boxId, v){ if(_coverCtx[boxId]){ _coverCtx[boxId].style = parseInt(v)||0; coverUpdate(boxId); } }
+function coverPickFrame(boxId, ts){ if(_coverCtx[boxId]){ _coverCtx[boxId].ts = ts; coverUpdate(boxId); } }
+function coverUpdate(boxId){
+  const st = _coverCtx[boxId], box = $(boxId);
+  box.innerHTML='<div class="hint">⏳ 重新渲染封面…</div>';
+  fetch('/api/cover', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({file: st.file, title: st.title, sub: st.sub, style: st.style, ts: st.ts})})
+    .then(r=>r.json()).then(res=>{
+      if(!res.ok){ box.innerHTML='<div class="hint">❌ '+(res.error||'生成失败')+'</div>'; return; }
+      st.ts = res.ts; st.cands = res.candidates||st.cands;
+      _coverDraw(boxId, res.cover);
+    }).catch(e=>{ box.innerHTML='<div class="hint">❌ '+e.message+'</div>'; });
+}
+
+
+// ---- 🗂 本地素材库：持久保存（material_library/，刷新/重启不丢）----
+function mlibList(){
+  const box = $('mlibList');
+  if(!box) return;
+  fetch('/api/material/list').then(r=>r.json()).then(res=>{
+    if(!res.ok){ box.innerHTML='<div class="hint">❌ 加载失败</div>'; return; }
+    if(!(res.items||[]).length){ box.innerHTML='<div class="hint">素材库还是空的：上传文件，或把 B 站下载的视频「🗂 存入素材库」。</div>'; return; }
+    box.innerHTML='';
+    (res.items||[]).forEach(m=>{
+      const url = '/material_lib/' + encodeURIComponent(m.name);
+      const sz = (m.size/1048576).toFixed(1)+'MB';
+      const d = document.createElement('div'); d.className='item'; d.style.marginBottom='6px';
+      d.innerHTML = `${m.kind==='image' ? `<img class="thumb" src="${url}">` : `<video class="thumb" src="${url}#t=1" preload="metadata" muted></video>`}
+        <div class="meta"><div class="name">${escapeHtml(m.name)}</div><div class="kind">${m.kind==='video'?'🎬':'🖼️'} ${sz}</div></div>
+        <button class="btn mini">➕ 加入素材列表</button>
+        <button class="btn mini ghost">🎬 设为解说</button>
+        <button class="btn mini ghost">🎯 设为卡点</button>
+        <button class="btn mini danger" title="删除">🗑</button>`;
+      box.appendChild(d);
+      const [bAdd, bNar, bBc, bDel] = d.querySelectorAll('button');
+      bAdd.addEventListener('click', ()=>{
+        ITEMS.push({ id:'it'+Date.now()+Math.random().toString(36).slice(2,6), name:m.name, kind:m.kind, dur:parseInt(($('defDur')||{}).value)||3, mlib:m.name, url });
+        render();
+        bAdd.textContent='✅ 已加入'; setTimeout(()=>bAdd.textContent='➕ 加入素材列表', 1200);
+      });
+      bNar.addEventListener('click', ()=>mlibToSlot(m.name, 'nar', bNar));
+      bBc.addEventListener('click', ()=>mlibToSlot(m.name, 'bc', bBc));
+      bDel.addEventListener('click', ()=>{
+        if(!confirm('从素材库删除 '+m.name+' ？（已生成的成片不受影响）')) return;
+        fetch('/api/material/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:m.name})}).then(()=>mlibList()).catch(()=>{});
+      });
+    });
+  }).catch(()=>{ box.innerHTML='<div class="hint">❌ 请求失败</div>'; });
+}
+async function mlibUploadFile(f){
+  let r;
+  if(f.size > 64*1024*1024){
+    const uid = await uploadChunksOnly(f);
+    r = await fetch('/api/material/from_upload', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({upload_id: uid, name: f.name})}).then(x=>x.json());
+  } else {
+    const data = toB64(new Uint8Array(await f.arrayBuffer()));
+    r = await fetch('/api/material/upload', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: f.name, data})}).then(x=>x.json());
+  }
+  if(!r.ok) throw new Error(r.error||'上传失败');
+  return r.name;
+}
+async function mlibUpload(files){
+  for(const f of files){
+    try { await mlibUploadFile(f); } catch(e){ alert('❌ '+f.name+'：'+e.message); }
+  }
+  mlibList();
+}
+function mlibToSlot(name, which, btn){
+  if(btn){ btn.disabled=true; btn.textContent='⏳…'; }
+  if(which==='nar'){ NAR_VIDEO = {name, mlib:name}; $('narDrop').textContent='🎞️ 已选（素材库）：'+name; $('narInfo').textContent='已从素材库设置视频，可直接点「生成解说」。'; if(btn) btn.textContent='✅'; goStep('narCard'); }
+  else { BC_VIDEO = {name, mlib:name}; $('bcDrop').textContent='🎬 已选（素材库）：'+name; $('bcInfo').textContent='已从素材库设置视频，请选择背景音乐后生成。'; if(btn) btn.textContent='✅'; goStep('beatcutCard'); }
+}
+mlibList();
