@@ -1,6 +1,6 @@
 # 项目进度存档（2026-08-29 更新）
 
-> **当前状态：全部完成、116 测试通过、可正常出片。解说已切到本地 14B 模型。GPU 硬编已启用。存储管理面板已上线（用户自主清理，不自动删）。**
+> **当前状态：全部完成、118 测试通过、可正常出片。解说已切到本地 14B 模型。GPU 硬编已启用。存储管理面板已上线。🎭 剧情驱动解说已上线（用户粘贴剧情→按时序剪分镜+写解说，不靠AI识别画面）。**
 
 ---
 
@@ -612,3 +612,27 @@ ode --check static/app.js → OK；HTML 标签平衡、goStep 目标全部有效
 - `py_compile` + `node --check` 通过；`pytest` **116 passed**（+2 新例：扫描结构、白名单/穿越拒绝）；`pyflakes webui_server.py` 干净。
 - 冒烟：`_storage_scan()` 实跑返回 9 组、可回收 ~1.86GB；`_storage_resolve_deletable` 对 run 目录返回路径、对 `../webui_server.py` 与成片目录均返回 None。
 - 严格遵循用户决策：**未自动删除任何文件**，清理动作完全由用户在面板内触发。
+
+---
+
+## 🎭 第三十一轮 · 剧情驱动解说（2026-08-29）
+
+### 需求
+用户：在「解说」页加入新功能——粘贴详细剧情（如《行尸走肉》分幕剧情），系统**按剧情剪分镜 + 写解说**，而不是 AI 单独识别画面。痛点：原解说只匹配画面、不识视频主体内容，割裂感很强。
+
+### 方案（复用既有引擎，零重写）
+- **核心引擎 `_narrate_by_plot`**（新增）：分段 → ASR台词 → `llm_movie_script('', plot)` 把用户剧情按句拆成解说事件 → `align_script_to_segments` 按时序把事件对齐到分镜 → 映射每段解说。`align_script_to_segments` 自带单调指针，保证剧情不乱序、不错配到更早画面。
+- **空段兜底**：剧情句数 < 镜头数（无台词可语义对齐）时，把剧情句按时间均匀铺满全片，消除「片尾大段静音 / 解说只挤开头」的割裂感。
+- **去掉分幕编号**：改进 `_split_sentences`，剥掉「1. 2. 3.」前缀，解说词不带序号。
+- **复用**：`narrate_movie` 重构改走 `_narrate_by_plot`（避免两份实现漂移）；`_analyze_plan_job` 的 narrate 分支在 `req.plot` 非空时走剧情驱动（segs/narr/asr/diag 全由剧情生成）。
+
+### 前端
+- `narCard` 加「🎭 剧情驱动剪辑」折叠面板（`textarea#narPlot`）。
+- `buildNarrate`：`narPlot` 非空 → 改 POST `/api/narrate_movie`（`movie:''`, `plot`），状态提示区分剧情模式。
+- `planNarrate`/`_startPlan`：透传 `plot` 到 `/api/plan`，预览方案即剧情驱动的分镜+解说，仍可用「按解说词重新匹配分镜」微调。
+- 留空则仍是原「AI 识别画面」模式，向后兼容。
+
+### ✅ 验证
+- `py_compile` + `node --check` 通过；`pytest` **118 passed**（+2 新例：剧情拆事件去编号、对齐单调全覆盖）；`pyflakes webui_server.py` 干净。
+- 冒烟（`_narrate_by_plot` 用合成 seg/asr 绕过 ffmpeg）：8 段分镜全部铺到剧情解说、剧情按时序展开、无空段、无「1.」编号。
+- 提交：`4124389` feat: 🎭 剧情驱动解说。
