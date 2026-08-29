@@ -94,6 +94,33 @@ python webui_server.py
 
 > ⚠️ `ai_config.json` 已被 `.gitignore` 忽略，**不要提交到仓库**。
 
+## 🔤 中文字体（字幕 / 封面标题）
+
+烧字幕和封面标题时，程序会**自动探测**一个真正含中文字形的字体，探测顺序：
+
+1. 环境变量 `SPRING_VIDEO_FONT`（显式指定字体文件路径）
+2. 项目自带的 `assets/fonts/` 目录（`.ttf` / `.otf` / `.ttc`）
+3. 系统常见中文字体（Windows 雅黑 / 黑体 / 宋体，macOS 苹方，Linux Noto CJK / 文泉驿等）
+4. 扫描系统字体目录（最多 400 个文件或 8 秒）
+
+⚠️ **探测不到时不会「凑合」**：程序会中止渲染并给出修复指引，**不会**静默改用不含中文的字体画出一片「豆腐块」——那种图看起来能出片，实际全是方框。
+
+修复方式任选其一：
+
+```bash
+# 1) 装一个开源中文字体（思源黑体 Noto Sans SC，SIL OFL 协议，可商用）
+sudo apt-get install -y fonts-noto-cjk          # Debian / Ubuntu
+sudo yum install -y google-noto-sans-cjk-fonts # CentOS / RHEL
+apk add --no-cache font-noto-cjk                # Alpine
+
+# 2) 或把字体文件放进 assets/fonts/ 后重启
+
+# 3) 或用环境变量指定（Windows PowerShell 示例）
+$env:SPRING_VIDEO_FONT = "C:/path/to/NotoSansSC-Regular.otf"
+```
+
+> 注：Windows 默认命中的微软雅黑版权归方正 / 微软，若成片用于商业发布，建议换成 OFL 协议的思源黑体（丢进 `assets/fonts/` 即可，无需改代码）。
+
 ## 🤝 如何参与贡献
 
 1. Fork 本仓库

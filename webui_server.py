@@ -40,7 +40,211 @@ def _aborted():
         return False
     p = PROGRESS.get(rid)
     return bool(p and p.get('abort'))
-FONT_PATH = "C:/Windows/Fonts/msyh.ttc"
+# ---------------------------------------------------------------------------
+# 中文字体解析（跨平台探测 · 缺字形校验 · 不静默降级）
+#
+# 历史硬伤：这里曾是 FONT_PATH = "C:/Windows/Fonts/msyh.ttc"，且加载失败时
+# `except: ImageFont.load_default()` —— 该默认字体**不含中文字形**且**不报错**，
+# 于是 macOS/Linux/Docker 上烧字幕与封面标题会静默变成「豆腐块」，用户只看到
+# 一堆方框却无从得知原因（README 当时还宣称 Docker 镜像已装好中文字体）。
+# 现策略：显式探测 → 逐字校验是否真含中文字形 → 找不到就抛 FontMissingError
+# 并给出可执行的修复指引。宁可明确失败，也不产出不可读的视频。
+#
+# 待办（合规）：微软雅黑版权归方正/微软，渲染进公开发布的商业视频存在授权风险，
+# 后续拟换成 SIL OFL 协议字体（思源黑体 Noto Sans SC）随仓库分发。探测顺序已
+# 为「仓库自带 assets/fonts/」预留优先级，换字体时只需丢文件进去，不用改代码。
+# ---------------------------------------------------------------------------
+FONT_ENV = 'SPRING_VIDEO_FONT'                      # 环境变量：显式指定字体文件
+FONT_DIR = os.path.join(HERE, 'assets', 'fonts')    # 仓库自带字体目录（建议放 OFL 字体）
+_CJK_SAMPLE = '中文字幕测试'                          # 字形校验采样
+_PUA_PROBE = '\ue000'        # 私用区码位：常规字体必然缺失，用作「缺字形」基准位图
+_FONT_LOCK = threading.Lock()
+_FONT_CACHE = {'checked': False, 'path': '', 'reason': ''}
+_font_cache_by_size = {}
+
+
+def _font_has_cjk(path, size=48):
+    """判断字体文件是否**真的**含中文字形（只看文件存在与否是不够的）。
+
+    原理：把每个采样汉字渲染为位图，与「必然缺失」的私用区码位位图逐一比对 ——
+    完全相同说明该字落到了 .notdef（缺字形）。实测可正确区分
+    微软雅黑/宋体（含中文）与 Arial / Segoe UI / Times / Pillow 默认字体（不含中文）。
+    个别字体（如 simsun）连 .notdef 都不绘制，此时退化为「是否画出任何笔画」判定。
+    """
+    try:
+        f = ImageFont.truetype(path, size)
+    except Exception:
+        return False
+
+    def _bmp(ch):
+        img = Image.new('L', (size * 3, size * 3), 0)
+        ImageDraw.Draw(img).text((8, 8), ch, font=f, fill=255)
+        return img.tobytes()
+
+    try:
+        miss = _bmp(_PUA_PROBE)
+        if not any(miss):                       # 该字体不绘制 .notdef（空白）
+            return all(any(_bmp(ch)) for ch in _CJK_SAMPLE)
+        return all(_bmp(ch) != miss for ch in _CJK_SAMPLE)
+    except Exception:
+        return False
+
+
+# 各平台常见中文字体（按优先级）
+_FONT_CANDIDATES = {
+    'win32': ['C:/Windows/Fonts/msyh.ttc', 'C:/Windows/Fonts/msyhl.ttc',
+              'C:/Windows/Fonts/msyhbd.ttc', 'C:/Windows/Fonts/simhei.ttf',
+              'C:/Windows/Fonts/simsun.ttc', 'C:/Windows/Fonts/Deng.ttf'],
+    'darwin': ['/System/Library/Fonts/PingFang.ttc',
+               '/System/Library/Fonts/STHeiti Medium.ttc',
+               '/System/Library/Fonts/STHeiti Light.ttc',
+               '/System/Library/Fonts/Hiragino Sans GB.ttc',
+               '/Library/Fonts/Arial Unicode.ttf',
+               '/Library/Fonts/Noto Sans CJK SC Regular.otf',
+               os.path.expanduser('~/Library/Fonts/Noto Sans SC Regular.otf')],
+}
+_FONT_CANDIDATES['linux'] = [
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf',   # Debian 12+ / Ubuntu 22.04+
+    '/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf',      # 上游 Noto Sans SC（OFL）
+    '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+    '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+    '/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf',
+    '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
+    '/usr/share/fonts/truetype/arphic/uming.ttc',
+    os.path.expanduser('~/.fonts/NotoSansSC-Regular.otf'),
+    os.path.expanduser('~/.local/share/fonts/NotoSansSC-Regular.otf'),
+]
+# 候选都没命中时的兜底：扫描系统字体目录（限流，避免启动拖慢）
+_FONT_SCAN_DIRS = {
+    'win32': ['C:/Windows/Fonts'],
+    'darwin': ['/System/Library/Fonts', '/Library/Fonts',
+               os.path.expanduser('~/Library/Fonts')],
+    'linux': ['/usr/share/fonts', '/usr/local/share/fonts',
+              os.path.expanduser('~/.fonts'), os.path.expanduser('~/.local/share/fonts')],
+}
+_FONT_SCAN_MAX_FILES = 400      # 最多校验这么多字体文件
+_FONT_SCAN_DEADLINE = 8.0       # 或最多花这么多秒
+
+
+def _platform_key():
+    p = (sys.platform or '').lower()
+    if p.startswith('win'):
+        return 'win32'
+    if p.startswith('darwin'):
+        return 'darwin'
+    return 'linux'
+
+
+def _iter_bundled_fonts():
+    try:
+        for fn in sorted(os.listdir(FONT_DIR)):
+            if fn.lower().endswith(('.ttf', '.otf', '.ttc')):
+                yield os.path.join(FONT_DIR, fn)
+    except OSError:
+        return
+
+
+def _scan_system_fonts(key, deadline_ts):
+    """遍历系统字体目录找第一个含中文字形的字体（限文件数与时间）。"""
+    n = 0
+    for root in _FONT_SCAN_DIRS.get(key, []):
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dn, filenames in os.walk(root):
+            for fn in sorted(filenames):
+                if not fn.lower().endswith(('.ttf', '.otf', '.ttc')):
+                    continue
+                n += 1
+                if n > _FONT_SCAN_MAX_FILES or time.time() > deadline_ts:
+                    return ''
+                p = os.path.join(dirpath, fn)
+                if _font_has_cjk(p):
+                    return p
+    return ''
+
+
+def _resolve_cjk_font(force=False):
+    """惰性解析中文字体路径，结果进程内缓存。返回 '' 表示没找到（附 reason）。"""
+    with _FONT_LOCK:
+        if _FONT_CACHE['checked'] and not force:
+            return _FONT_CACHE['path']
+        key = _platform_key()
+        found, notes = '', []
+        deadline = time.time() + _FONT_SCAN_DEADLINE
+
+        env = (os.environ.get(FONT_ENV) or '').strip()
+        if env:
+            if os.path.isfile(env) and _font_has_cjk(env):
+                found = os.path.abspath(env)
+            else:
+                notes.append(f'环境变量 {FONT_ENV} 指定的字体不可用或不含中文字形：{env}')
+        if not found:
+            for p in _iter_bundled_fonts():     # 仓库自带（OFL 字体放这里即可，无需改代码）
+                if _font_has_cjk(p):
+                    found = p
+                    break
+        if not found:
+            for p in _FONT_CANDIDATES.get(key, []):
+                if os.path.isfile(p) and _font_has_cjk(p):
+                    found = p
+                    break
+        if not found:
+            found = _scan_system_fonts(key, deadline)
+        if not found and not notes:
+            notes.append('已检查 环境变量 / assets/fonts / 系统常见中文字体 / 系统字体目录，均未找到含中文字形的字体')
+        _FONT_CACHE.update(checked=True, path=found, reason='；'.join(notes))
+        global FONT_PATH
+        FONT_PATH = found or ''
+        return _FONT_CACHE['path']
+
+
+class FontMissingError(RuntimeError):
+    """找不到含中文字形的字体。绝不静默降级为不含中文的字体（那会产出豆腐块）。"""
+
+
+def font_missing_help():
+    """缺字体时的可执行修复指引（各平台安装命令 + 两种免安装兜底）。"""
+    return (
+        '未找到含中文字形的字体，已中止渲染 —— 不会生成「豆腐块」字幕/封面标题。'
+        f'（{_FONT_CACHE.get("reason") or "系统无可用中文字体"}）\n'
+        '任选一种方式修复：\n'
+        '  1) 安装开源中文字体（推荐思源黑体 Noto Sans SC，SIL OFL 协议，可商用）：\n'
+        '     · Debian/Ubuntu : sudo apt-get install -y fonts-noto-cjk\n'
+        '     · Alpine(Docker): apk add --no-cache font-noto-cjk\n'
+        '     · CentOS/RHEL   : sudo yum install -y google-noto-sans-cjk-fonts\n'
+        '  2) 把字体文件（.ttf/.otf/.ttc）放进项目的 assets/fonts/ 目录后重启\n'
+        f'  3) 用环境变量指定：{FONT_ENV}=/path/to/NotoSansSC-Regular.otf'
+    )
+
+
+def cjk_font(size):
+    """加载中文字体。找不到含中文字形的字体时抛 FontMissingError（而非静默降级）。"""
+    p = _resolve_cjk_font()
+    if not p:
+        raise FontMissingError(font_missing_help())
+    with _FONT_LOCK:
+        f = _font_cache_by_size.get(size)
+    if f is None:
+        try:
+            f = ImageFont.truetype(p, size)
+        except Exception as e:
+            raise FontMissingError(f'字体加载失败：{p}（{e}）。{font_missing_help()}')
+        with _FONT_LOCK:
+            _font_cache_by_size[size] = f
+    return f
+
+
+def font_selfcheck():
+    """启动自检：返回 (ok, 说明文本)。缺字体时给出警告而非让用户在成片里踩坑。"""
+    p = _resolve_cjk_font()
+    if p:
+        return True, f'中文字体：{p}'
+    return False, '[警告] ' + font_missing_help().replace('\n', '\n        ')
+
+
+FONT_PATH = ''   # 由 _resolve_cjk_font() 惰性填充；保留名字仅为向后兼容
 AI_CONFIG_PATH = os.path.join(HERE, 'ai_config.json')
 HISTORY_PATH = os.path.join(HERE, 'history.json')
 STATIC_DIR = os.path.join(HERE, 'static')
@@ -1563,10 +1767,9 @@ def _cover_render(video_path, ts, title, sub, style, out_path, w_cap=1920):
     fs = max(28, W // 16)
 
     def font(size):
-        try:
-            return ImageFont.truetype(FONT_PATH, size)
-        except Exception:
-            return ImageFont.load_default()
+        # 找不到含中文字形的字体时显式报错（cjk_font 抛 FontMissingError），
+        # 绝不回退到 ImageFont.load_default() —— 那个字体不含中文，只会画出豆腐块。
+        return cjk_font(size)
 
     def wrap(text, fnt, maxw, maxlines=3):
         lines, cur = [], ''
@@ -2353,9 +2556,14 @@ SCENE_TITLES = ['花开似锦 · 樱花漫山', '金色田野 · 油菜花开', 
 
 def stamp_title(img, text):
     try:
-        font = ImageFont.truetype(FONT_PATH, 54); font_small = ImageFont.truetype(FONT_PATH, 30)
-    except Exception:
-        font = ImageFont.load_default(); font_small = font
+        font = cjk_font(54); font_small = cjk_font(30)
+    except FontMissingError:
+        # 默认示例图上的标题只是装饰文字：宁可不加字，也不画一堆豆腐块。
+        # 真正的成片渲染路径（字幕/封面）会显式抛错，不会走到这种静默分支。
+        if not getattr(stamp_title, '_warned', False):
+            stamp_title._warned = True
+            print('[警告] ' + font_missing_help(), flush=True)
+        return img
     d = ImageDraw.Draw(img, 'RGBA'); sub = '· 春日 ·'
     d.text((34, H-120), text, font=font, fill=(255,255,255,120)); d.text((36, H-116), sub, font=font_small, fill=(255,255,255,120))
     d.text((30, H-120), text, font=font, fill=(40,70,40,255)); d.text((32, H-118), sub, font=font_small, fill=(60,90,50,255))
@@ -6638,6 +6846,9 @@ def start_server(port=8765, open_browser=True):
     print('  [Spring Video Studio] started')
     print('  Open in browser:', url)
     print('  Press Ctrl+C to stop')
+    _fok, _fmsg = font_selfcheck()      # 启动自检：无中文字体时提前告警，别等成片全是方框
+    if not _fok:
+        print('  ' + _fmsg, flush=True)
     print('=' * 52, flush=True)
     if open_browser and host in ('127.0.0.1', 'localhost'):
         threading.Timer(0.7, lambda: webbrowser_open(url)).start()

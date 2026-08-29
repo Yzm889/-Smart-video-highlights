@@ -1783,3 +1783,95 @@ def test_clamp_line_cuts_at_punctuation_not_midword():
     no_punc = '这是一个完全没有标点符号的长句子用来测试硬切分支是否正常工作'
     assert len(S._clamp_line(no_punc, 10)) <= 10
 
+
+
+# ---------------------------------------------------------------------------
+# 中文字体解析（P0：不得静默降级为不含中文的字体）
+# ---------------------------------------------------------------------------
+def _first_existing(*paths):
+    for p in paths:
+        if os.path.isfile(p):
+            return p
+    return ''
+
+
+def test_font_has_cjk_rejects_fonts_without_chinese():
+    """缺字形必须被识别出来 —— 这正是「豆腐块」bug 的根因（原来只判文件存在与否）。"""
+    import webui_server as S
+    non_cjk = _first_existing(
+        'C:/Windows/Fonts/arial.ttf', 'C:/Windows/Fonts/times.ttf',
+        'C:/Windows/Fonts/segoeui.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        '/System/Library/Fonts/Helvetica.ttc',
+    )
+    if not non_cjk:
+        pytest.skip('本机没有可对照的非中文字体')
+    assert S._font_has_cjk(non_cjk) is False, f'{non_cjk} 不含中文，应判定为缺字形'
+
+    cjk = _first_existing(
+        'C:/Windows/Fonts/msyh.ttc', 'C:/Windows/Fonts/simsun.ttc',
+        'C:/Windows/Fonts/simhei.ttf',
+        '/System/Library/Fonts/PingFang.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+    )
+    if cjk:
+        assert S._font_has_cjk(cjk) is True, f'{cjk} 含中文，应判定为可用'
+
+
+def test_cjk_font_raises_instead_of_silent_tofu(monkeypatch):
+    """找不到中文字体时必须显式报错，且给出可执行的修复指引。"""
+    import webui_server as S
+    monkeypatch.setattr(S, '_FONT_CACHE', {'checked': True, 'path': '', 'reason': '模拟：无字体'})
+    with pytest.raises(S.FontMissingError) as ei:
+        S.cjk_font(40)
+    msg = str(ei.value)
+    assert '豆腐块' in msg
+    assert 'fonts-noto-cjk' in msg and S.FONT_ENV in msg, '应给出安装命令与环境变量兜底'
+
+
+def test_font_selfcheck_warns_when_missing(monkeypatch):
+    """启动自检：缺字体时返回 False + 警告文案（而不是让用户在成片里才发现）。"""
+    import webui_server as S
+    monkeypatch.setattr(S, '_FONT_CACHE', {'checked': True, 'path': '', 'reason': '模拟：无字体'})
+    ok, msg = S.font_selfcheck()
+    assert ok is False and '警告' in msg and 'assets/fonts' in msg
+
+
+def test_font_resolution_order_and_no_font(monkeypatch, tmp_path):
+    """解析顺序可验证：关掉系统扫描与平台候选后，空环境应明确解析失败（不假成功）。"""
+    import webui_server as S
+    monkeypatch.setattr(S, '_FONT_SCAN_MAX_FILES', 0)
+    monkeypatch.setattr(S, '_FONT_CANDIDATES', {'win32': [], 'darwin': [], 'linux': []})
+    monkeypatch.setattr(S, 'FONT_DIR', str(tmp_path / 'empty_fonts'))
+    monkeypatch.delenv(S.FONT_ENV, raising=False)
+    assert S._resolve_cjk_font(force=True) == '', '没有中文字体时应返回空串，而不是随便挑一个字体充数'
+
+
+def test_cover_render_fails_loudly_without_cjk_font(monkeypatch, tmp_path):
+    """成片路径（封面/字幕）缺中文字体必须抛错中止 —— 不能产出看不懂的方框图。"""
+    import webui_server as S
+    from PIL import Image
+    video = tmp_path / 'v.mp4'
+    video.write_bytes(b'v')
+
+    def fake_ff(args, input_data=None):
+        out = args[args.index('-an') + 1]
+        Image.new('RGB', (320, 180), (120, 60, 30)).save(out, quality=85)
+        return 0, b'', b''
+
+    monkeypatch.setattr(S, 'ffmpeg_run', fake_ff)
+    monkeypatch.setattr(S, '_FONT_CACHE', {'checked': True, 'path': '', 'reason': '模拟：无字体'})
+    with pytest.raises(S.FontMissingError):
+        S._cover_render(str(video), 1.0, '中文标题', '副标题', 1, str(tmp_path / 'cover.jpg'))
+    assert not (tmp_path / 'cover.jpg').exists(), '失败时不应留下半成品封面'
+
+
+def test_stamp_title_skips_text_rather_than_tofu(monkeypatch):
+    """默认示例图的装饰标题：缺字体时宁可不加字，也不画豆腐块（且不抛错中断启动）。"""
+    import webui_server as S
+    from PIL import Image
+    monkeypatch.setattr(S, '_FONT_CACHE', {'checked': True, 'path': '', 'reason': '模拟：无字体'})
+    img = Image.new('RGB', (320, 180), (10, 20, 30))
+    out = S.stamp_title(img, '花开似锦')
+    assert out is img and out.size == (320, 180), '应原样返回，不绘制不可读的方框'
