@@ -1425,3 +1425,66 @@ def test_parse_time_str():
     assert S._parse_time_str('00:01:23.45') == 83.45
     assert S._parse_time_str('01:00:00') == 3600.0
     assert S._parse_time_str('bad') is None
+
+
+# ---------------------------------------------------------------------------
+# 视频编码器选择：GPU 硬编(h264_nvenc) 优先、不可用时回退 CPU 软编(libx264)
+# ---------------------------------------------------------------------------
+def _write_video_cfg(S, encoder):
+    """把编码策略写入被 conftest 隔离到 tmp 的 ai_config.json。"""
+    import json
+    with open(S.AI_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump({'video': {'encoder': encoder}}, f)
+
+
+def test_video_encoder_cfg_defaults_to_auto():
+    import webui_server as S
+    _write_video_cfg(S, '')
+    assert S.video_encoder_cfg() == 'auto'
+    _write_video_cfg(S, 'gpu')
+    assert S.video_encoder_cfg() == 'gpu'
+    _write_video_cfg(S, '不存在的策略')
+    assert S.video_encoder_cfg() == 'auto', '非法值必须回退 auto，不能让下游拿到脏值'
+
+
+def test_video_encode_args_cpu_mode_uses_libx264():
+    import webui_server as S
+    _write_video_cfg(S, 'cpu')
+    args = S.video_encode_args(20)
+    assert args[0:2] == ['-c:v', 'libx264']
+    assert 'veryfast' in args
+    assert args[args.index('-crf') + 1] == '20'
+
+
+def test_video_encode_args_gpu_when_usable(monkeypatch):
+    import webui_server as S
+    _write_video_cfg(S, 'auto')
+    monkeypatch.setattr(S, '_nvenc_usable', lambda: True)
+    args = S.video_encode_args(20)
+    assert args[0:2] == ['-c:v', 'h264_nvenc']
+    assert args[args.index('-qp') + 1] == '20'
+
+
+def test_video_encode_args_falls_back_when_gpu_unusable(monkeypatch):
+    """强制 GPU 但本机 nvenc 不可用时必须回退 CPU，绝不能让整条流水线崩掉。"""
+    import webui_server as S
+    _write_video_cfg(S, 'gpu')
+    monkeypatch.setattr(S, '_nvenc_usable', lambda: False)
+    args = S.video_encode_args()
+    assert args[0:2] == ['-c:v', 'libx264']
+
+
+def test_video_encode_args_auto_without_gpu(monkeypatch):
+    import webui_server as S
+    _write_video_cfg(S, 'auto')
+    monkeypatch.setattr(S, '_nvenc_usable', lambda: False)
+    assert S.video_encode_args()[1] == 'libx264'
+
+
+def test_encoder_preset_unified_source_pin():
+    """源码 pin：8 处编码点统一走 video_encode_args，旧的不一致 preset 'fast' 不得复活。"""
+    import webui_server as S
+    src = open(os.path.join(os.path.dirname(os.path.abspath(S.__file__)),
+                            'webui_server.py'), encoding='utf-8').read()
+    assert "'fast'" not in src, "发现旧的 'fast' preset，8 处编码应统一为 veryfast/GPU 档位"
+    assert src.count('video_encode_args(') >= 9, '应为 1 处定义 + 8 处调用'

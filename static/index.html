@@ -562,7 +562,15 @@
         <select id="hardCutSel"><option value="0">交叉淡入淡出</option><option value="1">硬切（更准踩点）</option></select>
       </div>
       <div class="field"><label>默认单张时长(秒)</label><input type="number" id="defDur" value="3" min="1" max="20"></div>
+      <div class="field"><label>视频编码（影响出片速度）</label>
+        <select id="videoEnc" onchange="saveVideoEnc()">
+          <option value="auto">自动（GPU 可用则用，最快）</option>
+          <option value="cpu">仅 CPU 软编（兼容性最好）</option>
+          <option value="gpu">强制 GPU 硬编</option>
+        </select>
+      </div>
     </div>
+    <div class="hint" id="videoEncInfo" style="margin-top:4px;">编码器中…</div>
     <div class="row" style="margin-top:8px;">
       <div class="field"><label>一键发布规格</label>
         <div class="row">

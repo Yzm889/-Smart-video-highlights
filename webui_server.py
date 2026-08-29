@@ -2282,8 +2282,7 @@ def make_image_clip(img_path, dur, motion, out_path, w, h, fps):
         out_frames.append(np.asarray(win.resize((w, h), Image.BILINEAR), dtype=np.float32))
     data = np.stack(out_frames) if len(out_frames) > 1 else out_frames[0][None]
     rc, o, e = ffmpeg_run(['-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{w}x{h}',
-                            '-r', str(fps), '-i', '-', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                            '-preset', 'veryfast', '-threads', '0', '-crf', '20', out_path], input_data=data.astype(np.uint8).tobytes())
+                            '-r', str(fps), '-i', '-'] + video_encode_args(20) + ['-threads', '0', out_path], input_data=data.astype(np.uint8).tobytes())
     return out_path
 
 def make_video_clip(src, dur, out_path, w, h, fps, start=0.0):
@@ -2296,9 +2295,77 @@ def make_video_clip(src, dur, out_path, w, h, fps, start=0.0):
         use = dur
     rc, o, e = ffmpeg_run(['-y', '-ss', f'{start:.3f}', '-i', src, '-t', f'{use:.3f}',
                             '-vf', f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1',
-                            '-r', str(fps), '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                            '-preset', 'veryfast', '-threads', '0', '-crf', '20', '-an', out_path])
+                            '-r', str(fps)] + video_encode_args(20) + ['-threads', '0', '-an', out_path])
     return out_path, use
+
+
+# ---------------------------------------------------------------------------
+# 视频编码器选择：GPU 硬编(h264_nvenc) 优先，不可用时回退 CPU 软编(libx264)
+# 渲染是长视频全流程的瓶颈（8 分钟实测约 360s），Whisper 早已走 CUDA，编码仍纯 CPU。
+# ---------------------------------------------------------------------------
+_ENC_CACHE = {'probe': None}
+
+
+def video_encoder_cfg():
+    """读取用户选择的编码策略：auto(默认·GPU 可用则用) / cpu / gpu。"""
+    v = (load_ai_config().get('video') or {})
+    mode = str(v.get('encoder') or 'auto').strip().lower()
+    return mode if mode in ('auto', 'cpu', 'gpu') else 'auto'
+
+
+def _probe_nvenc():
+    """实际跑一个极短测试编码，确认 h264_nvenc 真能出片。
+    仅查 `ffmpeg -encoders` 不够——驱动/格式不匹配时会"列表里有、运行期失败"。"""
+    import tempfile
+    out = os.path.join(tempfile.gettempdir(), '_framecut_nvenc_probe.mp4')
+    ok = False
+    try:
+        rc, _o, _e = ffmpeg_run(['-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=10:duration=1',
+                                 '-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p',
+                                 '-preset', 'p4', '-rc', 'constqp', '-qp', '26', out])
+        ok = (rc == 0) and os.path.exists(out) and os.path.getsize(out) > 0
+    except Exception:
+        ok = False
+    try:
+        if os.path.exists(out):
+            os.remove(out)
+    except Exception:
+        pass
+    return ok
+
+
+def _nvenc_usable():
+    """缓存探测结果（进程内只探测一次，避免每条命令都跑测试编码）。"""
+    if _ENC_CACHE['probe'] is None:
+        _ENC_CACHE['probe'] = bool(_probe_nvenc())
+    return _ENC_CACHE['probe']
+
+
+def reset_encoder_probe():
+    """清空编码探测缓存（切换策略后 / 测试用）。"""
+    _ENC_CACHE['probe'] = None
+
+
+def video_encode_args(quality=23):
+    """返回视频编码参数片段（list）。GPU 硬编可用且用户未禁用时用 h264_nvenc，否则回退 libx264。
+    quality：质量档，越小越清晰（libx264 的 crf / nvenc 的 qp，语义对齐）。"""
+    mode = video_encoder_cfg()
+    if mode in ('auto', 'gpu') and _nvenc_usable():
+        return ['-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p',
+                '-preset', 'p4', '-rc', 'constqp', '-qp', str(int(quality))]
+    # auto 但 GPU 不可用，或用户强制 cpu，或强制 gpu 却探测失败 → 一律回退 CPU 软编
+    return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast',
+            '-crf', str(int(quality))]
+
+
+def video_encoder_label():
+    """给前端展示当前实际生效的编码器。"""
+    mode = video_encoder_cfg()
+    if mode == 'cpu':
+        return 'CPU 软编 libx264（已手动指定）'
+    if _nvenc_usable():
+        return 'GPU 硬编 h264_nvenc'
+    return 'CPU 软编 libx264（未检测到可用 GPU 编码器）'
 
 
 def probe_audio_len(path):
@@ -3307,8 +3374,7 @@ def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=
         fc_parts.append('%sformat=yuv420p[vo]' % prev)
         fc = ';'.join(fc_parts)
         cmd = inputs + ['-filter_complex', fc, '-map', '[vo]',
-                        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast',
-                        '-threads', '0', '-r', str(int(params.get('fps', 30))), silent]
+                        ] + video_encode_args() + ['-threads', '0', '-r', str(int(params.get('fps', 30))), silent]
         rc, o, e = ffmpeg_run(cmd)
     else:
         up('按鼓点硬切拼接', 30)
@@ -3332,8 +3398,7 @@ def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=
             cmd = ['-y']
             for s in segs:
                 cmd += ['-i', s]
-            cmd += ['-filter_complex', fc, '-map', '[vout]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                    '-preset', 'veryfast', '-threads', '0', silent]
+            cmd += ['-filter_complex', fc, '-map', '[vout]'] + video_encode_args() + ['-threads', '0', silent]
             rc, o, e = ffmpeg_run(cmd)
     if rc != 0:
         raise RuntimeError('卡点拼接失败: ' + e.decode('utf-8', 'ignore')[-400:])
@@ -3506,8 +3571,7 @@ def generate_beat_sync_video(video_path, audio_path, output_path, beat_sensitivi
     temp_video = base + '.temp_noaudio.mp4'
     try:
         rc, out, err = ffmpeg_run(['-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
-                                   '-t', str(music_dur), '-c:v', 'libx264', '-preset', 'fast',
-                                   '-crf', '23', temp_video])
+                                   '-t', str(music_dur)] + video_encode_args() + [temp_video])
         if rc != 0:
             raise RuntimeError('片段拼接失败: ' + err.decode('utf-8', 'ignore')[-1200:])
         up('合成配乐', 80)
@@ -3944,8 +4008,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     vsub = os.path.join(run_dir, 'vsub.mp4')
     rc, o, e = ffmpeg_run(['-y', '-i', video_path,
                            '-vf', f"subtitles='{esc}':force_style='FontName=Microsoft YaHei,FontSize=22,Alignment=2,MarginV=50'",
-                           '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast',
-                           '-threads', '0', '-an', vsub])
+                           ] + video_encode_args() + ['-threads', '0', '-an', vsub])
     base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
 
     has_orig_audio = _has_audio_track(video_path)
@@ -4973,9 +5036,8 @@ def assemble(items, params, music=None, progress=None, run_dir=None):
         cmd = ['-y']
         for s in segments:
             cmd += ['-i', s]
-        cmd += ['-filter_complex', filter_str, '-map', '[vout]', '-c:v', 'libx264',
-                '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-threads', '0',
-                os.path.join(run_dir, 'vid_silent.mp4')]
+        cmd += ['-filter_complex', filter_str, '-map', '[vout]'] + video_encode_args() + [
+                '-threads', '0', os.path.join(run_dir, 'vid_silent.mp4')]
         rc, o, e = ffmpeg_run(cmd)
         if rc != 0:
             raise RuntimeError('合成失败: ' + e.decode('utf-8', 'ignore')[-600:])
@@ -5037,8 +5099,7 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
         esc = srt_path.replace('\\', '/').replace(':', '\\:').replace('\'', '\\\'')
         rc, o, e = ffmpeg_run(['-y', '-i', video_path,
                                '-vf', f"subtitles='{esc}':force_style='FontName=Microsoft YaHei,FontSize=20,Alignment=2,MarginV=40'",
-                               '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                               '-preset', 'veryfast', '-threads', '0', '-an', burned])
+                               ] + video_encode_args() + ['-threads', '0', '-an', burned])
         if rc == 0 and os.path.exists(burned):
             video_path = burned
         if progress:
@@ -5308,12 +5369,14 @@ class Handler(BaseHTTPRequestHandler):
                            'local': mask(cfg.get('local')),
                            'whisper': dict(cfg.get('whisper') or {}),
                            'vlm': mask(cfg.get('vlm')),
-                           'mirror': dict(cfg.get('mirror') or {})},
+                           'mirror': dict(cfg.get('mirror') or {}),
+                           'video': dict(cfg.get('video') or {})},
                 'vision_available': _vision_available(),
                 'tts_available': _tts_available(),
                 'local_enabled': local_llm_enabled(),
                 'whisper_ready': whisper_model_ready(),
                 'vlm_enabled': vlm_enabled(),
+                'video_encoder': video_encoder_label(),
             }).encode('utf-8'), 'application/json')
             return
         if path == '/api/ai_status':
@@ -5439,10 +5502,20 @@ class Handler(BaseHTTPRequestHandler):
                     if 'enabled' in inc:
                         cur['enabled'] = bool(inc['enabled'])
                     cfg['vlm'] = cur
+                if isinstance(data.get('video'), dict):
+                    # 编码策略：auto(默认·GPU可用则用) / cpu / gpu
+                    inc = data['video']
+                    cur = dict(cfg.get('video') or {})
+                    enc = str(inc.get('encoder') or '').strip().lower()
+                    if enc in ('auto', 'cpu', 'gpu'):
+                        cur['encoder'] = enc
+                    cfg['video'] = cur
                 save_ai_config(cfg)
                 self._send(200, json.dumps({'ok': True,
                                             'vision_available': _vision_available(),
-                                            'tts_available': _tts_available()}).encode('utf-8'), 'application/json')
+                                            'tts_available': _tts_available(),
+                                            'video_encoder': video_encoder_label()}).encode('utf-8'),
+                              'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
             return

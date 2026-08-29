@@ -154,6 +154,12 @@ function loadAIConfig(){
     if($('vlmEnabled')) $('vlmEnabled').checked = (vlm.enabled === true);
     if(vlm.base_url) $('vlmBase').value = vlm.base_url;
     if(vlm.model) $('vlmModel').value = vlm.model;
+    const vid = c.video || {};
+    if($('videoEnc') && vid.encoder) $('videoEnc').value = vid.encoder;
+    if($('videoEncInfo')){
+      $('videoEncInfo').textContent = '当前生效：' + (res.video_encoder || 'CPU 软编 libx264')
+        + '　（渲染是长视频出片的主要耗时环节，GPU 硬编通常更快）';
+    }
     if(vlm.mode) $('vlmMode').value = vlm.mode;
     const mir = c.mirror || {};
     if($('mirUseMirror')) $('mirUseMirror').value = (mir.use_hf_mirror === false) ? '0' : '1';
@@ -391,6 +397,18 @@ function pullVlm(){
 }
 
 
+function saveVideoEnc(){
+  const sel = $('videoEnc'); if(!sel) return;
+  fetch('/api/ai/config', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ video: { encoder: sel.value } }) })
+    .then(r=>r.json()).then(res=>{
+      if($('videoEncInfo')){
+        $('videoEncInfo').textContent = (res.ok ? '✅ 已保存，' : '❌ 保存失败，')
+          + '当前生效：' + (res.video_encoder || 'CPU 软编 libx264');
+      }
+    }).catch(()=>{ if($('videoEncInfo')) $('videoEncInfo').textContent = '❌ 保存失败：无法连接服务'; });
+}
+
 function copyText(id){
   const el = $(id); if(!el) return;
   const t = el.textContent || el.innerText || '';
@@ -582,11 +600,10 @@ function preflight(task){
     const decide = (s) => {
       _aiStatus = s;
       let missing = null, explicit = false;
-      const narSel = $('narMode'), movSel = $('movieMode'), eco = $('eco'), aiCap = $('aiCap');
-      if (task === 'narrate' && narSel && narSel.value === 'ai' && !s.chat){ missing = '真AI 解说(LLM)'; explicit = true; }
-      else if (task === 'movie' && movSel && movSel.value === 'ai' && !s.chat){ missing = '真AI 解说(LLM)'; explicit = true; }
-      else if (task === 'build' && eco && !eco.checked && !s.any_ai){ missing = '真AI(DeepSeek/MiMo)'; explicit = true; }
-      else if (task === 'build' && aiCap && aiCap.checked && !s.vision){ missing = '画面描述(Vision)'; explicit = true; }
+      // 注：「省流/智能」模式选择器已于第 26 轮移除，改为后端自动选路（本地优先、配了 key 才用云端），
+      // 故不再读取 narMode/movieMode/eco；此处只对「主动勾选了画面描述」这类仍存在的开关做前置确认。
+      const aiCap = $('aiCap');
+      if (task === 'build' && aiCap && aiCap.checked && !s.vision){ missing = '画面描述(Vision)'; explicit = true; }
       else if (task === 'instruct' && !s.chat){ missing = '真AI 解说(LLM)'; explicit = false; }
       if (missing){
         _pendingGen = resolve;  // 点「仍用免费生成」时 resolve(true)
