@@ -10,15 +10,20 @@ if ROOT not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_ai_config(tmp_path):
-    """测试隔离：把 AI 配置指向空文件，避免测试结果受本机 ai_config.json
-    （真实 key / vlm 开关 / whisper 模型等）影响，保证测试可复现。"""
+def _isolate_project_state(tmp_path):
+    """测试隔离：AI 配置 / 生成历史 / 输出目录 全部指向 tmp_path，避免测试
+    受本机 ai_config.json（真实 key / 开关）影响，也杜绝测试往真实 history.json
+    与 webui_output/ 写入垃圾条目（_render_plan_job 等现在会写历史，必须隔离）。"""
     import webui_server as S
     p = tmp_path / 'ai_config.json'
     p.write_text('{}', encoding='utf-8')
-    old = S.AI_CONFIG_PATH
+    old_cfg, old_hist, old_out = S.AI_CONFIG_PATH, S.HISTORY_PATH, S.OUTDIR
     S.AI_CONFIG_PATH = str(p)
+    S.HISTORY_PATH = str(tmp_path / 'history.json')
+    S.OUTDIR = str(tmp_path / 'webui_output')
     try:
         yield
     finally:
-        S.AI_CONFIG_PATH = old
+        S.AI_CONFIG_PATH = old_cfg
+        S.HISTORY_PATH = old_hist
+        S.OUTDIR = old_out
