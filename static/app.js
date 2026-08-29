@@ -1385,11 +1385,19 @@ function renderPlanModal(){
   }
   const timelineHtml = isBeat ? _renderTimeline() : '';
   const addCutHtml = isBeat ? _addCutBarHtml() : '';
+  // 解说方案：改完解说词后，可让模型按新解说重新匹配分镜并更新下方列表
+  const alignHtml = isBeat ? '' : (
+      '<div class="plan-align">'
+    + '<button class="btn mini" id="alignShotsBtn" onclick="alignNarrateShots()">🧩 按解说词重新匹配分镜</button>'
+    + '<span class="hint">改完上方解说词后点这里：会把候选镜头按新解说重新分配（增删句子、调换顺序都会重排分镜）。'
+    + '模型可用时按语义匹配，不可用则按句子长度比例分配。</span>'
+    + '<div class="hint" id="alignMsg"></div></div>');
   box.innerHTML = '<div class="plan-head"><span class="plan-title">'+title+'</span>'
     + '<button class="btn mini ghost" onclick="closePlanModal()">✕ 关闭</button></div>'
     + '<div class="plan-desc">'+desc+'</div>'
     + timelineHtml
     + addCutHtml
+    + alignHtml
     + '<div class="plan-list">'+rowsHtml+'</div>'
     + '<div class="plan-sum" id="planSum"></div>'
     + '<div class="plan-actions">'
@@ -1529,6 +1537,43 @@ function _collectPlanEdits(){
   }
   return { segs };
 }
+// 解说词驱动的分镜重匹配：把用户改写后的解说词送回后端，由模型（或算法）重新分配镜头
+async function alignNarrateShots(){
+  if(!_planRunid || !_curPlan) return;
+  const lines = [];
+  $('planBox').querySelectorAll('.plan-row').forEach(row=>{
+    const cap = row.querySelector('.cap');
+    if(cap) lines.push((cap.value||'').trim());
+  });
+  if(!lines.some(x=>x)){ alert('请至少填写一句解说词'); return; }
+  const btn = $('alignShotsBtn');
+  const msg = $('alignMsg');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ 匹配中…'; }
+  if(msg) msg.textContent = '正在按解说词重新匹配分镜…';
+  try{
+    const r = await fetch('/api/narrate/align', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ runid:_planRunid, lines }) });
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '匹配失败');
+    // 用新的分镜刷新方案并重新渲染
+    _curPlan.segs = out.segs;
+    _curPlan.narr = lines;
+    renderPlanModal();
+    const m = $('alignMsg');
+    if(m){
+      m.textContent = '✅ ' + (out.msg||'已重新匹配')
+        + '（候选镜头 ' + (out.shots||0) + ' 个 → ' + out.segs.length + ' 段）';
+      m.style.color = (out.source === 'model') ? '#2e7d32' : '#b8860b';
+    }
+  }catch(e){
+    const m = $('alignMsg');
+    if(m){ m.textContent = '❌ ' + e.message; m.style.color = '#c0392b'; }
+  }finally{
+    const b = $('alignShotsBtn');
+    if(b){ b.disabled = false; b.textContent = '🧩 按解说词重新匹配分镜'; }
+  }
+}
+
 async function confirmPlan(){
   if(!_planRunid) return;
   const edits=_collectPlanEdits();

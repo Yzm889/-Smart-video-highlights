@@ -3954,6 +3954,163 @@ def _merge_segs(segs, max_keep=None):
     return merged
 
 
+def _narrate_candidate_shots(video_path, params):
+    """解说「候选镜头」＝未合并的细粒度场景段（供用户改完解说词后重新匹配分镜用）。
+    场景切点命中缓存，重复调用几乎零成本。若切点太少（长镜头视频），再按 maxSeg 细分，
+    保证重匹配时有足够的可组合粒度。"""
+    segs = _segment_timeline(video_path, max_seg=float((params or {}).get('maxSeg', 25)))
+    if not segs:
+        return []
+    return segs
+
+
+def _llm_text(prompt, system='', timeout=180):
+    """本地文字模型优先（写稿主力），不可用/失败时回退视觉模型的文字通道；都不可用返回 None。"""
+    if _local_model_available():
+        try:
+            r = local_llm_chat(prompt, system=system, timeout=timeout)
+            if r and r.strip():
+                return r
+        except Exception:
+            pass
+    try:
+        return vlm_text(prompt, system=system, timeout=timeout)
+    except Exception:
+        return None
+
+
+def _asr_text_in(asr, s, e):
+    """取时间窗 [s,e) 内的台词（按台词中点归窗，与解说稿聚合口径一致）。"""
+    parts = []
+    for x in (asr or []):
+        try:
+            mid = (float(x.get('start', 0)) + float(x.get('end', 0))) / 2.0
+        except Exception:
+            continue
+        if s <= mid < e:
+            t = (x.get('text') or '').strip()
+            if t:
+                parts.append(t)
+    return ' '.join(parts)[:120]
+
+
+def _algo_align_shots(shots, lines):
+    """算法兜底：按解说词字数权重把镜头顺序分配给各句（不调模型，离线可用）。
+    返回 bounds：第 i 句解说对应的最后一个镜头编号（1-based）。"""
+    m, k = len(shots), len(lines)
+    if m <= 0 or k <= 0:
+        return []
+    w = [max(1, len(str(l))) for l in lines]
+    tot = float(sum(w))
+    bounds, acc = [], 0
+    for i in range(k):
+        acc += w[i]
+        b = int(round(acc * m / tot))
+        # 每句至少 1 个镜头，且给后面的句子留够（避免最后几句分不到镜头）
+        b = max(i + 1, min(m - (k - 1 - i), b))
+        bounds.append(b)
+    return bounds
+
+
+def _model_align_shots(shots, lines, asr=None, params=None):
+    """让模型按解说词语义把镜头分配给各句（asr 仅作语义依据，可缺省）。
+    返回 bounds(list[int])；失败/结果不合法返回 None，由调用方回退到 _algo_align_shots。"""
+    m, k = len(shots), len(lines)
+    if m <= 0 or k <= 0:
+        return None
+    shot_lines = []
+    for i, (s, e) in enumerate(shots, 1):
+        t = _asr_text_in(asr, s, e)
+        shot_lines.append('%d [%.1f-%.1fs] %s' % (i, s, e, ('台词：' + t) if t else '（无台词画面）'))
+    prompt = ('下面是视频的镜头清单（编号 / 时间 / 该镜头里的台词），以及用户改写后的解说词。\n'
+              '请把每个镜头分配给【内容最贴合】的那句解说。\n\n'
+              '【镜头清单】\n' + '\n'.join(shot_lines)
+              + '\n\n【解说词】共 %d 句\n' % k
+              + '\n'.join('%d. %s' % (i + 1, l) for i, l in enumerate(lines))
+              + '\n\n要求：\n'
+              '- 必须按镜头顺序分配：不能颠倒、不能跳号、不能遗漏，每个镜头只能属于一句解说；\n'
+              '- 一句解说可以对应一个或多个【连续】镜头；\n'
+              '- 输出一个 JSON 数组，共 %d 个整数，第 i 个数 = 第 i 句解说对应的最后一个镜头编号；\n' % k
+              + '- 数组最后一个数必须等于 %d（总镜头数），保证全部镜头都被覆盖。\n' % m
+              + '只输出这个 JSON 数组，不要解释、不要其他文字。')
+    out = _llm_text(prompt, '你是影视剪辑师，擅长把解说词与画面对位。', timeout=180)
+    if not out:
+        return None
+    import re as _re, json as _json
+    m2 = _re.search(r'\[[^\]]*\]', out, _re.S)
+    if not m2:
+        return None
+    try:
+        arr = _json.loads(m2.group(0))
+    except Exception:
+        return None
+    if not isinstance(arr, list) or len(arr) != k:
+        return None
+    bounds = []
+    for v in arr:
+        try:
+            bounds.append(int(round(float(v))))
+        except Exception:
+            return None
+    # 合法化：单调递增、每句至少 1 个镜头、末值 = 总镜头数
+    for i in range(k):
+        lo, hi = i + 1, m - (k - 1 - i)
+        if bounds[i] < lo:
+            bounds[i] = lo
+        elif bounds[i] > hi:
+            bounds[i] = hi
+    for i in range(1, k):
+        if bounds[i] < bounds[i - 1]:
+            return None      # 出现倒序 → 判定模型输出不可用，交给算法兜底
+    if bounds[-1] != m:
+        bounds[-1] = m
+    return bounds
+
+
+def _expand_shots(shots, k):
+    """候选镜头数少于解说句数时，把每个镜头按时间均分成若干子段，
+    保证每句解说至少能分到一个画面单元（子段仍在原镜头内，不跨镜头）。
+    否则「每句至少 1 个镜头」的约束无解，会导致索引越界。"""
+    m = len(shots)
+    if m <= 0 or k <= 0 or m >= k:
+        return shots
+    per = -(-k // m)          # 整数向上取整，免 import math
+    out = []
+    for (s, e) in shots:
+        span = (e - s) / float(per)
+        for j in range(per):
+            out.append((s + span * j, s + span * (j + 1)))
+    return out
+
+
+def _align_shots_to_lines(shots, lines, asr=None, params=None, use_model=True):
+    """把候选镜头按（用户改写后的）解说词重新分配，产出新的分镜段。
+    模型语义匹配优先；模型不可用/输出不合法时回退按字数权重的算法分配。
+    返回 (segs, source)；segs 为 [(start, end)]，长度 = len(lines)。"""
+    if not shots or not lines:
+        return [], 'none'
+    # 句数多于镜头数时先细分镜头，保证分配有解（否则每句至少 1 镜头不可满足 → 越界崩溃）
+    shots = _expand_shots(shots, len(lines))
+    bounds = None
+    if use_model:
+        bounds = _model_align_shots(shots, lines, asr, params)
+    src = 'model'
+    if not bounds:
+        bounds = _algo_align_shots(shots, lines)
+        src = 'algo'
+    if not bounds:
+        return [], 'none'
+    segs, prev = [], 0
+    for b in bounds:
+        if prev >= len(shots):      # 防御：镜头已分完，剩余句子复用最后一段
+            segs.append(segs[-1] if segs else (float(shots[-1][0]), float(shots[-1][1])))
+            continue
+        b = max(prev + 1, min(len(shots), b))
+        segs.append((float(shots[prev][0]), float(shots[b - 1][1])))
+        prev = b
+    return segs, src
+
+
 def _narrate_analysis(video_path, params, run_dir, progress=None):
     """解说分析公共层：分段→合并环节→ASR台词→(可选)关键帧→解说稿。
     「人机协同分析(/api/plan)」与「直接生成解说(narrate_video)」共用此流程，
@@ -4718,7 +4875,11 @@ def _analyze_plan_job(req, prog):
                 raise RuntimeError('请先上传视频')
             segs, narr, asr, diag, mode = _analyze_narrate(vp, params, run_dir, prog)
             music_path = _resolve_music(req.get('music'))
+            # 额外保存「未合并的细粒度候选镜头」与台词：用户改完解说词后
+            # 需要按新解说重新匹配分镜（/api/narrate/align），合并后的环节粒度太粗无法重排
+            shots = _narrate_candidate_shots(vp, params)
             plan = {'type': 'narrate', 'video': vp, 'segs': segs, 'narr': narr,
+                    'shots': shots, 'asr': asr, 'run_dir': run_dir,
                     'params': params, 'music': music_path, 'diag': diag, 'mode': mode,
                     'thumbs': _plan_thumbs(vp, segs, run_dir)}
         else:
@@ -5923,6 +6084,47 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 nrunid = self._spawn(_render_plan_job, req)
                 self._send(200, json.dumps({'ok': True, 'runid': nrunid}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/narrate/align':
+            # 解说词驱动的分镜重匹配：用户改完解说词后，按新解说把候选镜头重新分配、重剪分镜
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(length).decode('utf-8') or '{}') if length else {}
+                runid = data.get('runid')
+                plan = PLANS.get(runid) if runid else None
+                if not plan or plan.get('type') != 'narrate':
+                    self._send(200, json.dumps({'ok': False, 'error': '方案不存在/已过期或不是解说方案，请重新分析'}).encode('utf-8'), 'application/json')
+                    return
+                lines = [str(x).strip() for x in (data.get('lines') or []) if str(x).strip()]
+                if not lines:
+                    self._send(200, json.dumps({'ok': False, 'error': '解说词为空'}).encode('utf-8'), 'application/json')
+                    return
+                shots = plan.get('shots') or plan.get('segs') or []
+                use_model = (str(data.get('mode') or 'auto').lower() != 'algo')
+                segs, src = _align_shots_to_lines(shots, lines, plan.get('asr'),
+                                                 plan.get('params'), use_model=use_model)
+                if not segs:
+                    self._send(200, json.dumps({'ok': False, 'error': '分镜重匹配失败'}).encode('utf-8'), 'application/json')
+                    return
+                # 回写方案：后续 /api/confirm 直接用新分镜渲染
+                plan['segs'] = segs
+                plan['narr'] = lines
+                plan['align_source'] = src
+                try:
+                    plan['thumbs'] = _plan_thumbs(plan['video'], segs,
+                                                  plan.get('run_dir') or os.path.dirname(plan['video']))
+                except Exception:
+                    pass
+                rel = lambda p: (os.path.relpath(p, OUTDIR).replace('\\', '/') if p and os.path.exists(p) else '')
+                self._send(200, json.dumps({
+                    'ok': True, 'source': src, 'shots': len(shots),
+                    'msg': ('已按解说词语义重新匹配分镜' if src == 'model' else '模型不可用，已按解说词长度比例分配分镜'),
+                    'segs': [{'i': i, 'start': round(a, 3), 'end': round(b, 3), 'caption': c,
+                              'thumb': rel(plan.get('thumbs', {}).get(i))}
+                             for i, ((a, b), c) in enumerate(zip(segs, lines))],
+                }).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
             return

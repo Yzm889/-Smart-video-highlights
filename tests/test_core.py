@@ -1531,3 +1531,59 @@ def test_split_nar_clauses_and_into_k():
     assert len(cl) >= 2 and cl[0].endswith('，')
     k = S._split_into_k('一二三四五六七八九十', 3)
     assert len(k) == 3 and ''.join(k) == '一二三四五六七八九十'
+
+
+# ---------------------------------------------------------------------------
+# 解说词驱动的分镜重匹配（/api/narrate/align）
+# ---------------------------------------------------------------------------
+def _shots(n, dur=3.0):
+    return [(i * dur, i * dur + dur) for i in range(n)]
+
+
+def test_algo_align_covers_all_and_contiguous():
+    import webui_server as S
+    segs, src = S._align_shots_to_lines(_shots(12), ['甲。', '乙。', '丙。', '丁。', '戊。'],
+                                        None, None, use_model=False)
+    assert src == 'algo' and len(segs) == 5
+    assert segs[0][0] == 0.0 and abs(segs[-1][1] - 36.0) < 1e-6
+    for i in range(len(segs) - 1):
+        assert abs(segs[i][1] - segs[i + 1][0]) < 1e-6, '分镜必须连续覆盖，不能有空洞或重叠'
+
+
+def test_align_more_lines_than_shots_no_crash():
+    """回归：解说句数 > 候选镜头数时曾触发 IndexError（每句至少 1 镜头无解）。"""
+    import webui_server as S
+    segs, src = S._align_shots_to_lines(_shots(3, 4.0), ['甲。', '乙。', '丙。', '丁。', '戊。'],
+                                        None, None, use_model=False)
+    assert len(segs) == 5, '句数多于镜头时应先细分镜头，保证每句都分到画面'
+    assert abs(segs[-1][1] - 12.0) < 1e-6
+
+
+def test_expand_shots_only_when_needed():
+    import webui_server as S
+    s = _shots(4)
+    assert len(S._expand_shots(s, 2)) == 4, '镜头够用时不细分'
+    assert len(S._expand_shots(s, 9)) >= 9, '镜头不够时应细分到至少够分'
+    assert S._expand_shots([], 5) == []
+
+
+def test_model_align_parses_valid_json(monkeypatch):
+    import webui_server as S
+    monkeypatch.setattr(S, '_llm_text', lambda *a, **k: '[3, 6, 9, 12]')
+    assert S._model_align_shots(_shots(12), ['甲。', '乙。', '丙。', '丁。']) == [3, 6, 9, 12]
+
+
+def test_model_align_rejects_bad_output(monkeypatch):
+    """模型输出不合法时必须返回 None，由调用方回退算法，而不是产出错乱分镜。"""
+    import webui_server as S
+    lines = ['甲。', '乙。', '丙。', '丁。']
+    for bad in ['这不是JSON', '[3, 6]', '[]', '[9, 3, 6, 12]', '', None]:
+        monkeypatch.setattr(S, '_llm_text', lambda *a, **k: bad)
+        assert S._model_align_shots(_shots(12), lines) is None, '应拒绝非法输出: %r' % bad
+
+
+def test_align_falls_back_to_algo_when_model_unavailable(monkeypatch):
+    import webui_server as S
+    monkeypatch.setattr(S, '_llm_text', lambda *a, **k: None)
+    segs, src = S._align_shots_to_lines(_shots(12), ['甲。', '乙。', '丙。'])
+    assert src == 'algo' and len(segs) == 3
