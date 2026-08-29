@@ -10,7 +10,7 @@ webui_server.py — 春天短视频工坊 · 本地图形化 WebUI 后端
 
 依赖：Pillow / numpy / imageio-ffmpeg（第一次会自动 pip 安装）
 """
-import os, sys, json, math, random, shutil, subprocess, threading, time, base64
+import os, sys, json, math, random, re, shutil, subprocess, threading, time, base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -2472,14 +2472,52 @@ def ffmpeg_run(args, input_data=None, on_progress=None):
                 RUN_PROCS.pop(runid, None)
     return rc, out, err
 
-def probe_duration(path):
-    rc, out, err = ffmpeg_run(['-i', path, '-f', 'null', '-'])
-    import re
+# --- 媒体时长探测 -----------------------------------------------------------
+# 关键：取时长只应读容器头，绝不能加 `-f null -`——那会让 ffmpeg 把整片完整解码一遍。
+# 实测 60s 1080p：0.12s（只读头） vs 1.77s（全片解码），且后者随片长线性增长。
+# 切片循环会对同一源文件探测 N 次（见 _render_beatcut → make_video_clip），
+# 故这里再叠一层按 (mtime_ns, size) 失效的缓存：源文件被替换时自动重新探测。
+_DUR_CACHE = {}
+_DUR_CACHE_LOCK = threading.Lock()
+_DUR_CACHE_MAX = 512
+
+
+def _dur_cache_key(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+
+
+def _probe_duration_cached(path, runner):
+    key = _dur_cache_key(path)
+    if key is None:            # 文件不存在：直接跑，让调用方拿到 None
+        return runner(path)
+    with _DUR_CACHE_LOCK:
+        if key in _DUR_CACHE:
+            return _DUR_CACHE[key]
+    val = runner(path)
+    with _DUR_CACHE_LOCK:
+        if len(_DUR_CACHE) >= _DUR_CACHE_MAX:
+            _DUR_CACHE.clear()
+        _DUR_CACHE[key] = val
+    return val
+
+
+def _parse_duration(err):
     m = re.search(r'Duration:\s*(\d+):(\d+):([\d.]+)', err.decode('utf-8', 'ignore'))
     if not m:
         return None
     h, mm, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
     return h * 3600 + mm * 60 + s
+
+
+def probe_duration(path):
+    """视频时长（秒）；不可读时返回 None。只读容器头，不解码。"""
+    return _probe_duration_cached(path,
+                                  lambda p: _parse_duration(ffmpeg_run(['-hide_banner', '-i', p])[2]))
+
 
 def make_image_clip(img_path, dur, motion, out_path, w, h, fps):
     """Render one Ken Burns image clip (dur seconds) as an mp4 segment."""
@@ -2607,14 +2645,9 @@ def video_encoder_label():
 
 
 def probe_audio_len(path):
-    """Return audio duration in seconds using ffmpeg."""
-    rc, out, err = ffmpeg_run(['-i', path])
-    import re
-    m = re.search(r'Duration:\s*(\d+):(\d+):([\d.]+)', err.decode('utf-8', 'ignore'))
-    if not m:
-        return None
-    hh, mm, ss = int(m.group(1)), int(m.group(2)), float(m.group(3))
-    return hh * 3600 + mm * 60 + ss
+    """Return audio duration in seconds using ffmpeg. 只读容器头，不解码。"""
+    return _probe_duration_cached(path,
+                                  lambda p: _parse_duration(ffmpeg_run(['-hide_banner', '-i', p])[2]))
 
 
 def analyze_beats(path):
