@@ -1428,6 +1428,34 @@ def test_parse_time_str():
 
 
 # ---------------------------------------------------------------------------
+# 存储管理：扫描分组 + 删除路径白名单（防穿越）
+# ---------------------------------------------------------------------------
+def test_storage_scan_structure():
+    """_storage_scan 返回分组结构，成片不可删、run 残留可删。"""
+    import webui_server as S
+    d = S._storage_scan()
+    assert d['ok'] is True
+    keys = {g['key'] for g in d['groups']}
+    assert 'outputs' in keys and 'run_residual' in keys
+    by = {g['key']: g for g in d['groups']}
+    assert by['outputs']['deletable'] is False
+    assert by['run_residual']['deletable'] is True
+    assert d['total_bytes'] >= 0 and d['reclaimable_bytes'] >= 0
+
+
+def test_storage_resolve_deletable_allowlist():
+    """删除路径白名单：允许项返回项目内绝对路径；穿越/越权/成片一律拒绝。"""
+    import webui_server as S, os
+    p = S._storage_resolve_deletable('webui_output/run-1-20260829-130846')
+    assert p and os.path.isabs(p) and '..' not in p.replace('\\', '/')
+    assert S._storage_resolve_deletable('webui_workspace/uploads/up-123-abc') is not None
+    assert S._storage_resolve_deletable('../webui_server.py') is None
+    assert S._storage_resolve_deletable('webui_output/20260827-103807') is None  # 成片不在白名单
+    assert S._storage_resolve_deletable('webui_workspace/../../etc/passwd') is None
+    assert S._storage_resolve_deletable('') is None
+
+
+# ---------------------------------------------------------------------------
 # 视频编码器选择：GPU 硬编(h264_nvenc) 优先、不可用时回退 CPU 软编(libx264)
 # ---------------------------------------------------------------------------
 def _write_video_cfg(S, encoder):

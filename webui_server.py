@@ -1728,6 +1728,144 @@ def _safe_join(base, name):
 
 
 # ---------------------------------------------------------------------------
+# 🧹 存储管理：扫描各类磁盘占用 + 安全删除（路径白名单防穿越）
+# ---------------------------------------------------------------------------
+def _storage_dir_size(p):
+    """递归统计目录体积（字节）。"""
+    tot = 0
+    try:
+        for root, _dirs, files in os.walk(p):
+            for f in files:
+                try:
+                    tot += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return tot
+
+
+# 可被存储面板安全删除的路径白名单（相对项目根，正则匹配；禁止任何穿越/越界子路径）
+_STORAGE_ALLOW = [
+    r'^webui_output/run-[^/]+$',
+    r'^webui_workspace/uploads/up-[0-9A-Za-z-]+$',
+    r'^webui_workspace/asr_[0-9]+\.wav$',
+    r'^webui_workspace/music_[0-9]+\.(mp3|wav)$',
+    r'^webui_workspace/up_[0-9_]+_[a-z]+\.(jpg|png|webp|mp4)$',
+    r'^webui_workspace/analysis_cache$',
+    r'^models(/whisper)?$',
+]
+
+
+def _storage_resolve_deletable(rel):
+    """校验 rel 是否为可清理路径，返回绝对路径；否则 None（拒绝穿越/越权删除）。"""
+    import re as _re
+    if not rel:
+        return None
+    rel = rel.replace('\\', '/')
+    if rel.startswith('/') or '..' in rel.split('/'):
+        return None
+    for pat in _STORAGE_ALLOW:
+        if _re.match(pat, rel):
+            full = os.path.normpath(os.path.join(HERE, rel))
+            base_abs = os.path.abspath(HERE)
+            if os.path.commonpath([base_abs, full]) == base_abs:
+                return full
+            return None
+    return None
+
+
+def _storage_scan():
+    """扫描项目内各类磁盘占用，分组返回，供前端存储管理面板展示与清理。
+
+    档位：keep=保留不可删 / safe=临时可回收 / review=删除需重新下载。
+    """
+    import re as _re
+    groups = []
+
+    out_names = sorted(os.listdir(OUTDIR)) if os.path.isdir(OUTDIR) else []
+    out_items, out_total = [], 0
+    run_items, run_total = [], 0
+    for name in out_names:
+        p = os.path.join(OUTDIR, name)
+        if not os.path.isdir(p):
+            continue
+        s = _storage_dir_size(p)
+        mtime = int(os.path.getmtime(p))
+        if name.startswith('run-'):
+            run_total += s
+            run_items.append({'name': name, 'rel': 'webui_output/' + name,
+                              'size': s, 'mtime': mtime})
+        else:
+            out_total += s
+            out_items.append({'name': name, 'rel': 'webui_output/' + name,
+                              'size': s, 'mtime': mtime})
+    groups.append({'key': 'outputs', 'label': '成片（webui_output 下日期目录）',
+                   'tier': 'keep', 'deletable': False, 'total': out_total, 'items': out_items})
+    groups.append({'key': 'run_residual', 'label': '任务残留（run-* 临时帧/缩略图）',
+                   'tier': 'safe', 'deletable': True, 'total': run_total, 'items': run_items})
+
+    up_items, up_total = [], 0
+    if os.path.isdir(UPLOAD_DIR):
+        for name in sorted(os.listdir(UPLOAD_DIR)):
+            p = os.path.join(UPLOAD_DIR, name)
+            if os.path.isdir(p):
+                s = _storage_dir_size(p)
+                up_total += s
+                up_items.append({'name': name, 'rel': 'webui_workspace/uploads/' + name,
+                                 'size': s, 'mtime': int(os.path.getmtime(p))})
+    groups.append({'key': 'uploads', 'label': '上传会话成品（webui_workspace/uploads）',
+                   'tier': 'safe', 'deletable': True, 'total': up_total, 'items': up_items})
+
+    def temp_group(pattern, key, label):
+        items, total = [], 0
+        if os.path.isdir(WORKDIR):
+            for fn in sorted(os.listdir(WORKDIR)):
+                fp = os.path.join(WORKDIR, fn)
+                if _re.match(pattern, fn) and os.path.isfile(fp):
+                    s = os.path.getsize(fp)
+                    total += s
+                    items.append({'name': fn, 'rel': 'webui_workspace/' + fn,
+                                  'size': s, 'mtime': int(os.path.getmtime(fp))})
+        groups.append({'key': key, 'label': label, 'tier': 'safe',
+                       'deletable': True, 'total': total, 'items': items})
+
+    temp_group(r'^asr_[0-9]+\.wav$', 'asr_temp', 'ASR 临时音频（asr_*.wav）')
+    temp_group(r'^music_[0-9]+\.(mp3|wav)$', 'music_temp', '音乐临时文件（music_*.mp3/wav）')
+    temp_group(r'^up_[0-9_]+_[a-z]+\.(jpg|png|webp|mp4)$', 'upload_leftover', '上传素材残留（up_*_*）')
+
+    ac = os.path.join(WORKDIR, 'analysis_cache')
+    ac_size = _storage_dir_size(ac) if os.path.isdir(ac) else 0
+    groups.append({'key': 'analysis_cache', 'label': '分析缓存（webui_workspace/analysis_cache）',
+                   'tier': 'safe', 'deletable': True, 'total': ac_size,
+                   'items': [{'name': 'analysis_cache', 'rel': 'webui_workspace/analysis_cache',
+                              'size': ac_size, 'mtime': int(os.path.getmtime(ac))}] if ac_size else []})
+
+    models_dir = os.path.join(HERE, 'models')
+    if os.path.isdir(models_dir):
+        msize = _storage_dir_size(models_dir)
+        groups.append({'key': 'models', 'label': '模型权重（models/，删除需重新下载）',
+                       'tier': 'review', 'deletable': True, 'total': msize,
+                       'items': [{'name': 'models', 'rel': 'models',
+                                  'size': msize, 'mtime': int(os.path.getmtime(models_dir))}]})
+
+    git_dir = os.path.join(HERE, '.git')
+    if os.path.isdir(git_dir):
+        gsize = _storage_dir_size(git_dir)
+        groups.append({'key': 'git', 'label': '.git 版本历史（不建议删）',
+                       'tier': 'keep', 'deletable': False, 'total': gsize, 'items': []})
+
+    reclaimable = sum(g['total'] for g in groups if g['tier'] in ('safe', 'review') and g['deletable'])
+    total_all = sum(g['total'] for g in groups)
+    try:
+        free = shutil.disk_usage(HERE).free
+    except Exception:
+        free = 0
+    return {'ok': True, 'groups': groups, 'total_bytes': total_all,
+            'reclaimable_bytes': reclaimable, 'free_bytes': free}
+
+
+# ---------------------------------------------------------------------------
 # 📤 大文件分片上传：>64MB 的视频走「分片 base64」而非一次性 base64 JSON——
 # 旧路径会把整个文件膨胀 1.37 倍塞进一个 JSON（334MB 视频 ≈ 446MB 请求体 + GB 级内存峰值）。
 # 三接口：init(开会话) → chunk(乱序写分片) → done(按序合并)。小文件仍走 base64 旧路径。
@@ -6139,6 +6277,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/storage':
+            # 扫描项目内各类磁盘占用，分组返回（供存储管理面板展示）
+            try:
+                self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/storage/delete':
+            # 删除单条可清理项：路径必须命中白名单且仍在项目内（防穿越/越权）
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=64 * 1024) or {}
+                full = _storage_resolve_deletable(data.get('path') or '')
+                if not full:
+                    raise RuntimeError('该路径不在可清理范围内，或尝试越权删除（已拒绝）')
+                if os.path.isdir(full):
+                    shutil.rmtree(full)
+                else:
+                    os.remove(full)
+                self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
             return
         self._send(404, b'not found')
 

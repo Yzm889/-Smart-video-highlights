@@ -728,6 +728,7 @@ const STEP_CARDS = {
   output: ['timelineCard', 'outCard'],
   build: ['buildCard'],
   history: ['histCard'],
+  storage: ['storageCard'],
 };
 function showStep(step){
   if (!STEP_CARDS[step]) return;
@@ -755,8 +756,85 @@ function goStep(targetId){
   const onScroll = () => { if (st) st.classList.toggle('show', window.scrollY > 420); };
   window.addEventListener('scroll', onScroll, { passive: true });
   onScroll();
+  document.querySelectorAll('.stepbtn[data-step="storage"]').forEach(b => b.addEventListener('click', loadStorage));
+  if (init === 'storage') loadStorage();
 })();
 function scrollTop2(){ window.scrollTo({ top: 0, behavior: 'smooth' }); }
+
+// ---- 存储管理面板：展示占用 + 用户自主删除（不自动清理） ----
+function fmtBytes(n){
+  n = Number(n) || 0;
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1){ n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(n < 10 ? 2 : 1)) + ' ' + u[i];
+}
+
+function loadStorage(){
+  const sum = $('storageSummary');
+  const list = $('storageList');
+  if (sum) sum.textContent = '扫描中…';
+  fetch('/api/storage').then(r => r.json()).then(d => {
+    if (!d.ok){ if (sum) sum.textContent = '扫描失败：' + (d.error || ''); return; }
+    const tierBadge = { keep: '🔒 保留', safe: '🟢 可清理', review: '🟡 删除需重下' };
+    const tierCls = { keep: 'st-keep', safe: 'st-safe', review: 'st-review' };
+    let html = `<div class="st-summary">项目占用 <b>${fmtBytes(d.total_bytes)}</b> · 可回收 <b style="color:#1a7f37">${fmtBytes(d.reclaimable_bytes)}</b> · 磁盘剩余 <b>${fmtBytes(d.free_bytes)}</b></div>`;
+    (d.groups || []).forEach(g => {
+      if (g.total === 0 && g.items.length === 0) return;
+      html += `<div class="st-group"><div class="st-group-head"><span class="st-badge ${tierCls[g.tier] || ''}">${tierBadge[g.tier] || g.tier}</span><b>${g.label}</b><span class="st-size">${fmtBytes(g.total)}</span></div>`;
+      if (g.items && g.items.length){
+        html += '<div class="st-items">';
+        g.items.forEach(it => {
+          const del = g.deletable
+            ? `<button class="btn mini danger" onclick="deleteStorageItem('${encodeURIComponent(it.rel)}',${it.size})">🗑 删除</button>`
+            : '<span class="hint">不可删</span>';
+          html += `<div class="st-item"><span class="st-name" title="${it.rel}">${it.name}</span><span class="st-size">${fmtBytes(it.size)}</span>${del}</div>`;
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+    if (list) list.innerHTML = html;
+    if (sum) sum.innerHTML = `项目占用 <b>${fmtBytes(d.total_bytes)}</b> · 可回收 <b style="color:#1a7f37">${fmtBytes(d.reclaimable_bytes)}</b> · 磁盘剩余 <b>${fmtBytes(d.free_bytes)}</b>`;
+    const rec = (d.groups || []).filter(g => g.deletable && g.tier === 'safe').reduce((a, g) => a + g.total, 0);
+    const btn = $('storageCleanAll');
+    if (btn){ btn.dataset.amount = rec; btn.textContent = `🧹 一键清理可回收项（释放约 ${fmtBytes(rec)}）`; }
+  }).catch(e => { if (sum) sum.textContent = '请求失败：' + e; });
+}
+
+function deleteStorageItem(relEnc, size){
+  const rel = decodeURIComponent(relEnc);
+  const name = rel.split('/').pop();
+  if (!confirm(`确认删除「${name}」（${fmtBytes(size)}）？\n该操作不可恢复。`)) return;
+  fetch('/api/storage/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: rel })
+  }).then(r => r.json()).then(d => {
+    if (d.ok) loadStorage();
+    else alert('删除失败：' + (d.error || ''));
+  }).catch(e => alert('删除失败：' + e));
+}
+
+function cleanStorageAll(){
+  const amount = Number(($('storageCleanAll') || {}).dataset ? ($('storageCleanAll').dataset.amount || 0) : 0);
+  if (!confirm(`将删除全部「🟢 可清理」类临时文件（run-* 残留、上传会话、ASR/音乐临时、分析缓存），释放约 ${fmtBytes(amount)}。\n⚠️ 模型权重(🟡)与成片(🔒)不会被删。此操作不可恢复，确认？`)) return;
+  fetch('/api/storage').then(r => r.json()).then(d => {
+    const safe = (d.groups || []).filter(g => g.deletable && g.tier === 'safe');
+    const rels = [];
+    safe.forEach(g => (g.items || []).forEach(it => rels.push(it.rel)));
+    if (!rels.length){ alert('没有可清理项'); return; }
+    Promise.all(rels.map(rel => fetch('/api/storage/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: rel })
+    }).then(r => r.json()).then(x => ({ rel, ok: x.ok, err: x.error }))
+      .catch(e => ({ rel, ok: false, err: String(e) })))
+    ).then(results => {
+      const fails = results.filter(r => !r.ok);
+      loadStorage();
+      if (fails.length) alert('完成，但 ' + fails.length + ' 项删除失败：\n' + fails.map(f => f.rel + '：' + (f.err || '')).join('\n'));
+    });
+  });
+}
 
 // ---- 模式选择 → 一键跳转到对应配置区 ----
 function jumpToAISection(section){

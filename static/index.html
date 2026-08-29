@@ -25,6 +25,7 @@
   <button class="stepbtn" data-step="output" title="时间线 / 输出设置">⑦ 输出</button>
   <button class="stepbtn" data-step="build" title="一键合成">⑧ 合成</button>
   <button class="stepbtn" data-step="history" title="最近生成记录">⑨ 记录</button>
+  <button class="stepbtn" data-step="storage" title="磁盘占用与清理">🧹 存储</button>
 </nav>
 
 <!-- AI 配置就绪状态条：未配置时生成前会拦截提醒，避免静默用免费模板 -->
@@ -604,6 +605,17 @@
   <div class="card" id="histCard" data-step="history">
     <h2>🕘 最近生成 <button class="btn mini ghost" onclick="clearHistory()">🗑 清空</button></h2>
     <div id="historyList"><div class="hint">还没有生成记录。</div></div>
+  </div>
+
+  <div class="card" id="storageCard" data-step="storage">
+    <h2>🧹 存储管理（磁盘占用与清理）</h2>
+    <div class="hint">按档位展示项目内各类文件占用。<b>🟢 可清理</b>=任务/上传产生的临时残留（删除不影响成片）；<b>🟡 删除需重下</b>=模型权重；<b>🔒 保留</b>=你的成片与版本历史（本面板不会动）。删除后文件进入系统回收站逻辑由系统决定，请确认后再操作。</div>
+    <div id="storageSummary" class="st-summary" style="margin-top:8px;">加载中…</div>
+    <div class="row" style="margin-top:8px; gap:8px; align-items:center;">
+      <button class="btn" onclick="loadStorage()">🔄 刷新占用</button>
+      <button class="btn ghost" id="storageCleanAll" onclick="cleanStorageAll()">🧹 一键清理可回收项</button>
+    </div>
+    <div id="storageList" style="margin-top:12px;"></div>
   </div>
 </div>
 </div>

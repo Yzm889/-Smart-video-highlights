@@ -621,3 +621,18 @@ header h1 { background: linear-gradient(90deg,#fff,#e6fff5 60%,#d7f0ff); -webkit
 .narr-guide.warn { border-color:#fde68a; background:#fffbeb; color:#92400e; }
 .narr-guide.warn code { background:#fef3c7; }
 .btn2 { background:#eef4ff; color:#1d4ed8; }
+
+/* 存储管理面板 */
+.st-summary { margin:6px 0 10px; padding:8px 10px; background:#f6fbf6; border:1px solid var(--line); border-radius:8px; font-size:13px; }
+.st-group { margin:10px 0; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+.st-group-head { display:flex; align-items:center; gap:8px; padding:8px 10px; background:#fafafa; border-bottom:1px solid var(--line); }
+.st-group-head b { flex:1; font-size:13px; }
+.st-size { color:#555; font-variant-numeric:tabular-nums; white-space:nowrap; font-size:12px; }
+.st-badge { font-size:12px; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+.st-keep { background:#e8f0fe; color:#1a56c4; }
+.st-safe { background:#e6f6ec; color:#1a7f37; }
+.st-review { background:#fff7e6; color:#b8860b; }
+.st-items { padding:4px 6px; }
+.st-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid #f0f0f0; }
+.st-item:last-child { border-bottom:none; }
+.st-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#334155; }
