@@ -212,7 +212,9 @@
         <video id="instructPlayer" controls playsinline></video>
         <span class="modebadge" id="instructMode"></span>
         <div id="instructPartial" class="partial" style="display:none"></div>
-        <div style="margin-top:12px;"><a class="btn ghost" id="instructDl" href="#" download="instruct.mp4">💾 保存</a></div>
+        <div style="margin-top:12px;"><a class="btn ghost" id="instructDl" href="#" download="instruct.mp4">💾 保存</a>
+        <button class="btn mini ghost" id="instructCoverBtn" style="display:none" onclick="makeCover(_coverCtx.instruct.file, 'coverBoxInstruct', '指令成片')">🖼 生成封面</button></div>
+        <div id="coverBoxInstruct" style="display:none"></div>
         <div class="hint" id="instructDiag"></div>
       </div>
     </div>
@@ -270,6 +272,10 @@
       <div class="field"><label>片段最小时长(秒)</label>
         <input type="number" id="bcMinClip" min="0.3" max="2.0" step="0.1" value="0.6" style="width:90px">
       </div>
+      <div class="field"><label>片头保护(秒)</label>
+        <input type="number" id="bcSkipHead" min="0" max="30" step="0.5" value="3" style="width:90px">
+        <span class="hint" style="font-size:11px;">前N秒不切点，避免商标/片头被切碎</span>
+      </div>
     </div>
     <div class="row" style="margin-top:8px; align-items:center; gap:6px;">
       <label style="display:flex; align-items:center; gap:6px; margin:0;">
@@ -321,22 +327,68 @@
     <div class="hint" id="narInfo">还没有选择视频。</div>
     <div class="row" style="margin-top:10px;">
       <div class="mode-hint" id="narModeHint">🤖 <b>自动路径</b>：本地模型免费优先（看画面 + 写稿）→ 配置了云端 key 时用云端增强 → 都没有时用台词/模板兜底。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
+      <div class="hint" id="narVoiceInfo" style="width:100%; margin-top:4px;">🔊 配音：读取中…</div>
+      <div class="field"><label>题材类型（决定解说模板）</label>
+        <select id="narGenre" onchange="saveNarrGenre()">
+          <option value="auto" selected>自动判断</option>
+          <option value="suspense">悬疑/烧脑/反转</option>
+          <option value="romance">爱情/青春/文艺</option>
+          <option value="horror">恐怖/惊悚/心理</option>
+          <option value="action">动作/科幻/灾难</option>
+          <option value="comedy">喜剧/荒诞/黑色幽默</option>
+          <option value="history">历史/战争/传记</option>
+        </select>
+      </div>
       <div class="field"><label>最大分段(秒)</label><input type="number" id="narMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
       <div class="field" style="flex:1"><label>视频主题/梗概（选填，纯风景片建议填）</label><input id="narTheme" placeholder="例：春天樱花树下散步的治愈短片"></div>
       <div class="field" style="flex:1"><label>解说要求/风格（选填，会作为前置条件交给模型）</label><input id="narReq" placeholder="例：多点幽默/少升华/语气接地气/强调兄弟情"></div>
+      <div class="field"><label>解说风格</label>
+        <select id="narrStyle" onchange="saveNarrPrefs()">
+          <option value="movie" selected>🎬 电影解说</option>
+          <option value="science">🔬 科普讲解</option>
+          <option value="funny">😂 搞笑吐槽</option>
+          <option value="suspense">🔍 悬疑解读</option>
+        </select>
+      </div>
+      <div class="field"><label>详略程度</label>
+        <select id="detailLevel" onchange="saveNarrPrefs()">
+          <option value="detailed">📝 详细展开</option>
+          <option value="balanced" selected>⚖️ 均衡</option>
+          <option value="concise">✂️ 精简概括</option>
+        </select>
+      </div>
     </div>
-    <details class="bubble" style="margin-top:10px;">
+    <details class="bubble plot-box" style="margin-top:10px;" id="narPlotBox">
       <summary>🎭 剧情驱动剪辑（粘贴你的剧情，按时序剪分镜 + 写解说，不靠 AI 识别画面）</summary>
       <div class="bubble-body">
-        <textarea id="narPlot" rows="7" placeholder="例：&#10;1. 灾变前的最后时光&#10;故事开始时，副警长瑞克和搭档肖恩在巡逻车里聊天，随后瑞克中枪昏迷。&#10;&#10;2. 末日后苏醒&#10;瑞克在医院中醒来，发现医院空无一人，世界已变。&#10;&#10;3. 初识丧尸与幸存者&#10;瑞克回到家，开枪打死第一个行尸，被摩根父子所救。"></textarea>
-        <div class="hint" style="margin-top:6px;">填了剧情就走「剧情驱动」：系统把你的剧情按句拆成解说词，并<b>按时序铺到视频分镜</b>上（有台词时按台词语义精确对齐）。这样解说讲的就是你的故事，而不是 AI 瞎猜画面导致的割裂感。<b>留空则仍是原来的「AI 识别画面」模式。</b></div>
+        <div class="plot-edit">
+          <textarea id="narPlot" rows="14" placeholder="例：&#10;1. 灾变前的最后时光&#10;故事开始时，副警长瑞克和搭档肖恩在巡逻车里聊天，随后瑞克中枪昏迷。&#10;&#10;2. 末日后苏醒&#10;瑞克在医院中醒来，发现医院空无一人，世界已变。&#10;&#10;3. 初识丧尸与幸存者&#10;瑞克回到家，开枪打死第一个行尸，被摩根父子所救。"></textarea>
+          <div class="plot-side">
+            <button class="btn mini" id="narDsBtn" onclick="openDeepSeek('nar')">🔎 DeepSeek 查剧情</button>
+            <a class="btn mini ghost" style="text-align:center;" href="https://chat.deepseek.com/" target="_blank" rel="noopener">🌐 打开 DeepSeek</a>
+            <label style="font-size:12px; font-weight:600; color:#3d6a5c; margin-top:6px;">目标成片时长</label>
+            <select id="narTargetSec">
+              <option value="0" selected>自动（按视频时长·覆盖全片）</option>
+              <option value="60">约 1 分钟</option>
+              <option value="180">约 3 分钟</option>
+              <option value="300">约 5 分钟</option>
+              <option value="600">约 10 分钟</option>
+            </select>
+            <div class="hint" id="narDsHint">点「🔎 DeepSeek 查剧情」会<b>自动复制提问模板</b>并打开 DeepSeek（记得勾选联网搜索），把回复的剧情粘贴回左边即可。没填片名时会复制通用模板。</div>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:6px;">填了剧情就走<b>解说驱动剪辑</b>：先按你的剧情写出<b>完整解说稿</b>（开场钩子 → 情节推进 → 结尾升华），再按每句话的字数去原片里<b>挑有内容的画面</b>——解说讲不完的过场空镜会被跳过，成片因此比原片短。<b>剧情写得越具体，解说越像样；只写三行梗概就只能出三句。</b>留空则走「AI 识别画面」模式。</div>
       </div>
     </details>
+    <div class="hint" style="margin-top:6px;">
+      <label><input type="checkbox" id="narAutoCut" checked style="width:auto"> ✂ 自动剪辑画面（只保留有解说的镜头段，把没选中的片段<b>真的剪掉</b>）</label>
+      <span style="color:#64748b;">　勾选后成片会比原片短；想保留完整原片只加字幕配音，就取消勾选。</span>
+    </div>
     <div class="hint" style="margin-top:6px;"><label><input type="checkbox" id="narBgm" style="width:auto"> 加配乐（使用上方🎵选中的背景音乐，低音量铺底）</label></div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="narGo" onclick="planNarrate()">🎙 分析并预览（可微调）</button>
       <button class="btn btn2" id="narQuickBtn" onclick="buildNarrate()">⚡ 直接生成</button>
-      <button class="btn danger" id="narCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
+      <button class="btn danger" id="narCancel" onclick="stopRun('narStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
       <span class="status" id="narStatus"></span>
     </div>
     <div class="bar" id="narBar"><i></i></div>
@@ -360,7 +412,14 @@
       <button class="btn ghost" onclick="fillMovieNameFromBraces()">从《》提取</button>
     </div>
     <div class="hint" style="margin-top:6px;">可选：粘贴剧情梗概（联网失败/不想联网时用，质量更稳定）</div>
-    <textarea id="moviePlot" rows="3" placeholder="可直接粘贴豆瓣简介/剧情分幕…留空则自动联网搜索" style="width:100%; margin-top:6px; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px; font-family:inherit;"></textarea>
+    <div class="plot-edit" style="margin-top:6px;">
+      <textarea id="moviePlot" rows="8" placeholder="可直接粘贴豆瓣简介/剧情分幕…留空则自动联网搜索"></textarea>
+      <div class="plot-side">
+        <button class="btn mini" onclick="openDeepSeek('movie')">🔎 DeepSeek 查剧情</button>
+        <a class="btn mini ghost" style="text-align:center;" href="https://chat.deepseek.com/" target="_blank" rel="noopener">🌐 打开 DeepSeek</a>
+        <div class="hint" id="movieDsHint">按上面片名复制提问模板并打开 DeepSeek，搜到的剧情粘回左边即可。</div>
+      </div>
+    </div>
     <div id="movieDrop" class="musdrop" style="margin-top:10px;">🎞️ （可选）拖入正片/片段，自动按剧情对齐生成解说视频</div>
     <input type="file" id="movieInput" accept="video/*" style="display:none">
     <div class="hint" id="movieInfo">未选视频：仅生成解说稿（可在结果区复制）。选了视频：产出带解说配音+字幕的成片。</div>
@@ -371,7 +430,7 @@
     </div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="movieGo" onclick="buildMovieNarrate()">🎬 生成（联网）解说</button>
-      <button class="btn danger" id="movieCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
+      <button class="btn danger" id="movieCancel" onclick="stopRun('movieStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
       <span class="status" id="movieStatus"></span>
     </div>
     <div class="bar" id="movieBar"><i></i></div>
@@ -380,7 +439,9 @@
       <video id="moviePlayer" controls playsinline></video>
       <span class="modebadge" id="movieBadge"></span>
       <div id="moviePartial" class="partial" style="display:none"></div>
-      <div style="margin-top:12px;"><a class="btn ghost" id="movieDl" href="#" download="movie_narration.mp4">💾 保存</a></div>
+      <div style="margin-top:12px;"><a class="btn ghost" id="movieDl" href="#" download="movie_narration.mp4">💾 保存</a>
+      <button class="btn mini ghost" id="movieCoverBtn" style="display:none" onclick="makeCover(_coverCtx.movie.file, 'coverBoxMovie', '联网解说')">🖼 生成封面</button></div>
+      <div id="coverBoxMovie" style="display:none"></div>
       <div class="hint" id="movieDiag"></div>
     </div>
   </div>
@@ -406,6 +467,18 @@
 
   <div class="card" id="aiCard" data-step="ai">
     <h2>🤖 AI 文案·字幕·配音</h2>
+    <div id="hardwareBanner" style="display:none; margin:10px 0; padding:12px 14px; background:#e3f2fd; border:1px solid #90caf9; border-radius:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <span style="font-weight:600; color:#1565c0; font-size:14px;">🖥 硬件检测与模型推荐</span>
+        <button class="btn mini ghost" onclick="loadHardware()">🔄 重新检测</button>
+      </div>
+      <div id="hardwareInfo" style="font-size:13px; color:#333; margin-bottom:6px;"></div>
+      <div id="hardwareRecs" style="font-size:13px; color:#333;"></div>
+      <div id="hardwareActions" style="margin-top:8px;"></div>
+    </div>
+    <div style="margin:8px 0; padding:8px 12px; background:#fff8e1; border:1px solid #ffe082; border-radius:8px; font-size:13px;">
+      <label style="cursor:pointer;"><input type="checkbox" id="cleanupMid" style="width:auto;vertical-align:middle;" onchange="saveCleanupMid()"> 🧹 任务完成后自动清理中间产物（保留成片/源视频/封面，省磁盘）</label>
+    </div>
     <label><input type="checkbox" id="aiCap" style="width:auto" onchange="updateBuildModeHint()"> 按画面生成中文文案 + 烧字幕 + 配音</label>
     <div class="hint">🤖 <b>自动路径</b>：本地模型（免费）优先 → 配置了云端 key 时用云端看图写文案 + 云端配音 → 都没有时离线模板兜底。</div>
     <div class="mode-hint" id="buildModeHint">💡 <b>自动路径</b>：勾选「按画面生成中文文案」后，自动用当前可用的最优路径生成文案与配音。</div>
@@ -474,6 +547,10 @@
           <button class="btn ghost" id="testLocal" onclick="testLocal()">🧪 测试连接</button>
           <button class="btn ghost" id="pullLocal" onclick="pullLocalModel()">📥 拉取模型</button>
         </div>
+        <div style="width:100%; margin-top:4px;">
+          <div class="hint" style="margin-bottom:4px;">📝 写稿模型三选一（点击启用；未安装的会先自动下载，已安装的秒切换）：</div>
+          <div class="row" style="gap:6px; flex-wrap:wrap; align-items:stretch;" id="localModelCards"></div>
+        </div>
         <div class="bar" id="localPullBar"><i id="localPullFill"></i></div>
         <div class="hint" id="localPullPct" style="display:none; width:100%; margin-top:4px;">0%</div>
         <div class="hint" id="localTestRes" style="width:100%"> </div>
@@ -489,8 +566,10 @@
             <option value="base" selected>base（默认·平衡）</option>
             <option value="small">small（更准·推荐）</option>
             <option value="medium">medium（很准·较慢）</option>
-            <option value="large-v3">large-v3（最准·最慢）</option>
+            <option value="large-v3">large-v3（最准·GPU 加速·12GB 推荐）</option>
+            <option value="distil-large-v3">distil-large-v3（large-v3 蒸馏·更快·精度接近）</option>
           </select>
+          <div class="hint" style="margin-top:4px;">💡 装了 CUDA 版 torch（见 requirements.txt 注释）后，<b>large-v3-turbo 在显卡上又快又准</b>，中文台词识别明显优于 base；纯 CPU 建议 base/small。</div>
         </div>
         <div class="field"><label>&nbsp;</label><button class="btn ghost" id="dlWhisper" onclick="downloadWhisper()">⬇ 下载/预载模型</button></div>
         <div class="hint" id="whisperStatus" style="width:100%">状态加载中…</div>
@@ -513,6 +592,10 @@
           <button class="btn ghost" id="testVlm" onclick="testVlm()">🧪 测试/检测</button>
           <button class="btn ghost" id="pullVlm" onclick="pullVlm()">📥 拉取模型</button>
         </div>
+        <div style="width:100%; margin-top:4px;">
+          <div class="hint" style="margin-bottom:4px;">👁 看图模型二选一（负责理解画面剧情；写稿仍由文字模型负责）：</div>
+          <div class="row" style="gap:6px; flex-wrap:wrap; align-items:stretch;" id="vlmModelCards"></div>
+        </div>
         <div class="bar" id="vlmPullBar"><i id="vlmPullFill"></i></div>
         <div class="hint" id="vlmPullPct" style="display:none; width:100%; margin-top:4px;">0%</div>
         <div class="hint" id="vlmStatus" style="width:100%">状态加载中…</div>
@@ -523,6 +606,40 @@
           要写出《赌圣》式剧情解说（点片名、讲人物背景、有年代感），真正的主力是 <b>📝 文字模型</b>（如 <code>qwen2.5:14b</code>）。
           请到「③ 本地模型」把模型填成文字模型，并执行 <code>ollama pull qwen2.5:14b</code> 部署——解说词质量会明显上一个台阶。
         </div>
+      </div>
+      <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
+        <div style="font-weight:600; color:#2e7d32; width:100%;">🔊 本地配音引擎（免费·不花 API 钱）</div>
+        <details class="bubble"><summary>三条免费路线怎么选？音质差别很大（点开）</summary><div class="bubble-body">
+          · <b>🌐 edge-tts</b>：<b>最拟真</b>，微软神经语音，十几种音色带语调起伏，<b>不需要任何 Key</b>。
+            代价是依赖网络，本机实测单次成功率约 2/3（连接会被随时重置），现已带自动重试。<br>
+          · <b>💾 离线模型</b>：下载后<b>完全断网可用</b>。两个可选：<b>MeloTTS</b> 自然度接近在线语音（推荐）；
+            <b>华研 piper</b> 体积小、速度快，但机械感重、几乎没有感情——觉得「配音像机器人」多半是选中了它。<br>
+          · <b>🪟 系统 SAPI</b>：零安装，但多数 Windows 只带一个中文音色（Microsoft Huihui），机械味重，仅作兜底。<br>
+          选「自动」时优先级：<b>edge-tts → 离线模型 → 系统 SAPI</b>。
+          <b>一条解说内部会锁定引擎</b>，不会前半段一个声音后半段另一个。
+        </div></details>
+        <div class="field"><label>引擎</label>
+          <select id="ttsLocalEngine" onchange="ttsLocalHint()">
+            <option value="auto" selected>自动（edge-tts → 离线模型 → 系统）</option>
+            <option value="edge">🌐 edge-tts（最拟真·免 Key）</option>
+            <option value="sherpa">💾 离线模型（断网可用）</option>
+            <option value="sapi">🪟 系统 SAPI（兜底）</option>
+          </select>
+        </div>
+        <div class="field"><label>离线模型</label><select id="ttsSherpaModel" style="min-width:210px"></select></div>
+        <div class="field"><label>音色（edge-tts）</label><select id="ttsLocalVoice" style="min-width:220px"></select></div>
+        <div class="field"><label>语速</label><input id="ttsLocalRate" value="+0%" placeholder="+0%" style="width:80px"></div>
+        <div class="field"><label>&nbsp;</label>
+          <button class="btn ghost" id="ttsEdgeBtn" onclick="installTtsPkg('edge-tts')">📥 装 edge-tts</button>
+          <button class="btn ghost" id="ttsModelBtn" onclick="downloadTtsModel()">📥 下离线模型</button>
+          <button class="btn ghost" onclick="testLocalTts()">🧪 试听</button>
+          <button class="btn ghost" onclick="resetTtsEngine()" title="edge-tts 连续失败会临时停用，网络恢复后点这里立即启用">🔄 重试配音引擎</button>
+        </div>
+        <div class="bar" id="ttsSetupBar" style="display:none"><i id="ttsSetupFill"></i></div>
+        <div class="hint" id="ttsLocalHint" style="width:100%"></div>
+        <div class="hint" id="ttsLocalState" style="width:100%">状态加载中…</div>
+        <audio id="ttsTestPlayer" controls style="display:none; width:100%; margin-top:6px"></audio>
+        <div class="hint" style="width:100%">装完点「🧪 试听」验证：能听到声音就说明这条链路通了。之后「解说」会自动用它配音——<b>没配云端 Key 也不会没声音</b>。</div>
       </div>
       <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
         <div style="font-weight:600; color:#1565c0; width:100%;">🌐 国内下载镜像（免科学上网）</div>

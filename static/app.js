@@ -97,11 +97,15 @@ function doSearch(){
     for (const t of res.results){
       const d = document.createElement('div');
       d.className = 'mres' + (t.cached ? ' done' : '');
-      d.innerHTML = `<div class="info"><div class="t">${t.title}</div>
-        <div class="m">${t.genre} · BPM~${t.bpm} · ${t.length!==null?'时长'+t.length+'s':'待缓存'} · ${t.license}</div></div>
+      const lenTxt = (t.length !== null && t.length !== undefined) ? ('时长' + t.length + 's') : '待缓存';
+      d.innerHTML = `<div class="info"><div class="t">${escapeHtml(t.title)}</div>
+        <div class="m">${escapeHtml(t.genre)} · BPM~${escapeHtml(t.bpm)} · ${escapeHtml(lenTxt)} · ${escapeHtml(t.license)}</div></div>
         <audio preload="none"></audio>
-        <button class="btn mini ghost" onclick="previewMusic('${t.id}','/music_lib/${t.id}.mp3',this)">▶ 预览</button>
-        <button class="btn mini ghost" onclick="useMusic('${t.id}','${t.title}')">＋ 使用</button>`;
+        <button class="btn mini ghost mprev">▶ 预览</button>
+        <button class="btn mini ghost muse">＋ 使用</button>`;
+      // 用监听器代替内联 onclick：标题/ID 里的引号不会再破坏 HTML 属性与 JS 字符串
+      d.querySelector('.mprev').addEventListener('click', function(){ previewMusic(t.id, '/music_lib/' + t.id + '.mp3', this); });
+      d.querySelector('.muse').addEventListener('click', () => useMusic(t.id, t.title));
       box.appendChild(d);
     }
   }).catch(() => box.innerHTML = '❌ 搜索失败（服务未运行？）');
@@ -166,11 +170,172 @@ function loadAIConfig(){
     if(mir.hf_endpoint) $('mirHf').value = mir.hf_endpoint;
     if($('mirProxy')) $('mirProxy').value = mir.ollama_proxy || '';
     ttsProviderHint();
+    if($('cleanupMid')) $('cleanupMid').checked = (c.cleanup_mid !== false);
     const st = [];
     if(res.vision_available) st.push('视觉✅'); else st.push('视觉(离线)');
     if(res.tts_available) st.push('配音✅'); else st.push('配音未配');
     $('aiStatus').textContent = st.join(' · ');
+    loadHardware();
   }).catch(e=>console.warn('加载 AI 配置失败', e));
+}
+
+
+function saveCleanupMid(){
+  const on = $('cleanupMid') ? $('cleanupMid').checked : true;
+  fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cleanup_mid: on})})
+    .then(r=>r.json()).then(res=>{ if(!res.ok) console.warn('清理配置保存失败', res.error); }).catch(e=>console.warn(e));
+}
+
+// ---- 硬件检测与模型推荐 ----
+function loadHardware(){
+  fetch('/api/hardware').then(r=>r.json()).then(h=>{
+    const banner = $('hardwareBanner'); if(!banner) return;
+    banner.style.display = 'block';
+    const info = [];
+    if(h.gpu) info.push('GPU: ' + h.gpu + ' (' + h.gpu_vram_gb + 'GB 显存)');
+    if(h.ram_gb) info.push('内存: ' + h.ram_gb + 'GB');
+    info.push('Ollama: ' + (h.ollama ? '✅ 运行中 (' + h.ollama_models.length + ' 个模型)' : '❌ 未运行'));
+    if(h.tier) info.push('档位: ' + h.tier);
+    $('hardwareInfo').innerHTML = info.join(' · ');
+    const rec = h.recommendations || {};
+    const cur = h.current || {};
+    let recHtml = '<div style="margin-bottom:4px;"><b>推荐配置：</b></div>';
+    recHtml += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 16px; font-size:12px;">';
+    const labels = {vlm:'VLM 视觉模型', whisper:'Whisper 转写', tts:'TTS 配音', text:'文本写稿'};
+    for(const k of ['vlm','whisper','tts','text']){
+      if(rec[k]){
+        let curVal = cur[k] || '';
+        if(k==='tts') curVal = cur.tts_engine || '';
+        const isDiff = rec[k] !== curVal;
+        recHtml += '<div>' + labels[k] + ': <b>' + rec[k] + '</b>' + (isDiff?' <span style="color:#e65100;">(当前:'+(curVal||'未设')+')</span>':'') + '</div>';
+      }
+    }
+    recHtml += '</div>';
+    if(rec.note) recHtml += '<div style="margin-top:4px; color:#555;">💡 ' + rec.note + '</div>';
+    if(h.upgrades && h.upgrades.length){
+      recHtml += '<div style="margin-top:6px; color:#c62828;"><b>可升级：</b>' + h.upgrades.map(u=>u.slot+' '+u.current+'→'+u.recommend).join('；') + '</div>';
+    }
+    $('hardwareRecs').innerHTML = recHtml;
+    const hasUpgrade = h.upgrades && h.upgrades.length > 0;
+    $('hardwareActions').innerHTML = hasUpgrade
+      ? '<button class="btn" onclick="applyHardwareRecs()">⚡ 一键应用推荐配置</button> <span style="font-size:12px;color:#666;">（修改模型选择，缺失模型需另行下载）</span>'
+      : '<span style="color:#2e7d32; font-size:12px;">✅ 当前配置已是该硬件的最优选择</span>';
+  }).catch(e=>console.warn('硬件检测失败', e));
+}
+function applyHardwareRecs(){
+  fetch('/api/hardware').then(r=>r.json()).then(h=>{
+    const rec = h.recommendations || {};
+    const body = {};
+    if(rec.whisper) body.whisper = {model: rec.whisper};
+    if(rec.vlm) body.vlm = {enabled: true, mode: 'ollama', base_url: 'http://localhost:11434', model: rec.vlm};
+    if(rec.text) body.local = {enabled: true, base_url: 'http://localhost:11434/v1', model: rec.text};
+    if(rec.tts === 'melo-zh') body.tts_local = {engine: 'sherpa', voice: 'zh-CN-XiaoxiaoNeural', rate: '+7%'};
+    fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+      .then(r=>r.json()).then(res=>{
+        if(res.ok){ $('aiStatus').textContent = '✅ 已应用推荐配置，请下载缺失模型'; loadAIConfig(); loadHardware(); }
+        else $('aiStatus').textContent = '❌ ' + res.error;
+      }).catch(()=>$('aiStatus').textContent='❌ 应用失败');
+  });
+}
+// ---------------------------------------------------------------------------
+// 🔊 本地配音引擎（免费）：edge-tts / 离线模型(sherpa-onnx) / 系统 SAPI
+// 历史缺口：界面上只有「云端 TTS 要 Key」的选项，本地配音既没有引擎选择也没有下载入口，
+// 用户只能吃到系统自带的那一个中文音色。这里补齐选择 + 安装 + 试听。
+// ---------------------------------------------------------------------------
+let _ttsSetupTimer = null;
+function ttsLocalHint(){
+  const eng = $('ttsLocalEngine') ? $('ttsLocalEngine').value : 'auto';
+  const voiceSel = $('ttsLocalVoice');
+  if(voiceSel) voiceSel.style.display = (eng === 'sapi' || eng === 'sherpa') ? 'none' : '';
+  const hint = $('ttsLocalHint');
+  if(!hint) return;
+  const m = {
+    auto: '自动：优先 edge-tts（免 Key、音色最多），不可用时退到离线模型，最后系统 SAPI 兜底。',
+    edge: 'edge-tts 免 Key，但要能访问微软朗读服务；连不上会自动改用下一条，并暂时不再重试（不会拖慢出片）。',
+    sherpa: '离线模型需先点「📥 下离线模型」下载一次（约 130MB），之后断网也能配音。',
+    sapi: '系统 SAPI 零安装但音色少（多数 Windows 只有一个中文女声），机械味较重。',
+  };
+  hint.textContent = m[eng] || m.auto;
+}
+function loadTtsLocal(){
+  fetch('/api/tts/voices').then(r=>r.json()).then(res=>{
+    if(!res.ok) return;
+    const sel = $('ttsLocalVoice');
+    if(sel){
+      const cur = (res.cfg && res.cfg.voice) || sel.value;
+      sel.innerHTML = (res.voices||[]).map(v=>'<option value="'+escapeHtml(v[0])+'">'+escapeHtml(v[1])+'</option>').join('');
+      if(cur) sel.value = cur;
+    }
+    const cfg = res.cfg || {};
+    if(cfg.engine && $('ttsLocalEngine')) $('ttsLocalEngine').value = cfg.engine;
+    if(cfg.rate && $('ttsLocalRate')) $('ttsLocalRate').value = cfg.rate;
+    const edgeBtn = $('ttsEdgeBtn'), modelBtn = $('ttsModelBtn');
+    if(edgeBtn) edgeBtn.textContent = res.edge_installed ? '✅ edge-tts 已装' : '📥 装 edge-tts';
+    if(modelBtn) modelBtn.textContent = res.sherpa_model_ready ? '✅ 离线模型已装' : '📥 下离线模型';
+    const st = $('ttsLocalState');
+    if(st){
+      const parts = ['当前配音：' + (res.label||'未知')];
+      if(!res.edge_installed) parts.push('edge-tts 未安装');
+      else if(res.edge_dead) parts.push('edge-tts 暂不可用（' + res.edge_dead.slice(0,60) + '）');
+      if(!res.sherpa_model_ready) parts.push('离线模型未下载（' + (res.sherpa_model_label||'') + '）');
+      st.textContent = parts.join(' · ');
+    }
+    // 解说卡直接显示「这条解说会用哪种声音」，不用跑去 AI 页才知道
+    const nv = $('narVoiceInfo');
+    if(nv){
+      nv.innerHTML = '🔊 配音：<b>' + escapeHtml(res.label || '未知') + '</b>'
+        + '　<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'local\')">⚙️ 换配音引擎/音色</a>';
+    }
+    ttsLocalHint();
+  }).catch(e=>console.warn('本地配音状态加载失败', e));
+}
+function _ttsSetupPoll(){
+  fetch('/api/tts/voices').then(r=>r.json()).then(res=>{
+    const s = res.setup || {};
+    const bar = $('ttsSetupBar'), fill = $('ttsSetupFill');
+    if(bar) bar.style.display = s.running ? 'block' : 'none';
+    if(fill && s.pct) fill.style.width = Math.min(100, s.pct) + '%';
+    const st = $('ttsLocalState');
+    if(st && s.msg) st.textContent = s.msg;
+    if(!s.running){
+      clearInterval(_ttsSetupTimer); _ttsSetupTimer = null;
+      loadTtsLocal();
+    }
+  }).catch(()=>{});
+}
+function installTtsPkg(pkg){
+  const st = $('ttsLocalState');
+  if(st) st.textContent = '⏳ 正在安装 ' + pkg + '（约 1 分钟）…';
+  fetch('/api/tts/install', {method:'POST', headers:{'Content-Type':'application/json'},
+                             body: JSON.stringify({pkg: pkg})})
+    .then(r=>r.json()).then(res=>{
+      if(!res.ok && st) st.textContent = '❌ ' + (res.error || res.message || '安装失败');
+    }).catch(e=>{ if(st) st.textContent = '❌ 安装请求失败：' + e.message; });
+  if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 1500);
+}
+function downloadTtsModel(){
+  const st = $('ttsLocalState');
+  if(st) st.textContent = '⏳ 正在下载离线配音模型（约 130MB）…';
+  fetch('/api/tts/model/download', {method:'POST', headers:{'Content-Type':'application/json'},
+                                    body: JSON.stringify({})})
+    .then(r=>r.json()).then(res=>{
+      if(!res.ok && st) st.textContent = '❌ ' + (res.error || res.message || '下载失败');
+    }).catch(e=>{ if(st) st.textContent = '❌ 下载请求失败：' + e.message; });
+  if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 2000);
+}
+function testLocalTts(){
+  const st = $('ttsLocalState'), pl = $('ttsTestPlayer');
+  if(st) st.textContent = '⏳ 正在试听合成…';
+  fetch('/api/tts/test', {method:'POST', headers:{'Content-Type':'application/json'},
+                          body: JSON.stringify({text: '画面缓缓推进，主角从人群中走出来。'})})
+    .then(r=>r.json()).then(res=>{
+      if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || '');
+      if(res.ok && res.file && pl){
+        pl.src = '/media/' + res.file + '?t=' + Date.now();
+        pl.style.display = 'block';
+        pl.play().catch(()=>{});
+      }
+    }).catch(e=>{ if(st) st.textContent = '❌ 试听失败：' + e.message; });
 }
 function ttsProviderHint(){
   const p = $('ttsProvider').value;
@@ -186,6 +351,9 @@ function saveAIConfig(){
     whisper: { model: $('whisperModel') ? $('whisperModel').value.trim() : 'base' },
     vlm:    { enabled: $('vlmEnabled') ? $('vlmEnabled').checked : false, mode: $('vlmMode') ? $('vlmMode').value.trim() : 'ollama',
               base_url: $('vlmBase') ? $('vlmBase').value.trim() : '', model: $('vlmModel') ? $('vlmModel').value.trim() : '' },
+    tts_local: { engine: $('ttsLocalEngine') ? $('ttsLocalEngine').value : 'auto',
+                 voice: $('ttsLocalVoice') ? $('ttsLocalVoice').value : 'zh-CN-XiaoxiaoNeural',
+                 rate: $('ttsLocalRate') ? $('ttsLocalRate').value.trim() : '+0%' },
   };
   fetch('/api/ai/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })
     .then(r=>r.json()).then(res=>{
@@ -327,9 +495,62 @@ function loadVlmStatus(){
     // 同步顶栏芯片
     const chip = $('aiVlm'); if(chip){ chip.className = 'aichip ' + (res.ready ? 'ok' : 'no');
       chip.textContent = res.ready ? '📷 视觉理解 已就绪' : '📷 视觉理解 未部署'; }
+    if (typeof refreshModelCards === 'function') _renderModelCards('vlmModelCards', VLM_MODEL_CATALOG,
+      (res.model||'').trim(), res.installed, res.pulling ? res.pull_model : null, 'pickVlmModel');
   }).catch(e=>console.warn('加载 VLM 状态失败', e));
 }
 // ---- 本地模型（文字解说）：网页内一键拉取 + 状态轮询 ----
+// 模型选择卡：状态驱动——如实显示 使用中 / 已安装·点击启用 / 未安装·下载中
+const LOCAL_MODEL_CATALOG = [
+  {tag:'qwen3:14b-q4_K_M', label:'⭐ qwen3:14b', desc:'新一代 · 写作更强', size:'≈9.0GB'},
+  {tag:'qwen2.5:14b',      label:'qwen2.5:14b', desc:'稳定基准（回退选）', size:'≈8.4GB'},
+  {tag:'qwen3:8b',         label:'qwen3:8b', desc:'轻快省显存 · 共存更稳', size:'≈5.2GB'},
+];
+const VLM_MODEL_CATALOG = [
+  {tag:'qwen3-vl:8b',      label:'⭐ qwen3-vl:8b', desc:'新一代视觉 · 剧情理解更强', size:'≈6.1GB'},
+  {tag:'qwen2.5vl:latest', label:'qwen2.5vl', desc:'稳定基准（回退选）', size:'≈5.6GB'},
+];
+function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn){
+  const box = $(boxId); if(!box) return;
+  box.innerHTML = catalog.map(m=>{
+    const inst = (installed||[]).some(x => x === m.tag || x.indexOf(m.tag) === 0);
+    const active = cur === m.tag;
+    const pulling = pullingModel === m.tag;
+    let state, btnCls, btn;
+    if (pulling){ state = '⏳ 下载中…'; btnCls = 'btn mini'; btn = '下载中'; }
+    else if (active){ state = '✅ 使用中'; btnCls = 'btn mini'; btn = '使用中'; }
+    else if (inst){ state = '✅ 已安装'; btnCls = 'btn mini ghost'; btn = '点击启用'; }
+    else { state = '⬜ 未安装'; btnCls = 'btn mini ghost'; btn = '⬇ 下载并启用'; }
+    return `<button class="${btnCls}" style="flex:1;min-width:150px;text-align:left;${active?'outline:2px solid #16a34a;':''}" onclick="${pickFn}('${m.tag}')" ${pulling?'disabled':''}>
+      <span style="display:block;font-weight:600;">${m.label} · ${m.size}</span>
+      <span style="display:block;font-size:12px;opacity:.75;">${m.desc}</span>
+      <span style="display:block;font-size:12px;margin-top:2px;">${state}</span></button>`;
+  }).join('');
+}
+function refreshModelCards(){
+  fetch('/api/local/status').then(r=>r.json()).then(st=>{
+    _renderModelCards('localModelCards', LOCAL_MODEL_CATALOG,
+                      (st.model||'').trim(), st.installed, st.pulling ? st.pull_model : null, 'pickLocalModel');
+  }).catch(()=>{});
+  fetch('/api/vlm/status').then(r=>r.json()).then(st=>{
+    _renderModelCards('vlmModelCards', VLM_MODEL_CATALOG,
+                      (st.model||'').trim(), st.installed, st.pulling ? st.pull_model : null, 'pickVlmModel');
+  }).catch(()=>{});
+}
+function pickLocalModel(tag){
+  const el = $('localModel'); if(!el) return;
+  el.value = tag;
+  saveAIConfig();          // 切换立即生效
+  pullLocalModel();        // 后端守卫：已安装秒完成 / 已有下载会拒绝并提示
+  refreshModelCards();
+}
+function pickVlmModel(tag){
+  const el = $('vlmModel'); if(!el) return;
+  el.value = tag;
+  saveVlm();               // 切换立即生效
+  pullVlm();               // 同上
+  refreshModelCards();
+}
 function pullLocalModel(){
   const btn = $('pullLocal'); if(btn){ btn.textContent='⏳ 拉取中…'; btn.disabled=true; }
   const bar = $('localPullBar'), pct = $('localPullPct');
@@ -379,6 +600,8 @@ function loadLocalStatus(){
     if(res.pulling) setTimeout(loadLocalStatus, 2000);
     const chip = $('aiLocal'); if(chip){ chip.className = 'aichip ' + (res.ready ? 'ok' : 'no');
       chip.textContent = res.ready ? '🖥 本地模型 已就绪' : '🖥 本地模型 未部署'; }
+    if (typeof refreshModelCards === 'function') _renderModelCards('localModelCards', LOCAL_MODEL_CATALOG,
+      (res.model||'').trim(), res.installed, res.pulling ? res.pull_model : null, 'pickLocalModel');
   }).catch(e=>console.warn('加载本地模型状态失败', e));
 }
 // ---- 本地视觉理解 VLM：网页内一键拉取（按钮此前未接，这里补上）----
@@ -423,7 +646,7 @@ function scanOllamaMirrors(){
   if(box) box.innerHTML = '<span class="hint">⏳ 正在探测可用镜像（约 6 秒）…</span>';
   if(btn){ btn.disabled = true; btn.textContent = '🔍 检测中…'; }
   fetch('/api/mirror/scan', {method:'POST'}).then(r=>r.json()).then(res=>{
-    if(!res.ok || !res.result){ if(box) box.innerHTML = '<span class="hint">❌ 检测失败：'+(res.error||'未知错误')+'</span>'; return; }
+    if(!res.ok || !res.result){ if(box) box.innerHTML = '<span class="hint">❌ 检测失败：'+escapeHtml(res.error||'未知错误')+'</span>'; return; }
     const list = res.result.mirrors || [], best = res.result.best;
     if(!list.length){ if(box) box.innerHTML = '<span class="hint">未配置镜像候选。</span>'; return; }
     try { localStorage.setItem('ollamaBest', best || ''); } catch(e){}
@@ -437,12 +660,14 @@ function scanOllamaMirrors(){
       const rec = (m.base === best) ? ' recommend' : '';
       const tag = (m.base === best) ? '<span class="badge ok">✅ 推荐</span>' : '<span class="badge ok">可用</span>';
       const cid = 'mir' + i;
+      const href = safeUrl(m.url);   // 只放行 http(s)，其余不渲染成链接
+      const link = href ? `<a class="open" target="_blank" rel="noopener noreferrer" href="${escapeHtml(href)}">↗ 打开</a>` : '';
       return `<div class="mirroritem${rec}">
         ${tag}
-        <code id="${cid}">${m.url}</code>
-        <a class="open" target="_blank" href="${m.url}">↗ 打开</a>
+        <code id="${cid}">${escapeHtml(m.url)}</code>
+        ${link}
         <button class="btn mini ghost cp" onclick="copyText('${cid}')">📋 复制</button>
-        <div class="note">${m.note||''}</div>
+        <div class="note">${escapeHtml(m.note||'')}</div>
       </div>`;
     }).join('') + official;
   }).catch(()=>{ if(box) box.innerHTML = '<span class="hint">❌ 检测请求失败，请重试。</span>'; })
@@ -453,17 +678,32 @@ function loadHistory(){
     const box = $('historyList');
     if(!res.ok || !res.history || !res.history.length){ box.innerHTML='<div class="hint">还没有生成记录。</div>'; return; }
     box.innerHTML = '';
-    res.history.forEach(h => {
+    res.history.forEach((h, i) => {
       const d = document.createElement('div');
       d.className = 'item';
       const secs = h.duration || 0;
       const tag = [h.music?'🎵':'', h.voice?'🗣️':'', (h.w||'')+'x'+(h.h||'')].filter(Boolean).join(' ');
-      d.innerHTML = `<div class="meta"><div class="name">🕘 ${h.time||''} · ${secs}s ${tag}</div>
-        <div class="kind">${(h.captions&&h.captions.length)?'文案:'+h.captions.join(' / '):''}</div></div>
-        <a class="btn mini ghost" href="/media/${h.file}" download="spring-${h.time||''}.mp4">⬇ 下载</a>
+      const capTxt = (h.captions && h.captions.length) ? ('文案:' + h.captions.join(' / ')) : '';
+      const missing = !!h.missing;
+      d.innerHTML = `${h.cover?`<img class="thumb" src="/media/${h.cover}?t=${Date.now()}" alt="封面">`:''}<div class="meta"><div class="name">🕘 ${escapeHtml(h.time||'')} · ${escapeHtml(secs)}s ${escapeHtml(tag)}${missing?' <span style="color:#b45309;">⚠️ 成片文件已丢失</span>':''}</div>
+        <div class="kind">${escapeHtml(capTxt)}</div></div>
+        ${missing?'':`<a class="btn mini ghost" href="/media/${escapeHtml(h.file)}" download="spring-${escapeHtml(h.time||'')}.mp4">⬇ 下载</a>
+        <button class="btn mini ghost cov" title="生成或重做该成片的封面">🖼 封面</button>`}
         <button class="btn mini del">🗑 删除</button>`;
       d.querySelector('a').addEventListener('click', (e)=>{ e.preventDefault(); const a=e.currentTarget; a.href='/media/'+h.file+'?t='+Date.now(); a.click(); });
       d.querySelector('button.del').addEventListener('click', () => deleteHistory(h.file));
+      d.querySelector('button.cov').addEventListener('click', () => {
+        let cb = document.getElementById('coverBox_h' + i);
+        if (!cb) {
+          cb = document.createElement('div');
+          cb.id = 'coverBox_h' + i;
+          cb.style.display = 'none'; cb.style.width = '100%';
+          d.appendChild(cb);
+        }
+        const show = cb.style.display !== 'block';
+        cb.style.display = show ? 'block' : 'none';
+        if (show) makeCover(h.file, cb.id, (h.captions && h.captions[0]) || '成片封面');
+      });
       box.appendChild(d);
     });
   }).catch(e=>console.warn('加载历史记录失败', e));
@@ -487,6 +727,7 @@ loadAiStatus();
 scanOllamaMirrors();   // 页面加载即自动探测可用 Ollama 安装镜像，免人工替换
 loadWhisperStatus();
 loadVlmStatus();
+loadTtsLocal();        // 本地配音引擎状态与音色列表
 
 function clearEmpty(){ $('emptyHint').style.display = ITEMS.length ? 'none' : ''; }
 
@@ -508,8 +749,8 @@ function render(){
     const d = document.createElement('div'); d.className = 'item';
     const kindTxt = it.kind==='video' ? '🎬 视频' : '🖼️ 图片';
     d.innerHTML = `
-      <img class="thumb" src="${it.url}" alt="">
-      <div class="meta"><div class="name">${it.name}</div><div class="kind">${kindTxt}</div></div>
+      <img class="thumb" src="${escapeHtml(it.url)}" alt="">
+      <div class="meta"><div class="name">${escapeHtml(it.name)}</div><div class="kind">${kindTxt}</div></div>
       <span class="lbl">时长</span><input type="number" value="${it.dur}" min="1" max="120" data-i="${i}">
       <button class="btn mini ghost" data-up="${i}" title="上移">↑</button>
       <button class="btn mini ghost" data-dn="${i}" title="下移">↓</button>
@@ -537,8 +778,28 @@ function toB64(u8){
 
 let _tickTimer = null;
 let _currentRunid = null;
+let _stopFlag = false;   // 用户点了「⏹ 停止」：轮询不再覆盖状态文案，等后端中断后收尾
 function setBar(p){ const b=$('bar').querySelector('i'); $('bar').style.display='block'; b.style.width=Math.min(100,Math.max(1,p))+'%'; }
 function stopBar(){ clearInterval(_tickTimer); $('bar').style.display='none'; }
+
+// 统一的中途停止入口：各页面的「⏹ 停止」都调它，状态写到对应卡片而不是顶部全局 status
+function stopRun(statusId){
+  const el = statusId ? $(statusId) : null;
+  if(!_currentRunid){
+    if(el) el.textContent = 'ℹ️ 当前没有正在生成的任务';
+    return;
+  }
+  if(_stopFlag){ if(el) el.textContent = '⏹ 正在停止…请稍候'; return; }
+  _stopFlag = true;
+  if(el) el.textContent = '⏹ 正在停止…（当前阶段跑完即中断）';
+  fetch('/api/cancel', { method:'POST', headers:{'Content-Type':'application/json'},
+                         body: JSON.stringify({runid:_currentRunid}) })
+    .then(()=>{ if(el) el.textContent = '⏹ 已下达停止指令，正在中断当前阶段…'; })
+    .catch(()=>{ if(el) el.textContent = '⚠️ 停止指令发送失败，请检查服务是否在运行'; });
+}
+// 兼容旧调用（一键合成等页面）
+function cancelRun(){ stopRun('status'); }
+function cancelBuild(){ stopRun('status'); }
 
 // ---- AI 配置就绪状态 + 生成前置引导（避免静默用免费模板） ----
 let _aiStatus = null;
@@ -552,10 +813,14 @@ function loadAiStatus(){
   fetch('/api/ai_status').then(r=>r.json()).then(s=>{
     _aiStatus = s;
     const chat = $('aiChat'), vis = $('aiVision');
-    if (chat){ chat.className = 'aichip ' + (s.chat ? 'ok' : 'no');
-      chat.textContent = s.chat ? '🤖 真AI(LLM) 已配置' : '🤖 真AI(LLM) 未配置'; }
-    if (vis){ vis.className = 'aichip ' + (s.vision ? 'ok' : 'no');
-      vis.textContent = s.vision ? '👁 画面描述 已配置' : '👁 画面描述 未配置'; }
+    if (chat){
+      const chatOk = s.chat || s.local;
+      chat.className = 'aichip ' + (chatOk ? 'ok' : 'no');
+      chat.textContent = s.chat ? '☁️ 云端LLM 已配置' : (s.local ? '🖥 本地LLM 已就绪' : '🤖 真AI(LLM) 未配置'); }
+    if (vis){
+      const visOk = s.vision || s.vlm_ready;
+      vis.className = 'aichip ' + (visOk ? 'ok' : 'no');
+      vis.textContent = s.vision ? '☁️ 云端视觉 已配置' : (s.vlm_ready ? '📷 本地视觉 已就绪' : '👁 画面描述 未配置'); }
     const loc = $('aiLocal');
     if (loc){ loc.className = 'aichip ' + (s.local ? 'ok' : 'no');
       loc.textContent = s.local ? '🖥 本地模型 已就绪' : '🖥 本地模型 未部署'; }
@@ -603,8 +868,8 @@ function preflight(task){
       // 注：「省流/智能」模式选择器已于第 26 轮移除，改为后端自动选路（本地优先、配了 key 才用云端），
       // 故不再读取 narMode/movieMode/eco；此处只对「主动勾选了画面描述」这类仍存在的开关做前置确认。
       const aiCap = $('aiCap');
-      if (task === 'build' && aiCap && aiCap.checked && !s.vision){ missing = '画面描述(Vision)'; explicit = true; }
-      else if (task === 'instruct' && !s.chat){ missing = '真AI 解说(LLM)'; explicit = false; }
+      if (task === 'build' && aiCap && aiCap.checked && !s.vision && !s.vlm_ready){ missing = '画面描述(Vision)'; explicit = true; }
+      else if (task === 'instruct' && !s.chat && !s.local){ missing = '真AI 解说(LLM)'; explicit = false; }
       if (missing){
         _pendingGen = resolve;  // 点「仍用免费生成」时 resolve(true)
         // 根据缺少的配置类型决定「去配置」跳转到云端还是本地
@@ -637,6 +902,7 @@ function setModeBadge(id, mode){
 let _gStart = 0;
 function gStart(label){
   _gStart = Date.now();
+  _stopFlag = false;   // 新任务开始：清掉上一次的停止标记，否则状态文案会被锁住
   $('gprogLabel').textContent = label || '处理中…';
   $('gprogPct').textContent = '0%';
   $('gprogPhase').textContent = '';
@@ -664,12 +930,140 @@ function gDone(){
 }
 function gErr(msg){
   $('gprogFill').style.width = '100%';
-  $('gprogLabel').textContent = '❌ ' + (msg || '失败');
+  const c = classifyError(msg, null);
+  $('gprogLabel').textContent = c.head + (c.kind === 'other' && msg ? '：' + String(msg).slice(0, 40) : '');
   $('gprogPhase').textContent = '';
   setTimeout(() => $('gprog').classList.remove('show'), 2800);
 }
+
+// ---- 任务失败分级呈现：人话首行 + 可展开技术细节 + 一键复制 ----
+// 后端若已给出 error_kind / error_stage / error_detail 则优先使用，否则按 message 关键字归类
+const ERR_RULES = [
+  { kind:'cancel',  re:/取消|cancel(led)?/i,
+    head:'⏹ 已取消', tip:'任务已停止，不会产生新的成片。想继续的话重新发起即可。' },
+  { kind:'busy',    re:/并发上限|已达上限|正在运行|已有任务|queue is full|too many/i,
+    head:'⏳ 同时只能跑一个任务', tip:'已经有任务在跑了。请等它完成，或先点「⏹ 取消」再重新发起。' },
+  { kind:'lost',    re:/失去连接|服务可能已重启/i,
+    head:'🔌 与服务失去连接', tip:'后台服务可能已重启或崩溃。请刷新页面后重新发起任务。' },
+  { kind:'timeout', re:/等待超时|轮询超时|timed out|read timeout/i,
+    head:'⏳ 等待超时', tip:'等待时间超过了上限（任务可能仍在后台进行）。请稍后到「⑨记录」查看结果，或重新发起。' },
+  { kind:'font',    re:/豆腐块|中文字形|中文字体|字体缺失|no cjk|cjk font|glyph/i,
+    head:'🔤 缺少中文字体（画面文字变成方框）', tip:'请把一个中文字体（如思源黑体、微软雅黑 msyh.ttc）放进项目 assets/fonts 目录，或在「🤖 AI 配置」里改指字体后重试。' },
+  { kind:'frame',   re:/抽帧|ffmpeg|exit code|invalid data|out of range|超出范围|编码失败|no such filter|moov atom/i,
+    head:'🎞️ 素材抽帧 / 编码失败', tip:'素材可能已损坏，或抽帧的时间点超出了视频长度。换个时间点，或重新选一段素材再试。' },
+  { kind:'model',   re:/whisper|ollama|vlm|qwen|权重|未下载|未部署|model not found|no such model|connection refused/i,
+    head:'🧠 本地模型未就绪', tip:'任务需要的本地模型还没下载/启动。请到「🤖 AI 配置 → 🖥 本地离线模型」点「下载 / 部署」，完成后再重试。' },
+  { kind:'disk',    re:/空间不足|磁盘|no space|not enough space/i,
+    head:'💾 磁盘空间不足', tip:'请到「🧹 存储」页清理可回收的临时文件，腾出空间后重试。' },
+  { kind:'net',     re:/超时|timeout|连接失败|connection|网络|api ?key|401|403|429|quota|unauthorized|ssl|proxy/i,
+    head:'🌐 AI / 网络请求失败', tip:'请检查网络连通性，以及「🤖 AI 配置」里的接口地址与 API Key 是否正确（Key 无效或欠费也会报这类错）。' },
+];
+function classifyError(msg, p){
+  const raw = String(msg == null ? '' : msg);
+  let kind = (p && p.error_kind) ? String(p.error_kind) : '';
+  if (!kind){
+    for (const r of ERR_RULES){ if (r.re.test(raw)){ kind = r.kind; break; } }
+  }
+  const rule = ERR_RULES.filter(r => r.kind === kind)[0];
+  if (rule) return { kind: rule.kind, head: rule.head, tip: rule.tip };
+  return { kind:'other', head:'❌ 任务失败',
+           tip:'遇到了未归类的问题。点下面的「📋 复制错误信息」把详情发给作者，能最快定位。' };
+}
+function showTaskError(el, err, detail){
+  if (!el) return;
+  const p = (detail && typeof detail === 'object') ? detail : null;
+  const msg = String(err == null ? '' : err);
+  const c = classifyError(msg, p);
+  const tech = p ? (p.error_detail || msg) : (detail ? String(detail) : msg);
+  const stage = p ? (p.error_stage || p.phase || '') : '';
+  el.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'taskerr' + (c.kind === 'cancel' ? ' cancel' : '');
+  let html = '<div class="te-head">' + escapeHtml(c.head) + '</div>'
+           + '<div class="te-tip">' + escapeHtml(c.tip) + '</div>';
+  if (c.kind === 'other' && msg) html += '<div class="te-raw">' + escapeHtml(msg) + '</div>';
+  if (stage) html += '<div class="te-stage">出错阶段：' + escapeHtml(stage) + '</div>';
+  html += '<details class="te-detail"><summary>🔍 技术细节</summary><pre class="te-pre"></pre></details>'
+        + '<button type="button" class="btn mini ghost te-copy">📋 复制错误信息</button>';
+  box.innerHTML = html;
+  box.querySelector('.te-pre').textContent = tech || msg || '（后端未返回详细信息）';
+  const report = '【一帧成片·错误反馈】\n提示：' + c.head + '\n建议：' + c.tip
+    + (stage ? '\n出错阶段：' + stage : '')
+    + '\n技术细节：\n' + (tech || msg || '（无）');
+  const btn = box.querySelector('.te-copy');
+  const pre = box.querySelector('.te-pre');
+  const det = box.querySelector('.te-detail');
+  btn.addEventListener('click', () => {
+    copyString(report).then(ok => {
+      if (ok){ btn.textContent = '✅ 已复制'; }
+      else { det.open = true; _selectNode(pre); btn.textContent = '⚠️ 复制失败，请手动复制（已选中）'; }
+      setTimeout(() => { btn.textContent = '📋 复制错误信息'; }, 2200);
+    });
+  });
+  el.appendChild(box);
+}
+function _selectNode(node){
+  try {
+    const rg = document.createRange(); rg.selectNodeContents(node);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(rg);
+  } catch(e){}
+}
+// 复制：navigator.clipboard → execCommand 兜底 → 返回 false 交由调用方提示手动复制
+function copyString(text){
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    return navigator.clipboard.writeText(text).then(() => true).catch(() => Promise.resolve(_legacyCopy(text)));
+  }
+  return Promise.resolve(_legacyCopy(text));
+}
+function _legacyCopy(text){
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch(e){ return false; }
+}
+
+// ---- CC.BY 音乐署名（任务完成时展示；credits 为空则不渲染）----
+function renderCredits(hostId, credits){
+  const host = $(hostId);
+  if (!host) return;
+  const cid = hostId + '_credits';
+  let box = $(cid);
+  const text = String(credits == null ? '' : credits).trim();
+  if (!text){ if (box) box.remove(); return; }
+  if (!box){
+    box = document.createElement('div');
+    box.id = cid; box.className = 'credits';
+    host.appendChild(box);
+  }
+  box.innerHTML = '<div class="cr-title">🎵 音乐署名（CC.BY 协议要求）</div>'
+    + '<pre class="cr-text"></pre>'
+    + '<button type="button" class="btn mini ghost cr-copy">📋 复制署名</button>'
+    + '<div class="cr-note">发布到公开平台时，请把上面的署名放进视频简介或片尾。</div>';
+  box.querySelector('.cr-text').textContent = text;
+  const btn = box.querySelector('.cr-copy');
+  btn.addEventListener('click', () => {
+    copyString(text).then(ok => {
+      btn.textContent = ok ? '✅ 已复制' : '⚠️ 复制失败，请手动选中复制';
+      setTimeout(() => { btn.textContent = '📋 复制署名'; }, 1800);
+    });
+  });
+}
 function escapeHtml(s){
-  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// URL 白名单：只放行 http(s) 与站内相对路径（排除 //host 协议相对地址），其余返回空串 → 调用方不渲染该链接
+function safeUrl(u){
+  const s = String(u == null ? '' : u).trim();
+  if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.indexOf('//') === 0) return '';
+  if (s.indexOf('/') === 0) return s;
+  return '';
 }
 function renderPartial(id, partial){
   const box = $(id);
@@ -683,14 +1077,14 @@ function renderPartial(id, partial){
           + '<button class="btn mini ghost pcopy">📋 复制全文</button></div>';
   }
   if (partial.best_video){
-    html += '<video class="pvideo" src="' + partial.best_video + '?t=' + Date.now() + '" controls playsinline></video>';
+    html += '<video class="pvideo" src="' + escapeHtml(partial.best_video) + '?t=' + Date.now() + '" controls playsinline></video>';
   }
   html += '<div class="plist">';
   (partial.files || []).forEach(f => {
     const sz = (f.size / 1024).toFixed(0) + ' KB';
     const tag = { video:'🎬', audio:'🎵', subtitle:'📝', text:'📄', file:'📎' }[f.kind] || '📎';
     html += '<div class="pitem"><span class="ptag">' + tag + '</span>'
-          + '<a href="' + f.url + '" download="' + escapeHtml(f.name) + '" target="_blank">' + escapeHtml(f.name) + '</a>'
+          + '<a href="' + escapeHtml(f.url) + '" download="' + escapeHtml(f.name) + '" target="_blank">' + escapeHtml(f.name) + '</a>'
           + '<span class="psz">' + sz + '</span></div>';
   });
   html += '</div>';
@@ -708,9 +1102,9 @@ function gPreview(file, name){
   const card = document.createElement('div');
   card.className = 'pvcard';
   card.innerHTML =
-    '<div class="pvhead"><span>✅ ' + (name || '已生成') + '</span><button class="pvclose">✕</button></div>' +
-    '<video src="' + url + '" controls playsinline></video>' +
-    '<div class="pvfoot"><a class="btn mini ghost" href="' + url + '" download="' + (name || 'video.mp4') + '">💾 保存</a></div>';
+    '<div class="pvhead"><span>✅ ' + escapeHtml(name || '已生成') + '</span><button class="pvclose">✕</button></div>' +
+    '<video src="' + escapeHtml(url) + '" controls playsinline></video>' +
+    '<div class="pvfoot"><a class="btn mini ghost" href="' + escapeHtml(url) + '" download="' + escapeHtml(name || 'video.mp4') + '">💾 保存</a></div>';
   card.querySelector('.pvclose').addEventListener('click', () => { card.remove(); if (!dock.children.length) dock.classList.remove('show'); });
   dock.appendChild(card);
   dock.classList.add('show');
@@ -781,20 +1175,24 @@ function loadStorage(){
     let html = `<div class="st-summary">项目占用 <b>${fmtBytes(d.total_bytes)}</b> · 可回收 <b style="color:#1a7f37">${fmtBytes(d.reclaimable_bytes)}</b> · 磁盘剩余 <b>${fmtBytes(d.free_bytes)}</b></div>`;
     (d.groups || []).forEach(g => {
       if (g.total === 0 && g.items.length === 0) return;
-      html += `<div class="st-group"><div class="st-group-head"><span class="st-badge ${tierCls[g.tier] || ''}">${tierBadge[g.tier] || g.tier}</span><b>${g.label}</b><span class="st-size">${fmtBytes(g.total)}</span></div>`;
+      html += `<div class="st-group"><div class="st-group-head"><span class="st-badge ${tierCls[g.tier] || ''}">${tierBadge[g.tier] || escapeHtml(g.tier)}</span><b>${escapeHtml(g.label)}</b><span class="st-size">${fmtBytes(g.total)}</span></div>`;
       if (g.items && g.items.length){
         html += '<div class="st-items">';
         g.items.forEach(it => {
+          // 用 data-* + 监听器传参：路径里的引号不会破坏 onclick 的 JS 字符串
           const del = g.deletable
-            ? `<button class="btn mini danger" onclick="deleteStorageItem('${encodeURIComponent(it.rel)}',${it.size})">🗑 删除</button>`
+            ? `<button class="btn mini danger st-del" data-rel="${escapeHtml(it.rel)}" data-size="${escapeHtml(it.size)}">🗑 删除</button>`
             : '<span class="hint">不可删</span>';
-          html += `<div class="st-item"><span class="st-name" title="${it.rel}">${it.name}</span><span class="st-size">${fmtBytes(it.size)}</span>${del}</div>`;
+          html += `<div class="st-item"><span class="st-name" title="${escapeHtml(it.rel)}">${escapeHtml(it.name)}</span><span class="st-size">${fmtBytes(it.size)}</span>${del}</div>`;
         });
         html += '</div>';
       }
       html += '</div>';
     });
     if (list) list.innerHTML = html;
+    if (list) list.querySelectorAll('.st-del').forEach(b => {
+      b.addEventListener('click', () => deleteStorageItem(b.dataset.rel, Number(b.dataset.size) || 0));
+    });
     if (sum) sum.innerHTML = `项目占用 <b>${fmtBytes(d.total_bytes)}</b> · 可回收 <b style="color:#1a7f37">${fmtBytes(d.reclaimable_bytes)}</b> · 磁盘剩余 <b>${fmtBytes(d.free_bytes)}</b>`;
     const rec = (d.groups || []).filter(g => g.deletable && g.tier === 'safe').reduce((a, g) => a + g.total, 0);
     const btn = $('storageCleanAll');
@@ -802,8 +1200,8 @@ function loadStorage(){
   }).catch(e => { if (sum) sum.textContent = '请求失败：' + e; });
 }
 
-function deleteStorageItem(relEnc, size){
-  const rel = decodeURIComponent(relEnc);
+function deleteStorageItem(rel, size){
+  rel = String(rel == null ? '' : rel);
   const name = rel.split('/').pop();
   if (!confirm(`确认删除「${name}」（${fmtBytes(size)}）？\n该操作不可恢复。`)) return;
   fetch('/api/storage/delete', {
@@ -867,14 +1265,7 @@ function onModeChange(modeSelectId){
 }
 
 function setRes(res, name){ $('res').value = res; $('status').textContent = '已设为：' + name + ' (' + res + ')'; }
-function cancelRun(){
-  if (_currentRunid){
-    fetch('/api/cancel', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({runid:_currentRunid}) }).then(r=>r.json()).then(()=>{
-      const el = $('status'); if (el) el.textContent='⏹ 正在取消…';
-    }).catch(()=>{});
-  }
-}
-function cancelBuild(){ cancelRun(); }
+// 注：cancelRun / cancelBuild 已上移为 stopRun 的兼容别名（见文件顶部「中途停止」区），此处不再重复定义
 
 // 大视频走分片上传（>64MB）：旧路径把整文件 base64 塞进一个 JSON，体积膨胀 1.37 倍且有内存峰值；
 // 分片路径每片 4MB、3 路并发提交，后端按序合并。小文件维持 base64 旧路径（少 3 个请求）。
@@ -908,8 +1299,13 @@ async function uploadChunksOnly(file){
     while(todo.length && !failed){
       const i = todo.shift();
       try {
-        const data = await new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result.split(',')[1]); fr.onerror=()=>rej(new Error('读取分片失败')); fr.readAsDataURL(file.slice(i*CH,(i+1)*CH)); });
-        const r = await fetch('/api/upload/chunk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uid, idx:i, data})}).then(r=>r.json());
+        // FormData 二进制直传：省去 FileReader+base64 的 1.37x 膨胀和 CPU 编码
+        const blob = file.slice(i*CH, (i+1)*CH);
+        const fd = new FormData();
+        fd.append('upload_id', uid);
+        fd.append('idx', i);
+        fd.append('chunk', blob, 'part_' + i);
+        const r = await fetch('/api/upload/chunk',{method:'POST', body: fd}).then(r=>r.json());
         if(!r.ok) throw new Error(r.error||'分片上传失败');
         doneN++;
         gSet(2 + Math.round(doneN*20/total), '📤 视频上传中 ' + doneN + '/' + total + (have.length ? '（已续传 ' + have.length + ' 片）' : ''));
@@ -964,7 +1360,7 @@ async function buildBeatCut(){
   const syncSt=$('bcSyncStatus'); if(syncSt){ syncSt.style.display='none'; syncSt.style.background=''; syncSt.textContent=''; }
   $('bcStatus').textContent='上传视频…';
   gStart('⚡ 智能强卡点');
-  const params={w:1280,h:720,fps:30,sceneTh:0.30,maxCuts:30, strength: $('bcStrength').value};
+  const params={w:1280,h:720,fps:30,sceneTh:0.30,maxCuts:30, strength: $('bcStrength').value, skipHead: parseFloat(($('bcSkipHead')||{}).value) || 3.0};
   if($('bcKeepAudio')){ params.keepAudio = $('bcKeepAudio').checked; }
   // 转场仅在智能强卡点（非节拍同步）生效
   params.transition = 'none';
@@ -1003,13 +1399,14 @@ function pollBeatCut(runid){
         if(p.done){
           clearInterval(iv); $('bcBar').style.display='none';
           _currentRunid=null; if(cb) cb.style.display='none';
-          if(p.error){ renderPartial('bcPartial', p.partial); $('bcStatus').textContent='❌ '+p.error; gErr(p.error); resolve(); return; }
+          if(p.error){ renderPartial('bcPartial', p.partial); showTaskError($('bcStatus'), p.error, p); gErr(p.error); resolve(); return; }
           $('bcStatus').textContent='✅ 完成'; gDone();
           $('bcResult').style.display='block';
           $('bcPlayer').src='/media/'+p.file+'?t='+Date.now();
           setModeBadge('bcMode', p.mode);
           gPreview(p.file, '强卡点短片');
           $('bcDl').href='/media/'+p.file;
+          renderCredits('bcResult', p.credits);
           _coverCtx.bc = {file: p.file}; const _ccb=$('bcCoverBtn'); if(_ccb) _ccb.style.display='';
           const d=p.diag||{};
           let txt;
@@ -1053,6 +1450,42 @@ function setNarVideo(file){
   $('narDrop').textContent = '🎞️ 已选：' + file.name;
   $('narInfo').textContent = '已选视频，点「生成解说」开始（默认免费配音）。';
 }
+// ---- 🔎 DeepSeek 直达：复制「查剧情」提问模板 + 打开 DeepSeek，方便搜剧情概况 ----
+function _deepSeekPrompt(which){
+  const isMovie = (which === 'movie');
+  const nameEl = isMovie ? $('movieName') : $('narTheme');
+  const v = isMovie ? MOVIE_VIDEO : NAR_VIDEO;
+  let key = ((nameEl && nameEl.value) || '').trim();
+  if(!key && v && v.name) key = String(v.name).replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ').trim();
+  if(key.length > 24){
+    // 主题框里写的是长描述而非片名 → 直接围绕它整理
+    return '我要为下面这段视频写解说词，请帮我把它的剧情/内容按时间顺序整理成 8-12 幕，'
+      + '每一幕用一到两句话概括关键情节，不要写评价：\n' + key;
+  }
+  return key
+    ? '请给我《' + key + '》的详细剧情梗概（请开启联网搜索，参考豆瓣/百科）：按时间顺序分 8-12 幕，'
+      + '每一幕用一到两句话概括关键情节，人物给出姓名与身份，不要剧透结局，不要写评价，直接输出分幕正文。'
+    : '请给我一部影视作品的剧情梗概（我稍后补充片名）：按时间顺序分 8-12 幕，每幕一到两句话概括关键情节，不要剧透结局。';
+}
+function openDeepSeek(which){
+  const isMovie = (which === 'movie');
+  const prompt = _deepSeekPrompt(which);
+  const win = window.open('https://chat.deepseek.com/', '_blank', 'noopener');
+  const hintEl = $(isMovie ? 'movieDsHint' : 'narDsHint');
+  copyString(prompt).then(ok => {
+    if(!hintEl) return;
+    if(ok){
+      hintEl.innerHTML = '✅ 提问模板已复制。在 DeepSeek 里 <b>Ctrl+V 粘贴发送</b>（记得开「联网搜索」），把回复的剧情粘回左边输入框。';
+    }else{
+      hintEl.innerHTML = '⚠️ 自动复制失败，请手动复制下面这句提问：<br><code style="word-break:break-all;">'
+        + escapeHtml(prompt) + '</code>';
+    }
+  });
+  if(!win && hintEl){
+    hintEl.innerHTML = '⚠️ 新标签被浏览器拦截了，请<a href="https://chat.deepseek.com/" target="_blank" rel="noopener">手动打开 DeepSeek</a>（提问已复制）。';
+  }
+}
+
 async function buildNarrate(){
   if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; $('narDrop').classList.add('shake'); setTimeout(()=>$('narDrop').classList.remove('shake'),600); return; }
   if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
@@ -1065,7 +1498,11 @@ async function buildNarrate(){
   const body = { video: videoObj,
                  params:{maxSeg: parseFloat($('narMaxSeg').value)||25, w:1280, h:720, fps:30,
                          name: NAR_VIDEO.name, theme: ($('narTheme') ? $('narTheme').value.trim() : ''),
-                         req: ($('narReq') ? $('narReq').value.trim() : '')} };
+                         req: ($('narReq') ? $('narReq').value.trim() : ''),
+                         narr_style: ($('narrStyle') ? $('narrStyle').value : 'movie'),
+                         detail_level: ($('detailLevel') ? $('detailLevel').value : 'balanced'),
+                         autoCut: $('narAutoCut') ? $('narAutoCut').checked : true,
+                         targetSec: parseFloat(($('narTargetSec')||{}).value) || 0} };
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/narrate_movie（movie 名为空，纯按剧情）
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
@@ -1082,7 +1519,8 @@ async function buildNarrate(){
 function pollNarrate(runid){
   return new Promise(resolve=>{
     let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
-    _currentRunid = runid; const cb=$('narCancel'); if(cb) cb.style.display='';
+    _stopFlag = false;
+    _currentRunid = runid; const cb=$('narCancel'); if(cb){ cb.style.display=''; cb.disabled=false; cb.textContent='⏹ 停止生成'; }
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
         const b=$('narBar').querySelector('i');
@@ -1091,25 +1529,28 @@ function pollNarrate(runid){
         gSet(p.pct, p.phase);
         if(p.done){
           clearInterval(iv); $('narBar').style.display='none';
-          _currentRunid=null; if(cb) cb.style.display='none';
-          if(p.error){ renderPartial('narPartial', p.partial); $('narStatus').textContent='❌ '+p.error; gErr(p.error); resolve(); return; }
+          _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
+          if(p.error){ renderPartial('narPartial', p.partial); showTaskError($('narStatus'), p.error, p); gErr(p.error); resolve(); return; }
           $('narStatus').textContent='✅ 完成'; gDone();
           $('narResult').style.display='block';
           $('narPlayer').src='/media/'+p.file+'?t='+Date.now();
           setModeBadge('narBadge', p.mode);
           gPreview(p.file, '电影解说');
           $('narDl').href='/media/'+p.file;
+          renderCredits('narResult', p.credits);
           _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
           const d=p.diag||{};
           let txt='分段 '+(d.segments||0)+' · 台词 '+(d.asr_lines||0)+' 条 · 配音 '+(d.voice_clips||0)+' 段';
+          txt += _cutDiag(d.cut);
           if(d.narration){ txt += ' · 解说：' + d.narration.join(' / '); }
           $('narDiag').textContent = txt;
           resolve(); return;
         }
-        $('narStatus').textContent = (p.phase||'处理中')+'… '+(p.pct||0)+'%';
-      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); $('narBar').style.display='none'; _currentRunid=null; if(cb) cb.style.display='none'; $('narStatus').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
+        // 已点「⏹ 停止」时不要再覆盖状态文案，否则用户看不到停止反馈
+        if(!_stopFlag) $('narStatus').textContent = (p.phase||'处理中')+'… '+(p.pct||0)+'%';
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); $('narBar').style.display='none'; _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('narStatus').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     },400);
-    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('narStatus').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
+    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('narStatus').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 
@@ -1160,7 +1601,8 @@ async function buildMovieNarrate(){
 function pollMovie(runid){
   return new Promise(resolve => {
     let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
-    _currentRunid = runid; const cb=$('movieCancel'); if(cb) cb.style.display='';
+    _stopFlag = false;
+    _currentRunid = runid; const cb=$('movieCancel'); if(cb){ cb.style.display=''; cb.disabled=false; cb.textContent='⏹ 停止生成'; }
     const iv = setInterval(() => {
       fetch('/api/progress?run=' + runid).then(r => r.json()).then(p => {
         const b = $('movieBar').querySelector('i'); $('movieBar').style.display = 'block';
@@ -1168,11 +1610,12 @@ function pollMovie(runid){
         gSet(p.pct, p.phase);
         if(p.done){
           clearInterval(iv); $('movieBar').style.display = 'none';
-          _currentRunid=null; if(cb) cb.style.display='none';
-          if(p.error){ renderPartial('moviePartial', p.partial); $('movieStatus').textContent = '❌ ' + p.error; gErr(p.error); resolve(); return; }
+          _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
+          if(p.error){ renderPartial('moviePartial', p.partial); showTaskError($('movieStatus'), p.error, p); gErr(p.error); resolve(); return; }
           $('movieStatus').textContent = '✅ 完成'; gDone();
           const d = p.diag || {};
           let txt = '事件 ' + (d.events || 0) + ' · 分段 ' + (d.segments || 0) + ' · 台词 ' + (d.asr_lines || 0) + ' 条 · 对齐 ' + (d.aligned || 0) + ' · 配音 ' + (d.voice_clips || 0) + ' 段';
+          txt += _cutDiag(d.cut);
           if(d.narration && d.narration.length) txt += '\n解说：' + d.narration.join(' / ');
           if(p.script && p.script.length && !p.file) txt += '\n（仅解说稿）' + p.script.map(s => s.desc).join(' / ');
           $('movieDiag').textContent = txt;
@@ -1181,14 +1624,16 @@ function pollMovie(runid){
             $('moviePlayer').src = '/media/' + p.file + '?t=' + Date.now();
             setModeBadge('movieBadge', p.mode);
             $('movieDl').href = '/media/' + p.file;
+            _coverCtx.movie = {file: p.file}; const _mvcb=$('movieCoverBtn'); if(_mvcb) _mvcb.style.display='';
             gPreview(p.file, '联网解说');
+            renderCredits('movieResult', p.credits);
           }
           resolve(); return;
         }
-        $('movieStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%';
-      }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('movieBar').style.display = 'none'; _currentRunid=null; if(cb) cb.style.display='none'; $('movieStatus').textContent = '❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
+        if(!_stopFlag) $('movieStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%';
+      }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('movieBar').style.display = 'none'; _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('movieStatus').textContent = '❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
-    setTimeout(() => { clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('movieStatus').textContent = '⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
+    setTimeout(() => { clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('movieStatus').textContent = '⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 
@@ -1232,14 +1677,16 @@ function pollInstruct(runid){
         if(p.done){
           clearInterval(iv); $('instructBar').style.display = 'none';
           _currentRunid=null; if(cb) cb.style.display='none';
-          if(p.error){ renderPartial('instructPartial', p.partial); $('instructStatus').textContent = '❌ ' + p.error; gErr(p.error); resolve(); return; }
+          if(p.error){ renderPartial('instructPartial', p.partial); showTaskError($('instructStatus'), p.error, p); gErr(p.error); resolve(); return; }
           $('instructStatus').textContent = '✅ 完成（' + (p.phase || '') + '）'; gDone();
           if(p.file){
             $('instructResult').style.display = 'block';
             $('instructPlayer').src = '/media/' + p.file + '?t=' + Date.now();
             setModeBadge('instructMode', p.mode);
             $('instructDl').href = '/media/' + p.file;
+            _coverCtx.instruct = {file: p.file}; const _icb=$('instructCoverBtn'); if(_icb) _icb.style.display='';
             gPreview(p.file, '指令成片');
+            renderCredits('instructResult', p.credits);
           }
           const d = p.diag || {};
           let txt = (p.phase || '');
@@ -1316,7 +1763,7 @@ function pollRun(runid){
         const sec = Math.round((Date.now()-t0)/1000);
         if (p.done){
           clearInterval(iv); stopBar();
-          if (p.error){ renderPartial('buildPartial', p.partial); $('status').textContent='❌ '+p.error; gErr(p.error); resolve(); return; }
+          if (p.error){ renderPartial('buildPartial', p.partial); showTaskError($('status'), p.error, p); gErr(p.error); resolve(); return; }
           $('status').textContent = '✅ 完成（'+(p.duration||'')+'s）'; gDone();
           if (p.beat && p.beat.bpm){ $('musInfo2').textContent='💿 BPM '+p.beat.bpm+' · 节拍 '+p.beat.beat_count+' · 时长 '+(p.duration||'')+'s · 每'+ (p.beat.beatStep||1) +'拍切换，已对齐节拍。'; }
           $('result').style.display='block';
@@ -1325,6 +1772,7 @@ function pollRun(runid){
           $('dl').href = '/media/' + p.file;
           _coverCtx.build = {file: p.file}; const _bcb=$('buildCoverBtn'); if(_bcb) _bcb.style.display='';
           gPreview(p.file, '合成视频');
+          renderCredits('result', p.credits);
           resolve(); return;
         }
         $('status').textContent = (p.phase||'合成中') + '… ' + (p.pct||0) + '%（已 ' + sec + ' 秒）';
@@ -1381,6 +1829,8 @@ async function planNarrate(){
   if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; return; }
   if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再分析'; return; }
   const params={w:1280,h:720,fps:30, maxSeg: parseFloat(($('narMaxSeg')||{}).value)||25};
+  if($('narAutoCut')){ params.autoCut = $('narAutoCut').checked; }
+  if($('narTargetSec')){ params.targetSec = parseFloat($('narTargetSec').value) || 0; }
   const plot = ($('narPlot') && $('narPlot').value.trim()) ? $('narPlot').value.trim() : '';
   await _startPlan('narrate', params, plot);
 }
@@ -1410,23 +1860,25 @@ function _pollPlan(runid, type){
     const st=(type==='beatcut')?$('bcStatus'):$('narStatus');
     const mainBtn = (type==='beatcut') ? $('bcGo') : $('narGo');
     const done = ()=>{ if(mainBtn) mainBtn.disabled=false; };
-    _currentRunid = runid; const cb=$((type==='beatcut')?'bcCancel':'narCancel'); if(cb) cb.style.display='';
+    _stopFlag = false;
+    _currentRunid = runid; const cb=$((type==='beatcut')?'bcCancel':'narCancel');
+    if(cb){ cb.style.display=''; cb.disabled=false; cb.textContent='⏹ 停止生成'; }
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
         if(p.plan_ready && p.plan){
           clearInterval(iv);
-          _currentRunid=null; if(cb) cb.style.display='none';
+          _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
           _planRunid=runid; _planType=type;
           openPlanEditor(runid, p.plan);
           st.textContent='✅ 规划完成，请在弹窗中微调后点击「按我的调整合成」';
           done(); resolve(); return;
         }
-        if(p.error){ st.textContent='❌ '+p.error; clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; done(); resolve(); return; }
-        if(p.done){ st.textContent='❌ '+(p.error||'分析失败'); clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; done(); resolve(); return; }
-        st.textContent=(p.phase||'分析中')+'… '+(p.pct||0)+'%';
-      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='❌ 与服务失去连接（服务可能已重启），请重新分析'; done(); resolve(); } });
+        if(p.error){ showTaskError(st, p.error, p); clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; done(); resolve(); return; }
+        if(p.done){ showTaskError(st, p.error||'分析失败', p); clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; done(); resolve(); return; }
+        if(!_stopFlag) st.textContent=(p.phase||'分析中')+'… '+(p.pct||0)+'%';
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; st.textContent='❌ 与服务失去连接（服务可能已重启），请重新分析'; done(); resolve(); } });
     },400);
-    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='⚠️ 分析超时未返回（长视频解说分析可能需要 30 分钟以上），请稍后在⑨记录查看或重试'; done(); resolve(); }, 3600000);
+    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; st.textContent='⚠️ 分析超时未返回（长视频解说分析可能需要 30 分钟以上），请稍后在⑨记录查看或重试'; done(); resolve(); }, 3600000);
   });
 }
 
@@ -1455,7 +1907,8 @@ function renderPlanModal(){
   const desc = isBeat
     ? '上方时间轴显示全部切点（圆点）——点 ✕ 可删除某个切换点；在「添加切点」输入秒数可手动加一个切换点。'
       + '列表勾选 = 保留该镜头段；取消勾选 = 该处不切换（与前段合并）。'
-    : '列表勾选 = 保留该段并配音；取消勾选 = 去掉该段。可直接编辑每段解说词；点「✂ 减词」可缩短成一句话；点「🔒」把该段锁定为必要（不可误删）。';
+    : '列表勾选 = 保留该段并配音；<b>取消勾选 = 把这段画面真的剪掉</b>（成片里不再出现，时长同步缩短）。'
+      + '可直接编辑每段解说词；点「✂ 减词」可缩短成一句话；点「🔒」把该段锁定为必要（不可误删）。';
   let rowsHtml = '';
   if(isBeat){
     rowsHtml = _cutTimes.slice(0,-1).map((s,i)=>{
@@ -1484,6 +1937,10 @@ function renderPlanModal(){
     + '<div class="plan-sum" id="planSum"></div>'
     + '<div class="plan-actions">'
     + '<button class="btn ghost" onclick="closePlanModal()">取消</button>'
+    + (isBeat ? '' : '<label class="cut-toggle" title="关闭则保留整段原片，只加字幕与配音">'
+       + '<input type="checkbox" id="planAutoCut" checked style="width:auto"> ✂ 剪掉未勾选片段</label>')
+    + '<span style="flex:1"></span>'
+    + '<button class="btn danger" onclick="stopRun(' + (isBeat ? "'bcStatus'" : "'narStatus'") + ')">⏹ 停止生成</button>'
     + '<button class="btn" onclick="confirmPlan()">✅ 按我的调整合成</button>'
     + '</div>';
   // 事件绑定
@@ -1516,7 +1973,7 @@ function renderPlanModal(){
 }
 
 function _planRowHtml(i, s, e, on, caption, thumb, isBeat, importance, keep){
-  const th = thumb ? '<img src="/media/'+thumb+'?t='+Date.now()+'">' : '<img>';
+  const th = thumb ? '<img src="/media/'+_esc(thumb)+'?t='+Date.now()+'">' : '<img>';
   let capField='';
   let tag='';
   if(!isBeat){
@@ -1529,7 +1986,8 @@ function _planRowHtml(i, s, e, on, caption, thumb, isBeat, importance, keep){
       + '<button type="button" class="mini-btn shrink" title="缩短为一句">✂ 减词</button>'
       + '<button type="button" class="mini-btn ess" title="锁定为必要片段">🔒</button>';
   }
-  return '<div class="plan-row" data-i="'+i+'">'
+  // data-s/data-e 供 _updatePlanSum 实时算「剪掉多少 / 成片多长」
+  return '<div class="plan-row" data-i="'+i+'" data-s="'+Number(s||0)+'" data-e="'+Number(e||0)+'">'
     + '<input type="checkbox" class="on" '+(on?'checked':'')+'>'
     + th
     + '<span class="time">'+_fmtTime(s)+' ~ '+_fmtTime(e)+'</span>'
@@ -1600,8 +2058,34 @@ function _shortenCaption(s){
 const _esc = escapeHtml;   // 统一转义入口（escapeHtml 额外转义引号，属性值里更安全）
 function _updatePlanSum(){
   const rows=[...$('planBox').querySelectorAll('.plan-row')];
-  const keep=rows.filter(r=>r.querySelector('.on').checked).length;
-  const sum=$('planSum'); if(sum) sum.textContent='已保留 '+keep+' / '+rows.length+' 段'+(keep<rows.length?'（未勾选的段会被跳过）':'');
+  const onRows=rows.filter(r=>r.querySelector('.on').checked);
+  const keep=onRows.length;
+  const sum=$('planSum'); if(!sum) return;
+  let txt='已保留 '+keep+' / '+rows.length+' 段';
+  const isBeat = _curPlan && _curPlan.type==='beatcut';
+  if(!isBeat){
+    // 解说方案：直接算出剪掉/留下的时长，让「取消勾选=真剪掉」看得见
+    const kept=onRows.reduce((a,r)=>a+Math.max(0, (parseFloat(r.dataset.e)||0)-(parseFloat(r.dataset.s)||0)), 0);
+    const all=rows.reduce((a,r)=>a+Math.max(0, (parseFloat(r.dataset.e)||0)-(parseFloat(r.dataset.s)||0)), 0);
+    if(keep<rows.length && all>0){
+      txt+='（✂ 剪掉 '+_fmtDur(all-kept)+'，成片约 '+_fmtDur(kept)+' / 原片 '+_fmtDur(all)+'）';
+    }else if(all>0){
+      txt+='（全片保留，成片约 '+_fmtDur(all)+'）';
+    }
+  }else if(keep<rows.length){
+    txt+='（未勾选的段会被跳过）';
+  }
+  sum.textContent=txt;
+}
+function _fmtDur(sec){
+  sec=Math.max(0,sec||0);
+  const m=Math.floor(sec/60), s=sec-m*60;
+  return m>0 ? (m+'分'+(s<10?'0':'')+s.toFixed(1)+'秒') : s.toFixed(1)+'秒';
+}
+// 剪辑结果摘要：让「真的剪了多少」在结果区看得见（此前解说成片恒等于原片时长）
+function _cutDiag(cut){
+  if(!cut || !(cut.cut_sec > 0)) return '';
+  return ' · ✂ 剪掉 ' + _fmtDur(cut.cut_sec) + '（原片 ' + _fmtDur(cut.src_dur) + ' → 成片 ' + _fmtDur(cut.out_dur) + '）';
 }
 function _collectPlanEdits(){
   const plan=_curPlan; const isBeat = plan && plan.type==='beatcut';
@@ -1671,8 +2155,10 @@ async function confirmPlan(){
   const st=(_planType==='beatcut')?$('bcStatus'):$('narStatus');
   st.textContent='⏳ 正在按你的调整合成…';
   try{
+    const ac=$('planAutoCut');
     const r=await fetch('/api/confirm',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({runid:_planRunid, edits})});
+      body:JSON.stringify({runid:_planRunid, edits,
+                           params:{ autoCut: ac ? ac.checked : (($('narAutoCut')||{}).checked !== false) }})});
     const out=await r.json();
     if(!out.ok) throw new Error(out.error||'合成失败');
     await _pollRender(out.runid, _planType);
@@ -1683,21 +2169,23 @@ function _pollRender(runid, type){
   return new Promise(resolve=>{
     let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     const st=(type==='beatcut')?$('bcStatus'):$('narStatus');
-    _currentRunid = runid; const cb=$((type==='beatcut')?'bcCancel':'narCancel'); if(cb) cb.style.display='';
+    _stopFlag = false;
+    _currentRunid = runid; const cb=$((type==='beatcut')?'bcCancel':'narCancel');
+    if(cb){ cb.style.display=''; cb.disabled=false; cb.textContent='⏹ 停止生成'; }
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
         if(p.done){
           clearInterval(iv);
-          _currentRunid=null; if(cb) cb.style.display='none';
-          if(p.error){ st.textContent='❌ '+p.error; resolve(); return; }
+          _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
+          if(p.error){ showTaskError(st, p.error, p); resolve(); return; }
           st.textContent='✅ 完成（已按你的调整合成）';
           _showPlanResult(type, p);
           resolve(); return;
         }
-        st.textContent=(p.phase||'合成中')+'… '+(p.pct||0)+'%';
-      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; resolve(); } });
+        if(!_stopFlag) st.textContent=(p.phase||'合成中')+'… '+(p.pct||0)+'%';
+      }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; st.textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; resolve(); } });
     },400);
-    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; st.textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
+    setTimeout(()=>{ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; st.textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
 }
 function _showPlanResult(type, p){
@@ -1709,6 +2197,7 @@ function _showPlanResult(type, p){
     _coverCtx.bc = {file: p.file}; const _ccb=$('bcCoverBtn'); if(_ccb) _ccb.style.display='';
     setModeBadge('bcMode','human');
     gPreview(p.file,'强卡点短片');
+    renderCredits('bcResult', p.credits);
     const d=p.diag||{};
     g('bcDiag').textContent='已按你的调整合成 · 切换点 '+ (d.segments||0) +' 个'+(d.transition&&d.transition!=='none'?(' · 转场 '+d.transition):'')+(d.keep_audio?' · 保留原声':'');
   }else{
@@ -1718,14 +2207,12 @@ function _showPlanResult(type, p){
     _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
     setModeBadge('narBadge','human');
     gPreview(p.file,'电影解说');
+    renderCredits('narResult', p.credits);
     const d=p.diag||{};
-    g('narDiag').textContent='已按你的调整合成 · 片段 '+ (d.segments||0) +' 段 · 配音 '+ (d.voice_clips||0) +' 段';
+    g('narDiag').textContent='已按你的调整合成 · 片段 '+ (d.segments||0) +' 段 · 配音 '+ (d.voice_clips||0) +' 段'
+      + _cutDiag(d.cut);
   }
 }
-function closePlanModal(){
-  const m=$('planModal'); if(m) m.style.display='none';
-}
-
 function closePlanModal(){
   const m=$('planModal'); if(m) m.style.display='none';
 }
@@ -1739,21 +2226,28 @@ function biliSearch(){
   box.style.display='block'; box.innerHTML='<div class="hint">⏳ 正在搜索 B 站（约 3~8 秒）…</div>';
   fetch('/api/bili/search?kw=' + encodeURIComponent(kw)).then(r=>r.json()).then(res=>{
     btn.disabled = false; btn.textContent='🔍 搜 B 站';
-    if(!res.ok){ box.innerHTML='<div class="hint">❌ '+(res.error||'搜索失败')+'</div>'; return; }
+    if(!res.ok){ box.innerHTML='<div class="hint">❌ '+escapeHtml(res.error||'搜索失败')+'</div>'; return; }
     if(!(res.results||[]).length){ box.innerHTML='<div class="hint">没找到，换个关键词试试。</div>'; return; }
     box.innerHTML = '';
     (res.results||[]).forEach(it=>{
       const mins = Math.floor((it.duration||0)/60), secs = (it.duration||0)%60;
       const d = document.createElement('div');
       d.className = 'item'; d.style.marginBottom='6px';
-      d.innerHTML = `<img class="thumb" src="${it.pic||''}" referrerpolicy="no-referrer" alt="">
-        <div class="meta"><div class="name">${it.title||it.bvid}</div><div class="kind">${it.author||''} · ${mins}:${String(secs).padStart(2,'0')}</div></div>
-        <button class="btn mini" id="biliDl_${it.bvid}">⬇ 下载 MP4</button>
-        <a class="btn mini ghost" href="https://www.bilibili.com/video/${it.bvid}" target="_blank" rel="noopener">↗</a>`;
+      // 封面/标题/UP 主来自第三方：封面 URL 过协议白名单，文本一律转义
+      const pic = safeUrl(it.pic);
+      const thumb = pic ? `<img class="thumb" src="${escapeHtml(pic)}" referrerpolicy="no-referrer" alt="">`
+                        : `<span class="thumb" style="display:inline-block"></span>`;
+      const bvid = /^BV[0-9A-Za-z]{6,}$/.test(it.bvid||'') ? it.bvid : '';
+      const open = bvid ? `<a class="btn mini ghost" href="https://www.bilibili.com/video/${encodeURIComponent(bvid)}" target="_blank" rel="noopener">↗</a>` : '';
+      const dlId = 'biliDl_' + Math.random().toString(36).slice(2, 9);   // 不再把第三方 bvid 拼进 id
+      d.innerHTML = `${thumb}
+        <div class="meta"><div class="name">${escapeHtml(it.title||it.bvid)}</div><div class="kind">${escapeHtml(it.author||'')} · ${escapeHtml(mins+':'+String(secs).padStart(2,'0'))}</div></div>
+        <button class="btn mini" id="${dlId}">⬇ 下载 MP4</button>
+        ${open}`;
       box.appendChild(d);
       d.querySelector('button').addEventListener('click', ()=>biliDownload(it.bvid, d));
     });
-  }).catch(e=>{ btn.disabled=false; btn.textContent='🔍 搜 B 站'; box.innerHTML='<div class="hint">❌ 搜索请求失败：'+e.message+'</div>'; });
+  }).catch(e=>{ btn.disabled=false; btn.textContent='🔍 搜 B 站'; box.innerHTML='<div class="hint">❌ 搜索请求失败：'+escapeHtml(e.message)+'</div>'; });
 }
 let _biliTimer = null;
 // 把浏览器底层网络错误翻译成人话（Failed to fetch = 请求根本没到达服务器）
@@ -1765,7 +2259,7 @@ function netErrMsg(e){
 }
 function biliCancel(){ fetch('/api/bili/cancel', {method:'POST'}); }
 function biliDownload(bvid, row){
-  const btn = document.getElementById('biliDl_'+bvid);
+  const btn = row ? row.querySelector('button') : null;   // 行内第一个按钮即「⬇ 下载 MP4」
   if(btn){ btn.disabled=true; btn.textContent='⏳ 提交…'; }
   fetch('/api/bili/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({bvid})}).then(r=>r.json()).then(res=>{
     if(!res.ok){ if(btn){ btn.disabled=false; btn.textContent='⬇ 下载 MP4'; } alert('❌ '+(res.error||'下载未启动')); return; }
@@ -1775,18 +2269,18 @@ function biliDownload(bvid, row){
     _biliTimer = setInterval(()=>{
       fetch('/api/bili/status').then(r=>r.json()).then(st=>{
         if(st.running){
-          bar.innerHTML = '⏳ ' + (st.msg||'') + ' ' + (st.pct||0) + '% <button class="btn mini danger" onclick="biliCancel()">⏹ 取消</button>';
+          bar.innerHTML = '⏳ ' + escapeHtml(st.msg||'') + ' ' + escapeHtml(st.pct||0) + '% <button class="btn mini danger" onclick="biliCancel()">⏹ 取消</button>';
           return;
         }
         clearInterval(_biliTimer);
         if(!st.ok){ bar.textContent='❌ '+st.msg; if(btn){btn.disabled=false; btn.textContent='⬇ 重试下载';} return; }
-        bar.innerHTML = '✅ ' + (st.title||'已下载');
+        bar.textContent = '✅ ' + (st.title||'已下载');
         const act = document.createElement('div'); act.style.marginTop='4px';
         act.innerHTML = `<button class="btn mini">➕ 加入素材</button>
           <button class="btn mini ghost">🎬 设为解说视频</button>
           <button class="btn mini ghost">🎯 设为卡点视频</button>
           <button class="btn mini ghost">🗂 存入素材库</button>
-          <a class="btn mini ghost" href="/media/${st.file}" download>💾 保存</a>`;
+          <a class="btn mini ghost" href="/media/${escapeHtml(st.file)}" download>💾 保存</a>`;
         row.appendChild(act);
         const [bItems, bNar, bBc, bMlib] = act.querySelectorAll('button');
         bItems.addEventListener('click', ()=>biliToItems(st.file, bItems));
@@ -1831,28 +2325,29 @@ function makeCover(rel, boxId, defaultTitle){
   _coverCtx[boxId] = { file: rel, title: defaultTitle||'', sub:'', style:0, ts:null };
   fetch('/api/cover', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({file: rel, title: defaultTitle||''})})
     .then(r=>r.json()).then(res=>{
-      if(!res.ok){ box.innerHTML='<div class="hint">❌ '+(res.error||'生成失败')+'</div>'; return; }
+      if(!res.ok){ box.innerHTML='<div class="hint">❌ '+escapeHtml(res.error||'生成失败')+'</div>'; return; }
       Object.assign(_coverCtx[boxId], { ts: res.ts, cands: res.candidates||[] });
       _coverDraw(boxId, res.cover);
-    }).catch(e=>{ box.innerHTML='<div class="hint">❌ '+e.message+'</div>'; });
+    }).catch(e=>{ box.innerHTML='<div class="hint">❌ '+escapeHtml(e.message)+'</div>'; });
 }
 function _coverDraw(boxId, cover){
   const st = _coverCtx[boxId], box = $(boxId);
   const styleNames = ['居中大字','底部条幅','左上角'];
   const cands = (st.cands||[]).map(c =>
     `<button class="btn mini ghost" style="${Math.abs(c.ts-st.ts)<0.011?'outline:2px solid #1d4ed8':''}" onclick="coverPickFrame('${boxId}',${c.ts})" title="换用这一帧">🎞 ${c.ts.toFixed(1)}s</button>`).join(' ');
+  const coverUrl = '/media/' + cover;
   box.innerHTML = `
-    <img src="/media/${cover}?t=${Date.now()}" style="max-width:320px;border-radius:8px;display:block;margin:6px 0;" alt="封面预览">
+    <img src="${escapeHtml(coverUrl)}?t=${Date.now()}" style="max-width:320px;border-radius:8px;display:block;margin:6px 0;" alt="封面预览">
     <div class="row" style="gap:6px; align-items:center; margin:4px 0;">
-      <input type="text" id="${boxId}_title" placeholder="封面标题（可留空）" value="${(st.title||'').replace(/"/g,'&quot;')}" style="flex:1" oninput="coverSetTitle('${boxId}', this.value)">
+      <input type="text" id="${boxId}_title" placeholder="封面标题（可留空）" value="${escapeHtml(st.title||'')}" style="flex:1" oninput="coverSetTitle('${boxId}', this.value)">
       <select id="${boxId}_style" onchange="coverSetStyle('${boxId}', this.value)">
-        ${styleNames.map((nm,i)=>`<option value="${i}" ${st.style===i?'selected':''}>${nm}</option>`).join('')}
+        ${styleNames.map((nm,i)=>`<option value="${i}" ${st.style===i?'selected':''}>${escapeHtml(nm)}</option>`).join('')}
       </select>
     </div>
     <div class="row" style="gap:6px; flex-wrap:wrap; margin:4px 0; align-items:center;">
       <button class="btn mini" onclick="coverUpdate('${boxId}')">🖼 按当前设置重做</button>
       ${cands}
-      <a class="btn mini" href="/media/${cover}?t=${Date.now()}" download="cover.jpg">⬇ 下载封面</a>
+      <a class="btn mini" href="${escapeHtml(coverUrl)}?t=${Date.now()}" download="cover.jpg">⬇ 下载封面</a>
     </div>`;
 }
 function coverSetTitle(boxId, v){ if(_coverCtx[boxId]) _coverCtx[boxId].title = v; }
@@ -1864,10 +2359,10 @@ function coverUpdate(boxId){
   fetch('/api/cover', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({file: st.file, title: st.title, sub: st.sub, style: st.style, ts: st.ts})})
     .then(r=>r.json()).then(res=>{
-      if(!res.ok){ box.innerHTML='<div class="hint">❌ '+(res.error||'生成失败')+'</div>'; return; }
+      if(!res.ok){ box.innerHTML='<div class="hint">❌ '+escapeHtml(res.error||'生成失败')+'</div>'; return; }
       st.ts = res.ts; st.cands = res.candidates||st.cands;
       _coverDraw(boxId, res.cover);
-    }).catch(e=>{ box.innerHTML='<div class="hint">❌ '+e.message+'</div>'; });
+    }).catch(e=>{ box.innerHTML='<div class="hint">❌ '+escapeHtml(e.message)+'</div>'; });
 }
 
 
@@ -1883,7 +2378,7 @@ function mlibList(){
       const url = '/material_lib/' + encodeURIComponent(m.name);
       const sz = (m.size/1048576).toFixed(1)+'MB';
       const d = document.createElement('div'); d.className='item'; d.style.marginBottom='6px';
-      d.innerHTML = `${m.kind==='image' ? `<img class="thumb" src="${url}">` : `<video class="thumb" src="${url}#t=1" preload="metadata" muted></video>`}
+      d.innerHTML = `${m.kind==='image' ? `<img class="thumb" src="${escapeHtml(url)}">` : `<video class="thumb" src="${escapeHtml(url)}#t=1" preload="metadata" muted></video>`}
         <div class="meta"><div class="name">${escapeHtml(m.name)}</div><div class="kind">${m.kind==='video'?'🎬':'🖼️'} ${sz}</div></div>
         <button class="btn mini">➕ 加入素材列表</button>
         <button class="btn mini ghost">🎬 设为解说</button>
@@ -1928,4 +2423,5 @@ function mlibToSlot(name, which, btn){
   if(which==='nar'){ NAR_VIDEO = {name, mlib:name}; $('narDrop').textContent='🎞️ 已选（素材库）：'+name; $('narInfo').textContent='已从素材库设置视频，可直接点「生成解说」。'; if(btn) btn.textContent='✅'; goStep('narCard'); }
   else { BC_VIDEO = {name, mlib:name}; $('bcDrop').textContent='🎬 已选（素材库）：'+name; $('bcInfo').textContent='已从素材库设置视频，请选择背景音乐后生成。'; if(btn) btn.textContent='✅'; goStep('beatcutCard'); }
 }
+try { const ng = localStorage.getItem('springStudio.narGenre'); if (ng && $('narGenre')) $('narGenre').value = ng; } catch(e){}
 mlibList();

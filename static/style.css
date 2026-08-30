@@ -574,6 +574,25 @@ header h1 { background: linear-gradient(90deg,#fff,#e6fff5 60%,#d7f0ff); -webkit
 .bubble.warn > summary { color: #b8860b; }
 .bubble.warn > summary::before { content: "⚠️ "; }
 
+/* 🎭 剧情驱动剪辑：加宽加高的剧情输入框 + 侧边 DeepSeek 直达按钮
+   此前 textarea 无宽度样式，浏览器默认只有 ~20 字符宽（约 180px），粘贴剧情极难用 */
+.plot-edit { display: flex; gap: 12px; align-items: stretch; }
+.plot-edit > textarea {
+  flex: 1; min-width: 0; width: 100%; min-height: 260px; resize: vertical;
+  padding: 10px 12px; border: 1px solid #bcd9c1; border-radius: 8px;
+  font-family: inherit; font-size: 13.5px; line-height: 1.75; background: #fff;
+}
+.plot-edit > textarea:focus { outline: none; border-color: #0e7a5f; box-shadow: 0 0 0 3px rgba(14,122,95,.12); }
+.plot-side { flex: none; width: 168px; display: flex; flex-direction: column; gap: 7px; }
+.plot-side .btn { width: 100%; justify-content: center; }
+.plot-side .hint { font-size: 11.5px; line-height: 1.6; margin: 0; }
+.bubble.plot-box > .bubble-body { padding: 2px 12px 12px; }
+@media (max-width: 720px){
+  .plot-edit { flex-direction: column; }
+  .plot-side { width: 100%; }
+  .plot-edit > textarea { min-height: 200px; }
+}
+
 /* 网络/科学上网速查卡（已迁为就近气泡，样式保留备用） */
 
 
@@ -636,6 +655,35 @@ header h1 { background: linear-gradient(90deg,#fff,#e6fff5 60%,#d7f0ff); -webkit
 .st-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid #f0f0f0; }
 .st-item:last-child { border-bottom:none; }
 .st-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#334155; }
+
+/* ---------- 任务失败：分级错误呈现（人话 + 技术细节 + 一键复制） ---------- */
+.taskerr { display:block; margin:10px 0; padding:10px 13px; background:#fef2f2; border:1px solid #fecaca;
+  border-radius:10px; font-size:13px; line-height:1.7; color:#7f1d1d; font-weight:500; text-align:left; }
+.taskerr.cancel { background:#fffbeb; border-color:#fde68a; color:#92400e; }
+.taskerr .te-head { font-weight:800; color:#b91c1c; }
+.taskerr.cancel .te-head { color:#92400e; }
+.taskerr .te-tip { margin-top:4px; font-weight:400; color:#991b1b; }
+.taskerr.cancel .te-tip { color:#92400e; }
+.taskerr .te-raw { margin-top:6px; font-size:12.5px; font-weight:600; word-break:break-word; }
+.taskerr .te-stage { margin-top:4px; font-size:12px; font-weight:600; color:#b45309; }
+.taskerr .te-detail { margin-top:8px; font-size:12.5px; }
+.taskerr .te-detail > summary { cursor:pointer; font-weight:700; color:#b91c1c; }
+.taskerr .te-detail > summary::-webkit-details-marker { display:none; }
+.taskerr .te-detail > summary::before { content:"\25B8"; display:inline-block; margin-right:5px; color:#94a3b8; }
+.taskerr .te-detail[open] > summary::before { content:"\25BE"; }
+.taskerr .te-pre { max-height:260px; overflow:auto; margin:7px 0 0; padding:9px 10px; background:#fff;
+  border:1px solid #fecaca; border-radius:8px; font-family:ui-monospace, Menlo, Consolas, monospace;
+  font-size:12px; line-height:1.65; color:#7f1d1d; white-space:pre-wrap; word-break:break-word; }
+.taskerr .te-copy { margin-top:9px; }
+
+/* ---------- CC.BY 音乐署名（任务完成结果区） ---------- */
+.credits { margin-top:12px; padding:11px 13px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; }
+.credits .cr-title { font-size:13px; font-weight:800; color:#15803d; }
+.credits .cr-text { margin:8px 0; max-height:220px; overflow:auto; padding:9px 10px; background:#fff;
+  border:1px solid var(--line); border-radius:8px; font-family:ui-monospace, Menlo, Consolas, monospace;
+  font-size:12px; line-height:1.7; color:#166534; white-space:pre-wrap; word-break:break-word; }
+.credits .cr-copy { background:#fff; }
+.credits .cr-note { margin-top:7px; font-size:11.5px; color:var(--muted); line-height:1.6; }
 
 /* 解说方案：主线/过渡标记 */
 .seg-tag { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; line-height:18px;

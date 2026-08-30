@@ -10,7 +10,7 @@ webui_server.py — 春天短视频工坊 · 本地图形化 WebUI 后端
 
 依赖：Pillow / numpy / imageio-ffmpeg（第一次会自动 pip 安装）
 """
-import os, sys, json, math, random, re, shutil, subprocess, threading, time, base64
+import os, sys, json, math, random, re, shutil, subprocess, threading, time, base64, itertools, atexit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -18,12 +18,27 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WORKDIR = os.path.join(HERE, 'webui_workspace')
 PROGRESS = {}          # runid -> mutable progress dict for the UI poller
 PLANS = {}             # runid -> 人机协同「规划方案」（分析结果，等待用户确认/微调后再渲染）
-RUNSEQ = [0]           # monotonic run id counter
 import threading as _threading
 OUTDIR = os.path.join(HERE, 'webui_output')
 RUN_PROCS = {}          # runid -> 当前活跃的 ffmpeg Popen（用于取消时终止）
 _PROC_LOCK = threading.Lock()
 _TLS = threading.local()   # 每个任务线程绑定自己的 runid，供 ffmpeg_run 读取
+_RUN_CTR = itertools.count(1)   # 原子自增的 run id 计数器（原来的 RUNSEQ[0] += 1 非原子，多线程下可能撞号）
+
+
+def _max_concurrent_tasks():
+    """任务并发上限：默认 2，可用环境变量 MAX_CONCURRENT_TASKS 覆盖；非法值退回默认。"""
+    try:
+        v = int(os.environ.get('MAX_CONCURRENT_TASKS', '') or 2)
+    except ValueError:
+        v = 2
+    return max(1, v)
+
+
+# ffmpeg 是 CPU / 内存大户，放任并发会把机器打满、多个任务互相拖慢到不可用。
+# 超限采用「直接拒绝并提示」而不是无限排队——排队没有任何可见反馈，用户只会以为卡死。
+_MAX_CONCURRENT_TASKS = _max_concurrent_tasks()
+_TASK_SEM = threading.Semaphore(_MAX_CONCURRENT_TASKS)
 
 class AbortError(Exception):
     """任务被用户取消时抛出。"""
@@ -257,10 +272,26 @@ def load_ai_config():
     except Exception:
         return {}
 
+def _atomic_write_json(path, obj, indent=2):
+    """原子写 JSON：先写同目录 .tmp，再 os.replace 覆盖。
+
+    旧实现 open(path,'w') 会先截断原文件：写入过程中进程被杀 / 磁盘满 / 被占用，
+    文件就变成半截 JSON。下一次 load 静默解析失败返回空，随后任何一次写都以空为基底
+    覆盖回去 —— 用户表现为「历史记录全没了 / 配置全空了」，且无法恢复。
+    os.replace 在同一卷上是原子的：要么读到旧内容，要么读到新内容，不存在中间态。"""
+    directory = os.path.dirname(os.path.abspath(path)) or '.'
+    os.makedirs(directory, exist_ok=True)
+    tmp = os.path.join(directory, '.' + os.path.basename(path) + '.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=indent)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    return obj
+
+
 def save_ai_config(cfg):
-    with open(AI_CONFIG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    return cfg
+    return _atomic_write_json(AI_CONFIG_PATH, cfg)
 
 
 def mirror_cfg():
@@ -389,6 +420,17 @@ def local_llm_ping():
         return False, str(e)[:200]
 
 
+def _strip_think(text):
+    """剥离 Qwen3 等混合思考模型输出中的 <think>…</think> 段（含未闭合残段），
+    保证解说稿不被思考文本污染。无思考段时原样返回。"""
+    import re as _re
+    if not text:
+        return text
+    out = _re.sub(r'<think>.*?</think>', '', text, flags=_re.S)
+    out = _re.sub(r'<think>.*$', '', out, flags=_re.S)   # 未闭合残段：丢弃其后全部内容
+    return out.strip()
+
+
 def local_llm_chat(prompt, system=None, timeout=180):
     """调用本地 OpenAI 兼容端点生成文本（Ollama /v1/chat/completions）。失败抛异常。"""
     cfg = local_llm_cfg()
@@ -407,13 +449,13 @@ def local_llm_chat(prompt, system=None, timeout=180):
                                  data=_json.dumps(payload).encode('utf-8'), headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = _json.loads(resp.read().decode('utf-8'))
-    return (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
+    return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
 
 
 # ---------------------------------------------------------------------------
 # Whisper (本地 ASR) 模型配置：可切换 tiny/base/small/medium/large，权重缓存进项目目录
 # ---------------------------------------------------------------------------
-_WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3']
+_WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3', 'distil-large-v3']
 
 def whisper_models_dir():
     """faster-whisper 模型权重统一缓存到项目 models/whisper，方便引导用户管理/查看。"""
@@ -495,6 +537,7 @@ _WHISPER_REPO = {
     'small': 'Systran/faster-whisper-small',
     'medium': 'Systran/faster-whisper-medium',
     'large-v3': 'Systran/faster-whisper-large-v3',
+    'distil-large-v3': 'Systran/faster-distil-whisper-large-v3',
 }
 
 def whisper_prepare(model=None):
@@ -689,17 +732,34 @@ def vlm_text(text, system=None, timeout=180):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = _json.loads(resp.read().decode('utf-8'))
     if c['mode'] == 'ollama':
-        return (data.get('message') or {}).get('content', '')
-    return (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
+        return _strip_think((data.get('message') or {}).get('content', ''))
+    return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
 
 
 VLM_PULL = {'model': None, 'running': False, 'ok': None, 'msg': '', 'pct': 0}
+VLM_FAST_GGUF_SOURCES = {
+
+    'qwen3-vl:8b': (
+
+        'https://hf-mirror.com/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf',
+
+        'Qwen3VL-8B-Instruct-Q4_K_M.gguf',
+
+        'https://hf-mirror.com/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
+
+        'mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf'),
+
+}
+
+
+
 
 def vlm_pull_async(model=None):
     """后台异步执行 `ollama pull <model>`（避免阻塞请求）。通过 /api/vlm/status 轮询。"""
     m = model or vlm_cfg()['model']
-    if VLM_PULL['running']:
-        return False, '已有拉取任务进行中'
+    running = _model_pull_running()
+    if running:
+        return False, '已有模型在后台下载（%s），请等它完成后再试' % running
     VLM_PULL['model'] = m
     threading.Thread(target=_vlm_pull_thread, args=(m,), daemon=True).start()
     return True, '已开始拉取 %s' % m
@@ -732,6 +792,16 @@ def _vlm_pull_thread(model):
                                '再点拉取；若端口不是 11434 请在上方修改 base_url。' % str(_e)[:120])
             return
         # 国内镜像：若配置了代理，让 ollama pull 走代理拉取，免科学上网
+        # 加速通道：白名单模型走 hf-mirror GGUF + aria2c + ollama create（含视觉投影 mmproj）
+
+        spec = VLM_FAST_GGUF_SOURCES.get(model)
+
+        if spec:
+
+            _fast_pull_local(model, spec=spec, slot=VLM_PULL)
+
+            return
+
         mc = mirror_cfg()
         if mc['ollama_proxy']:
             os.environ['HTTP_PROXY'] = mc['ollama_proxy']
@@ -804,13 +874,24 @@ def local_model_exists(model):
     except Exception:
         return None
 
+def _model_pull_running():
+    """任一模型（写稿/看图）正在后台下载时返回其名称；否则 None。
+    同时下载两个大模型会互相抢带宽、进度条也互相干扰——统一串行。"""
+    if LOCAL_PULL.get('running'):
+        return LOCAL_PULL.get('model') or '本地模型'
+    if VLM_PULL.get('running'):
+        return VLM_PULL.get('model') or '视觉模型'
+    return None
+
+
 def local_pull_async(model=None, force=False):
     """后台异步执行 `ollama pull <model>`（文字解说模型）。通过 /api/local/status 轮询。
     若模型已存在则跳过重复拉取（手动 ollama create 导入的模型与官方打包版 manifest 不同，
     直接 ollama pull 会误判为需整包重下，浪费带宽）。"""
     m = model or local_llm_cfg()['model']
-    if LOCAL_PULL['running']:
-        return False, '已有拉取任务进行中'
+    running = _model_pull_running()
+    if running:
+        return False, '已有模型在后台下载（%s），请等它完成后再试' % running
     if not force:
         exists = local_model_exists(m)
         if exists is True:
@@ -828,65 +909,81 @@ def local_pull_async(model=None, force=False):
 FAST_GGUF_SOURCES = {
     'qwen2.5:14b': ('https://hf-mirror.com/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf', 'qwen2.5-14b-instruct-q4_k_m.gguf'),
     'qwen2.5:7b': ('https://hf-mirror.com/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m.gguf'),
+    'qwen3:14b-q4_K_M': ('https://hf-mirror.com/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf', 'Qwen_Qwen3-14B-Q4_K_M.gguf'),
+
     'qwen2.5:latest': ('https://hf-mirror.com/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m.gguf'),
 }
 
 
-def _fast_pull_local(model):
-    """加速通道：下载非 split 单文件 GGUF（bartowski Q4_K_M）+ aria2c 多线程 + ollama create 导入。
-    返回 (ok, msg)。失败返回 (False, 原因)，由调用方回退官方源。"""
+def _fast_pull_local(model, spec=None, slot=None):
+    """加速通道：下载单文件 GGUF（可含 mmproj 视觉投影）+ aria2c 多线程 + ollama create 导入。
+    spec: (url, 文件名) 或 (url, 文件名, mmproj_url, mmproj文件名)；缺省查 FAST_GGUF_SOURCES。
+    slot: 进度槽（LOCAL_PULL / VLM_PULL）。返回 (ok, msg)。失败返回 (False, 原因)，由调用方回退官方源。"""
     import subprocess as _sp, urllib.request, shutil, time as _t, re as _re
-    src = FAST_GGUF_SOURCES.get(model)
+    src = spec or FAST_GGUF_SOURCES.get(model)
     if not src:
         return False, '该模型没有内置加速源'
-    url, fname = src
+    slot = slot or LOCAL_PULL
+    m_url, m_fname = src[0], src[1]
+    p_url = src[2] if len(src) > 2 else None
+    p_fname = src[3] if len(src) > 3 else None
     aria = shutil.which('aria2c')
     if not aria:
         return False, '未找到 aria2c（多线程下载器），可安装 aria2 后重试，或改用官方源'
     dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_dl')
     os.makedirs(dl_dir, exist_ok=True)
-    target = os.path.join(dl_dir, fname)
-    # 解析文件总大小（Content-Range），拿不到则按 0 处理（进度显示为字节数）
-    total = 0
-    try:
-        _req = urllib.request.Request(url)
-        _req.add_header('Range', 'bytes=0-0')
-        with urllib.request.urlopen(_req, timeout=30) as _r:
-            _cr = _r.headers.get('Content-Range', '') or ''
-            if '/' in _cr:
-                total = int(_cr.split('/')[-1])
-    except Exception:
-        pass
-    # 下载（-c 断点续传；已有完整文件则跳过）
-    if not (os.path.exists(target) and (not total or os.path.getsize(target) >= total)):
-        p = _sp.Popen([aria, '-c', '-x', '8', '-s', '8', '-k', '1M', '--max-tries=0',
-                       '--retry-wait=3', '--timeout=60', '--console-log-level=warn',
-                       '-o', fname, url], cwd=dl_dir,
-                      stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-        while p.poll() is None:
-            if total and os.path.exists(target):
-                LOCAL_PULL['pct'] = min(92, int(os.path.getsize(target) * 100 // max(1, total)))
+    def _pull_one(u, fn, lo, hi):
+        # 单文件下载（-c 断点续传；已有完整文件则跳过），进度按 lo~hi 区间映射
+        total = 0
+        try:
+            _req = urllib.request.Request(u)
+            _req.add_header('Range', 'bytes=0-0')
+            with urllib.request.urlopen(_req, timeout=30) as _r:
+                _cr = _r.headers.get('Content-Range', '') or ''
+                if '/' in _cr:
+                    total = int(_cr.split('/')[-1])
+        except Exception:
+            pass
+        tgt = os.path.join(dl_dir, fn)
+        if os.path.exists(tgt) and (not total or os.path.getsize(tgt) >= total):
+            return True
+        pp = _sp.Popen([aria, '-c', '-x', '8', '-s', '8', '-k', '1M', '--max-tries=0',
+                        '--retry-wait=3', '--timeout=60', '--console-log-level=warn',
+                        '-o', fn, u], cwd=dl_dir,
+                       stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        while pp.poll() is None:
+            if total and os.path.exists(tgt):
+                slot['pct'] = min(hi, lo + int(os.path.getsize(tgt) * (hi - lo) // max(1, total)))
             _t.sleep(1)
-        if p.returncode != 0:
-            return False, 'aria2c 下载失败（退出码 %d），已回退官方源' % p.returncode
+        return pp.returncode == 0
+
+    if not _pull_one(m_url, m_fname, 0, 85):
+        return False, 'aria2c 下载失败，已回退官方源'
+    if p_url:
+        if not _pull_one(p_url, p_fname, 85, 92):
+            return False, '视觉投影（mmproj）下载失败'
     # ollama create 导入（cmd /c 规避 PowerShell 对 stderr 进度条的误判；Modelfile 用绝对路径）
     mf = os.path.join(dl_dir, 'Modelfile_' + _re.sub(r'[^0-9A-Za-z]', '_', model))
     with open(mf, 'w', encoding='utf-8') as f:
-        f.write('FROM ' + target.replace('\\', '/') + '\n')
+        f.write('FROM ' + os.path.join(dl_dir, m_fname).replace('\\', '/') + '\n')
+        if p_fname:
+
+            f.write('FROM ' + os.path.join(dl_dir, p_fname).replace('\\', '/') + '\n')
+
     try:
         r = _sp.run(['cmd', '/c', 'ollama', 'create', model, '-f', mf],
                     capture_output=True, text=True, timeout=1200)
     except Exception as e:
         return False, 'ollama create 失败：%s' % str(e)[:120]
     finally:
-        for _f in (target, mf):
+        for _f in (os.path.join(dl_dir, m_fname), mf):
             try:
                 os.remove(_f)
             except Exception:
                 pass
     if r.returncode != 0:
         return False, 'ollama create 失败：%s' % ((r.stdout or r.stderr or '')[-200:])
-    return True, '加速通道完成：%s（约 %d MB）' % (fname, (total or 0) // 1048576)
+    return True, '加速通道完成：%s' % m_fname
 
 
 def _local_pull_thread(model):
@@ -993,16 +1090,27 @@ def _plot_brief(frames, per_seg, params):
     if not frames:
         return None
     idxs = sorted(frames.keys())
-    step = max(1, (len(idxs) + 7) // 8)
-    picked = [frames[i] for i in idxs[::step]][:8]
+    # 均匀采样 8 帧：首尾必采、中间等距，确保长视频后面的画面也被模型看到
+    # （旧实现 idxs[::step][:8] 只取前 8 个采样点，长视频末尾 10%+ 的画面完全缺失）
+    n_pick = min(8, len(idxs))
+    if n_pick > 1:
+        pick_idx = [idxs[int(i * (len(idxs) - 1) / (n_pick - 1))] for i in range(n_pick)]
+    else:
+        pick_idx = [idxs[0]]
+    picked = [frames[i] for i in pick_idx]
     if not picked:
         return None
+    # 台词也均匀采样覆盖全片（最多 12 段），首尾必采；旧实现只取前 12 段，后面剧情的台词全部丢失
+    n_dlg = min(12, len(per_seg))
+    if n_dlg > 1:
+        dlg_idx = [int(i * (len(per_seg) - 1) / (n_dlg - 1)) for i in range(n_dlg)]
+    else:
+        dlg_idx = [0]
     dlg = []
-    for s0, s1, txt in per_seg:
+    for j in dlg_idx:
+        s0, s1, txt = per_seg[j]
         t = (txt or '').strip()
         dlg.append('%s-%s秒 台词：%s' % (int(s0), int(s1), t[:100] if t else '(无台词画面)'))
-        if len(dlg) >= 12:
-            break
     theme = (params.get('theme') or '').strip()
     name = (params.get('name') or '').strip()
     sys = '你是资深影视解说编辑，擅长从若干关键画面与台词重构一段视频的完整剧情。'
@@ -1225,6 +1333,131 @@ def _map_lines_to_segs(lines, n):
     return out
 
 
+def _seg_visual_captions(frames, per_seg, params, max_seg=14):
+    """逐段画面描述：把各段的中间帧按时间顺序一次性交给 VLM，
+    要求按「第k段: 画面内容」逐段输出——这是解说稿贴合画面的地基：
+    写稿模型拿到每段「实际可见的内容」后，才不会把后面的事件提前讲到前面。
+    返回 {段下标(0基): 画面描述}；VLM 不可用/失败返回 {}。"""
+    import re as _re
+    n = len(per_seg)
+    # 段数超限时均匀采样覆盖全片（首尾必采），而不是只取前 max_seg 段——
+    # 旧实现只看前 14 段，长视频后面的画面完全没被模型描述，解说词不贴合后面的画面。
+    if n <= max_seg:
+        pick_idx = list(range(n))
+    else:
+        pick_idx = sorted(set(int(i * (n - 1) / (max_seg - 1)) for i in range(max_seg)))
+    imgs = [(i, frames[i]) for i in pick_idx if frames.get(i)]
+    if not imgs:
+        return {}
+    img_list = [p for _, p in imgs]
+    idx_map = {k: i for k, (i, _) in enumerate(imgs)}  # 图片顺序 -> 原始段下标
+    sys_ = '你是视频画面描述助手，只描述画面里实际可见的内容。'
+    prompt = ('下面是同一段视频按时间顺序抽取的各镜头画面：第1张对应第1段，第2张对应第2段……依此类推。'
+              '请严格按顺序逐段输出每段画面里实际可见的内容（人物/动作/场景/屏幕文字）。'
+              '每段一行，格式严格为「第k段: 画面内容」，k 从 1 开始递增。'
+              '只描述看到的，不要推测剧情、不要总结、不要遗漏任何一段。')
+    try:
+        out = vlm_chat_multi(img_list, prompt, system=sys_, timeout=240) or ''
+    except Exception:
+        return {}
+    caps = {}
+    for l in out.splitlines():
+        l = l.strip()
+        m = _re.match(r'^第(\d+)段[:：]\s*(.+)$', l)
+        if m:
+            k = int(m.group(1))
+            if 1 <= k <= len(imgs):
+                orig_i = imgs[k - 1][0]
+                caps[orig_i] = m.group(2).strip()[:70]
+    return caps
+
+
+# ---------------------------------------------------------------------------
+# 题材化模板：六套标准解说结构（悬疑/爱情/恐怖/动作/喜剧/历史）。
+# 解说工业化流水线：拿到任何片子先定型，再按模板的钩子公式/结构节奏/升华方向填细节。
+# 来源：用户提供的实战方法论（无损压缩注入 prompt）。
+# ---------------------------------------------------------------------------
+NARR_STYLES = {
+    'movie':    {'label': '电影解说', 'system': '你是坐拥百万粉丝的资深影视解说博主——拼的是认知差与情绪共振，带观众用更高视角看故事，口气自然像唠嗑。'},
+    'science':  {'label': '科普讲解', 'system': '你是深入浅出的科普讲解者——用通俗语言讲清原理和逻辑，数据准确，不夸张不煽情，让观众听懂并记住。'},
+    'funny':    {'label': '搞笑吐槽', 'system': '你是幽默风趣的吐槽博主——语言轻松有梗，节奏明快，用调侃和反差制造笑点，但不低俗不冒犯。'},
+    'suspense': {'label': '悬疑解读', 'system': '你是擅长制造悬念的解说者——节奏沉稳，层层铺垫，留钩子引导观众思考，语气克制有张力。'},
+}
+DETAIL_LEVELS = {'detailed': 1.30, 'balanced': 1.0, 'concise': 0.70}
+
+
+GENRE_TEMPLATES = {
+    'suspense': {'name': '悬疑/烧脑/反转',
+        'focus': '讲诡计的设计逻辑与视角的欺骗性，不做凶手是谁的复读机',
+        'hook': '结果前置 + 灵魂拷问。公式例：如果告诉你，主角在开场第 X 分钟就死了，你信吗？别急——你亲眼看见的真相全是假的。',
+        'structure': '铺垫期快速讲清规则（循环/密室/狼人杀规则，不讲细枝末节）；搅局期抛第一个反常点（为什么只有主角记得昨天）；破局期强行剧透式反转（镜头回放第 3 遍你会发现，导演早就在背景的报纸上写了答案）',
+        'ending': '升维到诡计背后的动机（为了爱？为了阶层跨越？）。金句方向：比悬疑更难的，是算尽人心；比算尽人心更难的，是承认自己也在局中。',
+        'tone': '冷静克制，突出设计感'},
+    'romance': {'name': '爱情/青春/文艺',
+        'focus': '不说剧情，说情绪颗粒度——把情节翻译成观众共情的恋爱瞬间',
+        'hook': '痛点代入 + 细节特写。公式例：你上一次删掉聊天记录是什么时候？这部片里的男女主，删了整整 7 年。他们删掉的不是争吵，而是……',
+        'structure': '相遇期极简交代相识，重点写第一次心动的小动作（慢、轻）；拉扯期不讲大冲突，讲错过的时间差（他想复合时她刚死心）；结局期不强求圆满、放大遗憾（BE 就放慢，解说停一下补一句轻话）',
+        'ending': '金句要像朋友圈文案。方向：爱情经得起风雨，却经不起平凡。',
+        'tone': '慢、轻、克制'},
+    'horror': {'name': '恐怖/惊悚/心理阴暗',
+        'focus': '放弃高能预警，讲无处可逃的日常感',
+        'hook': '环境沉浸 + 反常理行为。公式例：关掉灯，戴上耳机。接下来的 3 分钟，你会觉得你家的衣柜、床底都有东西在盯着你——这部片的恐怖在于：鬼从来不敲门。',
+        'structure': '日常崩坏期极平淡地介绍主角的普通生活（越平淡后续越瘆人）；异常累积期用短促断句造压迫（他动了。她没醒。墙上的照片，眼睛闭上了。）；源头揭秘期讲心理创伤的外化（鬼是内疚的化身），不说鬼怪长相',
+        'ending': '吓完要治愈或警告。方向：比鬼更可怕的，是走不出的心魔；比心魔更可怕的，是你明明醒着，却动不了。',
+        'tone': '短促断句、压迫感'},
+    'action': {'name': '动作/科幻/超英/灾难',
+        'focus': '不讲打斗过程，讲世界观设定和代价',
+        'hook': '脑洞设定 + 极致假设。公式例：如果给你一件战甲，但每穿一次就少活一天，你穿还是不穿？这部片告诉你什么叫能力越大，债务越多。',
+        'structure': '设定期用最通俗的比喻讲清世界观；升级期跳过所有小喽啰打斗，只讲 BOSS 战的破局逻辑（为什么打不过？找到了什么漏洞？）；代价期强调牺牲（赢了，但失去了什么）',
+        'ending': '热血燃向。方向：所谓英雄，不是不会害怕，而是双腿发抖，却依然挡在普通人前面。',
+        'tone': '热血、节奏快'},
+    'comedy': {'name': '喜剧/荒诞/黑色幽默',
+        'focus': '把画面里的尴尬翻译成屏幕前的哈哈大笑，语调欢脱、带点阴阳怪气',
+        'hook': '高能名场面截取。公式例：建议别看这部片，真的会笑到邻居来敲门——尤其男主在殡仪馆点外卖那段，把葬礼整成了相声现场。',
+        'structure': '人设期用夸张标签给主角贴标签（抠门鬼/倒霉蛋）；连环期讲多米诺骨牌式连锁倒霉，语速加快用排比（刚躲过追债的，撞上前女友；刚甩掉前女友，亲爹把他存款捐了）；笑中带泪，结尾突然收住笑，点出小人物心酸',
+        'ending': '方向：所谓喜剧，就是把人生的烂摊子，扎成一束捧花。',
+        'tone': '欢脱、嘴碎'},
+    'history': {'name': '历史/战争/史诗/传记',
+        'focus': '放弃宏观大词，凝视大时代下的小人物——不谈战役意义，谈那场雪有多冷、那封信有多重',
+        'hook': '个人命运与时代冲撞。公式例：历史书上那行冰冷的伤亡数字，在这部片里，变成了一个母亲等了 20 年的空碗。这部战争片没有英雄，只有一群想活命的普通人。',
+        'structure': '背景期仅 1 句交代年代，极速切入主角日常（种地/织布/上课）；浪潮期讲抉择的被动性（不是他们选择了战争，是战争闯进了家），解说沉重；长镜头期找一个最经典的无言画面，此处全篇不给一句解说词，只放背景音让画面说话',
+        'ending': '必须拔高立意、关联当下和平。方向：我们并非生在一个和平的年代，只是生在一个和平的国家。忘了历史，就是第二次背叛。',
+        'tone': '沉重、凝视'},
+}
+
+def _detect_genre(plot):
+    """根据剧情梗概判断题材类型（一次轻量文字调用）；失败返回空串。"""
+
+    if not plot or not local_llm_enabled():
+        return ''
+    names = '、'.join(v['name'] for v in GENRE_TEMPLATES.values())
+    try:
+        out = local_llm_chat('这段视频的剧情梗概：' + str(plot)[:600] + '。它最适合按哪类题材解说？只回答其中一个类型名（' + names + ' 之一），不要任何其他内容。',
+                              system='只输出类型名。', timeout=60)
+    except Exception:
+        return ''
+    out = (out or "").strip()
+    for k, v in GENRE_TEMPLATES.items():
+        if v['name'] in out or k in out:
+            return k
+    return ''
+
+def _genre_template_block(key):
+    """按题材 key 生成写稿 prompt 的模板规则块；未知/空返回空串。"""
+
+    t = GENRE_TEMPLATES.get(key or "")
+    if not t:
+        return ""
+    return chr(10).join([
+        '【题材模板·' + t['name'] + '】本片按以下结构写（模板优先于默认写法）：',
+        '- 侧重点：' + t['focus'] + '；',
+        '- 开篇钩子公式：' + t['hook'] + '；',
+        '- 结构节奏：' + t['structure'] + '；',
+        '- 结尾升华方向：' + t['ending'] + '；',
+        '- 语调：' + t['tone'] + '。',
+    ])
+
+
 def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
     """本地真解说（连贯真人版 · 整稿生成 + 少升华 + 前置要求 + 自优化）：
     ① _plot_brief 视觉理解；② _beat_plan 详略规划（重要镜头展开、过渡镜头带过）；
@@ -1267,10 +1500,17 @@ def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
             return None
 
     n = len(per_seg)
-    sys_ = '你是资深电影解说博主，正在给观众连续地讲这个故事，口气自然、像真人聊天讲故事一样。'
+    _style = NARR_STYLES.get(params.get('narr_style', 'movie'), NARR_STYLES['movie'])
+    sys_ = _style['system']
     req_line = '- 你的额外要求：%s\n' % req if req else ''
 
     # —— 整稿生成：像真人一样把故事从头讲到尾 ——
+    # 逐段画面描述（写稿地基）：让模型知道每一段画面里实际有什么，
+    # 否则它只能按剧情梗概想象——事件会漂移，把后面发生的事提前讲到前面
+    seg_vis = _seg_visual_captions(frames, per_seg, params)
+    # 逐段画面描述（写稿地基）：让模型知道每一段画面里实际有什么，
+    # 否则它只能按剧情梗概想象——事件会漂移，把后面发生的事提前讲到前面
+    seg_vis = _seg_visual_captions(frames, per_seg, params)
     seg_brief = []
     for i, (s0, s1, txt) in enumerate(per_seg):
         b = beats[i] if i < len(beats) else {}
@@ -1278,10 +1518,18 @@ def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
         tag = {'key': '（关键/高光，可展开）', 'transition': '（过渡）', 'mood': '（氛围）'}.get(imp, '')
         t = (txt or '').strip()[:80]
         # 带上「建议字数」：模型按画面时长决定写多长，配音才念得完也填得满（贴合时间轴）
-        lo, hi = _target_chars(s1 - s0)
-        seg_brief.append('第%d段 %s[建议%d~%d字] %s'
-                         % (i + 1, tag, lo, hi, ('台词：' + t if t else '无台词画面')))
+        lo, hi = _target_chars((s1 - s0) * DETAIL_LEVELS.get(params.get('detail_level', 'balanced'), 1.0))
+        vis = ('画面：' + seg_vis[i]) if i in seg_vis else ''
+        seg_brief.append('第%d段 %s[建议%d~%d字] %s %s'
+                         % (i + 1, tag, lo, hi, ('台词：' + t if t else '无台词画面'), vis))
+    # 题材模板：用户显式选择优先；自动则按剧情梗概轻量判型（失败则不套模板）
+    genre = (params.get('genre') or 'auto').strip()
+    if genre not in GENRE_TEMPLATES or genre == 'auto':
+        genre = _detect_genre(plot) or ''
+    genre_block = _genre_template_block(genre)
     ctx = []
+    if genre_block:
+        ctx.append(genre_block)
     if name:
         ctx.append('视频：' + name)
     if theme:
@@ -1294,14 +1542,26 @@ def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
               + '\n'.join(ctx + seg_brief)
               + ('\n\n请写【%d 行】连贯的中文电影解说词，一行对应一个镜头，从上到下依次是第1、第2…段：\n' % n)
               + '- 【必须】恰好输出 %d 行，一行对应一个镜头：不要合并镜头、不要把多个镜头写成一行；\n' % n
-              + '- 像真人解说一样把故事从头讲到尾、一气呵成：镜头之间要自然衔接、层层递进'
-                '（可用“此时/紧接着/可没想到/而另一边/偏偏这时候”等承接），不要每段都另起炉灶；\n'
-              + '- 重点是【讲剧情本身】：这段发生了什么、人物做了什么说了什么、事态怎么变，像讲故事，不是描述画面；\n'
-              + '- 详略有当：标“关键/高光”的多讲（可两句），过渡镜头一句带过，不要平均用力、不要每段一样长；\n'
+              + '- 【黄金7秒·钩子开篇】第 1 行是生死线：用反常理悬念或人性拷问破题'
+                '（示范："如果你回到1939年，敢不敢向整个德国撒谎？"），'
+                '严禁"今天讲一部关于XX的电影"式平淡开场；\n'
+              + '- 【认知提炼·拒绝流水账】解说≠复述：只讲推动人物命运转折的情节、揭示人性底色的细节，'
+                '过场动作全部砍掉；每一行都要给观众一个"他们自己看不出来的信息差"或情绪点；\n'
+              + '- 【画面为准，顺序不漂移】每段都标了该段「画面：」的实际内容——这一行的解说必须以这段画面为基础展开；'
+              + '- 【万能衔接】想不出过渡时可用（每片最多 1 次）：然而，命运没打算放过他……/就在所有人以为结束时，真正的修罗场才刚刚开始……/但导演的镜头一转，揭示了最残酷的真相……；\n'
+              + '整体梗概只用于衔接语气，绝不允许把后面段落的事件提前到前面段落讲；'
+              + '- 【口语化讲述感】短句、多动词、少形容词，单句超过 20 字必须停顿；用「我们/你我」的唠嗑感；'
+                '关键处可插入一句主观吐槽（例："说实话，换我早跪了"）拉近距离；\n'
+              + '- 【留白】若某段是情感爆发点（痛哭/决裂/无言以对），该行只写「（留白）」三个字：解说闭嘴，让原片声音飞——文字不给满，情绪才溢得出来；\n'
+              + '- 【详略有当】标“关键/高光”的多讲（可两句），过渡镜头一句带过，不要平均用力、不要每段一样长；\n'
               + '- 【字数严格对应时长】每段标注了“建议N~M字”，这是该镜头的配音容量：\n'
                 '  写太长会念不完被截断，写太短画面会空着。请让每行字数落在该区间内（允许 ±10% 浮动）；\n'
-              + '- 除非某镜头真的是剧情转折/高光，否则【不要】总结“这反映了/象征着/揭示了/暗示了”这类意义升华；\n'
-              + '- 台词只转述大意，不原样照搬；不编造剧情里没有的事实；不堆“高潮/悬念/震撼”等空泛词。\n'
+              + '- 【中段克制·结尾升华】中间各行不总结、不升华，只推进剧情与情绪；'
+                '最后一段承担全片金句收尾：把故事映射到现实共鸣（职场/婚姻/原生家庭/阶层），'
+                '用 ≤2 句散文诗式总结点题——这是观众收藏转发的理由；\n'
+              + '- 【红线】涉及暴力用"清理/离世"等温和词、侧重心理而非过程；主角若违法，'
+                '最后一段必须点出"违法行为终将受到法律制裁"，不美化犯罪动机；\n'
+              + '- 台词只转述大意，不原样照搬；不编造剧情里没有的事实；不堆"高潮/悬念/震撼"等空泛词。\n'
               + req_line
               + '直接输出 %d 行解说词，不要编号、不要解释。\n' % n
               + '- 【格式】必须用换行分隔成 %d 行，**不要写成一整段话**；每行只讲对应镜头的内容。' % n)
@@ -1326,7 +1586,7 @@ def local_vlm_narrate(per_seg, frames, params, plot=None, beat_outline=None):
     if use_local_text and len(lines) >= max(2, (n + 1) // 2):
         polish = ('下面是电影解说稿草稿（一行对应一个镜头）。\n' + '\n'.join(lines)
                   + '\n\n请以资深电影解说编辑的身份审阅并优化，输出【改进后的完整稿】，让整篇像真人电影解说一样流畅自然：'
-                    '①镜头之间衔接更顺，有“接着讲下去”的连贯感；②删掉重复、套话和空泛的升华；'
+                    '①镜头之间衔接更顺，有“接着讲下去”的连贯感；②删掉重复、套话和空泛的升华（「（留白）」标记与结尾金句收尾必须原样保留）；'
                     '③保持详略得当（重要镜头多讲、过渡镜头短）；④每行对应一个镜头、行数不变。'
                     '直接输出优化后的完整稿，不要编号、不要解释。')
         out2 = _write(polish, '你是专业电影解说编辑。', timeout=300)
@@ -1481,6 +1741,101 @@ def _model_narr_guide():
     return guide
 
 
+
+# ---------------------------------------------------------------------------
+# 硬件检测 + 模型推荐（根据用户显卡/内存给出最优模型配置）
+# ---------------------------------------------------------------------------
+HARDWARE_MODEL_RECS = [
+    # (最低显存GB, 档位名, VLM推荐, Whisper推荐, TTS推荐, 文本模型推荐, 说明)
+    (12, '高端独显(≥12GB)', 'qwen3-vl:8b', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
+     'VLM 用 8B（Qwen3-VL 目前最大开源版），Whisper 用 GPU 全速，配音用自然度最高的 MeloTTS，文本写稿用 14B'),
+    (8, '中高端独显(8-12GB)', 'qwen3-vl:8b', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
+     '8B 视觉模型流畅，Whisper GPU 加速，MeloTTS 配音'),
+    (6, '中端独显(6-8GB)', 'qwen3-vl:8b', 'medium', 'melo-zh', 'qwen3:14b-q4_K_M',
+     '8B 视觉模型可用，Whisper 用 medium 平衡速度精度'),
+    (4, '入门独显(4-6GB)', 'qwen3-vl:4b', 'small', 'piper-huayan', 'qwen3:8b',
+     '4B 视觉模型，Whisper 用 small，TTS 用轻量 piper'),
+    (0, '纯CPU/无独显', 'qwen3-vl:4b', 'base', 'piper-huayan', 'qwen3:8b',
+     '无显卡，全部走 CPU，选最小模型保证速度'),
+]
+
+
+def detect_hardware():
+    """检测本机 GPU/内存/Ollama 状态，返回硬件信息 + 推荐模型 + 当前配置对比。
+    供前端 AI 设置页展示「你的硬件适合用什么模型」，避免用户盲目选小模型浪费显卡。"""
+    info = {'gpu': None, 'gpu_vram_gb': 0, 'ram_gb': 0, 'ollama': False, 'ollama_models': [],
+            'tier': None, 'recommendations': {}, 'current': {}, 'upgrades': []}
+    # GPU
+    try:
+        import subprocess
+        r = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits'],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            parts = r.stdout.strip().split(',')
+            info['gpu'] = parts[0].strip()
+            info['gpu_vram_gb'] = round(int(parts[1].strip()) / 1024.0, 1)
+    except Exception:
+        pass
+    # 内存
+    try:
+        import ctypes
+        class _MS(ctypes.Structure):
+            _fields_ = [('len', ctypes.c_ulong), ('load', ctypes.c_ulong),
+                        ('totalPhys', ctypes.c_ulonglong), ('availPhys', ctypes.c_ulonglong),
+                        ('totalPage', ctypes.c_ulonglong), ('availPage', ctypes.c_ulonglong),
+                        ('totalVirtual', ctypes.c_ulonglong), ('availVirtual', ctypes.c_ulonglong),
+                        ('availExtended', ctypes.c_ulonglong)]
+        ms = _MS()
+        ms.len = ctypes.sizeof(ms)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+            info['ram_gb'] = round(ms.totalPhys / (1024**3), 1)
+    except Exception:
+        try:
+            import psutil
+            info['ram_gb'] = round(psutil.virtual_memory().total / (1024**3), 1)
+        except Exception:
+            pass
+    # Ollama
+    try:
+        import urllib.request
+        req = urllib.request.Request('http://localhost:11434/api/tags')
+        resp = urllib.request.urlopen(req, timeout=3)
+        data = json.loads(resp.read().decode('utf-8'))
+        info['ollama'] = True
+        info['ollama_models'] = [m.get('name', '') for m in data.get('models', [])]
+    except Exception:
+        info['ollama'] = False
+    # 匹配档位
+    vram = info['gpu_vram_gb']
+    for min_vram, tier, vlm, whisper, tts, text, note in HARDWARE_MODEL_RECS:
+        if vram >= min_vram:
+            info['tier'] = tier
+            info['recommendations'] = {'vlm': vlm, 'whisper': whisper, 'tts': tts, 'text': text, 'note': note}
+            break
+    # 当前配置
+    cfg = load_ai_config()
+    info['current'] = {
+        'vlm': (cfg.get('vlm') or {}).get('model', ''),
+        'whisper': (cfg.get('whisper') or {}).get('model', 'base'),
+        'tts_engine': (cfg.get('tts_local') or {}).get('engine', ''),
+        'tts_sherpa': (cfg.get('tts_local') or {}).get('sherpa_model', ''),
+        'text': (cfg.get('local') or {}).get('model', ''),
+    }
+    # 可升级项对比
+    rec = info['recommendations']
+    cur = info['current']
+    if rec.get('vlm') and cur.get('vlm') and rec['vlm'] != cur['vlm']:
+        info['upgrades'].append({'slot': 'VLM 视觉模型', 'current': cur['vlm'], 'recommend': rec['vlm'],
+                                 'reason': '你的显存放得下更大的视觉模型，剧情理解会更强'})
+    if rec.get('whisper') and cur.get('whisper') and rec['whisper'] != cur['whisper']:
+        info['upgrades'].append({'slot': 'Whisper 转写模型', 'current': cur['whisper'], 'recommend': rec['whisper'],
+                                 'reason': '大模型转写更准，GPU 加速后速度也快'})
+    if rec.get('tts') == 'melo-zh' and not _sherpa_ready('melo-zh'):
+        info['upgrades'].append({'slot': 'TTS 配音模型', 'current': 'piper(机械感)', 'recommend': 'melo-zh(自然)',
+                                 'reason': 'MeloTTS 中文自然度明显更好，项目已支持只需下载'})
+    return info
+
+
 def ai_status():
     """返回各 AI 能力的就绪状态，供前端做生成前置引导（未配 key 时不应静默免费生成）。"""
     vok, vmsg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
@@ -1488,6 +1843,18 @@ def ai_status():
         'chat': ai_enabled('chat'),
         'vision': ai_enabled('vision'),
         'tts': _tts_available(),
+        'tts_local': {
+            'cfg': tts_local_cfg(),
+            'edge_installed': edge_tts_available(),
+            'edge_dead': edge_tts_dead_reason(),
+            'sherpa_installed': sherpa_tts_available(),
+            'sherpa_model_ready': sherpa_tts_ready(),
+            'sherpa_model': sherpa_model_key(),
+            'sherpa_models': [{'key': k, 'label': m['label'], 'ready': _sherpa_ready(k)}
+                              for k, m in SHERPA_TTS_MODELS.items()],
+            'voices': EDGE_TTS_VOICES,
+            'label': local_tts_label(),
+        },
         'local': local_llm_enabled(),
         'whisper_model': whisper_model_name(),
         'whisper_ready': whisper_model_ready(),
@@ -1724,27 +2091,94 @@ def _cover_score(im):
     return round(contrast * 0.6 + detail * 2.0 - ext * 40.0, 1)
 
 
+def _cover_candidates_sequential(video_path, cand_dir, ts_list, max_side=640, only=None):
+    """逐帧抽帧（保底实现）：每个候选单独起一次 ffmpeg，-ss 精确 seek + 单帧输出。
+
+    批量抽帧不可用时（老版本 ffmpeg 不认 -fps_mode / fps:start_time，或落盘帧数不足）
+    退回本函数。only 为下标列表时只补抽这些下标（批量已抽到的不重复劳动）。
+    共 ts_list 与 cand_dir 两个参数：时间与目录由调用方统一算好，避免两条路径漂移。"""
+    os.makedirs(cand_dir, exist_ok=True)
+    idxs = range(len(ts_list)) if only is None else only
+    for k in idxs:
+        fp = os.path.join(cand_dir, 'cand_%02d.jpg' % k)
+        rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.2f' % ts_list[k], '-i', video_path,
+                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,%d):-2' % max_side,
+                                 '-q:v', '4', '-an', fp])
+        if rc != 0 and os.path.isfile(fp):
+            # 失败残留的半张图会污染候选列表，直接清掉交给上层判缺失
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+
+
+def _cover_candidates_batch(video_path, cand_dir, n, max_side, vdur):
+    """一次 ffmpeg 调用抽 n 帧：fps 滤镜按 n/vdur 分桶 + scale + 模板输出 cand_%02d.jpg。
+    返回 True 表示 n 张 jpg 全部落盘。
+
+    【为什么要这么写】fps 滤镜默认的 round=near 会把时间轴按 vdur/n 分桶，桶边界正好
+    落在 (k+0.5)*vdur/n —— 也就是逐帧路径的 ts_k，所以「不碰时间轴」反而天然对齐。
+    实测（1080p/30fps 样片，n=4/6/8/12）抽到的帧与逐帧 -ss 抽到的相差 <8/255 灰度，
+    肉眼无差别。以下三种「看起来更对」的写法实测都是错的，别再改回去：
+      · fps=...:start_time=ts0 —— start_time 会重置锚点，桶边界整体后移 vdur/2n
+        （实测 0.625s），缩略图与最终封面完全不是同一画面（差异 35~120）。
+      · -ss ts0（输入侧 seek）—— 带滤镜链时输出时间戳不因 -ss 归零，同样整组后移。
+      · -ss ts0 + setpts=PTS-ts0/TB —— 锚点被挪到首个候选时刻之后，同样错位。
+    另注：fps 取的是「桶内最后一帧」，逐帧 -ss 取的是「ts 之后第一帧」，两者最多差
+    一帧（33ms@30fps）；这条差异无法通过挪网格消除，只能接受。
+    三级回退：-fps_mode vfr（ffmpeg 6+）→ -vsync 0（旧版）→ 全失败交给调用方逐帧抽。"""
+    out_tpl = os.path.join(cand_dir, 'cand_%02d.jpg')
+    rate = n / vdur if vdur > 0 and n > 0 else 1.0
+    vf = 'fps=fps=%.6f,scale=min(iw\\,%d):-2' % (rate, max_side)
+    for extra in (['-fps_mode', 'vfr'], ['-vsync', '0']):
+        # -start_number 0 必须显式给：image2 默认从 1 开始编号，与逐帧路径的
+        # cand_%02d.jpg（0 起）对不上，会让「帧已抽到」的判定全部落空而白白回退。
+        # 输出选项一律排在 -an 之前：保持「输出路径紧跟 -an」的位置约定。
+        rc, _o, _e = ffmpeg_run(['-y', '-i', video_path, '-vf', vf, '-q:v', '4',
+                                 '-start_number', '0'] + extra + ['-an', out_tpl])
+        if rc == 0 and all(os.path.isfile(out_tpl % k) for k in range(n)):
+            # fps 滤镜会向上取整多吐一帧（时刻已超出片长，是尾帧的重复），删掉免得
+            # 留在 run_dir 里被当成有效候选 / 中间产物
+            for name in sorted(os.listdir(cand_dir)):
+                m = re.match(r'cand_(\d+)\.jpg$', name)
+                if m and int(m.group(1)) >= n:
+                    try:
+                        os.remove(os.path.join(cand_dir, name))
+                    except OSError:
+                        pass
+            return True
+    return False
+
+
 def _cover_candidates(video_path, run_dir, n=COVER_CANDIDATES, max_side=640):
-    """均匀抽 n 帧做候选（预览小图存 run_dir/cover_cand，带打分）。返回按时间序的候选列表。"""
+    """均匀抽 n 帧做候选（预览小图存 run_dir/cover_cand，带打分）。返回按时间序的候选列表。
+
+    默认走一次 ffmpeg 批量抽 n 帧（原来 n 次进程 → 1 次，省掉 n-1 次 seek+解码开销）；
+    批量不可用或落盘不足时按缺失下标逐帧补抽，失败则退回全量逐帧。"""
     vdur = probe_audio_len(video_path) or 0.0
     if vdur <= 0:
         raise RuntimeError('无法读取视频时长')
     cand_dir = os.path.join(run_dir, 'cover_cand')
     os.makedirs(cand_dir, exist_ok=True)
+    ts_list = [round(vdur * (k + 0.5) / n, 2) for k in range(n)]
+    if _cover_candidates_batch(video_path, cand_dir, n, max_side, vdur):
+        missing = [k for k in range(n) if not os.path.isfile(os.path.join(cand_dir, 'cand_%02d.jpg' % k))]
+        if missing:
+            # 批量抽够了但个别帧缺（尾部帧可能落在时长之外）→ 只补这几帧
+            _cover_candidates_sequential(video_path, cand_dir, ts_list, max_side, only=missing)
+    else:
+        _cover_candidates_sequential(video_path, cand_dir, ts_list, max_side)
     out = []
-    for k in range(n):
-        ts = round(vdur * (k + 0.5) / n, 2)
+    for k, ts in enumerate(ts_list):
         fp = os.path.join(cand_dir, 'cand_%02d.jpg' % k)
-        rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.2f' % ts, '-i', video_path,
-                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,%d):-2' % max_side,
-                                 '-q:v', '4', '-an', fp])
-        if rc == 0 and os.path.isfile(fp):
-            try:
-                score = _cover_score(Image.open(fp))
-            except Exception:
-                score = 0.0
-            out.append({'ts': ts, 'thumb': os.path.relpath(fp, OUTDIR).replace('\\', '/'),
-                        'score': score})
+        if not os.path.isfile(fp):
+            continue
+        try:
+            score = _cover_score(Image.open(fp))
+        except Exception:
+            score = 0.0
+        out.append({'ts': ts, 'thumb': os.path.relpath(fp, OUTDIR).replace('\\', '/'),
+                    'score': score})
     return out
 
 
@@ -1864,11 +2298,19 @@ def material_save_file(src_path):
     return candidate
 
 
+# 可执行/可渲染扩展名：这类文件放进素材库并被同源访问即为存储型 XSS
+# （配合 /material_lib/ 的 attachment 响应与 nosniff，构成纵深防御）
+_MATERIAL_BLOCKED_EXT = {'.html', '.htm', '.xhtml', '.svg', '.js', '.mjs',
+                         '.xml', '.xsl', '.swf', '.php', '.jsp'}
+
+
 def material_save_bytes(name, data):
     """上传的字节存入素材库（保留原始文件名，重名自动加序号）。返回 (最终文件名|None, error)。"""
     base = os.path.basename(_safe_filename(name or ''))
     if not base or not data:
         return None, '文件名或内容为空'
+    if os.path.splitext(base)[1].lower() in _MATERIAL_BLOCKED_EXT:
+        return None, '不支持该文件类型（网页/脚本类文件不能作为素材）'
     os.makedirs(MATERIAL_DIR, exist_ok=True)
     stem, ext = os.path.splitext(base)
     candidate, i = base, 1
@@ -1901,8 +2343,20 @@ def load_history(limit=50):
                 items = json.load(f)
         if not isinstance(items, list):
             items = []
-    except Exception:
+    except FileNotFoundError:
         items = []
+    except Exception:
+        # 文件存在但解析失败（半截 JSON / 被写坏）：必须**保留现场**再返回空。
+        # 旧实现直接返回 []，调用方随后以 [] 为基底整体覆盖写回，损坏文件被彻底抹掉 ——
+        # 用户看到「历史全空」且无从恢复。这里改名留档，至少还能人工捞回来。
+        items = []
+        try:
+            if os.path.exists(HISTORY_PATH):
+                bak = HISTORY_PATH + '.corrupt.' + time.strftime('%Y%m%d-%H%M%S')
+                os.replace(HISTORY_PATH, bak)
+                print('[警告] history.json 解析失败，已留档为 %s，本次以空历史启动' % bak)
+        except Exception:
+            pass
     return items[:limit]
 
 
@@ -1966,7 +2420,8 @@ _STORAGE_ALLOW = [
     r'^webui_workspace/uploads/up-[0-9A-Za-z-]+$',
     r'^webui_workspace/asr_[0-9]+\.wav$',
     r'^webui_workspace/music_[0-9]+\.(mp3|wav)$',
-    r'^webui_workspace/up_[0-9_]+_[a-z]+\.(jpg|png|webp|mp4)$',
+    # 素材落盘名带 runid（见 dispatch_build），故第一段允许字母/数字/横线下划线
+    r'^webui_workspace/up_[0-9A-Za-z_-]+_[a-z]+\.(jpg|png|webp|mp4)$',
     r'^webui_workspace/analysis_cache$',
     r'^models(/whisper)?$',
 ]
@@ -2047,7 +2502,7 @@ def _storage_scan():
 
     temp_group(r'^asr_[0-9]+\.wav$', 'asr_temp', 'ASR 临时音频（asr_*.wav）')
     temp_group(r'^music_[0-9]+\.(mp3|wav)$', 'music_temp', '音乐临时文件（music_*.mp3/wav）')
-    temp_group(r'^up_[0-9_]+_[a-z]+\.(jpg|png|webp|mp4)$', 'upload_leftover', '上传素材残留（up_*_*）')
+    temp_group(r'^up_[0-9A-Za-z_-]+_[a-z]+\.(jpg|png|webp|mp4)$', 'upload_leftover', '上传素材残留（up_*_*）')
 
     ac = os.path.join(WORKDIR, 'analysis_cache')
     ac_size = _storage_dir_size(ac) if os.path.isdir(ac) else 0
@@ -2126,6 +2581,33 @@ def _upload_prune():
             shutil.rmtree(p, ignore_errors=True)
     except Exception:
         pass
+
+
+def _parse_multipart(raw, boundary):
+    """轻量 multipart/form-data 解析器：返回 {字段名: 字符串值 或 字节}。
+    只处理本项目上传用到的字段（upload_id/idx/chunk），不做完整 RFC 2046 解析。"""
+    result = {}
+    delim = b'--' + boundary
+    for part in raw.split(delim):
+        if not part or part in (b'--', b'--\r\n', b'\r\n'):
+            continue
+        if b'\r\n\r\n' not in part:
+            continue
+        header, body = part.split(b'\r\n\r\n', 1)
+        body = body[:-2] if body.endswith(b'\r\n') else body
+        try:
+            hdr = header.decode('utf-8', errors='replace')
+        except Exception:
+            continue
+        name_m = re.search(r'name="([^"]+)"', hdr)
+        if not name_m:
+            continue
+        field = name_m.group(1)
+        if 'filename=' in hdr:
+            result[field] = body
+        else:
+            result[field] = body.decode('utf-8', errors='replace')
+    return result
 
 
 def _upload_chunk_write(upload_id, idx, data_bytes):
@@ -2274,8 +2756,17 @@ def add_history(entry):
                 items = items[:MAX_HISTORY_KEEP]
                 for old in dropped:
                     _remove_history_file(old.get('file'))
-            with open(HISTORY_PATH, 'w', encoding='utf-8') as f:
-                json.dump(items, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(HISTORY_PATH, items)
+        # 任务成功后自动清理中间产物（配置开启时，默认开）
+        try:
+            if load_ai_config().get('cleanup_mid', True):
+                rel = entry.get('file')
+                if rel:
+                    fp = os.path.join(OUTDIR, rel) if not os.path.isabs(rel) else rel
+                    if os.path.isfile(fp) and os.path.getsize(fp) > 1024:
+                        cleanup_run_mid(os.path.dirname(fp))
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -2289,41 +2780,130 @@ def _remove_history_file(rel):
         fp = os.path.join(OUTDIR, rel) if not os.path.isabs(rel) else rel
         if os.path.isfile(fp):
             os.remove(fp)
-            # 一并清理同目录（独立 run_dir）下的中间产物
+            # 一并清理同目录（独立 run_dir）下的中间产物。
+            # 两道边界：① parent 正好等于 OUTDIR 时绝不能 rmtree，否则清空全部成片；
+            # ② 该目录下若还有其他记录仍在使用，只删当前文件，不动目录。
             parent = os.path.dirname(fp)
-            if parent and os.path.isdir(parent) and os.path.abspath(parent).startswith(os.path.abspath(OUTDIR)):
+            parent_abs = os.path.abspath(parent) if parent else ''
+            out_abs = os.path.abspath(OUTDIR)
+            if (parent_abs and os.path.isdir(parent) and parent_abs != out_abs
+                    and parent_abs.startswith(out_abs)
+                    and not _dir_still_referenced(parent_abs)):
                 shutil.rmtree(parent, ignore_errors=True)
     except Exception:
         pass
 
 
+def cleanup_run_mid(run_dir):
+    """任务成功后清理 run_dir 下可再生成的中间产物，保留 final.mp4 / src 源视频 / cover 封面 / 音乐 mp3。
+    避免 webui_output 无限膨胀（之前手动清过 3GB）。失败静默。"""
+    if not run_dir or not os.path.isdir(run_dir):
+        return 0
+    keep_prefix = ('final', 'src', 'cover', 'poster')
+    mid_patterns = [
+        re.compile(r'^narr\d+.*\.(wav|mp3)$'),
+        re.compile(r'^frame_\d+\.jpg$'),
+        re.compile(r'^cut.*\.mp4$'),
+        re.compile(r'^bc\d+\.mp4$'),
+        re.compile(r'^bc_silent\.mp4$'),
+        re.compile(r'^vsub\.mp4$'),
+        re.compile(r'^.*\.srt$'),
+        re.compile(r'^.*\.concat\.txt$'),
+    ]
+    freed = 0
+    for root, dirs, files in os.walk(run_dir):
+        for f in files:
+            fp = os.path.join(root, f)
+            low = f.lower()
+            if low.startswith(keep_prefix) or low.endswith('.mp3'):
+                continue
+            if any(p.match(f) for p in mid_patterns):
+                try:
+                    freed += os.path.getsize(fp)
+                    os.remove(fp)
+                except Exception:
+                    pass
+    for root, dirs, files in os.walk(run_dir, topdown=False):
+        for d in list(dirs):
+            dp = os.path.join(root, d)
+            try:
+                if not os.listdir(dp):
+                    os.rmdir(dp)
+            except Exception:
+                pass
+    return freed
+
+
+def _dir_still_referenced(parent_abs):
+    """history 里是否还有别的记录指向该目录——有则不能整目录删除。"""
+    try:
+        for it in load_history(500):
+            f = (it or {}).get('file')
+            if not f:
+                continue
+            p = os.path.abspath(os.path.join(OUTDIR, f) if not os.path.isabs(f) else f)
+            if os.path.dirname(p).lower() == parent_abs.lower():
+                return True
+    except Exception:
+        return True      # 判断失败时保守处理：宁可不删
+    return False
+
+
 def delete_history(file):
     """按 file 删除一条历史记录及其磁盘文件。返回是否删除成功。"""
     try:
-        items = load_history(500)
-        new = [it for it in items if it.get('file') != file]
-        if len(new) == len(items):
-            return False
-        with open(HISTORY_PATH, 'w', encoding='utf-8') as f:
-            json.dump(new, f, ensure_ascii=False, indent=2)
+        with _HIST_LOCK:   # 与 add_history 互斥：否则后台任务收尾写入的记录会被这里读到的旧快照覆盖掉
+            items = load_history(500)
+            new = [it for it in items if it.get('file') != file]
+            if len(new) == len(items):
+                return False
+            _atomic_write_json(HISTORY_PATH, new)
         _remove_history_file(file)
         return True
     except Exception:
         return False
 
 
-def clear_history():
-    """清空全部历史记录并删除 webui_output 下所有成片（保留目录本身）。"""
+def _active_run_dirs():
+    """当前仍有任务在使用的 run_dir 集合（绝对路径，小写）。
+
+    供 clear_history 跳过——旧实现无差别 rmtree 掉 OUTDIR 下所有目录，
+    会把正在渲染的任务目录一并删掉：ffmpeg 写入中途目录消失，几十分钟白跑，
+    且报错对用户毫无意义。"""
+    out = set()
     try:
+        for p in list(PROGRESS.values()):
+            rd = (p or {}).get('run_dir')
+            if rd and not (p or {}).get('done'):
+                out.add(os.path.abspath(rd).lower())
+    except Exception:
+        pass
+    return out
+
+
+def clear_history():
+    """清空全部历史记录并删除成片（保留目录本身）。
+
+    两点关键：
+    ① 先写空索引再删文件——反过来的话，中途异常会留下「文件已删、索引还在」的状态，
+       所有记录点开都是 404。
+    ② 跳过正在运行任务的 run_dir，避免把进行中的渲染删掉。"""
+    try:
+        active = _active_run_dirs()
+        with _HIST_LOCK:
+            _atomic_write_json(HISTORY_PATH, [])
         if os.path.isdir(OUTDIR):
             for name in os.listdir(OUTDIR):
                 p = os.path.join(OUTDIR, name)
                 if os.path.isdir(p):
+                    if os.path.abspath(p).lower() in active:
+                        continue       # 正在生成，留着
                     shutil.rmtree(p, ignore_errors=True)
                 elif os.path.isfile(p):
-                    os.remove(p)
-        with open(HISTORY_PATH, 'w', encoding='utf-8') as f:
-            json.dump([], f, ensure_ascii=False, indent=2)
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
         return True
     except Exception:
         return False
@@ -2334,7 +2914,8 @@ def clear_history():
 def offline_caption(name, idx, n_total):
     base = os.path.splitext(os.path.basename(name))[0]
     import re as _re
-    m = _re.search(r'up_(\d+)_\d+_img', base)
+    # 落盘名为 up_<runid>_<idx>_img；runid 可能是 run-12 / t1234 等非纯数字
+    m = _re.search(r'up_[0-9A-Za-z_-]+?_(\d+)_img', base)
     if m:
         i = int(m.group(1))
         phrases = ['春意初醒', '花开时节', '绿野青青', '溪水潺潺', '山色葱茏', '暖阳正好']
@@ -2592,10 +3173,19 @@ def _parse_time_str(t):
         return None
 
 
-def ffmpeg_run(args, input_data=None, on_progress=None):
+FFMPEG_MAX_SECONDS = 4 * 3600     # 单次 ffmpeg 调用的整体上限（4 小时）
+_ERR_CHUNK_MAX = 600               # stderr 最多保留的块数（每块 64KB），防长任务内存无限涨
+
+
+def ffmpeg_run(args, input_data=None, on_progress=None, timeout=FFMPEG_MAX_SECONDS):
     """运行 ffmpeg。若当前任务线程绑定了 runid（见 _spawn），则把进程注册到
     RUN_PROCS，并每 0.3s 检查 PROGRESS[runid]['abort']；用户取消时立即终止进程
     并抛 AbortError，使整条流水线真正中断。
+
+    timeout：整体时限（秒）。旧实现是 `while True: proc.wait(0.3)` 无累计上限——
+    ffmpeg 一旦挂起（损坏输入 / NVENC 驱动卡死 / 输入流无 EOF），后台线程永久阻塞，
+    进度永远不置 done（前端无限轮询），且 _TASK_SEM 名额永久泄漏，
+    攒够并发上限后所有新任务都被拒，只能重启服务。
     on_progress(seconds_done)：可选回调——从 stderr 的 time= 统计行解析当前解码/编码
     位置（需命令不带 -nostats），供长视频把阶段进度做平滑推进。"""
     import re as _re
@@ -2609,12 +3199,17 @@ def ffmpeg_run(args, input_data=None, on_progress=None):
 
     err_chunks = []
     tail = ''
+    deadline = (time.time() + float(timeout)) if timeout else None
 
     def _read_stderr():
         nonlocal tail
         try:
             for chunk in iter(lambda: proc.stderr.read(65536), b''):
-                err_chunks.append(chunk)
+                # 长视频逐帧警告可达数百 MB：只保留最后若干块，报错信息照样够用
+                if len(err_chunks) < _ERR_CHUNK_MAX:
+                    err_chunks.append(chunk)
+                elif on_progress is None:
+                    break
                 if on_progress is not None:
                     tail = (tail + chunk.decode('utf-8', 'ignore'))[-2000:]
                     m = None
@@ -2648,12 +3243,21 @@ def ffmpeg_run(args, input_data=None, on_progress=None):
     t_in.start()
 
     rc, out, err = proc.returncode, b'', b''
+    killed = False
     try:
         while True:
             try:
                 rc = proc.wait(timeout=0.3)
                 break
             except subprocess.TimeoutExpired:
+                if deadline and time.time() > deadline:
+                    # 挂死兜底：杀进程并抛错，让任务失败而不是永久卡住
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    killed = True
+                    break
                 if runid and PROGRESS.get(runid, {}).get('abort'):
                     try:
                         proc.terminate()
@@ -2666,7 +3270,12 @@ def ffmpeg_run(args, input_data=None, on_progress=None):
                             proc.kill()
                         except Exception:
                             pass
-                    raise AbortError('用户取消了任务')
+                    killed = True
+                    break
+    finally:
+        # 无论正常结束 / 取消 / 超时，都必须排空并关闭管道、回收子进程。
+        # 旧实现在取消路径直接 raise，跳过下面这段，每次取消泄漏 2 个文件句柄 +
+        # 2 个读线程，kill 之后不 wait 还会留下僵尸进程。
         try:
             out = proc.stdout.read()
         except Exception:
@@ -2674,10 +3283,24 @@ def ffmpeg_run(args, input_data=None, on_progress=None):
         t_err.join(timeout=2)
         t_in.join(timeout=2)
         err = b''.join(err_chunks)
-    finally:
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)      # 回收僵尸进程（kill 之后仍要 wait）
+        except Exception:
+            pass
         if runid:
             with _PROC_LOCK:
                 RUN_PROCS.pop(runid, None)
+    if killed:
+        if runid and PROGRESS.get(runid, {}).get('abort'):
+            raise AbortError('用户取消了任务')
+        raise RuntimeError('ffmpeg 执行超时（超过 %d 秒，已终止）'
+                           % int(timeout or FFMPEG_MAX_SECONDS))
     return rc, out, err
 
 # --- 媒体时长探测 -----------------------------------------------------------
@@ -3499,12 +4122,20 @@ def _analyze_video_frames(video_path, fps_s=4.0, progress=None):
     proc = _sp.Popen([exe, '-hide_banner', '-i', video_path, '-vf', f'fps={fps_s},scale={w}:{h}',
                       '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-vcodec', 'rawvideo', '-'],
                      stdout=_sp.PIPE, stderr=_sp.DEVNULL)
+    # 注册到 RUN_PROCS：/api/cancel 才能真的把这个进程杀掉。
+    # 旧实现是裸 Popen，长视频全片解码要跑数分钟到数十分钟，期间「取消」按钮完全无效。
+    _runid = getattr(_TLS, 'runid', None)
+    if _runid:
+        with _PROC_LOCK:
+            RUN_PROCS[_runid] = proc
     times, motion, frac, hist, bright = [], [], [], [], []
     prev_gray = None
     prev_hist = None
     t = 0.0
     try:
         while True:
+            if _runid and PROGRESS.get(_runid, {}).get('abort'):
+                break
             data = proc.stdout.read(fb)
             if not data or len(data) < fb:
                 break
@@ -3539,6 +4170,18 @@ def _analyze_video_frames(video_path, fps_s=4.0, progress=None):
             proc.kill()
         except Exception:
             pass
+        # kill 之后必须 wait，否则进程句柄残留成僵尸直到 Popen 被 GC
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        if _runid:
+            with _PROC_LOCK:
+                RUN_PROCS.pop(_runid, None)
     return {'times': times, 'motion': motion, 'frac': frac, 'hist': hist, 'bright': bright}
 
 
@@ -3680,7 +4323,7 @@ def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
 
 
 def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=None, max_seg=9.0, tol=0.35,
-                   visual_cuts=None, strength='standard', max_cuts=None):
+                   visual_cuts=None, strength='standard', max_cuts=None, skip_head=0.0):
     """把视频切点(场景+动作+视觉线索)加权匹对到最近强拍，生成强卡点时间线。
     权重：场景切>动作>视觉线索；强力模式更严格吸附强拍；段过长时用强拍网格兜底。
     - min_seg 默认按强度自适应（soft 1.5 / standard 1.2 / strong 1.0），避免 1 秒碎切闪屏；
@@ -3725,7 +4368,7 @@ def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=None, max_
     eff_tol = tol * 0.7 if strength == 'strong' else (tol * 1.4 if strength == 'soft' else tol)
     for c in sorted(merged):
         w = merged[c]
-        if c <= 0.3 or c >= video_dur - 0.3:
+        if c < max(0.3, skip_head) or c >= video_dur - 0.3:
             continue
         best = min(beats, key=lambda b: abs(b - c)) if beats else None
         target = best if (best is not None and abs(best - c) <= eff_tol) else c
@@ -3763,6 +4406,18 @@ def plan_beat_cuts(scene_cuts, motion_cuts, beats, video_dur, min_seg=None, max_
         if len(tl2) > 1 and video_dur - tl2[-1] < 0.4:
             tl2.pop()
         timeline = tl2
+    # 同场景去重：相邻片段之间无场景切换且都短于 min_seg*1.5 → 合并（避免同一场景反复切）
+    if scene_cuts and len(timeline) > 2:
+        sc_set = set(round(float(s), 1) for s in scene_cuts)
+        merged = [timeline[0]]
+        for i in range(1, len(timeline)):
+            seg_dur = timeline[i] - merged[-1]
+            # 该切点附近有无场景切换（±0.5s）
+            has_scene = any(abs(timeline[i] - sc) <= 0.5 for sc in sc_set)
+            if seg_dur < min_seg * 1.5 and not has_scene:
+                continue  # 跳过此切点，合并到前一段
+            merged.append(timeline[i])
+        timeline = merged
     timeline.append(video_dur)
     return timeline
 
@@ -3788,9 +4443,10 @@ def _analyze_beatcut(video_path, music_path, params, progress=None):
     visual_cuts = _detect_visual_from_frames(frames, strength=strength)
     up('分析音乐大鼓点', 45)
     strong_beats, bps = detect_strong_beats(music_path, top_k=max_cuts)
+    skip_head = max(0.0, min(30.0, float(params.get('skipHead', 3.0) or 3.0)))
     timeline = plan_beat_cuts(scene_cuts, motion_cuts, strong_beats, vdur,
                               visual_cuts=visual_cuts, strength=strength,
-                              max_cuts=max_cuts)
+                              max_cuts=max_cuts, skip_head=skip_head)
     diag = {
         'scene_cuts': scene_cuts,
         'motion_cuts': motion_cuts,
@@ -4097,25 +4753,503 @@ def sapi_tts(text, out_path):
         return False
 
 
-def whisper_device():
-    """返回 (device, compute_type)：检测到 NVIDIA CUDA 就用 GPU 加速（float16），否则回退 CPU(int8)。
-    让「省流(本地离线)」模式在有无显卡的机器上都能跑，且尽量用显卡提速。"""
+# ---------------------------------------------------------------------------
+# 本地配音（免费）：edge-tts（微软朗读，免 Key、音质好）+ Windows SAPI（系统内置、完全离线）
+#
+# 历史缺口：界面上只有「云端 TTS」要 Key 的选项，本地配音只能吃系统 SAPI ——
+# 而多数 Windows 只装了一个 zh-CN 音色（Microsoft Huihui），机械味重且无法选择，
+# 用户既看不到配置入口也无从下载更好的引擎。这里补上本地配音引擎的选择与安装。
+# ---------------------------------------------------------------------------
+EDGE_TTS_VOICES = [
+    ('zh-CN-XiaoxiaoNeural', '晓晓 · 女声（温柔自然·推荐）'),
+    ('zh-CN-YunxiNeural', '云希 · 男声（清朗）'),
+    ('zh-CN-YunyangNeural', '云扬 · 男声（播报/解说腔）'),
+    ('zh-CN-XiaoyiNeural', '晓伊 · 女声（活泼）'),
+    ('zh-CN-YunjianNeural', '云健 · 男声（沉稳叙事）'),
+    ('zh-CN-YunxiaNeural', '云夏 · 男声（少年感）'),
+    ('zh-CN-liaoning-XiaobeiNeural', '晓北 · 女声（东北话）'),
+    ('zh-CN-shaanxi-XiaoniNeural', '晓妮 · 女声（陕西话）'),
+    ('zh-HK-WanLungNeural', '粤语 · 云龙（男）'),
+    ('zh-TW-HsiaoChenNeural', '台湾腔 · 晓臻（女）'),
+]
+
+
+def tts_local_cfg():
+    """本地配音配置 {engine, voice, rate}；engine ∈ auto|edge|sapi。"""
+    c = load_ai_config().get('tts_local') or {}
+    rate = str(c.get('rate') or '+0%').strip()
+    if rate and not rate.startswith(('+', '-')):
+        rate = '+' + rate.replace('%', '') + '%'
+    return {'engine': str(c.get('engine') or 'auto').lower(),
+            'voice': str(c.get('voice') or 'zh-CN-XiaoxiaoNeural').strip(),
+            'rate': rate or '+0%'}
+
+
+# edge-tts 需要访问微软朗读服务。本机实测**单次成功率只有约 2/3**（连接被会随时重置），
+# 但同一次内容重试一两次基本都能成——所以这里分两层：
+#   ① 单次合成内重试（_EDGE_RETRY 次，间隔递增）：把 67% 拉到接近 100%，
+#      这是「用得上 edge-tts 好音质」的关键，否则动不动就掉到机械感重的离线模型。
+#   ② 整条链路熔断：连续 _EDGE_MAX_FAILS 次「重试后仍失败」才判死一段时间，
+#      避免网络真断了以后每段都白等一轮重试，把几十段的解说拖成假死。
+_EDGE_RETRY = 3              # 单次合成的重试次数
+_EDGE_RETRY_SLEEP = 1.2      # 重试间隔基数（秒），按 1x/2x/3x 递增
+_EDGE_MAX_FAILS = 4          # 连续多少次「整轮重试失败」才熔断
+_EDGE_DEAD_SECONDS = 300     # 熔断时长（5 分钟，原为 10 分钟，恢复过快会反复抖动）
+_EDGE_STATE = {'fails': 0, 'dead_until': 0.0, 'reason': ''}
+
+
+def edge_tts_dead_reason():
+    """返回 edge-tts 当前被熔断的原因（未熔断返回 ''）。"""
+    if time.time() < _EDGE_STATE['dead_until']:
+        return _EDGE_STATE['reason'] or '连续失败'
+    return ''
+
+
+def edge_tts_available():
+    """edge-tts 是否已安装且当前可用（python 模块或命令行任一即可，熔断期内视为不可用）。"""
+    if edge_tts_dead_reason():
+        return False
+    try:
+        import importlib.util as _u
+        if _u.find_spec('edge_tts') is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(['edge-tts', '--version'], capture_output=True, timeout=25)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _edge_note_failure(reason=''):
+    """记一次「整轮重试后仍失败」。达到阈值才熔断。"""
+    _EDGE_STATE['fails'] += 1
+    if _EDGE_STATE['fails'] >= _EDGE_MAX_FAILS:
+        _EDGE_STATE['dead_until'] = time.time() + _EDGE_DEAD_SECONDS
+        _EDGE_STATE['reason'] = reason or ('连续 %d 次合成失败' % _EDGE_MAX_FAILS)
+    return _EDGE_STATE['fails']
+
+
+def edge_tts_reset():
+    """手动解除熔断（供界面「重试配音引擎」调用）：网络恢复后不必干等。"""
+    _EDGE_STATE.update(fails=0, dead_until=0.0, reason='')
+    return True
+
+
+def edge_tts_speak(text, out_path, voice=None, rate=None):
+    """用 edge-tts 合成中文配音（免费、无需 API Key，需能访问微软朗读服务）。成功返回 True。
+    走子进程而非 asyncio，避免与 ffmpeg 子进程/事件循环相互干扰。"""
+    if not (text or '').strip():
+        return False
+    cfg = tts_local_cfg()
+    voice = voice or cfg['voice']
+    rate = rate or cfg['rate']
+    if not str(rate).startswith(('+', '-')):
+        rate = '+' + str(rate).replace('%', '') + '%'
+    d = os.path.dirname(os.path.abspath(out_path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tries = [['edge-tts', '--voice', voice, '--rate=' + rate, '--text', text,
+              '--write-media', out_path],
+             # 模块装了但命令行未暴露（Windows 常见）→ 用 python -m 兜底
+             [sys.executable, '-m', 'edge_tts', '--voice', voice, '--rate=' + rate,
+              '--text', text, '--write-media', out_path]]
+    last_err = ''
+    # 外层：重试整轮（本机实测单次成功率仅约 2/3，重试后才谈得上「用得上」）
+    for attempt in range(_EDGE_RETRY):
+        for cmd in tries:
+            try:
+                if os.path.exists(out_path):
+                    os.unlink(out_path)
+            except Exception:
+                pass
+            try:
+                r = subprocess.run(cmd, capture_output=True, timeout=180)
+                if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                    _EDGE_STATE.update(fails=0, dead_until=0.0, reason='')   # 成功即复位熔断
+                    return True
+                last_err = (r.stderr or b'').decode('utf-8', 'ignore')[-160:]
+            except Exception as e:
+                last_err = str(e)[-160:]
+                continue
+        if attempt < _EDGE_RETRY - 1:
+            # 连接被重置多为瞬时抖动，稍等再试；递增间隔避免高频打服务端
+            time.sleep(_EDGE_RETRY_SLEEP * (attempt + 1))
+    _edge_note_failure(last_err or '合成失败')
+    return False
+
+
+def local_tts_speak(text, out_path):
+    """本地免费配音统一入口。
+
+    按配置在 edge-tts / 离线模型 / 系统 SAPI 之间选择，任一失败自动回退下一个，
+    保证「要么出声、要么明确失败」，不因某条路不可用就静默无配音。
+
+    【音色一致性】一个任务内一旦选定引擎就锁死在 _TLS 上。否则长解说前半段用
+    edge-tts、后半段因网络抖动掉到离线模型，观众会听到明显的音色突变。
+    只有锁定引擎彻底失败时才改锁到备用引擎。
+    返回 (ok, engine, actual_path)；SAPI/离线输出 wav，故实际路径后缀可能不同。"""
+    cfg = tts_local_cfg()
+    eng_set = cfg['engine']
+    if eng_set == 'edge':
+        order = ['edge', 'sherpa', 'sapi']
+    elif eng_set == 'sherpa':
+        order = ['sherpa', 'edge', 'sapi']
+    elif eng_set == 'sapi':
+        order = ['sapi', 'sherpa', 'edge']
+    else:   # auto：音质优先（edge）→ 离线（sherpa）→ 系统兜底
+        order = ['edge', 'sherpa', 'sapi']
+    # 本任务已锁定过引擎 → 优先沿用，其余仍作后备
+    locked = getattr(_TLS, 'tts_engine', None)
+    if locked in order:
+        order = [locked] + [e for e in order if e != locked]
+    stem, _ext = os.path.splitext(out_path)
+    try:
+        speed = 1.0 + (float(str(cfg['rate']).replace('%', '').replace('+', '')) / 100.0)
+    except Exception:
+        speed = 1.0
+    for eng in order:
+        if eng == 'edge':
+            if not edge_tts_available():
+                continue
+            if edge_tts_speak(text, out_path):
+                _TLS.tts_engine = 'edge'      # 锁定：后续段落沿用同一音色
+                return True, 'edge', out_path
+        elif eng == 'sherpa':
+            if not sherpa_tts_available():
+                continue
+            wv = stem + '_sherpa.wav'
+            if sherpa_tts_speak(text, wv, speed=speed):
+                _TLS.tts_engine = 'sherpa'
+                return True, 'sherpa', wv
+        else:
+            wv = stem + '.wav'
+            if sapi_tts(text, wv):
+                _TLS.tts_engine = 'sapi'
+                return True, 'sapi', wv
+    return False, None, out_path
+
+
+def tts_models_dir():
+    """离线配音模型目录：models/tts（与 models/whisper 并列，方便用户自行查看/替换）。"""
+    return os.path.join(HERE, 'models', 'tts')
+
+
+# 离线配音模型（sherpa-onnx）。可选多个，音质差别明显：
+#   melo-zh      = MeloTTS 中文：自然度明显好于 piper，接近在线神经 TTS，约 180MB
+#   piper-huayan = piper 中文小模型：体积最小、最快，但机械感重、几乎没有语调起伏
+# 实测用户反馈「拟真和感情不行」时用的正是 piper-huayan，故默认优先 melo。
+SHERPA_TTS_MODELS = {
+    'melo-zh': {
+        'name': 'vits-melo-tts-zh_en',
+        'label': 'MeloTTS 中文（自然·推荐）',
+        'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/'
+               'vits-melo-tts-zh_en.tar.bz2',
+    },
+    'piper-huayan': {
+        'name': 'vits-piper-zh_CN-huayan-medium',
+        'label': '华研 · 女声（轻量·机械感较重）',
+        'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/'
+               'vits-piper-zh_CN-huayan-medium.tar.bz2',
+    },
+}
+SHERPA_DEFAULT_MODEL = 'melo-zh'
+
+
+def _sherpa_ready(key):
+    """指定模型是否已下载到 models/tts/<name>/（判据：onnx 权重 + tokens.txt）。"""
+    m = SHERPA_TTS_MODELS.get(key)
+    if not m:
+        return False
+    d = os.path.join(tts_models_dir(), m['name'])
+    if not os.path.isdir(d):
+        return False
+    try:
+        names = os.listdir(d)
+    except Exception:
+        return False
+    return any(n.endswith('.onnx') for n in names) and ('tokens.txt' in names)
+
+
+def sherpa_model_key():
+    """当前使用的离线模型 key。
+
+    未配置或配置的模型还没下载 → 自动挑一个已就绪的（优先 melo）。
+    这样新模型下载完成后无需改配置就会自动启用。"""
+    cfg = load_ai_config().get('tts_local') or {}
+    k = str(cfg.get('sherpa_model') or '').strip()
+    if k in SHERPA_TTS_MODELS and _sherpa_ready(k):
+        return k
+    for cand in (SHERPA_DEFAULT_MODEL, 'melo-zh', 'piper-huayan'):
+        if _sherpa_ready(cand):
+            return cand
+    return k if k in SHERPA_TTS_MODELS else SHERPA_DEFAULT_MODEL
+
+
+def sherpa_tts_ready():
+    """当前选中的离线模型是否已就绪。"""
+    return _sherpa_ready(sherpa_model_key())
+
+
+def sherpa_tts_available():
+    """sherpa-onnx 引擎是否可用（python 包已装 + 模型已下载）。"""
+    if not sherpa_tts_ready():
+        return False
+    try:
+        import importlib.util as _u
+        return _u.find_spec('sherpa_onnx') is not None
+    except Exception:
+        return False
+
+
+def _sherpa_load():
+    """加载（并缓存）sherpa-onnx 离线 TTS 实例。模型加载较慢，缓存避免每段重复加载。"""
+    global _SHERPA_TTS
+    key = sherpa_model_key()
+    m = SHERPA_TTS_MODELS.get(key) or {}
+    if _SHERPA_TTS.get('obj') is not None and _SHERPA_TTS.get('key') == key:
+        return _SHERPA_TTS['obj']
+    import sherpa_onnx            # 重依赖，仅在真正用到时导入
+    d = os.path.join(tts_models_dir(), m.get('name', ''))
+    if not os.path.isdir(d):
+        raise RuntimeError('离线配音模型未下载：%s' % m.get('label', key))
+    # 不同发行版 onnx 文件名不同：优先标称名，否则取目录里第一个 .onnx
+    model = os.path.join(d, m.get('model_file') or 'model.onnx')
+    if not os.path.exists(model):
+        cands = [n for n in sorted(os.listdir(d)) if n.endswith('.onnx')]
+        if not cands:
+            raise RuntimeError('模型目录里没有 .onnx 权重')
+        model = os.path.join(d, cands[0])
+    lexicon = os.path.join(d, 'lexicon.txt')
+    data_dir = os.path.join(d, 'espeak-ng-data')
+    tts = sherpa_onnx.OfflineTts(
+        sherpa_onnx.OfflineTtsConfig(
+            model=sherpa_onnx.OfflineTtsModelConfig(
+                vits=sherpa_onnx.OfflineTtsVitsModelConfig(
+                    model=model,
+                    lexicon=lexicon if os.path.exists(lexicon) else '',
+                    tokens=os.path.join(d, 'tokens.txt'),
+                    data_dir=data_dir if os.path.isdir(data_dir) else '',
+                ),
+                num_threads=2,
+                provider='cpu',
+            ),
+            rule_fsts='',
+            max_num_sentences=1,
+        ))
+    _SHERPA_TTS['obj'] = tts
+    _SHERPA_TTS['key'] = key       # 换模型时缓存失效，避免继续用旧音色
+    return tts
+
+
+_SHERPA_TTS = {'obj': None, 'key': None}
+
+
+def sherpa_tts_speak(text, out_path, speed=1.0):
+    """用离线模型合成中文配音（完全不联网）。成功返回 True。"""
+    if not (text or '').strip():
+        return False
+    d = os.path.dirname(os.path.abspath(out_path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    try:
+        tts = _sherpa_load()
+        audio = tts.generate(text, speed=float(speed or 1.0))
+        if audio is None or not len(audio.samples):
+            return False
+        import soundfile as _sf            # 写 wav；没装则用 wave 模块兜底
+        _sf.write(out_path, audio.samples, audio.sample_rate)
+    except ImportError:
+        try:
+            import wave, struct
+            with wave.open(out_path, 'wb') as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(audio.sample_rate)
+                w.writeframes(b''.join(struct.pack('<h', int(max(-1.0, min(1.0, s)) * 32767))
+                                       for s in audio.samples))
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
+
+
+TTS_SETUP = {'running': False, 'op': '', 'pct': 0, 'msg': '', 'ok': None}
+_SETUP_LOCK = threading.Lock()      # 保护「检查 running → 置位 → 启动线程」的原子性
+
+
+def tts_install_async(pkg='edge-tts'):
+    """后台 pip 安装本地配音引擎。pkg ∈ edge-tts|sherpa-onnx。"""
+    global TTS_SETUP
+    pkg = 'sherpa-onnx' if 'sherpa' in str(pkg).lower() else 'edge-tts'
+    # 检查与置位必须在同一把锁内：多线程 HTTP 服务下，两次点击可能同时通过检查，
+    # 起两个线程共写同一个进度槽，进度条乱跳、模型目录被 os.replace 两次而报错。
+    with _SETUP_LOCK:
+        if TTS_SETUP['running']:
+            return False, '已有一个安装/下载任务在进行中'
+        TTS_SETUP.update(running=True, op='pip:' + pkg, pct=0,
+                         msg='正在安装 %s…' % pkg, ok=None)
+
+    def _run():
+        try:
+            r = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
+                 '--no-input', pkg],
+                capture_output=True, timeout=600)
+            if r.returncode == 0:
+                TTS_SETUP.update(ok=True, pct=100, msg='✅ %s 安装完成（点「🧪 试听」验证）' % pkg)
+            else:
+                TTS_SETUP.update(ok=False, pct=100,
+                                 msg='❌ 安装失败：' + (r.stderr or b'').decode('utf-8', 'ignore')[-300:])
+        except Exception as e:
+            TTS_SETUP.update(ok=False, pct=100, msg='❌ 安装异常：' + str(e)[-300:])
+        finally:
+            TTS_SETUP['running'] = False
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return True, '开始安装 %s（约 1 分钟，可在下方看进度）' % pkg
+
+
+def tts_model_download_async(model_key=None):
+    """后台下载离线中文配音模型（tar.bz2）到 models/tts/<name>/ 并解压。
+
+    model_key：SHERPA_TTS_MODELS 的键；不传则下载当前选中的（或默认推荐）模型。"""
+    global TTS_SETUP
+    key = model_key or sherpa_model_key()
+    m = SHERPA_TTS_MODELS.get(key)
+    if not m:
+        return False, '未知模型：%s' % key
+    name = m['name']
+    dest = os.path.join(tts_models_dir(), name)
+    if _sherpa_ready(key):
+        return True, '模型已就绪，无需重复下载'
+    with _SETUP_LOCK:      # 与 tts_install_async 互斥，防双点起两个下载线程
+        if TTS_SETUP['running']:
+            return False, '已有一个安装/下载任务在进行中'
+        TTS_SETUP.update(running=True, op='model:' + key, pct=0,
+                         msg='正在下载离线配音模型（%s）…' % m['label'], ok=None)
+
+    def _run():
+        import tarfile
+        import urllib.request as _u
+        # 文件名带模型 key：两个模型可以同时/先后下载，互不覆盖
+        arch = os.path.join(tts_models_dir(), '_dl_%s.tar.bz2' % key)
+        try:
+            os.makedirs(tts_models_dir(), exist_ok=True)
+            tmp = arch + '.part'
+            _u.urlretrieve(m['url'], tmp)
+            TTS_SETUP.update(pct=70, msg='下载完成，正在解压…')
+            os.replace(tmp, arch)
+            with tarfile.open(arch, 'r:bz2') as tf:
+                tf.extractall(tts_models_dir())
+            os.unlink(arch)
+            # 发行包内目录名可能与模型名不同 → 归一到 <name>
+            if not os.path.isdir(dest):
+                for n in os.listdir(tts_models_dir()):
+                    p = os.path.join(tts_models_dir(), n)
+                    if os.path.isdir(p) and any(f.endswith('.onnx') for f in os.listdir(p)):
+                        os.replace(p, dest)
+                        break
+            ok = _sherpa_ready(key)
+            TTS_SETUP.update(ok=ok, pct=100,
+                             msg='✅ %s 就绪' % m['label'] if ok
+                             else '❌ 解压后未找到模型文件，请重试')
+        except Exception as e:
+            TTS_SETUP.update(ok=False, pct=100, msg='❌ 下载失败：' + str(e)[-300:])
+        finally:
+            # 【必须】缺这一句时 running 永远为 True：前端轮询定时器不停（永久转圈），
+            # 且此后所有安装/下载请求都被「已有一个任务在进行中」挡掉，只能重启服务。
+            TTS_SETUP['running'] = False
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return True, '开始下载离线配音模型（约 130MB，取决于网速）'
+
+
+def tts_test_speak(text='这是一段中文配音试听。'):
+    """试听一句：返回 (ok, msg, engine, rel_path)。rel_path 相对 OUTDIR，供 /media 播放。"""
+    text = (text or '').strip() or '这是一段中文配音试听。'
+    out_dir = os.path.join(OUTDIR, '_tts_test')
+    os.makedirs(out_dir, exist_ok=True)
+    # 文件名带时间戳：连点两次「试听」时，旧实现的固定名 sample.mp3 会被第二次
+    # 先删后写，导致第一次正在播放的请求读到 404 或半截文件
+    out = os.path.join(out_dir, 'sample_%d.mp3' % int(time.time() * 1000))
+    ok, eng, path = local_tts_speak(text, out)
+    if not ok or not os.path.exists(path):
+        hint = ''
+        if not edge_tts_available() and edge_tts_dead_reason():
+            hint = '（edge-tts 暂时不可用：%s）' % edge_tts_dead_reason()
+        return False, '配音失败：没有可用的配音引擎，先装 edge-tts 或下载离线模型' + hint, None, ''
+    rel = os.path.relpath(path, OUTDIR).replace('\\', '/')
+    label = {'edge': 'edge-tts', 'sherpa': '离线模型', 'sapi': '系统 SAPI'}.get(eng, eng or '未知')
+    return True, '✅ 试听已生成（%s，%.1f 秒）' % (label, probe_audio_len(path) or 0), eng, rel
+
+
+def local_tts_label():
+    """给前端看的当前配音来源说明（用于解说卡状态提示）。"""
+    if _tts_available():
+        t = load_ai_config().get('tts') or {}
+        return '云端 %s' % (t.get('provider') or 'tts')
+    cfg = tts_local_cfg()
+    if cfg['engine'] == 'edge':
+        return 'edge-tts（%s）' % cfg['voice'] if edge_tts_available() else 'edge-tts（不可用，已回退系统 SAPI）'
+    if cfg['engine'] == 'sherpa':
+        return '离线模型 · 华研女声' if sherpa_tts_available() else '离线模型（未下载，已回退系统 SAPI）'
+    if cfg['engine'] == 'sapi':
+        return '系统 SAPI'
+    # auto
+    if edge_tts_available():
+        return 'edge-tts（%s）' % cfg['voice']
+    if sherpa_tts_available():
+        return '离线模型 · 华研女声'
+    return '系统 SAPI（可选装 edge-tts 或离线模型）'
+
+
+def _cuda_available():
+    """轻量检测 NVIDIA GPU 是否可用：不依赖 torch（很多用户没装），先用 nvidia-smi，再 fallback torch。
+    faster-whisper 的 CTranslate2 后端原生支持 CUDA，只要驱动在就能用，不需要 torch。"""
+    try:
+        import subprocess
+        r = subprocess.run(['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+    except Exception:
+        pass
     try:
         import torch
         if getattr(torch, 'cuda', None) is not None and torch.cuda.is_available():
-            return 'cuda', 'float16'
+            return True
     except Exception:
         pass
+    return False
+
+
+def whisper_device():
+    """返回 (device, compute_type)：检测到 NVIDIA CUDA 就用 GPU 加速（float16），否则回退 CPU(int8)。
+    让「省流(本地离线)」模式在有无显卡的机器上都能跑，且尽量用显卡提速。"""
+    if _cuda_available():
+        return 'cuda', 'float16'
     return 'cpu', 'int8'
 
 
-def asr_segments(video_path):
+def _fmt_hms(sec):
+    sec = max(0.0, float(sec or 0))
+    m, s = int(sec // 60), int(sec % 60)
+    return '%d:%02d' % (m, s)
+
+
+def asr_segments(video_path, progress=None, pct_range=None):
     """faster-whisper 本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
-    自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。"""
+    自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
+
+    progress / pct_range：可选。传了就逐段推进进度并响应取消——
+    旧实现一次性消费 transcribe 的生成器，长视频（十几分钟）转写期间进度条
+    长时间停在同一个百分比，观感与「卡死」无异，且中途无法取消。"""
     try:
         from faster_whisper import WhisperModel
     except Exception:
         return []
+    wav = None
     try:
         wav = os.path.join(WORKDIR, f'asr_{int(time.time()*1000)}.wav')
         os.makedirs(WORKDIR, exist_ok=True)
@@ -4126,14 +5260,29 @@ def asr_segments(video_path):
         _whisper_env_setup()
         model = WhisperModel(_whisper_load_path(whisper_model_name()), device=device, compute_type=ctype,
                              download_root=whisper_models_dir())
-        segments, _info = model.transcribe(wav, language='zh', vad_filter=True,
-                                           initial_prompt='以下是普通话的句子。')
-        segs = [{'start': float(s.start), 'end': float(s.end), 'text': (s.text or '').strip()}
-                for s in segments if s.text and s.text.strip()]
+        segments, info = model.transcribe(wav, language='zh', vad_filter=True,
+                                          initial_prompt='以下是普通话的句子。')
+        total = 0.0
         try:
-            os.remove(wav)
+            total = float(getattr(info, 'duration', 0) or 0)
         except Exception:
-            pass
+            total = 0.0
+        lo, hi = (pct_range or (0, 0))
+        segs = []
+        n = 0
+        for s in segments:
+            n += 1
+            # 段间检查取消：transcribe 一旦启动无法从外部中断，只能在消费间隙响应
+            if _aborted():
+                raise AbortError('用户取消了任务')
+            if s.text and s.text.strip():
+                segs.append({'start': float(s.start), 'end': float(s.end),
+                             'text': (s.text or '').strip()})
+            if progress is not None and (n % 3 == 0):
+                frac = min(1.0, (float(s.end) / total)) if total > 0 else 0.5
+                progress['pct'] = int(lo + (hi - lo) * frac)
+                progress['phase'] = ('识别台词 %s / %s' % (_fmt_hms(s.end), _fmt_hms(total))
+                                     if total > 0 else '识别台词…')
         return segs
     except Exception:
         try:
@@ -4182,13 +5331,24 @@ def _local_narrate(per_seg, params, plot=None):
         ctx.append('视频文件名：' + name)
     if theme:
         ctx.append('视频主题/梗概：' + theme)
+    # 旧提示词只说「讲发生了什么」，模型于是自由发挥成抒情散文
+    # （实测产出「像举着半透明的糖纸」「油菜花的呼吸声」这类文艺腔），
+    # 这里给出明确结构 + 禁用词表，把风格压回「讲故事的口播稿」。
     prompt = ('你是一个电影解说文案助手。下面是一段视频的分段时间轴与台词。\n'
               + ('补充信息：\n' + '\n'.join(ctx) + '\n' if ctx else '')
-              + '请生成一段面向观众的连贯中文剧情解说稿：第 1 段开场引入剧情（不确定片名就用“故事从……”自然引入），'
-                '后续每段承接上文叙述本段剧情事件（讲“发生了什么”，不要描述画面本身）。'
-                '每段一句，30~60字，口播风格、有推进感，严格按顺序每段一行输出，不要编号、不要引号、不要解释。\n\n' + brief)
-    text = local_llm_chat(prompt,
-                          system='你是资深电影解说博主，擅长把剧情讲得生动有感染力，让观众想看下去。')
+              + '请生成一段面向观众的连贯中文解说稿：\n'
+                '- 第 1 段开场：点出主题（不确定片名就用“故事从……”自然引入），抛出一个抓人的悬念。\n'
+                '- 中间每段：承接上文，讲清楚「谁 + 做了什么 + 为什么」，'
+                '用口语推进节奏（没想到／就在这时／结果／也正是这时）。\n'
+                '- 最后一段：收束或升华一句。\n'
+                '- 每段 40~90 字，口播风格，句子要能直接念出来。\n'
+                '- 严禁文艺腔与抒情排比；严禁出现这些词：画面里、镜头中、我们看到、仿佛、像极了、藏着。\n'
+                '- 严格按顺序每段一行输出，不要编号、不要引号、不要括号、不要解释。\n\n' + brief)
+    _style = NARR_STYLES.get(params.get('narr_style', 'movie'), NARR_STYLES['movie'])
+    _detail = DETAIL_LEVELS.get(params.get('detail_level', 'balanced'), 1.0)
+    _lo, _hi = int(40 * _detail), int(90 * _detail)
+    prompt = prompt.replace('每段 40~90 字', '每段 %d~%d 字' % (_lo, _hi))
+    text = local_llm_chat(prompt, system=_style['system'])
     lines = [l.strip().strip('"').strip() for l in text.splitlines() if l.strip()]
     if len(lines) < len(per_seg):
         # 行数不足：按上文口吻续写缺失镜头（不再回填模板，避免风格断裂/内容错配）
@@ -4310,14 +5470,23 @@ def generate_narration(segs, asr, params, frames=None, plot=None, beat_outline=N
                  '（剧情解说，不是画面描述）：\n'
                  '- 像真人解说一样把故事从头讲到尾、一气呵成：镜头之间自然衔接、层层递进'
                  '（可用“此时/紧接着/可没想到/而另一边/偏偏这时候”等承接），不要每段都另起炉灶；\n'
-                 '- 第 1 段：开场引入剧情（若画面能确认影视作品，点出片名/年代/背景；不确定不要编造片名，'
-                 '用“故事从……”/“镜头对准……”自然引入）；\n'
+                 '- 第 1 段：开场即钩子（黄金 7 秒）：用反常理悬念或人性拷问破题，'
+                 '严禁“今天讲一部关于XX的电影”式平淡开场；若画面能确认影视作品，点出片名/年代/背景（不确定不要编造片名）；\n'
                  '- 后续每段：承接上文，叙述本段剧情本身（人物做了什么/事态怎么变），像讲故事；'
                  '除非这段真是剧情转折/高光，否则不要总结“这反映了/象征着/揭示了”这类意义升华；\n'
                  '- 详略有当：关键/转折/高光段展开讲（2~3 句），过渡/铺垫段一句带过，不要平均用力；\n'
+                 '- 口语化讲述感：短句、多动词少形容词，单句别超过 20 字不停顿，可用「我们/你我」的唠嗑感；\n'
+                 '- 【中段克制·结尾升华】中间各行不总结不升华，只推进剧情与情绪；最后一段金句收尾：'
+                 '把故事映射到现实共鸣（职场/婚姻/原生家庭/阶层），≤2 句散文诗式总结；\n'
+                 '- 【红线】涉暴力用温和词、侧重心理而非过程；主角若违法，须点出“违法行为终将受到法律制裁”；\n'
                  '- 每段 20~120 字，口播风格、有推进感；台词转述、不要原样引用对话；'
                  '不编造剧情外事实；不堆“高潮/悬念/震撼”等空泛词；\n'
                  '- 严格按顺序每段一行输出，不要编号、不要引号、不要解释。\n\n')
+        genre = (params.get('genre') or '').strip()
+        if genre and genre != 'auto':
+            g_block = _genre_template_block(genre)
+            if g_block:
+                instr = instr + g_block + '\n\n'
         if req_txt:
             instr += '【额外要求】' + req_txt + '\n\n'
         payload = {
@@ -4639,12 +5808,18 @@ def _narrate_analysis(video_path, params, run_dir, progress=None):
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
+    # 同上：分段 / Whisper / 抽帧 / 生成解说稿都是无 ffmpeg 的长阶段，靠协作式取消响应「⏹ 停止」
     up('场景分段', 4)
+    if _aborted():
+        raise AbortError('用户取消了任务')
     fine = _segment_timeline(video_path, max_seg=float(params.get('maxSeg', 25)))
     if not fine:
         raise RuntimeError('无法分析视频时长')
     up('识别台词(本地Whisper)', 10)
-    asr = asr_segments(video_path)
+    if _aborted():
+        raise AbortError('用户取消了任务')
+    # 传入 progress：十几分钟的长视频转写要跑很久，没有逐段进度就是「看着像卡死」
+    asr = asr_segments(video_path, progress=progress, pct_range=(10, 16))
     need_frames = vlm_enabled() or ai_enabled('vision')   # 任一视觉能力可用就抽帧（自动选路）
     frames = {}
     if need_frames:
@@ -4664,6 +5839,8 @@ def _narrate_analysis(video_path, params, run_dir, progress=None):
     if kept:
         segs = [s for s, _ in kept]
         outline = [o for _, o in kept]
+    if _aborted():
+        raise AbortError('用户取消了任务')
     up('生成解说稿', 22)
     narr, used_local = generate_narration(segs, asr, params, frames=frames, plot=plot, beat_outline=outline)
     mode = None
@@ -4749,11 +5926,35 @@ def _clamp_line(text, max_chars):
     return window.strip()
 
 
-def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None):
-    """解说渲染阶段：按给定镜头段与解说稿逐段配音→混音→烧字幕→配乐。返回 final 路径。"""
+def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None,
+                    auto_cut=True):
+    """解说渲染阶段：按分镜剪辑(可选)→逐段配音→混音→烧字幕→配乐。
+
+    auto_cut=True 时先按保留段真剪辑（剪掉未勾选/无解说的画面），字幕与配音自动对齐到
+    剪辑后的新时间轴。返回 (final, voice_clips, cut_info)。"""
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
+
+    # ---- 第一步：真剪辑（此前缺失，导致成片恒等于原片时长，「剪辑解说」名不副实）----
+    src_video = video_path
+    cut_info = {'cut_sec': 0.0, 'src_dur': round(probe_audio_len(video_path) or 0.0, 2),
+                'out_dur': None, 'segs': len(segs)}
+    if auto_cut:
+        up('按分镜剪辑画面', 26)
+        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
+        cut_info['cut_sec'] = cut_sec
+        cut_info['segs'] = len(segs)
+    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
+    print(f'[DIAG] auto_cut后: segs={len(segs)} 总时长={sum(b-a for a,b in segs):.1f}s 视频时长={cut_info["out_dur"]}s narr={len(narr)}')
+
+    # 长度对齐保护：narr 与 segs 必须一一对应。模型偶尔多输出/少输出行，
+    # 不修正会导致越界（i >= len(segs) 时全部堆在 0-10s）或后面段无解说。
+    if len(narr) > len(segs):
+        narr = narr[:len(segs)]
+    elif len(narr) < len(segs):
+        narr = list(narr) + [''] * (len(segs) - len(narr))
+
     up('逐段配音', 30)
     tts_paths = []
     voice_spans = {}   # seg_idx -> (start, end)：字幕窗口跟随配音（有声才显字、念完即收）
@@ -4763,6 +5964,8 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
             raise AbortError('用户取消了任务')
         if not (txt and txt.strip()):
             continue
+        if txt.strip() in ('（留白）', '(留白)'):
+            continue   # 留白段：不配音不出字幕，让原片声音飞（第五原则·留白意识）
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
         span_len = max(0.0, seg_span[1] - seg_span[0])
         # 配音前先按画面时长做字数硬上限兜底：给足 _NAR_MAX_SPEED 的加速余量，
@@ -4775,9 +5978,12 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
             if ai_tts(spoken, np_):
                 clip = np_
         if clip is None:
-            wv = os.path.join(run_dir, f'narr{i}.wav')
-            if sapi_tts(spoken, wv):
-                clip = wv
+            # 本地免费配音：edge-tts（免 Key）→ 离线模型（sherpa-onnx）→ 系统 SAPI 兜底
+            ok, _eng, lp = local_tts_speak(spoken, os.path.join(run_dir, f'narr{i}.mp3'))
+            if ok:
+                clip = lp
+            else:
+                print(f'[DIAG] TTS失败 seg={i} 字数={len(spoken)} 文本前20字={spoken[:20]}')
         if clip is not None:
             # 配音时长自适应：念不完就用 atempo 适度提速贴合镜头，避免跨段重叠/腰斩
             v_len = probe_audio_len(clip) or max(0.5, span_len)
@@ -4794,8 +6000,10 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
             # 字幕只在「这句话正在被念」时显示：一行字挂满整个镜头段会让后段才发生的
             # 画面内容提前出现在段首，观感像字幕与时间轴错位
             voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
+    print(f'[DIAG] 配音完成: tts_paths={len(tts_paths)}/{len([t for t in narr if t and t.strip()])} voice_spans={len(voice_spans)}')
     up('混音+烧字幕+配乐', 60)
-    final = _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
+    final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:
         progress['done'] = True
@@ -4803,7 +6011,7 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
         progress['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
         if mode:
             progress['mode'] = mode
-    return final, len(tts_paths)
+    return final, len(tts_paths), cut_info
 
 
 def narrate_video(video_path, params, run_dir, progress=None, music_path=None):
@@ -4812,10 +6020,13 @@ def narrate_video(video_path, params, run_dir, progress=None, music_path=None):
     segs, narr, asr, frames, mode, _outline = _narrate_analysis(video_path, params, run_dir, progress)
     if progress and mode:
         progress['mode'] = mode
-    final, vc = _render_narrate(video_path, segs, narr, params, run_dir, progress=progress,
-                                music_path=music_path, mode=progress.get('mode') if progress else None)
+    auto_cut = params.get('autoCut', True)
+    final, vc, cut_info = _render_narrate(video_path, segs, narr, params, run_dir, progress=progress,
+                                          music_path=music_path,
+                                          mode=progress.get('mode') if progress else None,
+                                          auto_cut=auto_cut)
     diag = {'segments': len(segs), 'asr_lines': len(asr), 'voice_clips': vc,
-            'narration': narr}
+            'narration': narr, 'cut': cut_info}
     return final, diag
 def _has_audio_track(p):
     """返回视频文件是否含音轨。"""
@@ -4825,16 +6036,160 @@ def _has_audio_track(p):
 
 def _clean_caption(text):
     """清洗单条字幕文案：去首尾空白/引号、把内部换行替换为空格、合并多余空格。
-    LLM/模板输出偶尔带换行或引号，若原样写入 SRT 会破坏字幕时间轴格式。"""
+    LLM/模板输出偶尔带换行或引号，若原样写入 SRT 会破坏字幕时间轴格式。
+    同时剥掉模型误输出的元信息括号（如「（画面：绿色田野+蓝天）」「（结尾金句）」）——
+    这类注释一旦进配音，观众会听到「画面绿色田野」，非常出戏；（留白）是功能标记，保留。"""
     if not text:
         return ''
     import re as _re
     t = _re.sub(r'\s+', ' ', str(text)).strip()
+    if t in ('（留白）', '(留白)'):
+        return t
+    # 元信息括号：画面/镜头/结尾金句/开场/钩子/旁白/字幕 等拍摄说明
+    t = _re.sub(r'[（(]\s*(?:画面|镜头|结尾金句|开场|钩子|旁白|字幕|音效|转场)[^）)]{0,60}[）)]',
+                '', t)
+    t = _re.sub(r'\s+', ' ', t).strip()
     # 去掉首尾成对的引号（含中文弯引号）
     for a, b in (('"', '"'), ("'", "'"), ('“', '”'), ('‘', '’')):
         if len(t) >= 2 and t[0] == a and t[-1] == b:
             t = t[1:-1].strip()
     return t
+
+
+def _merge_spans(spans, eps=0.05):
+    """合并重叠/紧邻的区间并按时序排序，避免剪辑时同一段画面被重复拼接。"""
+    out = []
+    for s0, s1 in sorted((float(a), float(b)) for a, b in (spans or [])
+                         if float(b) - float(a) > 0.02):
+        if out and s0 <= out[-1][1] + eps:
+            out[-1] = (out[-1][0], max(out[-1][1], s1))
+        else:
+            out.append((s0, s1))
+    return out
+
+
+def _cut_video_by_spans(video_path, spans, run_dir, progress=None):
+    """按保留区间真剪辑：只留 spans 覆盖的画面，顺序拼成新片，并给出新时间轴。
+
+    这是「剧情驱动剪辑」名副其实的关键。历史实现里解说链路只做「烧字幕 + 混音」，
+    成片时长恒等于原片，用户在预览里取消勾选的段落画面照样留在成片里 —— 等于没剪。
+
+    返回 (cut_path, new_spans, cut_seconds)：
+    - new_spans[i] 是 spans[i] 在拼接后新片里的 (start, end)，字幕与配音必须按它对齐
+    - cut_seconds 为被剪掉的总时长（0 表示未发生剪辑）
+    剪辑失败时安全降级为 (video_path, spans, 0)：宁可不剪，也不因剪辑把出片搞崩。
+    """
+    def up(ph, pct):
+        if progress is not None:
+            progress['phase'] = ph
+            progress['pct'] = pct
+
+    vdur = probe_audio_len(video_path) or 0.0
+    # 夹到 [0, vdur]，避免分析阶段给出的切点越界导致 ffmpeg 报错
+    raw = [(max(0.0, min(vdur, float(a))), max(0.0, min(vdur, float(b))))
+           for a, b in (spans or [])]
+    raw = [(a, b) for a, b in raw if b - a > 0.02]
+    if not raw or vdur <= 0:
+        return video_path, raw, 0.0
+    # 修正重叠段：分析阶段/用户微调可能产生重叠（后段 start < 前段 end），
+    # 若不修正，_merge_spans 会合并重叠区，但 new_spans 仍按原始段长累计 →
+    # new_spans 总时长 > 剪辑后实际视频时长 → 后半段字幕/配音落在视频结束点之后，用户看不到听不到。
+    # 修正方式：后段 start 移到前段 end（重叠画面只出现一次，归属前段）。
+    _fixed = []
+    for a, b in raw:
+        if _fixed and a < _fixed[-1][1]:
+            a = _fixed[-1][1]
+        # 修正后过短的片段给最小 0.5 秒时长，绝不过滤——过滤会导致 narr 与 segs 长度不匹配，
+        # 后面的解说词无对应画面段，配音丢失、字幕错位。
+        if b - a <= 0.02:
+            b = min(vdur, a + 0.5)
+        if b - a > 0.02:
+            _fixed.append((a, b))
+    raw = _fixed
+    if not raw:
+        return video_path, raw, 0.0
+
+    # 剪切用的区间做合并（重叠/紧邻不重复切），但**返回的时间轴必须逐段等长**：
+    # 调用方 segs 与 narr 是一一对应的，这里少返回一段就会让字幕与配音整体错位。
+    spans = _merge_spans(raw)
+    if not spans:
+        return video_path, raw, 0.0
+
+    keep = sum(b - a for a, b in spans)
+    gap = vdur - keep
+    # 连续覆盖全片（中间没有实质空隙）→ 没有可剪的内容，直接跳过，省一次全片重编码
+    covered_gap = sum(max(0.0, spans[i + 1][0] - spans[i][1]) for i in range(len(spans) - 1))
+    if spans[0][0] <= 0.05 and vdur - spans[-1][1] <= 0.05 and covered_gap <= 0.25:
+        return video_path, raw, 0.0
+
+    cut_dir = os.path.join(run_dir, 'cuts')
+    os.makedirs(cut_dir, exist_ok=True)
+    has_audio = _has_audio_track(video_path)
+    pieces = []
+    try:
+        for i, (s0, s1) in enumerate(spans):
+            up('✂ 剪辑片段 %d/%d' % (i + 1, len(spans)), 34 + int(20 * i / max(1, len(spans))))
+            p = os.path.join(cut_dir, 'cut%03d.mp4' % i)
+            # -ss 放 -i 前走快 seek（重编码时仍精确到帧）；-t 用段长，避免 -to 语义混淆
+            cmd = ['-y', '-ss', '%.3f' % s0, '-i', video_path, '-t', '%.3f' % (s1 - s0)]
+            cmd += video_encode_args()
+            cmd += ['-threads', '0']
+            if has_audio:
+                cmd += ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
+            else:
+                cmd += ['-an']
+            cmd += [p]
+            rc, _o, e = ffmpeg_run(cmd)
+            if rc != 0 or not os.path.exists(p):
+                raise RuntimeError('片段 %d 剪切失败: %s' % (i, e.decode('utf-8', 'ignore')[-200:]))
+            pieces.append(p)
+
+        out = os.path.join(run_dir, 'cut.mp4')
+        concat_txt = os.path.join(cut_dir, 'concat.txt')
+        with open(concat_txt, 'w', encoding='utf-8') as f:
+            for p in pieces:
+                f.write("file '%s'\n" % p.replace('\\', '/').replace("'", "'\\''"))
+        up('拼接保留片段', 56)
+        rc, _o, e = ffmpeg_run(['-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
+                                '-c', 'copy', '-movflags', '+faststart', out])
+        if rc != 0 or not os.path.exists(out):
+            # 各段编码参数不一致时 copy 会失败 → 兜底 filter concat（重编码，慢但稳）
+            inputs = []
+            for p in pieces:
+                inputs += ['-i', p]
+            fc = ''.join('[%d:v]' % i for i in range(len(pieces)))
+            if has_audio:
+                fc += ''.join('[%d:a]' % i for i in range(len(pieces)))
+                fc += 'concat=n=%d:v=1:a=1[vout][aout]' % len(pieces)
+                cmd = ['-y'] + inputs + ['-filter_complex', fc, '-map', '[vout]', '-map', '[aout]']
+                cmd += video_encode_args() + ['-c:a', 'aac', '-b:a', '160k', '-threads', '0', out]
+            else:
+                fc += 'concat=n=%d:v=1:a=0[vout]' % len(pieces)
+                cmd = ['-y'] + inputs + ['-filter_complex', fc, '-map', '[vout]']
+                cmd += video_encode_args() + ['-threads', '0', out]
+            rc, _o, e = ffmpeg_run(cmd)
+        if rc != 0 or not os.path.exists(out):
+            raise RuntimeError('拼接失败: ' + e.decode('utf-8', 'ignore')[-300:])
+    except Exception:
+        # 剪辑属增强项：失败就退回原片，保证「能出片」优先于「剪得漂亮」
+        return video_path, raw, 0.0
+
+    # 拼接后的新时间轴：按原始段逐段累计（段数与输入严格一致，保证与解说词一一对应）
+    new_spans, cur = [], 0.0
+    for a, b in raw:
+        new_spans.append((round(cur, 3), round(cur + (b - a), 3)))
+        cur += (b - a)
+    # -c copy 拼接 VFR 视频时，各片段实际时长可能与 -t 指定的有偏差，
+    # 导致拼接后视频实际时长 != new_spans 总时长，后面的配音/字幕落在视频结束点之后。
+    # 修复：ffprobe 检查实际时长，偏差>0.5s 时按比例缩放 new_spans，保证与视频对齐。
+    actual_dur = probe_audio_len(out) or cur
+    expected_dur = cur
+    if actual_dur > 0 and abs(actual_dur - expected_dur) > 0.5:
+        scale = actual_dur / expected_dur
+        print(f'[DIAG] 拼接时长偏差: 预期={expected_dur:.1f}s 实际={actual_dur:.1f}s 缩放={scale:.3f}')
+        new_spans = [(round(s * scale, 3), round(min(actual_dur, e * scale), 3)) for s, e in new_spans]
+    # 被剪掉的总时长 = 原片时长 - 保留时长（gap 就是这个值，别再扣一次段间空隙）
+    return out, new_spans, round(max(0.0, gap), 3)
 
 
 def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None,
@@ -5049,6 +6404,299 @@ def _char_bigrams(s):
     return set(s[i:i + 2] for i in range(len(s) - 1))
 
 
+# ---------------------------------------------------------------------------
+# 影视剧情解说稿（「解说驱动剪辑」的核心）
+#
+# 旧实现 llm_movie_script 的三个硬伤，正是「怎么调都达不到普遍解说效果」的根因：
+#   1. 每句被硬截断到 30/40 字（_split_sentences 的 l[:30]、_parse_events 的 desc[:40]）
+#      → 解说碎片化，讲不成故事，甚至出现「随后追」这种半截话。
+#   2. 每个事件各自独立成句、互不衔接 → 没有开场钩子、没有因果推进、没有结尾升华。
+#   3. 事件条数由模型随意给 6-12 条，与画面段数无关 → 剧情只能往画面上「贴」，
+#      段少了剧情被丢弃、段多了剧情被复制铺满，等于没剪。
+#
+# llm_movie_full_script 改为一次产出完整的、可直接口播的解说稿；画面反过来去迁就它。
+# ---------------------------------------------------------------------------
+NAR_BEAT_MIN = 40       # 每节解说词最少字数：少于此讲不成完整的一句
+NAR_BEAT_MAX = 90       # 每节最多字数：超过则口播发赶、字幕一行放不下
+NAR_SCRIPT_CPS = 5.2    # 影视解说话速（字/秒）：比普通解说略快，更贴近 B 站观感
+
+SCRIPT_STYLE_MOVIE = (
+    '你是资深影视解说博主（B站/抖音影视解说风格）。请根据片名与剧情资料，'
+    '写一篇可以直接照着念的完整解说稿。\n\n'
+    '【结构】三段，缺一不可：\n'
+    '1. hook 开场：1-2 句，点出片名，抛出全片最抓人的悬念或反差，但不要剧透结局。\n'
+    '2. beats 主体：按剧情时间顺序分成若干节，每节 40-90 字，讲清楚人物、动机、'
+    '冲突与转折，让没看过的人也能听懂。\n'
+    '3. outro 结尾：1-2 句，点题或升华，给出回味。\n\n'
+    '【每节写法】\n'
+    '- 讲「谁 + 做了什么 + 为什么」，不要描述画面（禁止出现：画面里、镜头中、我们看到）。\n'
+    '- 人物第一次出现要带上姓名与身份，例如「副警长瑞克」「搭档肖恩」。\n'
+    '- 用口语衔接词推进节奏：没想到、就在这时、结果、也正是这时、可他不知道的是。\n'
+    '- 每节末尾留一点钩子，让观众想继续看。\n\n'
+    '【禁止】编号、引号、括号注释、markdown、代码块、任何解释性文字。\n\n'
+    '只输出如下 JSON：\n'
+    '{"title":"片名","hook":"开场白","beats":[{"text":"第1节解说词",'
+    '"keywords":["关键词1","关键词2"],"importance":"key|advance|transition"}],"outro":"结尾"}\n\n'
+    'importance：key＝主线关键情节点，advance＝一般推进，transition＝过渡铺垫。\n'
+)
+
+
+def _script_from_obj(obj, movie_name=''):
+    """把 LLM 返回的 JSON 对象规范化成解说稿 dict；结构不对返回 None。"""
+    if not isinstance(obj, dict):
+        return None
+    beats = []
+    for it in (obj.get('beats') or []):
+        if isinstance(it, dict) and it.get('text'):
+            kw = it.get('keywords') or []
+            if isinstance(kw, str):
+                kw = [kw]
+            imp = str(it.get('importance') or 'advance').lower()
+            if imp not in ('key', 'advance', 'transition'):
+                imp = 'advance'
+            beats.append({'text': str(it['text']).strip(),
+                          'keywords': [str(k) for k in kw][:6],
+                          'importance': imp})
+        elif isinstance(it, str) and it.strip():
+            beats.append({'text': it.strip(), 'keywords': [], 'importance': 'advance'})
+    if not beats:
+        return None
+    return {'title': str(obj.get('title') or movie_name or '').strip(),
+            'hook': str(obj.get('hook') or '').strip(),
+            'beats': beats,
+            'outro': str(obj.get('outro') or '').strip()}
+
+
+def _extract_json_obj(content):
+    """从 LLM 输出里抠出第一个完整 JSON 对象（容忍前后废话与 ```json 包裹）。"""
+    import json as _json
+    s = content.find('{')
+    if s < 0:
+        return None
+    depth, end = 0, -1
+    for i in range(s, len(content)):
+        if content[i] == '{':
+            depth += 1
+        elif content[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end <= s:
+        return None
+    try:
+        return _json.loads(content[s:end + 1])
+    except Exception:
+        return None
+
+
+def _asr_density(asr, vdur, step=0.5):
+    """台词密度表：每 step 秒一个格子，值为该格子内的台词字数。
+    用于判断「哪段画面有内容」——解说驱动剪辑靠它决定跳过哪些空镜与过场。"""
+    n = max(1, int(vdur / step) + 1)
+    d = [0.0] * n
+    for x in (asr or []):
+        try:
+            s0, s1 = float(x['start']), float(x['end'])
+        except Exception:
+            continue
+        i0 = max(0, int(s0 / step))
+        i1 = min(n, max(i0 + 1, int(s1 / step) + 1))
+        txt = str(x.get('text') or '')
+        for i in range(i0, i1):
+            d[i] += len(txt) / max(1.0, (s1 - s0) / step)
+    return d, step
+
+
+def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0):
+    """按解说词字数给每句话分配画面区间 ——「解说驱动剪辑」的核心。
+
+    返回 [(start, end)]，长度严格等于 len(texts)（保证解说词与画面一一对应）。
+    两条规则：
+    - 每节画面时长 ∝ 该节字数：讲得多的地方给更多画面，讲得少的一带而过。
+    - 解说需要的总时长 < 原片时长（常态）→ 只在「有台词/有内容」的区间里取画面，
+      空镜与过场被跳过，成片因此**明显短于原片**；这正是自动剪辑。
+      原片反而不够长时按比例压缩，保证解说念得完。
+    """
+    cps = float(cps or NAR_SCRIPT_CPS)
+    n = len(texts or [])
+    if n == 0 or vdur <= 0:
+        return []
+    weights = [max(1, len(str(t or ''))) for t in texts]
+    total_w = float(sum(weights))
+    durs = [w / cps for w in weights]
+    need = sum(durs)
+    if need > vdur:
+        scale = vdur / need          # 原片不够长：整体压缩，宁可赶也不越界
+        durs = [max(min_dur * 0.5, d * scale) for d in durs]
+        need = sum(durs)
+        if need > vdur:              # 极端短片：再按比例硬压一次
+            k = vdur / need
+            durs = [max(0.4, d * k) for d in durs]
+            need = sum(durs)
+    gap = max(0.0, vdur - need)
+
+    # 台词密度前缀和：窗口信息量查询 O(1)
+    dens, step = _asr_density(asr, vdur)
+    pref = [0.0] * (len(dens) + 1)
+    for i, v in enumerate(dens):
+        pref[i + 1] = pref[i] + v
+
+    def _score(t0, t1):
+        i0 = max(0, int(t0 / step))
+        i1 = min(len(dens), max(i0 + 1, int(t1 / step)))
+        return pref[min(len(pref) - 1, i1)] - pref[min(len(pref) - 1, i0)]
+
+    spans = []
+    for i, d in enumerate(durs):
+        # 每节按节数均匀分布到整个视频搜索：中心 = (i+0.5)*vdur/n
+        # 旧逻辑 cur=0 累计，每节只能在"给后面留够空间"的范围内搜，导致画面集中在前面，
+        # 长视频后面的剧情完全没被选到。新逻辑让第 i 节在视频第 i/n 位置附近找最佳片段。
+        center = (i + 0.5) * vdur / n
+        half_win = max(d * 2.5, vdur / n * 0.9)
+        lo = max(0.0, center - half_win)
+        hi = min(vdur - d, center + half_win)
+        # 保证与前一节严格不重叠（后一节起点 >= 前一节终点），
+        # 否则 _cut_video_by_spans 修正重叠时会把过短片段过滤掉，导致后面解说词无对应画面、配音丢失。
+        if spans:
+            lo = max(lo, spans[-1][1])
+        if hi < lo:
+            lo = max(0.0, i * vdur / n)
+            hi = min(vdur - d, (i + 1) * vdur / n)
+            if spans:
+                lo = max(lo, spans[-1][1])
+            if hi < lo:
+                hi = min(vdur - d, lo + d)
+        # 在 [lo, hi] 范围内搜索台词密度最高的起点
+        scan_step = max(step, (hi - lo) / 30.0) if hi > lo else step
+        best_t, best_s = lo, -1.0
+        t = lo
+        while t <= hi + 1e-6:
+            s = _score(t, min(vdur, t + d))
+            if s > best_s + 1e-9:
+                best_s, best_t = s, t
+            t += scan_step
+        s0 = min(max(0.0, best_t), max(0.0, vdur - d))
+        spans.append((round(s0, 3), round(min(vdur, s0 + d), 3)))
+    return spans
+
+
+def _fallback_full_script(movie_name, plot_text, target_sec=None):
+    """离线兜底：把剧情文本按句切分并合并成 40-90 字的解说节。
+    不再硬截断到 30 字——宁可保留整句，也不要「随后追」这种半截话。"""
+    import re as _re
+    raw = []
+    for l in _re.split(r'[\n。！？!?]', plot_text or ''):
+        l = l.strip()
+        if len(l) <= 4:
+            continue
+        l = _re.sub(r'^(?:第?\d+[\.、)．:：]|\[\d+\]|（\d+）)\s*', '', l).strip()
+        if len(l) > 4:
+            raw.append(l)
+    if not raw:
+        return None
+    # 短句合并到 NAR_BEAT_MIN 以上、不超过 NAR_BEAT_MAX
+    merged, buf = [], ''
+    for s in raw:
+        if not buf:
+            buf = s
+        elif len(buf) + len(s) + 1 <= NAR_BEAT_MAX:
+            buf = buf + '，' + s
+        else:
+            merged.append(buf)
+            buf = s
+    if buf:
+        merged.append(buf)
+    # 过长的单句按逗号再切一刀（避免整段 300 字撑爆一个镜头）
+    final = []
+    for m in merged:
+        while len(m) > NAR_BEAT_MAX:
+            cut = m.rfind('，', 0, NAR_BEAT_MAX)
+            cut = cut if cut > NAR_BEAT_MIN // 2 else NAR_BEAT_MAX
+            final.append(m[:cut].strip('，'))
+            m = m[cut:].strip('，')
+        if m:
+            final.append(m)
+    if not final:
+        return None
+    name = (movie_name or '').strip()
+    hook = ('今天要讲的这部电影是《%s》。' % name) if name else ''
+    return {'title': name,
+            'hook': hook,
+            'beats': [{'text': t, 'keywords': [], 'importance': 'advance'} for t in final],
+            'outro': ''}
+
+
+def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None, style='movie'):
+    """生成完整影视解说稿（解说驱动剪辑的起点）。
+
+    返回 {title, hook, beats:[{text, keywords, importance}], outro}；三层兜底保证绝不空返回：
+      云端/本地 LLM → 剧情切句合并 → 片名模板。
+    target_sec：期望成片时长，用来估算该写多少节（节数 = 时长×语速÷每节字数）。"""
+    n_beats = None
+    if target_sec:
+        try:
+            total_chars = float(target_sec) * NAR_SCRIPT_CPS
+            n_beats = max(4, min(60, int(round(total_chars / ((NAR_BEAT_MIN + NAR_BEAT_MAX) / 2.0)))))
+        except Exception:
+            n_beats = None
+    want = ('\n\n这一版请写成约 %d 节。' % n_beats) if n_beats else ''
+
+    # ① 本地模型（免费优先）
+    if local_llm_enabled() and not economy:
+        try:
+            if local_llm_ping()[0]:
+                brief = ((movie_name or '') + '\n' + (plot_text or ''))[:8000]
+                prompt = SCRIPT_STYLE_MOVIE + want + '\n\n【片名与剧情资料】\n' + brief
+                obj = _extract_json_obj(local_llm_chat(prompt, timeout=180))
+                sc = _script_from_obj(obj, movie_name)
+                if sc and sc['beats']:
+                    return sc
+        except Exception:
+            pass
+    # ② 云端 chat
+    if ai_enabled('chat') and not economy:
+        try:
+            import urllib.request
+            import json as _json
+            brief = ((movie_name or '') + '\n' + (plot_text or ''))[:4000]
+            prompt = SCRIPT_STYLE_MOVIE + want + '\n\n【片名与剧情资料】\n' + brief
+            cfg = chat_cfg()
+            payload = {'model': cfg.get('model'),
+                       'messages': [{'role': 'user', 'content': prompt}],
+                       'max_tokens': 3000, 'temperature': 0.75}
+            url = (cfg.get('base_url', '').rstrip('/')) + '/chat/completions'
+            req = urllib.request.Request(
+                url, data=_json.dumps(payload).encode('utf-8'),
+                headers={'Content-Type': 'application/json',
+                         'Authorization': 'Bearer ' + cfg.get('api_key', '')})
+            with urllib.request.urlopen(req, timeout=180) as r:
+                data = _json.loads(r.read().decode('utf-8'))
+            content = data['choices'][0]['message']['content']
+            sc = _script_from_obj(_extract_json_obj(content), movie_name)
+            if sc and sc['beats']:
+                return sc
+        except Exception:
+            pass
+    # ③ 离线兜底：剧情切句（整句保留，不再 30 字截断）
+    sc = _fallback_full_script(movie_name, plot_text, target_sec)
+    if sc:
+        return sc
+    # ④ 片名模板：保证任何情况下都有稿
+    name = (movie_name or '').strip()
+    tpl = [
+        '故事从一场不寻常的相遇悄然展开。',
+        '主角登场，命运的齿轮开始转动。',
+        '平静之下暗流涌动，冲突一触即发。',
+        '转折来临，局面陡然扑朔迷离。',
+        '真相浮出水面，结局出人意料。',
+    ]
+    return {'title': name,
+            'hook': ('今天要讲的这部电影是《%s》。' % name) if name else '',
+            'beats': [{'text': t, 'keywords': [], 'importance': 'advance'} for t in tpl],
+            'outro': ''}
+
+
 def llm_movie_script(movie_name, plot_text, economy=False):
     """根据片名 + 剧情文本，让 LLM 产出结构化解说事件列表 [{desc, keywords}]。
     兜底优先级（保证离线/断网也能出稿，绝不因缺剧情而空返回）：
@@ -5218,54 +6866,76 @@ def align_script_to_segments(events, segs, asr):
 
 
 def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_name='', events=None):
-    """🎭 剧情驱动核心：分段 → ASR台词 → 按用户剧情生成解说事件 → 按时序对齐到分镜 → 映射每段解说。
-    返回 (segs, narr, asr, frames, mode, events)。供 narrate_movie 与 规划分析(narrate 剧情模式)复用，
-    避免两份逐行重复实现各自漂移。
+    """🎭 剧情驱动核心（解说驱动剪辑）：
+        完整解说稿 → 按每句字数分配画面 → 返回「解说词与画面一一对应」的区间。
 
-    与「AI 识别画面」模式的关键区别：解说词来自【用户剧情】，而非 VLM 看画面；
-    这样解说讲的就是用户的故事，彻底消除「只匹配画面、不识主体内容」的割裂感。"""
+    返回 (segs, narr, asr, frames, mode, events)。供 narrate_movie 与 规划分析(narrate 剧情模式)复用。
+
+    【与旧实现的根本区别】旧版是「先按画面切换分段，再把剧情句贴上去」：
+      - 段少 → 剧情被丢弃（实测 3 条剧情只用 1 条）；段多 → 剧情被复制铺满
+      - 每句被硬截断到 30/40 字，讲到一半就断
+      - 画面段由场景检测决定，与剧情结构无关 → 成片＝原片，谈不上剪辑
+    新版反过来：先一次写完完整解说稿（开场钩子 / 因果推进 / 结尾升华），
+    再按每句字数算出它需要多少秒画面，从原片里挑「有内容」的区间取用。
+    解说不需要的画面自然被跳过，成片因此明显短于原片 —— 这才是普遍解说的做法。"""
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
-    up('场景分段', 22)
-    segs = _segment_timeline(video_path, max_seg=float(params.get('maxSeg', 25)))
-    if not segs:
+
+    # 每个长阶段前检查取消：Whisper/LLM 都不走 ffmpeg，靠协作式中断响应「⏹ 停止」
+    up('探测片长', 22)
+    if _aborted():
+        raise AbortError('用户取消了任务')
+    vdur = probe_audio_len(video_path) or 0.0
+    if vdur <= 0:
         raise RuntimeError('无法分析视频时长')
     up('识别台词(本地Whisper)', 32)
-    asr = asr_segments(video_path)
-    if events is None:
-        up('按剧情生成解说事件', 42)
-        events = llm_movie_script(movie_name, plot, economy=not ai_enabled('chat'))
-    if not events:
-        raise RuntimeError('无法从剧情生成解说事件（请检查剧情文本或本地模型）')
-    up('剧情↔片段对齐', 52)
-    aligned = align_script_to_segments(events, segs, asr)
-    # 未匹配事件按顺序补到空闲镜头段，保证剧情全覆盖
-    taken = {s for s, _ in aligned}
-    free = [i for i in range(len(segs)) if segs[i][0] not in taken]
-    extra = []
-    for ev in events:
-        if any(ev['desc'] == d for _, d in aligned):
-            continue
-        if free:
-            extra.append((segs[free.pop(0)][0], ev['desc']))
-    aligned = sorted(aligned + extra, key=lambda x: x[0])
-    # 映射到镜头段索引（保证字幕/配音与 segs 对齐）
-    seg_narr = [''] * len(segs)
-    for (start, desc) in aligned:
-        for i, (s0, s1) in enumerate(segs):
-            if abs(s0 - start) < 0.01:
-                seg_narr[i] = desc; break
-    # 🎭 剧情驱动兜底：若仍有空段（剧情句数 < 镜头数，且无台词可语义对齐），
-    # 把剧情句按时间均匀铺满全片，保证整段视频都有解说、且剧情按时序展开，
-    # 不再出现「片尾大段静音 / 解说只挤在开头」的割裂感。
-    if any(not x.strip() for x in seg_narr):
-        descs = [ev['desc'] for ev in events]
-        k = len(descs)
-        for i in range(len(segs)):
-            if not seg_narr[i].strip() and k:
-                seg_narr[i] = descs[min(k - 1, round(i * k / len(segs)))]
-    return segs, seg_narr, asr, {}, 'movie', events
+    if _aborted():
+        raise AbortError('用户取消了任务')
+    asr = asr_segments(video_path, progress=progress, pct_range=(32, 42))
+    if _aborted():
+        raise AbortError('用户取消了任务')
+
+    up('写完整解说稿', 42)
+    target_sec = params.get('targetSec')
+    try:
+        target_sec = float(target_sec) if target_sec else None
+    except Exception:
+        target_sec = None
+    # target_sec 为 0/None（自动）时按视频时长生成解说稿，覆盖全片；
+    # 否则模型自由发挥节数，常只写几分钟，导致 15 分钟视频只取前几分钟画面。
+    if not target_sec:
+        target_sec = vdur
+    # economy=False：本地模型是免费的，必须让它先写稿；云端用不用由 ai_enabled('chat') 决定。
+    # （历史坑：这里曾传 economy=not ai_enabled('chat')，未配云端时 economy=True 会直接跳过
+    #   本地模型走切句兜底，产出的是「剧情原文拼接」而不是解说稿——正是解说不像解说的原因。）
+    script = llm_movie_full_script(movie_name, plot, economy=False, target_sec=target_sec)
+    if not script or not script.get('beats'):
+        raise RuntimeError('无法从剧情生成解说稿（请检查剧情文本或本地模型）')
+
+    # hook + 各节拍 + outro 串成可直接口播的解说词序列
+    texts = []
+    if script.get('hook'):
+        texts.append(script['hook'])
+    for b in script['beats']:
+        if str(b.get('text') or '').strip():
+            texts.append(str(b['text']).strip())
+    if script.get('outro'):
+        texts.append(script['outro'])
+    if not texts:
+        raise RuntimeError('解说稿为空（请检查剧情文本或本地模型）')
+
+    if _aborted():
+        raise AbortError('用户取消了任务')
+    up('按解说分配画面', 52)
+    # 画面时长由解说字数决定；放不下的原片区间会被跳过（后续 _cut_video_by_spans 真剪掉）
+    segs = _allocate_script_spans(texts, vdur, asr=asr)
+    if not segs:
+        raise RuntimeError('画面分配失败（视频可能过短）')
+
+    # events 保持旧格式返回，供 diag 与「按解说词重新匹配分镜」复用
+    events = [{'desc': t[:40], 'keywords': []} for t in texts]
+    return segs, texts, asr, {}, 'movie', events
 
 
 def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, music_path=None):
@@ -5288,18 +6958,29 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             progress['file'] = ''; progress['script'] = events
             progress['mode'] = compute_mode(params, needs_chat=True)
         return None, {'events': events, 'no_video': True}
-    # 有视频：剧情驱动分镜 + 配音（movie_name 可空＝用户粘贴剧情模式）
-    up('LLM 生成解说稿', 14)
-    events = llm_movie_script(movie_name, plot, economy=not ai_enabled('chat'))
-    if not events:
-        raise RuntimeError('无法生成解说稿（请检查网络，或在指令里粘贴剧情文本）')
+    # 有视频：剧情驱动（解说稿 + 画面分配都在 _narrate_by_plot 内一次完成）。
+    # 此处不再单独调一次 llm_movie_script——那会白白多跑一轮模型，且旧接口只产出
+    # 30 字一句的碎片事件，与完整解说稿不是一回事。
     segs, narr, asr, _frames, mode, events = _narrate_by_plot(
-        video_path, plot, params, run_dir, progress, movie_name=movie_name, events=events)
+        video_path, plot, params, run_dir, progress, movie_name=movie_name)
+    # ✂ 真剪辑：只保留解说覆盖到的镜头段（此前整链路不剪切，成片恒等于原片时长）
+    src_video = video_path
+    cut_info = {'cut_sec': 0.0,
+                'src_dur': round(probe_audio_len(video_path) or 0.0, 2),
+                'out_dur': None, 'segs': len(segs)}
+    if params.get('autoCut', True):
+        up('按分镜剪辑画面', 54)
+        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
+        cut_info['cut_sec'] = cut_sec
+        cut_info['segs'] = len(segs)
+    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
     up('逐段配音', 58)
     tts_paths = []
     voice_spans = {}   # 字幕窗口跟随配音（与短片解说一致：有声才显字、念完即收）
     use_mimo = _tts_available()   # 自动：配置了云端 TTS key 即视为同意使用
     for i, txt in enumerate(narr):
+        if _aborted():
+            raise AbortError('用户取消了任务')
         if not txt.strip():
             continue
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
@@ -5309,15 +6990,17 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             if ai_tts(txt, np_):
                 clip = np_
         if clip is None:
-            wv = os.path.join(run_dir, f'narr{i}.wav')
-            if sapi_tts(txt, wv):
-                clip = wv
+            # 本地免费配音：edge-tts（免 Key）→ 离线模型（sherpa-onnx）→ 系统 SAPI 兜底
+            ok, _eng, lp = local_tts_speak(txt, os.path.join(run_dir, f'narr{i}.mp3'))
+            if ok:
+                clip = lp
         if clip is not None:
             tts_paths.append((clip, seg_span[0], seg_span[1]))
             v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
             voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
     up('混音+烧字幕+配乐', 70)
-    final = _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
+    final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:
         progress['done'] = True; progress['pct'] = 100
@@ -5325,7 +7008,8 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         progress['script'] = events
         progress['mode'] = compute_mode(params, needs_chat=True)
     diag = {'events': len(events), 'segments': len(segs), 'asr_lines': len(asr),
-            'aligned': sum(1 for x in narr if x.strip()), 'voice_clips': len(tts_paths), 'narration': narr}
+            'aligned': sum(1 for x in narr if x.strip()), 'voice_clips': len(tts_paths),
+            'narration': narr, 'cut': cut_info}
     return final, diag
 
 
@@ -5392,17 +7076,111 @@ def _resolve_music(music_data):
     return None
 
 
+def fail_task(prog, e):
+    """统一的任务失败收尾：落 error 三件套 + 收集已产出的中间文件。
+
+    prog['error']       保留原有的一句话错误（前端主展示，语义不变）
+    prog['error_stage'] 出错时任务所处的阶段（prog['phase'] 的快照，先取后改）
+    prog['error_detail']异常类型 + 消息 + 末尾若干帧堆栈（给前端「查看详情」用）
+    各 dispatch_* 原先各写一份相同的 except body，抽出来避免字段遗漏。"""
+    import traceback
+    traceback.print_exc()
+    stage = prog.get('phase') or '未开始'          # 必须在改 phase 之前快照
+    prog['error_stage'] = stage
+    try:
+        prog['error_detail'] = ('%s: %s\n%s' % (
+            type(e).__name__, e, traceback.format_exc(limit=8)))[:2000]
+    except Exception:
+        prog['error_detail'] = '%s: %s' % (type(e).__name__, e)
+    prog['done'] = True
+    prog['error'] = str(e)
+    if prog.get('run_dir'):
+        try:
+            prog['partial'] = collect_partial(prog['run_dir'])
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# CC.BY 音乐署名（合规）
+#
+# 内置曲库 12 首来自 Incompetech（Kevin MacLeod，CC BY 4.0）。按协议，公开发布
+# 成片必须给出 TASL 四要素：Title / Author / Source / License。以往选曲界面展示了
+# 许可信息，但成片里没有任何署名——用户一发抖音/B站就踩侵权线。
+# 本轮只做「机制」：生成署名文本 → 写 run_dir/credits.txt + 放进 prog['credits']，
+# 由前端展示并支持一键复制。文案最终措辞待法务定稿；不进渲染管线、不加片尾卡。
+# ---------------------------------------------------------------------------
+def _music_catalog_entry(music_data):
+    """任务参数里的 music 字段若指向内置曲库，返回曲库条目；否则返回 None（用户自带音乐不署名）。"""
+    if not isinstance(music_data, dict):
+        return None
+    if music_data.get('source') != 'catalog':
+        return None
+    mid = (music_data.get('catalogId') or '').strip()
+    if not mid:
+        return None
+    return next((t for t in MUSIC_CATALOG if t['id'] == mid), None)
+
+
+def _task_credits(req):
+    """按 CC.BY 4.0 的 TASL 要求生成纯文本署名；没用内置曲库音乐时返回 ''（空串=无需署名）。"""
+    entries = []
+    # 音乐可能挂在 req['music']（直接调用）或 req['params']['music']（指令解析层下传）
+    for cand in (req.get('music'), (req.get('params') or {}).get('music')):
+        t = _music_catalog_entry(cand)
+        if t and t not in entries:
+            entries.append(t)
+    if not entries:
+        return ''
+    lines = ['背景音乐署名（CC BY 4.0 协议要求，公开发布本片时请保留以下信息）：']
+    for t in entries:
+        lic = str(t.get('license') or 'CC BY 4.0').replace('CC.BY', 'CC BY')
+        lines += [
+            '',
+            'Title: %s' % t.get('title', ''),
+            'Author: %s' % (t.get('attri') or 'Kevin MacLeod'),
+            'Source: %s' % (t.get('licenseUrl') or 'https://incompetech.com/'),
+            'License: %s — https://creativecommons.org/licenses/by/4.0/' % lic,
+        ]
+    return '\n'.join(lines)
+
+
+def _finish_task_credits(req, prog):
+    """任务成功收尾：写 run_dir/credits.txt 并把同一段文本放进 prog['credits']。
+
+    没用曲库音乐时 prog['credits'] 为空串、不落文件、不塞占位文案。
+    署名只是附加产物，任何失败都吞掉，绝不能因为它把已完成的成片判成失败。"""
+    try:
+        text = _task_credits(req)
+    except Exception:
+        text = ''
+    prog['credits'] = text
+    if not text or not prog.get('run_dir'):
+        return
+    try:
+        with open(os.path.join(prog['run_dir'], 'credits.txt'), 'w', encoding='utf-8') as f:
+            f.write('# 生成时间：%s\n' % time.strftime('%Y-%m-%d %H:%M:%S'))
+            f.write(text)
+            f.write('\n')
+    except OSError:
+        pass
+
+
 def dispatch_build(req, prog):
     """通用合成（图片/视频混排 + 节拍对齐）。与 /api/build 共用。"""
     try:
         params = req.get('params', {})
         items = req.get('items', [])
         music_path = _resolve_music(req.get('music'))
+        # 落盘名必须带 runid：旧实现是 up_{序号}_{idx}_ext，两个并发任务若素材结构相同
+        # （比如都是 3 张图）会写到同一路径，后写的覆盖先写的，成片里混入另一个任务的素材。
+        _rid = (prog or {}).get('runid') or getattr(_TLS, 'runid', None) or ('t%d' % int(time.time()))
+        _rid = str(_rid).replace('\\', '_').replace('/', '_')
         work = []
         for idx, it in enumerate(items):
             if it['kind'] == 'image':
                 ext = os.path.splitext(it.get('name', 'x.jpg'))[1] or '.jpg'
-                fp = os.path.join(WORKDIR, f'up_{len(work)}_{idx}_img{ext}')
+                fp = os.path.join(WORKDIR, f'up_{_rid}_{idx}_img{ext}')
                 os.makedirs(WORKDIR, exist_ok=True)
                 if it.get('mlib'):
                     msrc = _material_path(it.get('mlib'))
@@ -5416,9 +7194,9 @@ def dispatch_build(req, prog):
                 work.append({'kind': 'image', 'src': fp, 'name': it.get('name', ''), 'dur': it.get('dur', 3), 'motion': len(work) % 4})
             else:
                 # 视频素材两种形态：base64（小文件）或分片上传 upload_id（大文件，直接 move 免二次拷贝）
-                fp = os.path.join(WORKDIR, f'up_{len(work)}_{idx}_vid.mp4')
+                fp = os.path.join(WORKDIR, f'up_{_rid}_{idx}_vid.mp4')
                 os.makedirs(WORKDIR, exist_ok=True)
-                src = _resolve_upload_video(it, WORKDIR, f'up_{len(work)}_{idx}_vid')
+                src = _resolve_upload_video(it, WORKDIR, f'up_{_rid}_{idx}_vid')
                 if src is None:
                     raise RuntimeError('素材 %s 缺少数据（data/upload_id），请重新上传' % (it.get('name') or idx))
                 work.append({'kind': 'video', 'src': src, 'name': it.get('name', ''), 'dur': it.get('dur', 3)})
@@ -5462,15 +7240,7 @@ def dispatch_build(req, prog):
         except Exception:
             pass
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        prog['done'] = True
-        prog['error'] = str(e)
-        if prog.get('run_dir'):
-            try:
-                prog['partial'] = collect_partial(prog['run_dir'])
-            except Exception:
-                pass
+        fail_task(prog, e)
 
 
 def _plan_thumbs(video_path, segs, run_dir, max_side=220):
@@ -5534,6 +7304,7 @@ def _analyze_plan_job(req, prog):
             if not vp:
                 raise RuntimeError('请先上传视频')
             plot = (req.get('plot') or '').strip()
+            outline = []
             if plot:
                 # 🎭 剧情驱动：不靠 AI 识别画面，按用户剧情剪分镜 + 写解说
                 segs, narr, asr, _frames, _mode, events = _narrate_by_plot(
@@ -5541,6 +7312,11 @@ def _analyze_plan_job(req, prog):
                 diag = {'segments': len(segs), 'asr_lines': len(asr),
                         'narration': narr, 'plot_driven': True, 'events': len(events)}
                 mode = 'movie'
+                # 剧情驱动没有「主线浓缩」这一步，也就没有 _condense_segs 产出的 outline；
+                # 但预览面板与渲染阶段都按 outline 取每段的保留标记，这里补一份全保留的默认值
+                # （历史 bug：此分支漏赋值 outline → 组合 plan 时 UnboundLocalError）
+                outline = [{'start': s0, 'end': s1, 'importance': 'advance', 'keep': True}
+                           for (s0, s1) in segs]
             else:
                 segs, narr, asr, diag, mode, outline = _analyze_narrate(vp, params, run_dir, prog)
             music_path = _resolve_music(req.get('music'))
@@ -5563,10 +7339,7 @@ def _analyze_plan_job(req, prog):
         prog['phase'] = '规划完成，请在下方微调后点击「按我的调整合成」'
         prog['pct'] = 100
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        prog['done'] = True
-        prog['error'] = str(e)
+        fail_task(prog, e)
 
 
 def _render_plan_job(req, prog):
@@ -5616,9 +7389,11 @@ def _render_plan_job(req, prog):
                 narr.append(str(s.get('caption', '')))
             if not segs:
                 raise RuntimeError('没有保留任何片段，请至少勾选一段')
-            # _render_narrate 返回 (final_path, voice_clips)，必须解包
-            final, voice_clips = _render_narrate(plan['video'], segs, narr, params, prog['run_dir'], prog,
-                                                 music_path=plan.get('music'), mode=plan.get('mode'))
+            # _render_narrate 返回 (final_path, voice_clips, cut_info)，必须解包
+            final, voice_clips, cut_info = _render_narrate(
+                plan['video'], segs, narr, params, prog['run_dir'], prog,
+                music_path=plan.get('music'), mode=plan.get('mode'),
+                auto_cut=bool(params.get('autoCut', True)))
         else:
             raise RuntimeError('未知方案类型')
         prog['done'] = True
@@ -5628,13 +7403,11 @@ def _render_plan_job(req, prog):
         prog['diag']['segments'] = len(tl2) - 1 if plan['type'] == 'beatcut' else len(segs)
         if plan['type'] == 'narrate':
             prog['diag']['voice_clips'] = voice_clips
+            prog['diag']['cut'] = cut_info
         _record_history(req, prog, 'plan-' + plan['type'])
         PLANS.pop(src_runid, None)
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        prog['done'] = True
-        prog['error'] = str(e)
+        fail_task(prog, e)
 
 
 def dispatch_beatcut(req, prog):
@@ -5676,15 +7449,7 @@ def dispatch_beatcut(req, prog):
             prog['mode'] = 'free'  # 强卡点为离线节拍模板，无需 LLM
             _record_history(req, prog, 'beatcut')
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        prog['done'] = True
-        prog['error'] = str(e)
-        if prog.get('run_dir'):
-            try:
-                prog['partial'] = collect_partial(prog['run_dir'])
-            except Exception:
-                pass
+        fail_task(prog, e)
 
 
 def dispatch_narrate(req, prog):
@@ -5704,15 +7469,7 @@ def dispatch_narrate(req, prog):
         prog['mode'] = prog.get('mode') or compute_mode(req.get('params', {}), needs_chat=True)
         _record_history(req, prog, 'narrate')
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        prog['done'] = True
-        prog['error'] = str(e)
-        if prog.get('run_dir'):
-            try:
-                prog['partial'] = collect_partial(prog['run_dir'])
-            except Exception:
-                pass
+        fail_task(prog, e)
 
 
 def dispatch_movie(req, prog):
@@ -5733,15 +7490,7 @@ def dispatch_movie(req, prog):
         prog['diag'] = diag
         _record_history(req, prog, 'movie')
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        prog['done'] = True
-        prog['error'] = str(e)
-        if prog.get('run_dir'):
-            try:
-                prog['partial'] = collect_partial(prog['run_dir'])
-            except Exception:
-                pass
+        fail_task(prog, e)
 
 
 def dispatch_instruct(req, prog):
@@ -6095,6 +7844,10 @@ MIME = {
     '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.mp4': 'video/mp4',
     '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    # 音频：配音试听（/media/_tts_test/sample.mp3）与配音片段走 /media 时
+    # 缺 MIME 会退化成 application/octet-stream，<audio> 在部分浏览器上拒绝播放
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+    '.srt': 'text/plain; charset=utf-8', '.webm': 'video/webm',
 }
 
 class Handler(BaseHTTPRequestHandler):
@@ -6105,11 +7858,34 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(content)))
+        # 页面与静态资源禁止缓存：前端更新后浏览器必须拉最新版，
+        # 否则旧缓存的 index.html/app.js 会与新后端接口错位（本机单用户场景无性能顾虑）
+        self.send_header('Cache-Control', 'no-cache')
+        # 禁止 MIME 嗅探：否则上传的 .html 素材被当成 text/html 在同源下执行（存储型 XSS）
+        self.send_header('X-Content-Type-Options', 'nosniff')
         if extra:
             for k, v in extra.items():
                 self.send_header(k, v)
         self.end_headers()
         self.wfile.write(content)
+
+    def _send_file(self, full, ctype, attachment=False):
+        """流式发送文件：不整份读进内存，句柄随 with 关闭。
+
+        旧实现 `open(full,'rb').read()` 有两个后果：2GB 成片预览时内存峰值等于文件体积
+        （多标签页并发即 OOM）；Windows 下句柄不释放会导致该文件无法被删除/覆盖。"""
+        size = os.path.getsize(full)
+        self.send_response(200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(size))
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        if attachment:
+            self.send_header('Content-Disposition',
+                             _content_disposition(os.path.basename(full)))
+        self.end_headers()
+        with open(full, 'rb') as f:
+            shutil.copyfileobj(f, self.wfile, 1 << 20)
 
     def _read_json(self, length, max_len=300 * 1024 * 1024):
         """按 Content-Length 分块读取并解析 JSON 请求体。
@@ -6143,41 +7919,49 @@ class Handler(BaseHTTPRequestHandler):
     def _spawn(self, fn, req):
         """登记一个后台任务并启动线程，返回 runid 供前端轮询。
         每个任务拥有独立的 run_dir（OUTDIR/runid-时间戳），产物互不干扰；并把 runid 绑定到
-        任务线程的 TLS，使 ffmpeg_run 能注册进程并响应「取消」。"""
-        RUNSEQ[0] += 1
-        runid = 'run-%d' % RUNSEQ[0]
-        # 目录名带时间戳：服务重启后 RUNSEQ 归零会复用 run-N 名字，
-        # 否则新任务会写进旧目录覆盖成片，历史记录（⑨记录）也随之指向错误文件
-        run_dir = os.path.join(OUTDIR, '%s-%s' % (runid, time.strftime('%Y%m%d-%H%M%S')))
-        os.makedirs(run_dir, exist_ok=True)
-        prog = {'phase': '排队', 'pct': 0, 'done': False, 'runid': runid, 'run_dir': run_dir}
-        PROGRESS[runid] = prog
-        # 防内存泄漏：PROGRESS 只增不减（diag/解说稿可能不小），长驻进程只保留最近 100 条
-        if len(PROGRESS) > 100:
-            for k in list(PROGRESS.keys())[:-100]:
-                if k not in RUN_PROCS:
-                    PROGRESS.pop(k, None)
+        任务线程的 TLS，使 ffmpeg_run 能注册进程并响应「取消」。
+        并发上限见 _TASK_SEM：拿不到名额直接拒绝（do_POST 会把这句原样显示给用户）。"""
+        # 非阻塞取名额：宁可明确拒绝，也不让用户在看不到进度的队列里干等
+        if not _TASK_SEM.acquire(blocking=False):
+            raise RuntimeError('已经有 %d 个任务在跑了（同时最多 %d 个），'
+                               '请等其中一个做完再提交'
+                               % (_MAX_CONCURRENT_TASKS, _MAX_CONCURRENT_TASKS))
+        try:
+            runid = 'run-%d' % next(_RUN_CTR)
+            # 目录名带时间戳：服务重启后 runid 从 1 重新计数会复用 run-N 名字，
+            # 否则新任务会写进旧目录覆盖成片，历史记录（⑨记录）也随之指向错误文件
+            run_dir = os.path.join(OUTDIR, '%s-%s' % (runid, time.strftime('%Y%m%d-%H%M%S')))
+            os.makedirs(run_dir, exist_ok=True)
+            prog = {'phase': '排队', 'pct': 0, 'done': False, 'runid': runid, 'run_dir': run_dir}
+            PROGRESS[runid] = prog
+            _evict_finished_progress(keep=100)
 
-        def _runner():
-            _TLS.runid = runid
-            try:
-                fn(req, prog)
-            except AbortError:
-                prog['done'] = True
-                prog['aborted'] = True
-                prog['error'] = '已取消（用户中断）'
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                prog['done'] = True
-                prog['error'] = str(e)
-                if prog.get('run_dir'):
-                    try:
-                        prog['partial'] = collect_partial(prog['run_dir'])
-                    except Exception:
-                        pass
+            def _runner():
+                _TLS.runid = runid
+                # 清掉上一次任务锁定的配音引擎：每个任务重新选，避免沿用旧音色
+                try:
+                    del _TLS.tts_engine
+                except Exception:
+                    pass
+                try:
+                    fn(req, prog)
+                    # 成功收尾才署名：失败的视频不会流出去，也就没有署名义务
+                    # （各 dispatch_* 自己吞异常，失败态只能靠 prog['error'] 判断）
+                    if not prog.get('error'):
+                        _finish_task_credits(req, prog)
+                except AbortError:
+                    prog['done'] = True
+                    prog['aborted'] = True
+                    prog['error'] = '已取消（用户中断）'
+                except Exception as e:
+                    fail_task(prog, e)
+                finally:
+                    _TASK_SEM.release()   # 无论成功/失败/取消都必须归还名额
 
-        _threading.Thread(target=_runner, daemon=True).start()
+            _threading.Thread(target=_runner, daemon=True).start()
+        except Exception:
+            _TASK_SEM.release()   # 建目录/登记失败时别把名额漏掉
+            raise
         return runid
 
     def do_GET(self):
@@ -6185,7 +7969,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/', '/index.html'):
             idx = os.path.join(STATIC_DIR, 'index.html')
             if os.path.exists(idx):
-                self._send(200, open(idx, 'rb').read(), 'text/html; charset=utf-8')
+                self._send_file(idx, 'text/html; charset=utf-8')
             else:
                 self._send(500, '前端文件缺失：请确保 static/ 目录存在'.encode('utf-8'), 'text/html; charset=utf-8')
             return
@@ -6194,26 +7978,29 @@ class Handler(BaseHTTPRequestHandler):
             full = os.path.join(STATIC_DIR, os.path.basename(name))
             if os.path.isfile(full):
                 ext = os.path.splitext(full)[1].lower()
-                self._send(200, open(full, 'rb').read(), MIME.get(ext, 'application/octet-stream'))
+                self._send_file(full, MIME.get(ext, 'application/octet-stream'))
                 return
             self._send(404, b'not found')
             return
         if path.startswith('/media/'):
             name = path[len('/media/'):].split('?')[0]
-            # first look in run output dir, then the folder containing built-in assets
-            for base in (OUTDIR, HERE):
-                full = _safe_join(base, name)
-                if full:
-                    ext = os.path.splitext(full)[1].lower()
-                    self._send(200, open(full, 'rb').read(), MIME.get(ext, 'application/octet-stream'))
-                    return
+            # 只服务 OUTDIR（成片/中间产物）。
+            # 【安全修复】旧实现会回退到项目根 HERE —— /media/ai_config.json 可无鉴权
+            # 读出明文 API Key，/media/webui_server.py 与 /media/.git/config 同样可读。
+            # 实测确认可泄露，且 HOST=0.0.0.0（Docker）时局域网内任何人可拿。
+            # 内置图片（img1~4.png）由后端按本地路径直接交给 ffmpeg，不经 /media/，删除回退无影响。
+            full = _safe_join(OUTDIR, name)
+            if full:
+                ext = os.path.splitext(full)[1].lower()
+                self._send_file(full, MIME.get(ext, 'application/octet-stream'))
+                return
             self._send(404, b'not found')
             return
         if path.startswith('/music_lib/'):
             name = path[len('/music_lib/'):].split('?')[0]
             full = _safe_join(MUSIC_DIR, name)
             if full:
-                self._send(200, open(full, 'rb').read(), MIME.get('.mp3', 'audio/mpeg'))
+                self._send_file(full, MIME.get('.mp3', 'audio/mpeg'))
                 return
             self._send(404, b'not found')
             return
@@ -6244,8 +8031,11 @@ class Handler(BaseHTTPRequestHandler):
             name = unquote(path[len('/material_lib/'):].split('?')[0])
             full = _safe_join(MATERIAL_DIR, name)
             if full:
-                ext = os.path.splitext(full)[1].lower()
-                self._send(200, open(full, 'rb').read(), MIME.get(ext, 'application/octet-stream'))
+                # 【安全修复】素材库接受任意扩展名上传，若按 MIME 返回 text/html，
+                # 上传的 .html 会在 http://localhost:8765 同源下执行 —— 后端无鉴权，
+                # 脚本可直接调 /api/ai/config、/api/history/clear（存储型 XSS）。
+                # 统一以附件下载方式返回，浏览器不会把它当页面渲染。
+                self._send_file(full, 'application/octet-stream', attachment=True)
                 return
             self._send(404, b'not found')
             return
@@ -6271,7 +8061,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(PROGRESS[runid]).encode('utf-8'), 'application/json')
             return
         if path == '/api/history':
-            self._send(200, json.dumps({'ok': True, 'history': load_history(50)}).encode('utf-8'),
+            items = load_history(50)
+            # 逐条体检：成片文件已丢失的条目标记 missing（前端降级展示，不给下载/封面入口）；
+            # 完好的条目附带 cover.jpg 封面（⑨记录里直接可预览/重生成）
+            for h in items:
+                rel = (h.get('file') or '').replace(chr(92), '/')
+                if not rel:
+                    h['missing'] = True
+                    continue
+                fp = os.path.join(OUTDIR, os.path.dirname(rel.replace('/', os.sep)), os.path.basename(rel))
+                if not os.path.isfile(fp):
+                    h['missing'] = True
+                    continue
+                cover = os.path.join(os.path.dirname(fp), 'cover.jpg')
+                if os.path.isfile(cover):
+                    h['cover'] = os.path.dirname(rel) + '/cover.jpg'
+            self._send(200, json.dumps({'ok': True, 'history': items}).encode('utf-8'),
                        'application/json')
             return
         if path == '/api/ai/config':
@@ -6287,6 +8092,7 @@ class Handler(BaseHTTPRequestHandler):
                            'local': mask(cfg.get('local')),
                            'whisper': dict(cfg.get('whisper') or {}),
                            'vlm': mask(cfg.get('vlm')),
+                           'tts_local': dict(cfg.get('tts_local') or {}),
                            'mirror': dict(cfg.get('mirror') or {}),
                            'video': dict(cfg.get('video') or {})},
                 'vision_available': _vision_available(),
@@ -6300,6 +8106,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/ai_status':
             self._send(200, json.dumps(ai_status()).encode('utf-8'), 'application/json')
             return
+        if path == '/api/hardware':
+            self._send(200, json.dumps(detect_hardware()).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/tts/voices':
+            # 本地配音音色清单 + 各引擎就绪状态（供 AI 配置页渲染下拉与安装按钮）
+            self._send(200, json.dumps({
+                'ok': True,
+                'voices': EDGE_TTS_VOICES,
+                'edge_installed': edge_tts_available(),
+                'edge_dead': edge_tts_dead_reason(),
+                'sherpa_installed': sherpa_tts_available(),
+                'sherpa_model_ready': sherpa_tts_ready(),
+                'sherpa_model': sherpa_model_key(),
+                'sherpa_models': [{'key': k, 'label': m['label'], 'ready': _sherpa_ready(k)}
+                                  for k, m in SHERPA_TTS_MODELS.items()],
+                'cfg': tts_local_cfg(),
+                'label': local_tts_label(),
+                'setup': dict(TTS_SETUP),
+            }).encode('utf-8'), 'application/json')
+            return
         if path == '/api/local/test':
             ok, msg = local_llm_ping()
             self._send(200, json.dumps({'ok': True, 'test_ok': ok, 'message': msg}).encode('utf-8'),
@@ -6309,6 +8135,7 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = (local_llm_ping() if local_llm_enabled() else (False, '本地模型未启用'))
             self._send(200, json.dumps({'ok': True, 'enabled': local_llm_enabled(), 'ready': bool(ok),
                                         'message': msg, 'model': local_llm_cfg()['model'],
+                                        'installed': _installed_local_models(),
                                         'pulling': LOCAL_PULL['running'], 'pull_model': LOCAL_PULL['model'],
                                         'pull_ok': LOCAL_PULL['ok'], 'pull_msg': LOCAL_PULL['msg'],
                                         'pull_pct': LOCAL_PULL.get('pct', 0)}).encode('utf-8'),
@@ -6343,6 +8170,7 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
             self._send(200, json.dumps({'ok': True, 'enabled': vlm_enabled(), 'ready': bool(ok),
                                         'message': msg, 'model': vlm_cfg()['model'],
+                                        'installed': _installed_local_models(),
                                         'pulling': VLM_PULL['running'], 'pull_model': VLM_PULL['model'],
                                         'pull_ok': VLM_PULL['ok'], 'pull_msg': VLM_PULL['msg'],
                                         'pull_pct': VLM_PULL.get('pct', 0)}).encode('utf-8'),
@@ -6420,6 +8248,26 @@ class Handler(BaseHTTPRequestHandler):
                     if 'enabled' in inc:
                         cur['enabled'] = bool(inc['enabled'])
                     cfg['vlm'] = cur
+                if isinstance(data.get('tts_local'), dict):
+                    # 本地免费配音：engine(auto|edge|sherpa|sapi) + voice + rate
+                    inc = data['tts_local']
+                    cur = dict(cfg.get('tts_local') or {})
+                    eng = str(inc.get('engine') or '').strip().lower()
+                    if eng in ('auto', 'edge', 'sherpa', 'sapi'):
+                        cur['engine'] = eng
+                    if inc.get('voice'):
+                        cur['voice'] = str(inc['voice']).strip()
+                    mk = str(inc.get('sherpa_model') or '').strip()
+                    if mk in SHERPA_TTS_MODELS:
+                        cur['sherpa_model'] = mk
+                    rate = str(inc.get('rate') or '').strip()
+                    if rate:
+                        if not rate.startswith(('+', '-')):
+                            rate = '+' + rate.replace('%', '')
+                        if not rate.endswith('%'):
+                            rate += '%'
+                        cur['rate'] = rate
+                    cfg['tts_local'] = cur
                 if isinstance(data.get('video'), dict):
                     # 编码策略：auto(默认·GPU可用则用) / cpu / gpu
                     inc = data['video']
@@ -6473,6 +8321,45 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({'ok': True, 'result': scan_ollama_mirrors()}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/tts/install':
+            # 安装本地配音引擎（pip）：edge-tts（免 Key·需联网）/ sherpa-onnx（离线推理运行时）
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(length) if length else b'{}'
+                data = json.loads(raw.decode('utf-8') or '{}')
+                ok, msg = tts_install_async(str(data.get('pkg') or 'edge-tts'))
+                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                           'application/json')
+            return
+        if path == '/api/tts/model/download':
+            # 下载离线中文配音模型到 models/tts/<name>/（可选 model 指定下载哪一个）
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(length) if length else b'{}'
+                data = json.loads(raw.decode('utf-8') or '{}')
+                ok, msg = tts_model_download_async(data.get('model'))
+                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                           'application/json')
+            return
+        if path == '/api/tts/test':
+            # 试听：用当前配置朗读一句，返回可播放的音频（相对 /media 的路径）
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(length) if length else b'{}'
+                data = json.loads(raw.decode('utf-8') or '{}')
+                ok, msg, engine, rel = tts_test_speak(str(data.get('text') or '这是一段中文配音试听。'))
+                self._send(200, json.dumps({'ok': ok, 'message': msg, 'engine': engine,
+                                            'file': rel}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                           'application/json')
             return
         if path == '/api/cancel':
             # 取消任务：置 abort 标记（ffmpeg_run 每 0.3s 轮询到后立即终止并抛 AbortError）+
@@ -6667,14 +8554,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
             return
         if path == '/api/upload/chunk':
-            # 单分片：base64 解码后 ≤8MB，写 part 文件（乱序到达安全）
+            # 单分片：支持 FormData 二进制直传（新，省 base64 1.37x 膨胀+CPU 编码）和 JSON base64（旧兼容）
             try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=16 * 1024 * 1024)
-                if data is None:
-                    raise RuntimeError('分片过大或读取失败')
-                ok, err = _upload_chunk_write(data.get('upload_id'), data.get('idx'),
-                                              base64.b64decode(data.get('data', '') or ''))
+                ctype = self.headers.get('Content-Type', '')
+                if 'multipart/form-data' in ctype:
+                    boundary = ctype.split('boundary=')[-1].strip().encode()
+                    length = int(self.headers.get('Content-Length', 0))
+                    raw = self.rfile.read(length) if length else b''
+                    fields = _parse_multipart(raw, boundary)
+                    ok, err = _upload_chunk_write(fields.get('upload_id'), fields.get('idx'),
+                                                  fields.get('chunk') or b'')
+                else:
+                    length = int(self.headers.get('Content-Length', 0))
+                    data = self._read_json(length, max_len=16 * 1024 * 1024)
+                    if data is None:
+                        raise RuntimeError('分片过大或读取失败')
+                    ok, err = _upload_chunk_write(data.get('upload_id'), data.get('idx'),
+                                                  base64.b64decode(data.get('data', '') or ''))
                 self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
@@ -6856,6 +8752,72 @@ def start_server(port=8765, open_browser=True):
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        # 退出前收掉所有仍在跑的 ffmpeg：否则 Ctrl+C / 关掉命令行窗口后，
+        # 子进程变孤儿继续占满 CPU 并往已失效的 run_dir 写文件。
+        _kill_all_child_processes()
+
+
+def _content_disposition(filename, disposition='attachment'):
+    """构造 Content-Disposition 头（RFC 6266）。
+
+    HTTP 头按标准只能带 latin-1 字符，直接把中文文件名拼进去会抛
+    `UnicodeEncodeError: 'latin-1' codec can't encode characters` ——
+    异常发生在 send_header 里，整个响应变成 500，前端请求一直挂着。
+    这里给 ASCII 兜底名 + filename* 传 UTF-8（浏览器按 RFC 5987 取后者）。
+    顺带剔除引号/换行，避免文件名把头部结构搞坏。"""
+    import urllib.parse as _up
+    safe_ascii = ''.join(ch if ord(ch) < 128 else '_' for ch in (filename or ''))
+    for bad in ('\\', '"', '\r', '\n', '\t'):
+        safe_ascii = safe_ascii.replace(bad, '_')
+    safe_ascii = safe_ascii.strip() or 'download'
+    utf8_part = _up.quote(filename or '', safe='')
+    return "%s; filename=\"%s\"; filename*=UTF-8''%s" % (disposition, safe_ascii, utf8_part)
+
+
+def _evict_finished_progress(keep=100):
+    """淘汰 PROGRESS 里的旧条目，防止长驻进程内存无限增长。
+
+    只能淘汰**已结束**的任务。旧条件只看 `k not in RUN_PROCS`，而 RUN_PROCS 仅在
+    ffmpeg 真正执行的窗口内有条目——正在跑 Whisper / LLM / 配音的任务会被误淘汰：
+    前端 /api/progress 查不到（一直轮询到超时才提示），取消按钮也失效
+    （/api/cancel 判定「未知 run」），任务白跑完还占着并发名额。"""
+    if len(PROGRESS) <= keep:
+        return
+    with _PROC_LOCK:
+        active = set(RUN_PROCS.keys())
+    for k in list(PROGRESS.keys())[:-keep]:
+        if k in active:
+            continue
+        if not PROGRESS[k].get('done'):
+            continue          # 仍在运行，绝不淘汰
+        PROGRESS.pop(k, None)
+
+
+def _kill_all_child_processes():
+    """终止 RUN_PROCS 中登记的全部子进程（进程退出与 /api/cancel 复用同一逻辑）。"""
+    try:
+        with _PROC_LOCK:
+            procs = list(RUN_PROCS.values())
+            RUN_PROCS.clear()
+    except Exception:
+        procs = []
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    for p in procs:
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+
+atexit.register(_kill_all_child_processes)
 
 
 def webbrowser_open(url):

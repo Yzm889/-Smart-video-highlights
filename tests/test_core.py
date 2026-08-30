@@ -245,9 +245,13 @@ def test_narrate_analysis_runs_local_asr_in_economy():
     """关键回归：省流模式不得关掉本地 ASR（旧实现 asr=[] 导致套话解说）。
     ASR 调用已抽到公共层 _narrate_analysis（/api/plan 分析与直接生成共用），pin 在那里；
     narrate_video 自身不得再出现条件化禁用 ASR 的写法。"""
+    import re
     import webui_server as S, inspect
     src = inspect.getsource(S._narrate_analysis)
-    assert 'asr = asr_segments(video_path)' in src, '公共分析层必须无条件调用本地 ASR'
+    # 允许带 progress/pct_range 等可选参数，但必须是无条件调用（不得写成 `if ... else []`）
+    m = re.search(r'^\s*asr = asr_segments\(video_path.*?\)\s*$', src, re.M)
+    assert m, '公共分析层必须无条件调用本地 ASR'
+    assert ' if ' not in m.group(0), '不得条件化禁用 ASR：%s' % m.group(0)
     src_nv = inspect.getsource(S.narrate_video)
     assert 'asr_segments(video_path) if' not in src_nv, 'narrate_video 不得条件化禁用 ASR'
 
@@ -749,12 +753,14 @@ def test_render_plan_narrate_edits_captions(monkeypatch, tmp_path):
     os.makedirs(run_dir, exist_ok=True)
     captured = {}
 
-    def fake_render(v, segs, narr, p, rd, prog=None, music_path=None, mode=None):
+    def fake_render(v, segs, narr, p, rd, prog=None, music_path=None, mode=None, auto_cut=True):
         captured['segs'] = list(segs)
         captured['narr'] = list(narr)
+        captured['auto_cut'] = auto_cut
         fp = os.path.join(rd, 'final.mp4')
         open(fp, 'wb').write(b'x')
-        return fp, 1
+        # 返回 (final, voice_clips, cut_info)：cut_info 进 diag，前端据此显示「原片→成片」时长
+        return fp, 1, {'cut_sec': 5.0, 'src_dur': 10.0, 'out_dur': 5.0, 'segs': len(segs)}
 
     monkeypatch.setattr(S, '_render_narrate', fake_render)
     S.PLANS['run-9'] = {'type': 'narrate', 'video': 'v.mp4', 'segs': [(0, 5), (5, 10)],
@@ -767,6 +773,8 @@ def test_render_plan_narrate_edits_captions(monkeypatch, tmp_path):
     S._render_plan_job({'runid': 'run-9', 'edits': edits}, prog)
     assert captured['segs'] == [(0.0, 5.0)], '被取消的段应移除：%s' % captured['segs']
     assert captured['narr'] == ['改成新词A'], '解说词应为用户编辑后的：%s' % captured['narr']
+    assert captured['auto_cut'] is True, '默认应开启真剪辑，否则取消勾选等于没剪'
+    assert (prog['diag']['cut'] or {}).get('cut_sec') == 5.0, '剪辑信息应进入 diag'
     assert prog.get('done') is True
     S.PLANS.pop('run-9', None)
 
@@ -1037,9 +1045,14 @@ def test_add_history_concurrent_writes_no_loss(monkeypatch, tmp_path):
 
 
 def test_progress_and_plans_pruned():
-    """源码 pin：_spawn 必须修剪 PROGRESS（只增不减会泄漏），方案表必须限量。"""
+    """源码 pin：_spawn 必须修剪 PROGRESS（只增不减会泄漏），方案表必须限量。
+
+    淘汰逻辑已抽成 _evict_finished_progress（便于单独回归「不得淘汰运行中任务」），
+    故这里改为检查 _spawn 调用了它、且它内部确实做 pop。"""
     import webui_server as S, inspect
-    assert 'PROGRESS.pop' in inspect.getsource(S.Handler._spawn)
+    spawn_src = inspect.getsource(S.Handler._spawn)
+    assert '_evict_finished_progress' in spawn_src, '新任务提交时必须触发淘汰'
+    assert 'PROGRESS.pop' in inspect.getsource(S._evict_finished_progress)
     assert 'PLANS.pop' in inspect.getsource(S._analyze_plan_job)
 
 
@@ -1281,8 +1294,69 @@ def test_cover_score_prefers_detailed_frame():
     assert S._cover_score(noise) > S._cover_score(black), '细节帧应优于全黑帧'
 
 
+def _cover_fake_ff(n_out=4):
+    """构造 ffmpeg_run 替身：输出路径含 %02d 时按 n_out 张批量落盘（真实 ffmpeg 行为）。"""
+    from PIL import Image
+
+    def fake_ff(args, input_data=None):
+        out = args[args.index('-an') + 1]   # 两条命令的目标路径都紧跟在 -an 之后
+        img = Image.new('RGB', (320, 180), (120, 60, 30))
+        if '%02d' in out:
+            for k in range(n_out):
+                img.save(out % k, quality=85)
+        else:
+            img.save(out, quality=85)
+        return 0, b'', b''
+
+    return fake_ff
+
+
 def test_cover_candidates_and_render(monkeypatch, tmp_path):
     """候选抽帧（mock ffmpeg 写真实小图）+ 按设置渲染出封面文件。"""
+    import webui_server as S, os
+    video = tmp_path / 'v.mp4'
+    video.write_bytes(b'v')
+    run_dir = str(tmp_path / 'run')
+    os.makedirs(run_dir)
+    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 40.0)
+
+    monkeypatch.setattr(S, 'ffmpeg_run', _cover_fake_ff(4))
+    cands = S._cover_candidates(str(video), run_dir, n=4)
+    assert len(cands) == 4 and all(0 < c['ts'] < 40 for c in cands)
+    assert [c['ts'] for c in cands] == [5.0, 15.0, 25.0, 35.0], '候选时刻仍按 vdur*(k+0.5)/n 计算'
+    assert all(os.path.isfile(os.path.join(run_dir, 'cover_cand', os.path.basename(c['thumb']))) for c in cands)
+    cover = os.path.join(run_dir, 'cover.jpg')
+    S._cover_render(str(video), cands[0]['ts'], '测试标题很长很长很长需要自动换行的超长内容', '副标题', 1, cover)
+    assert os.path.isfile(cover) and os.path.getsize(cover) > 1000, '应产出封面图'
+    S._cover_render(str(video), cands[1]['ts'], '居中标题', '', 0, cover)
+    assert os.path.getsize(cover) > 1000
+
+
+def test_cover_candidates_batches_into_one_ffmpeg_call(monkeypatch, tmp_path):
+    """批量抽帧：n 个候选只起 1 次 ffmpeg（原实现是 n 次进程，n-1 次纯属重复 seek+解码）。"""
+    import webui_server as S, os
+    video = tmp_path / 'v.mp4'
+    video.write_bytes(b'v')
+    run_dir = str(tmp_path / 'run')
+    os.makedirs(run_dir)
+    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 40.0)
+    inner = _cover_fake_ff(4)
+    calls = []
+
+    def counting_ff(args, input_data=None):
+        calls.append(list(args))
+        return inner(args, input_data)
+
+    monkeypatch.setattr(S, 'ffmpeg_run', counting_ff)
+    cands = S._cover_candidates(str(video), run_dir, n=4)
+    assert len(cands) == 4, '候选数仍须为 n：%r' % (cands,)
+    assert len(calls) == 1, '批量模式下 ffmpeg 只应被调用 1 次，实际 %d 次' % len(calls)
+    out_tpl = calls[0][calls[0].index('-an') + 1]
+    assert '%02d' in out_tpl, '输出应是 cand_%02d.jpg 模板，实际 %s' % out_tpl
+
+
+def test_cover_candidates_falls_back_when_batch_fails(monkeypatch, tmp_path):
+    """批量不可用（老 ffmpeg 不认 -fps_mode / start_time）→ 回退逐帧，候选数仍为 n。"""
     import webui_server as S, os
     from PIL import Image
     video = tmp_path / 'v.mp4'
@@ -1292,19 +1366,16 @@ def test_cover_candidates_and_render(monkeypatch, tmp_path):
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 40.0)
 
     def fake_ff(args, input_data=None):
-        out = args[args.index('-an') + 1]   # 两条命令的目标路径都紧跟在 -an 之后
+        out = args[args.index('-an') + 1]
+        if '%02d' in out:
+            return 1, b'', b'Unrecognized option'   # 只让批量模式失败
         Image.new('RGB', (320, 180), (120, 60, 30)).save(out, quality=85)
         return 0, b'', b''
 
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ff)
     cands = S._cover_candidates(str(video), run_dir, n=4)
-    assert len(cands) == 4 and all(0 < c['ts'] < 40 for c in cands)
-    assert all(os.path.isfile(os.path.join(run_dir, 'cover_cand', os.path.basename(c['thumb']))) for c in cands)
-    cover = os.path.join(run_dir, 'cover.jpg')
-    S._cover_render(str(video), cands[0]['ts'], '测试标题很长很长很长需要自动换行的超长内容', '副标题', 1, cover)
-    assert os.path.isfile(cover) and os.path.getsize(cover) > 1000, '应产出封面图'
-    S._cover_render(str(video), cands[1]['ts'], '居中标题', '', 0, cover)
-    assert os.path.getsize(cover) > 1000
+    assert len(cands) == 4, '批量失败必须回退到逐帧并抽满 n 个：%r' % (cands,)
+    assert [c['ts'] for c in cands] == [5.0, 15.0, 25.0, 35.0]
 
 
 def test_cover_endpoint_registered():
@@ -1875,3 +1946,224 @@ def test_stamp_title_skips_text_rather_than_tofu(monkeypatch):
     img = Image.new('RGB', (320, 180), (10, 20, 30))
     out = S.stamp_title(img, '花开似锦')
     assert out is img and out.size == (320, 180), '应原样返回，不绘制不可读的方框'
+
+
+# ---------------------------------------------------------------------------
+# 并发限流 / 错误上下文 / CC.BY 署名
+# ---------------------------------------------------------------------------
+def test_task_concurrency_limit(monkeypatch, tmp_path):
+    """并发上限：占满后再提交直接拒绝（不做无限排队）；上限可用 MAX_CONCURRENT_TASKS 调。"""
+    import webui_server as S, threading, time
+    monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
+    monkeypatch.setattr(S, '_TASK_SEM', threading.Semaphore(1))   # 上限调成 1 便于确定性验证
+    monkeypatch.setenv('MAX_CONCURRENT_TASKS', '5')
+    assert S._max_concurrent_tasks() == 5, '上限应可通过环境变量调整'
+    monkeypatch.setenv('MAX_CONCURRENT_TASKS', 'not-a-number')
+    assert S._max_concurrent_tasks() == 2, '非法值应回退默认'
+
+    gate = threading.Event()
+    h = S.Handler.__new__(S.Handler)      # 只用到 _spawn，不需要真的 HTTP 连接
+    rid1 = h._spawn(lambda req, prog: gate.wait(5), {})
+    assert rid1 in S.PROGRESS
+    try:
+        h._spawn(lambda req, prog: None, {})
+        assert False, '超过并发上限应直接拒绝，不能无限排队'
+    except RuntimeError as e:
+        assert '最多' in str(e), '拒绝文案要让用户看懂：%s' % e
+    gate.set()
+    time.sleep(0.3)                        # 等第一个任务线程结束并归还名额
+    rid2 = h._spawn(lambda req, prog: None, {})
+    assert rid1 != rid2, 'runid 不得重复（否则两个任务会互相覆盖进度）'
+    time.sleep(0.3)
+    assert S._TASK_SEM.acquire(blocking=False), '任务结束后名额必须归还'
+
+
+def test_fail_task_records_error_context(tmp_path):
+    """失败任务要带上诊断信息：error_stage（阶段快照）+ error_detail（类型+消息+堆栈）。"""
+    import webui_server as S
+    run_dir = str(tmp_path / 'run')
+    os.makedirs(run_dir)
+    prog = {'phase': '烧录字幕', 'run_dir': run_dir}
+
+    def boom():
+        raise RuntimeError('ffmpeg 挂了')
+
+    try:
+        boom()
+    except Exception as e:
+        S.fail_task(prog, e)
+    assert prog['error'] == 'ffmpeg 挂了', 'error 语义不变（前端主展示）'
+    assert prog['error_stage'] == '烧录字幕', '阶段必须是出错那一刻的快照'
+    assert 'RuntimeError' in prog['error_detail'] and 'ffmpeg 挂了' in prog['error_detail']
+    assert 'boom' in prog['error_detail'], 'detail 应含堆栈帧：%s' % prog['error_detail']
+    assert len(prog['error_detail']) <= 2000
+    assert prog['done'] is True
+
+
+def test_task_credits_written_for_catalog_music(tmp_path):
+    """用了内置曲库音乐 → 生成 credits.txt 且 prog['credits'] 含 CC.BY 的 TASL 四要素。"""
+    import webui_server as S
+    run_dir = str(tmp_path / 'run')
+    os.makedirs(run_dir)
+    prog = {'run_dir': run_dir}
+    # 指令解析层把音乐下传在 params.music，这里两种挂载方式都要认
+    req = {'music': {'source': 'catalog', 'catalogId': 'rising-game'},
+           'params': {'music': {'source': 'catalog', 'catalogId': 'carefree'}}}
+    S._finish_task_credits(req, prog)
+    fp = os.path.join(run_dir, 'credits.txt')
+    assert os.path.isfile(fp), '应落 credits.txt'
+    for kw in ('Kevin MacLeod', 'CC BY', 'Rising Game', 'Carefree', 'incompetech.com',
+               'creativecommons.org'):
+        assert kw in prog['credits'], '署名缺少 %s：%s' % (kw, prog['credits'])
+    assert '生成时间' in open(fp, encoding='utf-8').read(), '文件应带生成时间'
+
+
+def test_task_credits_absent_without_catalog_music(tmp_path):
+    """自带音乐 / 无音乐 → 不落文件、prog['credits'] 为空串（不塞占位文案）。"""
+    import webui_server as S
+    run_dir = str(tmp_path / 'run')
+    os.makedirs(run_dir)
+    for req in ({}, {'music': None}, {'params': {}},
+                {'music': {'source': 'upload', 'name': '我自己的歌.mp3'}},
+                {'music': {'source': 'catalog', 'catalogId': 'unknown-track'}}):
+        prog = {'run_dir': run_dir}
+        S._finish_task_credits(req, prog)
+        assert prog['credits'] == '', '不该署名却生成了内容：%r %r' % (req, prog['credits'])
+        assert not os.path.exists(os.path.join(run_dir, 'credits.txt'))
+
+# ---------------------------------------------------------------------------
+# 模型下载防重入：后台有模型在下载时，再次拉取必须被拒并警告
+# ---------------------------------------------------------------------------
+def test_local_pull_rejects_while_downloading(monkeypatch):
+    """本地模型下载中：同槽再点被拒；另一槽（VLM）在下载也跨槽拦截并提示模型名。"""
+    import webui_server as S
+    monkeypatch.setattr(S, 'LOCAL_PULL', {'model': 'qwen3:8b', 'running': True, 'pct': 30, 'msg': '', 'ok': None})
+    ok, msg = S.local_pull_async('qwen3:14b-q4_K_M')
+    assert not ok and 'qwen3:8b' in msg and '后台下载' in msg, '同槽重复拉取必须被拒并报出模型名：%s' % msg
+    monkeypatch.setattr(S, 'LOCAL_PULL', {'model': 'qwen3-vl:8b', 'running': True, 'pct': 30, 'msg': '', 'ok': None})
+    ok, msg = S.local_pull_async('qwen3:14b-q4_K_M')
+    assert not ok and 'qwen3-vl:8b' in msg, '跨槽（VLM 下载中）也要拦截并提示模型名：%s' % msg
+
+
+def test_vlm_pull_rejects_while_local_downloading(monkeypatch):
+    """本地模型下载中：VLM 拉取必须被拦并警告。"""
+    import webui_server as S
+    monkeypatch.setattr(S, 'LOCAL_PULL', {'model': 'qwen3:14b', 'running': True, 'pct': 10, 'msg': '', 'ok': None})
+    monkeypatch.setattr(S, 'VLM_PULL', {'model': None, 'running': False, 'ok': None, 'msg': '', 'pct': 0})
+    ok, msg = S.vlm_pull_async('qwen3-vl:8b')
+    assert not ok and 'qwen3:14b' in msg, 'VLM 拉取应被跨槽拦截：%s' % msg
+
+
+def test_pull_allowed_when_idle(monkeypatch):
+    """空闲时应允许发起拉取（且线程以 daemon 方式启动，不在测试中真下载）。"""
+    import webui_server as S, threading
+    monkeypatch.setattr(S, 'LOCAL_PULL', {'model': None, 'running': False, 'ok': True, 'pct': 100, 'msg': '', 'model': 'x'})
+    monkeypatch.setattr(S, 'VLM_PULL', {'model': None, 'running': False, 'ok': None, 'msg': '', 'pct': 0})
+    started = []
+    real_thread = threading.Thread
+    class FakeThread(real_thread):
+        def start(self):
+            started.append(True)   # 不真正启动下载线程
+    monkeypatch.setattr(S.threading, 'Thread', FakeThread)
+    monkeypatch.setattr(S, 'local_model_exists', lambda m: True)   # 已存在 → 短路不下载
+    ok, msg = S.local_pull_async('qwen2.5:14b')
+    assert ok and '已存在' in msg
+
+# ---------------------------------------------------------------------------
+# 解说逐段画面接地：修复「解说内容与画面漂移」
+# ---------------------------------------------------------------------------
+def test_seg_visual_captions_parse(monkeypatch):
+    """逐段画面描述：VLM 按「第k段: 内容」输出后正确解析为段下标映射。"""
+    import webui_server as S
+    monkeypatch.setattr(S, 'vlm_chat_multi',
+                        lambda imgs, text, system=None, timeout=240: chr(10).join(['第1段: 樱花树下', '第2段: 男子奔跑', '第3段: 城市夜景']))
+    frames = {0: 'f0.jpg', 1: 'f1.jpg', 2: 'f2.jpg'}
+    caps = S._seg_visual_captions(frames, [(0, 5, ''), (5, 10, ''), (10, 15, '')], {})
+    assert caps == {0: '樱花树下', 1: '男子奔跑', 2: '城市夜景'}
+
+
+def test_narration_prompt_includes_seg_visuals(monkeypatch):
+    """回归：写稿 prompt 必须包含每段「画面：」描述与不漂移规则（解说贴合画面的地基）。"""
+    import webui_server as S
+    prompts = []
+
+    def fake_chat(prompt, system=None, timeout=180):
+        prompts.append(prompt)
+        return chr(10).join(['第一句', '第二句'])
+
+    monkeypatch.setattr(S, 'local_llm_chat', fake_chat)
+    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
+    monkeypatch.setattr(S, '_local_model_available', lambda: True)
+    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params: {0: '画面A', 1: '画面B'})
+    monkeypatch.setattr(S, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
+    monkeypatch.setattr(S, '_beat_plan', lambda per_seg, plot, params: {
+        'summary': '', 'beats': [{'i': i + 1, 'importance': 'advance', 'role': ''} for i in range(2)]})
+    lines, used = S.local_vlm_narrate([(0.0, 5.0, ''), (5.0, 10.0, '')], {0: 'f0.jpg', 1: 'f1.jpg'}, {})
+    assert used is True
+    assert any('画面：画面A' in p and '画面：画面B' in p for p in prompts), '写稿 prompt 应包含逐段画面'
+    assert any('画面为准，顺序不漂移' in p for p in prompts), '应有防漂移规则'
+    assert lines == ['第一句', '第二句']
+
+# ---------------------------------------------------------------------------
+# 题材模板系统：构建器 / 自动判型 / prompt 注入
+# ---------------------------------------------------------------------------
+def test_genre_template_block():
+    """模板块：按题材生成含钩子/结构/升华的规则块；未知/自动返回空。"""
+    import webui_server as S
+    b = S._genre_template_block('suspense')
+    assert '题材模板·悬疑/烧脑/反转' in b and '结果前置' in b
+    assert S._genre_template_block('auto') == ''
+    assert S._genre_template_block('unknown') == ''
+    assert len(S.GENRE_TEMPLATES) == 6, '六套题材模板'
+
+
+def test_detect_genre(monkeypatch):
+    """自动判型：LLM 回答类型名 → 映射 key；无模型/胡答 → 空串。"""
+    import webui_server as S
+    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
+    monkeypatch.setattr(S, 'local_llm_chat', lambda prompt, system=None, timeout=60: '悬疑/烧脑/反转')
+    assert S._detect_genre('一段关于密室逃生的故事') == 'suspense'
+    monkeypatch.setattr(S, 'local_llm_chat', lambda prompt, system=None, timeout=60: '我不知道')
+    assert S._detect_genre('乱七八糟的内容') == ''
+
+
+def test_narration_prompt_includes_genre(monkeypatch):
+    """回归：选择题材后，写稿 prompt 必须注入对应题材模板。"""
+    import webui_server as S
+    prompts = []
+
+    def fake_chat(prompt, system=None, timeout=180):
+        prompts.append(prompt)
+        return chr(10).join(['第一句', '第二句'])
+
+    monkeypatch.setattr(S, 'local_llm_chat', fake_chat)
+    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
+    monkeypatch.setattr(S, '_local_model_available', lambda: True)
+    monkeypatch.setattr(S, '_detect_genre', lambda plot: 'suspense')
+    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params: {0: '画面A', 1: '画面B'})
+    monkeypatch.setattr(S, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
+    monkeypatch.setattr(S, '_beat_plan', lambda per_seg, plot, params: {
+        'summary': '', 'beats': [{'i': i + 1, 'importance': 'advance', 'role': ''} for i in range(2)]})
+    lines, used = S.local_vlm_narrate([(0.0, 5.0, ''), (5.0, 10.0, '')], {0: 'f0.jpg', 1: 'f1.jpg'},
+                                      {'genre': 'suspense'})
+    assert any('题材模板·悬疑/烧脑/反转' in p and '结果前置' in p for p in prompts), '应注入悬疑模板'
+    assert lines == ['第一句', '第二句']
+
+# ---------------------------------------------------------------------------
+# 加速通道扩展：Qwen3 白名单 + VLM 快速源（含 mmproj）
+# ---------------------------------------------------------------------------
+def test_fast_sources_cover_qwen3():
+    """加速通道白名单：Qwen3 写稿模型已收录；VLM 快速源含 mmproj 四元组。"""
+    import webui_server as S
+    assert 'qwen3:14b-q4_K_M' in S.FAST_GGUF_SOURCES, '写稿加速白名单应含 qwen3:14b-q4_K_M'
+    assert 'qwen3:14b-q4_K_M' not in S.FAST_GGUF_SOURCES.get('qwen2.5:14b', ('',))[:]
+    vlm = S.VLM_FAST_GGUF_SOURCES.get('qwen3-vl:8b')
+    assert vlm and len(vlm) == 4, 'VLM 快速源应为 (url, 主文件, mmproj_url, mmproj文件名)'
+    assert all(str(x).startswith('https://hf-mirror.com/') for x in (vlm[0], vlm[2]))
+
+
+def test_strip_think_qwen3():
+    """Qwen3 思考段剥离：混合思考模型的输出不会污染解说稿。"""
+    import webui_server as S
+    raw = '<think>用户想要悬念开头，我应该先……</think>你猜错了，第三个密码不是数字。'
+    assert S._strip_think(raw) == '你猜错了，第三个密码不是数字。'
