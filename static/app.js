@@ -2101,13 +2101,8 @@ async function planBeatCut(){
   await _startPlan('beatcut', params);
 }
 async function planNarrate(){
-  if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; return; }
-  if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再分析'; return; }
-  const params={w:1280,h:720,fps:30, maxSeg: parseFloat(($('narMaxSeg')||{}).value)||25};
-  if($('narAutoCut')){ params.autoCut = $('narAutoCut').checked; }
-  if($('narTargetSec')){ params.targetSec = parseFloat($('narTargetSec').value) || 0; }
-  const plot = ($('narPlot') && $('narPlot').value.trim()) ? $('narPlot').value.trim() : '';
-  await _startPlan('narrate', params, plot);
+  // 分析并预览：走两步走流程（分析+生成配音），完成后自动跳转到⑥手动调整页面
+  await buildNarrate();
 }
 async function _startPlan(type, params, plot){
   const video = (type==='beatcut') ? BC_VIDEO : NAR_VIDEO;
