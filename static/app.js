@@ -399,6 +399,12 @@ function uninstallTtsModel(){
     }).catch(e=>{ if(st) st.textContent = '❌ 卸载请求失败：' + e.message; });
 }
 
+function resetTtsEngine(){
+  fetch('/api/tts_reset').then(r=>r.json()).then(out=>{
+    alert(out.ok ? '✅ 配音引擎已重置，edge-tts熔断已解除' : ('❌ ' + (out.error||'失败')));
+  }).catch(e=>alert('❌ '+e.message));
+}
+
 function testLocalTts(){
   const st = $('ttsLocalState'), pl = $('ttsTestPlayer');
   if(st) st.textContent = '⏳ 正在试听合成…';

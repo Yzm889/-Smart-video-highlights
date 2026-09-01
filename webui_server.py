@@ -9452,6 +9452,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/bili/status':
             self._send(200, json.dumps({'ok': True, **BILI_PULL}).encode('utf-8'), 'application/json')
             return
+        if path == '/api/tts_reset':
+            # 重置edge-tts熔断状态（网络恢复后立即重新启用）
+            try:
+                _EDGE_STATE.update(fails=0, dead_until=0.0, reason='')
+                # 同时清除TLS引擎锁定，下次配音重新选择最优引擎
+                try:
+                    if hasattr(_TLS, 'tts_engine'):
+                        delattr(_TLS, 'tts_engine')
+                except Exception:
+                    pass
+                self._send(200, json.dumps({'ok': True, 'msg': '配音引擎已重置，edge-tts熔断已解除'}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
         if path == '/api/tts_recent':
             # 返回最近有tts_state.json的任务列表（用于恢复配音）
             try:
