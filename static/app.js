@@ -3017,6 +3017,8 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     let cleanText = (item.text||'').replace(/\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}/g, '').replace(/\{\/(?:情绪|停顿|慢|快|高音|低音|大声|小声)\}/g, '').replace(/\s+/g, ' ').trim();
     let vs = item.video_start !== undefined ? item.video_start : 0;
     let ve = item.video_end !== undefined ? item.video_end : 0;
+    let hasVideoSpan = (vs > 0 || ve > 0);
+    let spanHint = hasVideoSpan ? '' : '<span style="color:#f59e0b;font-size:11px;margin-left:4px">（自动匹配中，可手动输入时间）</span>';
     html += '<div class="adjust-item" id="adjItem'+idx+'" style="padding:12px;margin:8px 0;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">';
     html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
     html += '<span style="font-size:13px;font-weight:600">第 '+(idx+1)+' 段 <span style="color:var(--muted);font-weight:400">配音'+(item.duration||0)+'秒</span></span>';
@@ -3029,8 +3031,8 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<input type="number" id="adjVStart'+idx+'" value="'+vs+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_adjustState.changed['+idx+']=true">';
     html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
     html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_adjustState.changed['+idx+']=true">';
-    html += '<span style="font-size:12px;color:var(--muted)">秒</span>';
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 预览</button>';
+    html += '<span style="font-size:12px;color:var(--muted)">秒</span>'+spanHint;
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 预览画面</button>';
     html += '</div>';
     html += '<div id="adjFrame'+idx+'" style="margin-top:6px;display:none"><img id="adjFrameImg'+idx+'" style="max-width:100%;max-height:160px;border-radius:6px;border:1px solid var(--border)"></div>';
     html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';

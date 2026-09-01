@@ -8096,12 +8096,17 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         segs = beat_ranges
         # 应用用户手动调整的视频时间范围（覆盖自动聚合结果）
         if adjusted_items and user_video_spans:
+            video_dur = probe_audio_len(video_path) or 0
             for old_i, (vs, ve) in user_video_spans.items():
                 if old_i in old_to_new:
                     new_i = old_to_new[old_i]
                     if new_i < len(segs):
-                        segs[new_i] = (vs, ve)
-                        print('[DIAG] 用户调整第%d段画面: %.1f-%.1f秒' % (new_i + 1, vs, ve))
+                        # 校验：结束时间必须大于开始，且不超过视频时长
+                        if ve > vs and vs >= 0 and (video_dur == 0 or ve <= video_dur + 1):
+                            segs[new_i] = (vs, min(ve, video_dur) if video_dur else ve)
+                            print('[DIAG] 用户调整第%d段画面: %.1f-%.1f秒' % (new_i + 1, vs, ve))
+                        else:
+                            print('[DIAG] 用户调整第%d段画面时间不合理(%.1f-%.1f)，使用自动范围' % (new_i + 1, vs, ve))
         print('[DIAG] 高密度聚合: %d节 -> %d个片段' % (len(narr), len(segs)))
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
     if params.get('autoCut', True):
