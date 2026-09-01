@@ -9444,11 +9444,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
             return
-        if path.startswith('/api/tts_state?'):
+        if path == '/api/tts_state':
             # 返回指定run_dir的配音列表
             try:
-                from urllib.parse import parse_qs
-                qs = parse_qs(path.split('?', 1)[1])
+                qs = parse_qs(urlparse(self.path).query)
                 run_dir_name = (qs.get('run_dir') or [''])[0]
                 if not run_dir_name:
                     self._send(200, json.dumps({'ok': False, 'error': '缺少run_dir'}).encode('utf-8'), 'application/json')
