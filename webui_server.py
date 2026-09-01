@@ -4050,6 +4050,34 @@ def _analysis_cache_save(key, value):
         pass
 
 
+def _video_cache_key(video_path, suffix=''):
+    """基于视频文件大小+mtime+前1MB哈希生成缓存key，同文件重跑命中缓存。"""
+    import hashlib
+    try:
+        st = os.stat(video_path)
+        h = hashlib.md5()
+        h.update(str(st.st_size).encode())
+        h.update(str(int(st.st_mtime)).encode())
+        try:
+            with open(video_path, 'rb') as f:
+                h.update(f.read(1024 * 1024))
+        except Exception:
+            pass
+        return h.hexdigest() + '_' + suffix
+    except Exception:
+        return os.path.basename(video_path) + '_' + suffix
+
+
+def _cache_load(key):
+    """通用缓存读取（复用analysis缓存基础设施）。"""
+    return _analysis_cache_load(key)
+
+
+def _cache_save(key, value):
+    """通用缓存写入（复用analysis缓存基础设施）。"""
+    _analysis_cache_save(key, value)
+
+
 def _analysis_cache_trim():
     """缓存条数超过 ANALYSIS_CACHE_KEEP 时按修改时间清最旧。"""
     try:
@@ -7101,9 +7129,12 @@ def _build_scenes(cuts, vdur, min_len=3.0):
     return merged
 
 
-def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None, asr=None):
-    """对每个场景抽中间帧，VLM做结构化描述。
-    优化：①相邻短场景合并 ②有台词才跑VLM ③进度子状态+20秒超时。"""
+def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0):
+    """时间轴驱动：均匀抽样建立画面索引，跳过场景检测。
+
+    每interval秒抽1帧，±12秒内有台词才跑VLM，3帧批量调用。
+    返回格式与 _vlm_describe_scenes 完全一致，下游无需改动。
+    1小时视频：~120个抽样点 -> 有台词的约60个 -> 批量VLM约20次。"""
     if not vlm_enabled():
         return []
     try:
@@ -7112,41 +7143,50 @@ def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None, asr=None):
     except Exception:
         return []
 
-    # 优化①：合并相邻短场景（间隔<0.5秒且合并后<8秒）
-    merged = []
-    for s0, s1 in scenes:
-        if merged and (s0 - merged[-1][1]) < 0.5 and (s1 - merged[-1][0]) < 8.0:
-            merged[-1] = (merged[-1][0], s1)
-        else:
-            merged.append((s0, s1))
-    if len(merged) != len(scenes):
-        print(f'[DIAG] 场景合并: {len(scenes)}->{len(merged)}个')
-    scenes = merged
+    # 缓存检查
+    try:
+        vlm_model = vlm_cfg().get('model', 'default')
+    except Exception:
+        vlm_model = 'default'
+    cache_key = _video_cache_key(video_path, f'vlm_sample_{vlm_model}_{int(interval)}')
+    cached = _cache_load(cache_key)
+    if cached:
+        print(f'[DIAG] VLM抽样命中缓存: {len(cached)}个时间点')
+        if progress:
+            progress['phase'] = '画面索引（缓存命中）'
+            progress['pct'] = 46
+        return cached
 
-    # 优化②：检测场景是否有ASR台词重叠
-    def _has_dialogue(s0, s1):
+    frame_dir = os.path.join(run_dir, 'sample_frames')
+    os.makedirs(frame_dir, exist_ok=True)
+    results = []
+    sys_prompt = ('你是影视场景分析助手。根据画面和提供的台词，用JSON格式结构化描述这个时间点的画面。'
+                  '字段：location(地点)，characters(主要人物)，'
+                  'event(正在发生什么事，一句话)，'
+                  'dialogue(这段台词的核心内容，没有则留空)，'
+                  'summary(画面整体概括，不超过30字)。只输出JSON。')
+
+    # 生成抽样时间点
+    sample_times = []
+    t = interval / 2.0  # 从中间开始，避免片头黑屏
+    while t < vdur:
+        sample_times.append(t)
+        t += interval
+
+    # 预计算每个抽样点附近是否有台词（±12秒窗口）
+    def _near_dialogue(ts):
         if not asr:
             return True
         for seg in asr:
             try:
-                t0 = float(seg.get('start', seg.get('begin', 0)))
-                t1 = float(seg.get('end', seg.get('stop', t0 + 1)))
+                t0 = float(seg.get('start', 0))
+                t1 = float(seg.get('end', t0 + 1))
                 txt = str(seg.get('text', '')).strip()
-                if txt and t0 < s1 and t1 > s0:
+                if txt and (t0 - 12 <= ts <= t1 + 12):
                     return True
             except (ValueError, TypeError):
                 continue
         return False
-
-    frame_dir = os.path.join(run_dir, 'scene_frames')
-    os.makedirs(frame_dir, exist_ok=True)
-    results = []
-    sys_prompt = ('你是影视场景分析助手。根据画面和提供的台词，用JSON格式结构化描述这个场景。'
-                  '字段：location(地点，如赌场室内/火车站台/街头)，'
-                  'characters(出现的主要人物，有名字写名字，没有写外貌特征)，'
-                  'event(正在发生什么事，一句话)，'
-                  'dialogue(这段台词的核心内容，没有则留空)，'
-                  'summary(场景整体概括，不超过30字)。只输出JSON，不要其他文字。')
 
     # 第一遍：标记哪些点需要VLM，先抽帧
     need_vlm = []  # [(idx, ts, fp)]
@@ -7215,85 +7255,6 @@ def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None, asr=None):
     print(f'[DIAG] VLM均匀抽样(批量): {len(sample_times)}个点, 批量VLM {vlm_count}次(原需{len(need_vlm)}次), 跳过{skip_count}个无台词')
     _cache_save(cache_key, results)
     return results
-
-
-def _llm_align_beats_to_scenes(beats, scenes, movie_name=''):
-    """用LLM把解说词和场景做语义对齐。
-    beats: [text, ...] 解说词列表
-    scenes: [{'start','end','location','characters','event','dialogue','summary'}, ...]
-    返回 {beat_idx: [scene_idx, ...]}，失败返回 {}。"""
-    if not beats or not scenes:
-        return {}
-    # 优先本地LLM（免费），失败则用云端
-    scene_lines = []
-    for i, sc in enumerate(scenes):
-        parts = []
-        if sc['location']: parts.append('地点:' + sc['location'])
-        if sc['characters']: parts.append('人物:' + sc['characters'])
-        if sc['event']: parts.append('事件:' + sc['event'])
-        if sc['dialogue']: parts.append('台词:' + sc['dialogue'])
-        scene_lines.append('场景%d(%.0f-%.0fs): %s' % (i, sc['start'], sc['end'], '；'.join(parts)))
-
-    beat_lines = ['解说词%d: %s' % (i, t[:120]) for i, t in enumerate(beats)]
-
-    prompt = (
-        '你是影视剪辑师。下面是一部电影的场景列表和解说词列表。\n'
-        '请判断每段解说词对应哪个（或哪几个）场景。\n'
-        '注意：解说词按剧情时间顺序排列，场景也按时间顺序排列，对齐必须保持单调递增。\n\n'
-        + ('电影：%s\n\n' % movie_name if movie_name else '')
-        + '【场景列表】\n' + '\n'.join(scene_lines[:60])
-        + '\n\n【解说词列表】\n' + '\n'.join(beat_lines[:60])
-        + '\n\n请输出JSON：{"alignment": [[0,1],[2],[3,4],...]},'
-        '外层数组索引=解说词序号，内层数组=对应的场景序号列表。'
-        '一段解说词可以对应1-3个场景，不确定时选最接近的。只输出JSON。'
-    )
-
-    obj = None
-    # 本地LLM优先
-    if local_llm_enabled():
-        try:
-            if local_llm_ping()[0]:
-                resp = local_llm_chat(prompt, system='你是影视剪辑师，只输出JSON。', timeout=120)
-                obj = _extract_json_obj(resp)
-        except Exception:
-            pass
-    # 云端兜底
-    if not obj and ai_enabled('chat'):
-        try:
-            import urllib.request, json as _json
-            cfg = chat_cfg()
-            payload = {'model': cfg.get('model'),
-                       'messages': [{'role': 'system', 'content': '你是影视剪辑师，只输出JSON。'},
-                                    {'role': 'user', 'content': prompt}],
-                       'max_tokens': 2000, 'temperature': 0.3}
-            url = (cfg.get('base_url', '').rstrip('/')) + '/chat/completions'
-            req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'),
-                                         headers={'Content-Type': 'application/json',
-                                                  'Authorization': 'Bearer ' + cfg.get('api_key', '')})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                data = _json.loads(r.read().decode('utf-8'))
-            obj = _extract_json_obj(data['choices'][0]['message']['content'])
-        except Exception:
-            pass
-
-    if not obj:
-        return {}
-    align_raw = obj.get('alignment') or obj.get('align') or obj
-    alignment = {}
-    if isinstance(align_raw, list):
-        for bi, sids in enumerate(align_raw):
-            if bi >= len(beats):
-                break
-            if isinstance(sids, int):
-                alignment[bi] = [sids]
-            elif isinstance(sids, list):
-                alignment[bi] = [int(x) for x in sids if isinstance(x, (int, float))]
-    # 校验：场景序号在范围内
-    for bi in list(alignment.keys()):
-        alignment[bi] = [s for s in alignment[bi] if 0 <= s < len(scenes)]
-        if not alignment[bi]:
-            del alignment[bi]
-    return alignment
 
 
 def _vlm_sample_captions(video_path, vdur, run_dir, n_samples=24, progress=None):
@@ -9230,7 +9191,17 @@ class Handler(BaseHTTPRequestHandler):
             json.dump(st, open(state_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
             # 更新历史记录
             if final:
-                _update_history_file(run_id, final, narr)
+                try:
+                    import time as _time
+                    add_history({
+                        'time': _time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'file': os.path.relpath(final, OUTDIR).replace('\\', '/'),
+                        'duration': round(probe_audio_len(final) or 0, 1),
+                        'music': None, 'voice': True, 'captions': narr,
+                        'mode': 'regen', 'w': 0, 'h': 0, 'fps': 0,
+                    })
+                except Exception:
+                    pass
             self._send(200, json.dumps({'ok': True, 'file': os.path.relpath(final, OUTDIR).replace('\\', '/') if final else '',
                                         'narr': narr}).encode('utf-8'), 'application/json')
             return
