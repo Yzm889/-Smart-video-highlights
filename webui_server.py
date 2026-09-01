@@ -7859,18 +7859,13 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if _aborted():
         raise AbortError('用户取消了任务')
 
-    # === 并行优化：VLM画面索引在后台线程跑，主线程同时写解说稿 ===
-    import threading as _th_par
-    _vlm_result = [None]
-    _vlm_error = [None]
-    def _vlm_worker():
-        try:
-            _vlm_result[0] = _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=progress)
-        except Exception as e:
-            _vlm_error[0] = e
-    _vlm_thread = _th_par.Thread(target=_vlm_worker, daemon=True, name='vlm-sampler')
-    _vlm_thread.start()
-    print('[DIAG] VLM画面索引已启动（与写稿并行）')
+    # === 串行：先VLM建立画面索引，再写解说稿 ===
+    # 注意：12GB显存无法同时加载VLM(6.5GB)+LLM(9GB)，并行会导致Ollama反复换模型，
+    # 反而比串行慢2-3倍且容易卡死。TTS(网络/CPU)+裁剪(GPU编码NVENC)仍可并行，不冲突。
+    up('建立画面索引（均匀抽样）', 44)
+    scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=progress)
+    if scene_descs:
+        print(f'[DIAG] 画面索引: {len(scene_descs)}个时间点已建立')
 
     up('写完整解说稿', 42)
     target_sec = params.get('targetSec')
@@ -7909,16 +7904,6 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if _aborted():
         raise AbortError('用户取消了任务')
 
-    # 等待后台VLM抽样线程完成（与写稿并行，这里汇合）
-    _vlm_thread.join()
-    if _vlm_error[0]:
-        raise _vlm_error[0]
-    scene_descs = _vlm_result[0] or []
-    if scene_descs:
-        print(f'[DIAG] 画面索引（并行）: {len(scene_descs)}个时间点已建立')
-    else:
-        up('建立画面索引（均匀抽样）', 44)
-        scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=progress)
     # 阶段2：LLM语义对齐
     scene_alignment = {}
     if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
