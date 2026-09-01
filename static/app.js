@@ -3150,6 +3150,11 @@ async function confirmAdjustAndCompose(){
       video_end: ve ? parseFloat(ve.value) : (_adjustState.items[i].video_end || 0)
     });
   }
+  if(finalItems.length === 0){
+    alert('⚠️ 所有段都被跳过了，至少保留一段才能合成');
+    btn.disabled = false; btn.textContent = '✅ 确认调整，开始合成视频';
+    return;
+  }
   try{
     const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip };
     // 带上配乐
