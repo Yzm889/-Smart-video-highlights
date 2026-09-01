@@ -918,3 +918,33 @@ header .htools { display: flex; align-items: center; gap: 14px; }
   color: var(--ink);
 }
 [data-theme="light"] .theme-toggle:hover { background: rgba(184, 148, 58, 0.08); }
+
+/* ---------- 任务中心 ---------- */
+.task-card {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.03);
+  transition: all .2s;
+}
+.task-card:hover { border-color: rgba(201,168,76,0.3); }
+.task-card.task-running { border-left: 3px solid #C9A84C; }
+.task-card.task-done { border-left: 3px solid #4CAF50; opacity: 0.85; }
+.task-card.task-failed { border-left: 3px solid #f44336; }
+.task-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.task-id { font-family: monospace; font-size: 12px; color: var(--muted); }
+.task-status { font-size: 12px; font-weight: 700; }
+.task-running .task-status { color: #C9A84C; }
+.task-done .task-status { color: #4CAF50; }
+.task-failed .task-status { color: #f44336; }
+.task-phase { font-size: 13px; color: var(--ink); margin-bottom: 8px; min-height: 18px; }
+.task-bar { height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+.task-fill { height: 100%; background: linear-gradient(90deg, #C9A84C, #b8943a); border-radius: 3px; transition: width .5s; }
+.task-done .task-fill { background: #4CAF50; }
+.task-failed .task-fill { background: #f44336; }
+.task-foot { display: flex; justify-content: space-between; align-items: center; }
+.task-pct { font-size: 12px; color: var(--muted); font-weight: 700; }
+
+/* 顶部进度条可点击跳任务中心 */
+.gprog { cursor: pointer; }
+.gprog:hover { opacity: 0.95; }

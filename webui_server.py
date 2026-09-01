@@ -20,6 +20,49 @@ PROGRESS = {}          # runid -> mutable progress dict for the UI poller
 PLANS = {}             # runid -> 人机协同「规划方案」（分析结果，等待用户确认/微调后再渲染）
 import threading as _threading
 OUTDIR = os.path.join(HERE, 'webui_output')
+PROGRESS_FILE = os.path.join(OUTDIR, 'progress_state.json')  # 进度持久化（服务重启不丢失）
+
+
+def _save_progress():
+    """把 PROGRESS 快照写入磁盘（每5秒由后台线程调用，服务重启后可恢复）。"""
+    try:
+        snap = {}
+        for rid, p in PROGRESS.items():
+            if isinstance(p, dict):
+                snap[rid] = {k: v for k, v in p.items() if k != '_thread'}
+        with open(PROGRESS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(snap, f, ensure_ascii=False, default=str)
+    except Exception:
+        pass
+
+
+def _load_progress():
+    """启动时从磁盘恢复 PROGRESS（只恢复已完成/失败的，运行中的标记为中断）。"""
+    try:
+        if os.path.isfile(PROGRESS_FILE):
+            with open(PROGRESS_FILE, 'r', encoding='utf-8') as f:
+                snap = json.load(f)
+            for rid, p in snap.items():
+                if isinstance(p, dict) and rid not in PROGRESS:
+                    if not p.get('done') and not p.get('error'):
+                        p['error'] = '服务重启，任务已中断（成片文件仍在磁盘上，可在记录中下载）'
+                        p['done'] = True
+                    PROGRESS[rid] = p
+    except Exception:
+        pass
+
+
+def _start_progress_saver():
+    """后台线程：每5秒持久化一次 PROGRESS。"""
+    def _loop():
+        while True:
+            try:
+                _save_progress()
+            except Exception:
+                pass
+            time.sleep(5)
+    t = _threading.Thread(target=_loop, daemon=True, name='progress-saver')
+    t.start()
 RUN_PROCS = {}          # runid -> 当前活跃的 ffmpeg Popen（用于取消时终止）
 _PROC_LOCK = threading.Lock()
 _TLS = threading.local()   # 每个任务线程绑定自己的 runid，供 ffmpeg_run 读取
@@ -501,7 +544,7 @@ def _whisper_load_path(m):
 def whisper_model_name():
     """读取配置的 whisper 模型名（默认 base）。非法值回退 base。"""
     cfg = load_ai_config().get('whisper') or {}
-    m = (cfg.get('model') or 'base')
+    m = (cfg.get('model') or 'distil-large-v3')
     return m if m in _WHISPER_MODELS else 'base'
 
 def whisper_model_ready(model=None):
@@ -5463,6 +5506,24 @@ def sherpa_tts_available():
         return False
 
 
+
+def tts_model_uninstall(key):
+    """删除已下载的离线配音模型目录（models/tts/<name>/），释放磁盘空间。
+    返回 (ok, msg)。"""
+    m = SHERPA_TTS_MODELS.get(key)
+    if not m:
+        return False, '未知模型：%s' % key
+    d = os.path.join(tts_models_dir(), m['name'])
+    if not os.path.isdir(d):
+        return False, '模型未下载，无需卸载'
+    import shutil
+    try:
+        shutil.rmtree(d)
+        return True, '已卸载 %s（%s）' % (m['label'], m['name'])
+    except Exception as e:
+        return False, '卸载失败：%s' % str(e)
+
+
 def _sherpa_load():
     """加载（并缓存）sherpa-onnx 离线 TTS 实例。模型加载较慢，缓存避免每段重复加载。"""
     key = sherpa_model_key()
@@ -6460,7 +6521,10 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
     up('逐段配音', 30)
     tts_paths = []
     voice_spans = {}   # seg_idx -> (start, end)：字幕窗口跟随配音（有声才显字、念完即收）
-    use_mimo = _tts_available()   # 自动：配置了云端 TTS key 即视为同意使用，否则免费 SAPI
+    # 只在云端 TTS 真正配了 api_key+model 时才走云端；否则直接用本地免费引擎
+    # 旧写法 _tts_available() 会把本地引擎也算进去，导致每段先试云端（无key必失败）再回退本地，长视频严重拖慢甚至后面超时失声
+    _tcfg = load_ai_config().get('tts') or {}
+    use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
     for i, txt in enumerate(narr):
         if _aborted():
             raise AbortError('用户取消了任务')
@@ -7037,10 +7101,9 @@ def _build_scenes(cuts, vdur, min_len=3.0):
     return merged
 
 
-def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None):
-    """对每个场景抽中间帧，VLM做结构化描述（地点/人物/事件/关键台词）。
-    返回 [{'start','end','location','characters','event','dialogue','summary'}, ...]。
-    VLM不可用时返回 []。"""
+def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None, asr=None):
+    """对每个场景抽中间帧，VLM做结构化描述。
+    优化：①相邻短场景合并 ②有台词才跑VLM ③进度子状态+20秒超时。"""
     if not vlm_enabled():
         return []
     try:
@@ -7048,6 +7111,32 @@ def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None):
             return []
     except Exception:
         return []
+
+    # 优化①：合并相邻短场景（间隔<0.5秒且合并后<8秒）
+    merged = []
+    for s0, s1 in scenes:
+        if merged and (s0 - merged[-1][1]) < 0.5 and (s1 - merged[-1][0]) < 8.0:
+            merged[-1] = (merged[-1][0], s1)
+        else:
+            merged.append((s0, s1))
+    if len(merged) != len(scenes):
+        print(f'[DIAG] 场景合并: {len(scenes)}->{len(merged)}个')
+    scenes = merged
+
+    # 优化②：检测场景是否有ASR台词重叠
+    def _has_dialogue(s0, s1):
+        if not asr:
+            return True
+        for seg in asr:
+            try:
+                t0 = float(seg.get('start', seg.get('begin', 0)))
+                t1 = float(seg.get('end', seg.get('stop', t0 + 1)))
+                txt = str(seg.get('text', '')).strip()
+                if txt and t0 < s1 and t1 > s0:
+                    return True
+            except (ValueError, TypeError):
+                continue
+        return False
 
     frame_dir = os.path.join(run_dir, 'scene_frames')
     os.makedirs(frame_dir, exist_ok=True)
@@ -7059,34 +7148,72 @@ def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None):
                   'dialogue(这段台词的核心内容，没有则留空)，'
                   'summary(场景整体概括，不超过30字)。只输出JSON，不要其他文字。')
 
-    for idx, (s0, s1) in enumerate(scenes):
+    # 第一遍：标记哪些点需要VLM，先抽帧
+    need_vlm = []  # [(idx, ts, fp)]
+    skip_count = 0
+    for idx, ts in enumerate(sample_times):
+        if not _near_dialogue(ts):
+            skip_count += 1
+            results.append({'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
+                            'location': '', 'characters': '', 'event': '',
+                            'dialogue': '', 'summary': '无台词区间'})
+        else:
+            fp = os.path.join(frame_dir, 'sample_%04d.jpg' % idx)
+            rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % ts, '-i', video_path,
+                                     '-frames:v', '1', '-vf', 'scale=min(iw\\,768):-2',
+                                     '-q:v', '4', '-an', fp])
+            if rc == 0 and os.path.exists(fp):
+                need_vlm.append((idx, ts, fp))
+            else:
+                results.append({'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
+                                'location': '', 'characters': '', 'event': '',
+                                'dialogue': '', 'summary': ''})
+
+    # 第二遍：批量VLM调用，3帧一次（VLM调用次数降2/3）
+    vlm_count = 0
+    batch_size = 3
+    batch_prompt = ('你是影视场景分析助手。以下按时间顺序给出%d张画面帧。'
+                    '请对每张帧分别用JSON描述，帧之间用---分隔。'
+                    '每个JSON字段：location/characters/event/dialogue/summary。只输出JSON和---分隔符。' % batch_size)
+    for bi in range(0, len(need_vlm), batch_size):
+        batch = need_vlm[bi:bi + batch_size]
         if progress:
-            progress['phase'] = '场景理解 %d/%d' % (idx + 1, len(scenes))
-            progress['pct'] = 36 + int(10 * idx / max(1, len(scenes)))
-        mid = (s0 + s1) / 2.0
-        fp = os.path.join(frame_dir, 'scene_%03d.jpg' % idx)
-        rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % mid, '-i', video_path,
-                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,768):-2',
-                                 '-q:v', '4', '-an', fp])
-        if rc != 0 or not os.path.exists(fp):
-            results.append({'start': s0, 'end': s1, 'location': '', 'characters': '',
-                            'event': '', 'dialogue': '', 'summary': ''})
-            continue
+            progress['phase'] = '画面索引 批量%d/%d（VLM推理中…）' % (bi//batch_size + 1, (len(need_vlm)+batch_size-1)//batch_size)
+            progress['pct'] = 44 + int(6 * bi / max(1, len(need_vlm)))
+        frames = [b[2] for b in batch]
+        vlm_count += 1
         try:
-            resp = vlm_chat(fp, '请用JSON描述这个场景：location/characters/event/dialogue/summary',
-                            system=sys_prompt, timeout=30)
-            obj = _extract_json_obj(resp) or {}
-            results.append({
-                'start': s0, 'end': s1,
-                'location': str(obj.get('location', '')).strip()[:50],
-                'characters': str(obj.get('characters', '')).strip()[:80],
-                'event': str(obj.get('event', '')).strip()[:100],
-                'dialogue': str(obj.get('dialogue', '')).strip()[:100],
-                'summary': str(obj.get('summary', '')).strip()[:60],
-            })
+            if len(frames) == 1:
+                resp = vlm_chat(frames[0], '请用JSON描述这个画面：location/characters/event/dialogue/summary',
+                                system=sys_prompt, timeout=20)
+                objs = [_extract_json_obj(resp) or {}]
+            else:
+                resp = vlm_chat_multi(frames, batch_prompt, system=sys_prompt, timeout=60)
+                parts = resp.split('---')
+                objs = []
+                for part in parts[:len(frames)]:
+                    objs.append(_extract_json_obj(part) or {})
+                while len(objs) < len(frames):
+                    objs.append({})
+            for j, (idx, ts, fp) in enumerate(batch):
+                obj = objs[j] if j < len(objs) else {}
+                results.append({
+                    'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
+                    'location': str(obj.get('location', '')).strip()[:50],
+                    'characters': str(obj.get('characters', '')).strip()[:80],
+                    'event': str(obj.get('event', '')).strip()[:100],
+                    'dialogue': str(obj.get('dialogue', '')).strip()[:100],
+                    'summary': str(obj.get('summary', '')).strip()[:60],
+                })
         except Exception:
-            results.append({'start': s0, 'end': s1, 'location': '', 'characters': '',
-                            'event': '', 'dialogue': '', 'summary': ''})
+            for idx, ts, fp in batch:
+                results.append({'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
+                                'location': '', 'characters': '', 'event': '',
+                                'dialogue': '', 'summary': 'VLM超时跳过'})
+
+    results.sort(key=lambda x: x['start'])
+    print(f'[DIAG] VLM均匀抽样(批量): {len(sample_times)}个点, 批量VLM {vlm_count}次(原需{len(need_vlm)}次), 跳过{skip_count}个无台词')
+    _cache_save(cache_key, results)
     return results
 
 
@@ -7682,9 +7809,34 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     up('识别台词(本地Whisper)', 32)
     if _aborted():
         raise AbortError('用户取消了任务')
-    asr = asr_segments(video_path, progress=progress, pct_range=(32, 42))
+    # ASR缓存：同视频同模型不重复转写
+    whisper_model = whisper_model_name()
+    asr_cache_key = _video_cache_key(video_path, f'asr_{whisper_model}')
+    asr = _cache_load(asr_cache_key)
+    if asr:
+        print(f'[DIAG] ASR命中缓存: {len(asr)}段台词')
+        if progress:
+            progress['phase'] = '台词识别（缓存命中）'
+            progress['pct'] = 40
+    else:
+        asr = asr_segments(video_path, progress=progress, pct_range=(32, 42))
+        if asr:
+            _cache_save(asr_cache_key, asr)
     if _aborted():
         raise AbortError('用户取消了任务')
+
+    # === 并行优化：VLM画面索引在后台线程跑，主线程同时写解说稿 ===
+    import threading as _th_par
+    _vlm_result = [None]
+    _vlm_error = [None]
+    def _vlm_worker():
+        try:
+            _vlm_result[0] = _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=progress)
+        except Exception as e:
+            _vlm_error[0] = e
+    _vlm_thread = _th_par.Thread(target=_vlm_worker, daemon=True, name='vlm-sampler')
+    _vlm_thread.start()
+    print('[DIAG] VLM画面索引已启动（与写稿并行）')
 
     up('写完整解说稿', 42)
     target_sec = params.get('targetSec')
@@ -7723,15 +7875,16 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if _aborted():
         raise AbortError('用户取消了任务')
 
-    # === 三阶段语义对齐：场景级匹配，解决片段和字幕对不上 ===
-    # 阶段1：场景分割 + VLM结构化描述
-    up('检测场景切换', 44)
-    cuts = _cached_scene_cuts(video_path, threshold=0.30, progress=progress)
-    raw_scenes = _build_scenes(cuts, vdur, min_len=3.0)
-    print(f'[DIAG] 场景分割: {len(raw_scenes)}个场景')
-    scene_descs = _vlm_describe_scenes(video_path, raw_scenes, run_dir, progress=progress)
+    # 等待后台VLM抽样线程完成（与写稿并行，这里汇合）
+    _vlm_thread.join()
+    if _vlm_error[0]:
+        raise _vlm_error[0]
+    scene_descs = _vlm_result[0] or []
     if scene_descs:
-        print(f'[DIAG] VLM场景描述: {len(scene_descs)}个场景已描述')
+        print(f'[DIAG] 画面索引（并行）: {len(scene_descs)}个时间点已建立')
+    else:
+        up('建立画面索引（均匀抽样）', 44)
+        scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=progress)
     # 阶段2：LLM语义对齐
     scene_alignment = {}
     if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
@@ -7782,14 +7935,49 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     cut_info = {'cut_sec': 0.0,
                 'src_dur': round(probe_audio_len(video_path) or 0.0, 2),
                 'out_dur': None, 'segs': len(segs)}
+
+    # === 并行优化：TTS配音在后台线程跑，主线程同时做视频裁剪 ===
+    # TTS音频生成只依赖解说文本(narr)，不依赖裁剪结果；裁剪完成后再算voice_spans
+    import threading as _th_tts
+    _tts_results = []  # [(index, clip_path)]
+    _tts_error = [None]
+    _tcfg2 = load_ai_config().get('tts') or {}
+    use_mimo = bool(_tcfg2.get('api_key')) and bool(_tcfg2.get('model'))
+    def _tts_worker():
+        try:
+            for i, txt in enumerate(narr):
+                if _aborted():
+                    return
+                if not txt.strip():
+                    continue
+                clip = None
+                if use_mimo:
+                    np_ = os.path.join(run_dir, f'narr{i}.mp3')
+                    if ai_tts(txt, np_):
+                        clip = np_
+                if clip is None:
+                    ok, _eng, lp = local_tts_speak(txt, os.path.join(run_dir, f'narr{i}.mp3'))
+                    if ok:
+                        clip = lp
+                if clip is not None:
+                    _tts_results.append((i, clip))
+                if progress:
+                    progress['phase'] = f'逐段配音（并行）{i+1}/{len(narr)}'
+        except Exception as e:
+            _tts_error[0] = e
+    _tts_thread = _th_tts.Thread(target=_tts_worker, daemon=True, name='tts-worker')
+    _tts_thread.start()
+    print('[DIAG] TTS配音已启动（与裁剪并行）')
+
+    up('逐段配音+裁剪（并行）', 58)
+    # 主线程继续做裁剪（TTS在后台跑）
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 54)
         src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
-    # 高密度剪辑：一节解说词对应多个子片段，按 narr_map 聚合成每节的时间范围
-    # 配音和字幕按节走（一节一条配音、一行字幕），画面是多片段拼接
+    # 高密度剪辑聚合
     if narr_map and len(narr_map) == len(segs):
         beat_ranges = []
         for bi in range(len(narr)):
@@ -7799,31 +7987,20 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             else:
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
-        print(f'[DIAG] 高密度剪辑: {len(narr)}节 -> {len(narr_map)}个片段, 每节平均{len(narr_map)/max(1,len(narr)):.1f}个片段')
-    up('逐段配音', 58)
+        print(f'[DIAG] 高密度剪辑: {len(narr)}节 -> {len(narr_map)}个片段')
+    # 等待TTS线程完成
+    _tts_thread.join()
+    if _tts_error[0]:
+        raise _tts_error[0]
+    # 用裁剪后的segs计算voice_spans和tts_paths
     tts_paths = []
-    voice_spans = {}   # 字幕窗口跟随配音（与短片解说一致：有声才显字、念完即收）
-    use_mimo = _tts_available()   # 自动：配置了云端 TTS key 即视为同意使用
-    for i, txt in enumerate(narr):
-        if _aborted():
-            raise AbortError('用户取消了任务')
-        if not txt.strip():
-            continue
+    voice_spans = {}
+    for i, clip in _tts_results:
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
-        clip = None
-        if use_mimo:
-            np_ = os.path.join(run_dir, f'narr{i}.mp3')
-            if ai_tts(txt, np_):
-                clip = np_
-        if clip is None:
-            # 本地免费配音：edge-tts（免 Key）→ 离线模型（sherpa-onnx）→ 系统 SAPI 兜底
-            ok, _eng, lp = local_tts_speak(txt, os.path.join(run_dir, f'narr{i}.mp3'))
-            if ok:
-                clip = lp
-        if clip is not None:
-            tts_paths.append((clip, seg_span[0], seg_span[1]))
-            v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
-            voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
+        tts_paths.append((clip, seg_span[0], seg_span[1]))
+        v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
+        voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
+    print(f'[DIAG] TTS并行完成: {len(tts_paths)}/{len(narr)}段配音成功')
     up('混音+烧字幕+配乐', 70)
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
@@ -7833,9 +8010,61 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         progress['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/') if final else ''
         progress['script'] = events
         progress['mode'] = compute_mode(params, needs_chat=True)
+    # 保存中间状态（用于增量重生成：改某段解说词只重生成该段）
+    try:
+        _state = {
+            'src_video': os.path.abspath(src_video),
+            'segs': [[float(s), float(e)] for s, e in segs],
+            'narr': list(narr),
+            'tts_paths': [[p, float(s), float(e)] for p, s, e in tts_paths],
+            'voice_spans': {str(k): [float(v[0]), float(v[1])] for k, v in voice_spans.items()},
+            'music_path': os.path.abspath(music_path) if music_path else None,
+            'params': params,
+            'final': os.path.abspath(final) if final else None,
+        }
+        import json as _json
+        _json.dump(_state, open(os.path.join(run_dir, 'state.json'), 'w', encoding='utf-8'),
+                   ensure_ascii=False, indent=2)
+        print(f'[DIAG] 增量状态已保存: {len(narr)}段')
+    except Exception as _e:
+        print(f'[DIAG] 增量状态保存失败: {_e}')
+    # 剪辑质量自检：对比每段解说词和对应时间段的台词，标记可能不匹配的片段
+    quality_report = []
+    try:
+        for i, txt in enumerate(narr):
+            if not txt.strip():
+                quality_report.append({'seg': i, 'score': 1.0, 'flag': 'empty'})
+                continue
+            seg_span = segs[i] if i < len(segs) else (0, 0)
+            # 找该时间段内的ASR台词
+            seg_asr = [a.get('text', '') for a in asr if a.get('start', 0) >= seg_span[0] - 2
+                       and a.get('end', 0) <= seg_span[1] + 2]
+            seg_text = ' '.join(seg_asr)
+            # 简单关键词重叠度：解说词中的词在台词中出现的比例
+            txt_words = set(re.findall(r'[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}', txt))
+            seg_words = set(re.findall(r'[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}', seg_text))
+            if txt_words and seg_words:
+                overlap = len(txt_words & seg_words) / len(txt_words)
+            elif txt_words and not seg_text:
+                overlap = 0.0  # 该片段无台词，纯画面
+            else:
+                overlap = 1.0
+            flag = 'ok' if overlap >= 0.1 else ('no_dialogue' if not seg_text else 'mismatch')
+            quality_report.append({'seg': i, 'score': round(overlap, 2), 'flag': flag,
+                                   'narration': txt[:50], 'asr': seg_text[:50]})
+        mismatch_count = sum(1 for q in quality_report if q['flag'] == 'mismatch')
+        print(f'[DIAG] 质量自检: {len(quality_report)}段, {mismatch_count}段可能不匹配')
+        # 保存质量报告
+        import json as _jq
+        _jq.dump(quality_report, open(os.path.join(run_dir, 'quality.json'), 'w', encoding='utf-8'),
+                 ensure_ascii=False, indent=2)
+    except Exception as _qe:
+        print(f'[DIAG] 质量自检失败: {_qe}')
     diag = {'events': len(events), 'segments': len(segs), 'asr_lines': len(asr),
             'aligned': sum(1 for x in narr if x.strip()), 'voice_clips': len(tts_paths),
-            'narration': narr, 'cut': cut_info}
+            'narration': narr, 'cut': cut_info,
+            'quality': {'mismatch': sum(1 for q in quality_report if q['flag'] == 'mismatch'),
+                        'total': len(quality_report), 'report': quality_report}}
     return final, diag
 
 
@@ -8886,6 +9115,125 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, json.dumps(PROGRESS[runid]).encode('utf-8'), 'application/json')
             return
+        if path == '/api/model/remove':
+            # 卸载已安装的Ollama模型
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+            except Exception:
+                body = {}
+            model = str(body.get('model', '')).strip()
+            if not model:
+                self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
+                return
+            try:
+                import subprocess as _sp
+                r = _sp.run(['ollama', 'rm', model], capture_output=True, text=True, timeout=60)
+                ok = (r.returncode == 0)
+                msg = (r.stdout or r.stderr or '').strip()[:200]
+                self._send(200, json.dumps({'ok': ok, 'msg': msg}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/tasks':
+            # 任务中心：列出所有运行中+最近完成的任务，供任务中心页面多任务展示
+            tasks = []
+            for rid, p in PROGRESS.items():
+                if not isinstance(p, dict):
+                    continue
+                tasks.append({
+                    'runid': rid,
+                    'phase': p.get('phase', ''),
+                    'pct': p.get('pct', 0),
+                    'done': p.get('done', False),
+                    'error': p.get('error', ''),
+                    'file': p.get('file', ''),
+                    'mode': p.get('mode', ''),
+                    'start_time': p.get('start_time', ''),
+                })
+            # 运行中的排前面，然后按时间倒序
+            tasks.sort(key=lambda t: (t['done'], t['runid']), reverse=False)
+            self._send(200, json.dumps({'ok': True, 'tasks': tasks, 'running': sum(1 for t in tasks if not t['done'])})
+                       .encode('utf-8'), 'application/json')
+            return
+        if path == '/api/regen_segment':
+            # 增量重生成：只改某一段解说词，重生成该段TTS并重新合成，不重跑全流程
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+            except Exception:
+                body = {}
+            run_id = str(body.get('run_id', ''))
+            seg_idx = int(body.get('seg_idx', -1))
+            new_text = str(body.get('text', '')).strip()
+            if not run_id or seg_idx < 0 or not new_text:
+                self._send(400, json.dumps({'ok': False, 'error': '缺少run_id/seg_idx/text'}).encode('utf-8'), 'application/json')
+                return
+            run_dir = os.path.join(OUTDIR, run_id)
+            state_path = os.path.join(run_dir, 'state.json')
+            if not os.path.exists(state_path):
+                self._send(404, json.dumps({'ok': False, 'error': '该任务没有保存中间状态（可能是旧版本生成的）'}).encode('utf-8'), 'application/json')
+                return
+            try:
+                st = json.load(open(state_path, encoding='utf-8'))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': f'状态读取失败: {e}'}).encode('utf-8'), 'application/json')
+                return
+            narr = st.get('narr', [])
+            if seg_idx >= len(narr):
+                self._send(400, json.dumps({'ok': False, 'error': f'段索引越界: {seg_idx}/{len(narr)}'}).encode('utf-8'), 'application/json')
+                return
+            # 更新解说词
+            narr[seg_idx] = new_text
+            st['narr'] = narr
+            # 重生成该段TTS
+            tts_paths = st.get('tts_paths', [])
+            seg_span = st['segs'][seg_idx] if seg_idx < len(st['segs']) else [0.0, 10.0]
+            _tcfg = load_ai_config().get('tts') or {}
+            use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
+            clip = None
+            if use_mimo:
+                np_ = os.path.join(run_dir, f'narr{seg_idx}_regen.mp3')
+                if ai_tts(new_text, np_):
+                    clip = np_
+            if clip is None:
+                ok, _eng, lp = local_tts_speak(new_text, os.path.join(run_dir, f'narr{seg_idx}_regen.mp3'))
+                if ok:
+                    clip = lp
+            if clip is None:
+                self._send(500, json.dumps({'ok': False, 'error': 'TTS生成失败'}).encode('utf-8'), 'application/json')
+                return
+            # 更新tts_paths和voice_spans
+            tts_paths = [list(t) for t in tts_paths]
+            found = False
+            for i, t in enumerate(tts_paths):
+                # 按起始时间匹配同一段
+                if abs(t[1] - seg_span[0]) < 0.5:
+                    tts_paths[i] = [clip, float(seg_span[0]), float(seg_span[1])]
+                    found = True
+                    break
+            if not found:
+                tts_paths.append([clip, float(seg_span[0]), float(seg_span[1])])
+            st['tts_paths'] = tts_paths
+            v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
+            voice_spans = st.get('voice_spans', {})
+            voice_spans[str(seg_idx)] = [float(seg_span[0]), min(float(seg_span[1]), float(seg_span[0]) + v_len + 0.35)]
+            st['voice_spans'] = voice_spans
+            # 重新合成
+            segs = [tuple(s) for s in st['segs']]
+            narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
+            tps = [(t[0], t[1], t[2]) for t in tts_paths]
+            vs = {int(k): tuple(v) for k, v in voice_spans.items()}
+            music_path = st.get('music_path')
+            params = st.get('params', {})
+            final = _compose_narration_video(st['src_video'], segs, narr_srt, tps, run_dir, params,
+                                             music_path=music_path, voice_spans=vs)
+            st['final'] = os.path.abspath(final) if final else None
+            json.dump(st, open(state_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            # 更新历史记录
+            if final:
+                _update_history_file(run_id, final, narr)
+            self._send(200, json.dumps({'ok': True, 'file': os.path.relpath(final, OUTDIR).replace('\\', '/') if final else '',
+                                        'narr': narr}).encode('utf-8'), 'application/json')
+            return
         if path == '/api/history':
             items = load_history(50)
             # 逐条体检：成片文件已丢失的条目标记 missing（前端降级展示，不给下载/封面入口）；
@@ -8994,6 +9342,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == '/api/vlm/status':
             ok, msg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
+            VLM_PULL['msg'] = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', VLM_PULL.get('msg',''))
             self._send(200, json.dumps({'ok': True, 'enabled': vlm_enabled(), 'ready': bool(ok),
                                         'message': msg, 'model': vlm_cfg()['model'],
                                         'installed': _installed_local_models(),
@@ -9185,6 +9534,19 @@ class Handler(BaseHTTPRequestHandler):
                 raw = self.rfile.read(length) if length else b'{}'
                 data = json.loads(raw.decode('utf-8') or '{}')
                 ok, msg = tts_model_download_async(data.get('model'))
+                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                           'application/json')
+            return
+        if path == '/api/tts/model/uninstall':
+            # 卸载已下载的离线配音模型（删除 models/tts/<name>/ 目录）
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(length) if length else b'{}'
+                data = json.loads(raw.decode('utf-8') or '{}')
+                ok, msg = tts_model_uninstall(str(data.get('model') or ''))
                 self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
                            'application/json')
             except Exception as e:
@@ -9672,6 +10034,8 @@ def webbrowser_open(url):
 
 
 if __name__ == '__main__':
+    _load_progress()
+    _start_progress_saver()
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:

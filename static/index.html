@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>一帧成片 · FrameCut</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
 <header>
@@ -25,6 +25,7 @@
   <button class="stepbtn" data-step="ai" title="AI 文案 / 配音 / 模型配置">⑥ AI</button>
   <button class="stepbtn" data-step="output" title="时间线 / 输出设置">⑦ 输出</button>
   <button class="stepbtn" data-step="build" title="一键合成">⑧ 合成</button>
+  <button class="stepbtn" data-step="tasks" title="任务中心·进度详情">📋 任务</button>
   <button class="stepbtn" data-step="history" title="最近生成记录">⑨ 记录</button>
   <button class="stepbtn" data-step="storage" title="磁盘占用与清理">🧹 存储</button>
 </nav>
@@ -198,7 +199,7 @@
     </div>
 
     <!-- 一键智能模式 -->
-    <div class="card" id="smartCard">
+    <div class="card" id="smartCard" data-step="start">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <h2 style="margin:0;">⚡ 一键智能生成</h2>
         <span style="font-size:12px; color:var(--accent); background:rgba(201,168,76,0.12); padding:3px 10px; border-radius:12px; border:1px solid rgba(201,168,76,0.25);">推荐普通用户使用</span>
@@ -231,7 +232,7 @@
       </div>
     </div>
 
-<div id="proSettings" style="display:none;">
+<div id="proSettings">
 
     <!-- Phase 4 · 指令解析层 -->
     <div class="card" id="instructCard" data-step="start">
@@ -284,7 +285,7 @@
     <div class="hint">然后在下方「🎵 背景音乐」选一首歌（或从「🔎 免费踩点音乐库」搜一首点「使用」），系统会把画面切点<b>自动匹对到音乐大鼓点</b>，硬切生成强卡点短片。</div>
     <div class="hint" id="bcInfo">还没有选择视频。</div>
     <div class="row" style="margin-top:10px;">
-      <div class="field"><label>卡点强度</label>
+      <div class="field"><label for="bcStrength">卡点强度</label>
         <select id="bcStrength">
           <option value="soft">柔和（少切、稳）</option>
           <option value="standard" selected>标准（推荐）</option>
@@ -302,14 +303,14 @@
       <span class="hint" style="align-self:center;">按鼓点切段：片段不重样、免重编码防闪跳（修复顺序重复/画面跳闪）</span>
     </div>
     <div class="row" style="margin-top:8px;">
-      <div class="field"><label>节拍灵敏度</label>
+      <div class="field"><label for="bcSensitivity">节拍灵敏度</label>
         <input type="range" id="bcSensitivity" min="0.2" max="0.9" step="0.05" value="0.5" style="width:180px; vertical-align:middle;">
         <span id="bcSensitivityText" style="margin-left:8px;">0.5</span>
       </div>
-      <div class="field"><label>片段最小时长(秒)</label>
+      <div class="field"><label for="bcMinClip">片段最小时长(秒)</label>
         <input type="number" id="bcMinClip" min="0.3" max="2.0" step="0.1" value="0.6" style="width:90px">
       </div>
-      <div class="field"><label>片头保护(秒)</label>
+      <div class="field"><label for="bcSkipHead">片头保护(秒)</label>
         <input type="number" id="bcSkipHead" min="0" max="30" step="0.5" value="3" style="width:90px">
         <span class="hint" style="font-size:11px;">前N秒不切点，避免商标/片头被切碎</span>
       </div>
@@ -320,7 +321,7 @@
         <b>保留原声</b>
       </label>
       <span class="hint" style="align-self:center;">同时保留视频原声（压低）+ 音乐铺底，不勾选则纯音乐。</span>
-      <div class="field" style="margin:0;"><label>转场</label>
+      <div class="field" style="margin:0;"><label for="bcTransition">转场</label>
         <select id="bcTransition">
           <option value="none" selected>硬切（无转场）</option>
           <option value="fadeblack">黑闪</option>
@@ -330,7 +331,7 @@
         </select>
       </div>
       <span class="hint" style="align-self:center;">仅智能强卡点模式生效</span>
-      <div class="field" style="margin:0;"><label>转场时长(秒)</label>
+      <div class="field" style="margin:0;"><label for="bcTransDur">转场时长(秒)</label>
         <input type="number" id="bcTransDur" min="0.1" max="0.6" step="0.05" value="0.2" style="width:70px">
       </div>
     </div>
@@ -365,7 +366,7 @@
     <div class="row" style="margin-top:10px;">
       <div class="mode-hint" id="narModeHint">🤖 <b>自动路径</b>：本地模型免费优先（看画面 + 写稿）→ 配置了云端 key 时用云端增强 → 都没有时用台词/模板兜底。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
       <div class="hint" id="narVoiceInfo" style="width:100%; margin-top:4px;">🔊 配音：读取中…</div>
-      <div class="field"><label>题材类型（决定解说模板）</label>
+      <div class="field"><label for="narGenre">题材类型（决定解说模板）</label>
         <select id="narGenre" onchange="saveNarrGenre()">
           <option value="auto" selected>自动判断</option>
           <option value="suspense">悬疑/烧脑/反转</option>
@@ -376,10 +377,13 @@
           <option value="history">历史/战争/传记</option>
         </select>
       </div>
-      <div class="field"><label>最大分段(秒)</label><input type="number" id="narMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
-      <div class="field" style="flex:1"><label>视频主题/梗概（选填，纯风景片建议填）</label><input id="narTheme" placeholder="例：春天樱花树下散步的治愈短片"></div>
-      <div class="field" style="flex:1"><label>解说要求/风格（选填，会作为前置条件交给模型）</label><input id="narReq" placeholder="例：多点幽默/少升华/语气接地气/强调兄弟情"></div>
-      <div class="field"><label>解说风格</label>
+      <div class="field"><label for="narMaxSeg">最大分段(秒)</label>
+        <input type="number" id="narMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
+      <div class="field" style="flex:1"><label for="narTheme">视频主题/梗概（选填，纯风景片建议填）</label>
+        <input id="narTheme" placeholder="例：春天樱花树下散步的治愈短片"></div>
+      <div class="field" style="flex:1"><label for="narReq">解说要求/风格（选填，会作为前置条件交给模型）</label>
+        <input id="narReq" placeholder="例：多点幽默/少升华/语气接地气/强调兄弟情"></div>
+      <div class="field"><label for="narrStyle">解说风格</label>
         <select id="narrStyle" onchange="saveNarrPrefs()">
           <option value="movie" selected>🎬 电影解说</option>
           <option value="science">🔬 科普讲解</option>
@@ -387,7 +391,7 @@
           <option value="suspense">🔍 悬疑解读</option>
         </select>
       </div>
-      <div class="field"><label>详略程度</label>
+      <div class="field"><label for="detailLevel">详略程度</label>
         <select id="detailLevel" onchange="saveNarrPrefs()">
           <option value="detailed">📝 详细展开</option>
           <option value="balanced" selected>⚖️ 均衡</option>
@@ -403,7 +407,7 @@
           <div class="plot-side">
             <button class="btn mini" id="narDsBtn" onclick="openDeepSeek('nar')">🔎 DeepSeek 查剧情</button>
             <a class="btn mini ghost" style="text-align:center;" href="https://chat.deepseek.com/" target="_blank" rel="noopener">🌐 打开 DeepSeek</a>
-            <label style="font-size:12px; font-weight:600; color:#3d6a5c; margin-top:6px;">目标成片时长</label>
+            <label for="narTargetSec" style="font-size:12px; font-weight:600; color:#3d6a5c; margin-top:6px;">目标成片时长</label>
             <select id="narTargetSec">
               <option value="0" selected>自动（按视频时长·覆盖全片）</option>
               <option value="60">约 1 分钟</option>
@@ -462,7 +466,8 @@
     <div class="hint" id="movieInfo">未选视频：仅生成解说稿（可在结果区复制）。选了视频：产出带解说配音+字幕的成片。</div>
     <div class="row" style="margin-top:10px;">
       <div class="mode-hint" id="movieModeHint">🤖 <b>自动路径</b>：本地模型免费优先 → 配置了云端 key 时用云端增强 → 都没有时离线切句/模板兜底。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
-      <div class="field"><label>最大分段(秒)</label><input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
+      <div class="field"><label for="movieMaxSeg">最大分段(秒)</label>
+        <input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
       <label style="align-self:center;"><input type="checkbox" id="movieBgm" style="width:auto"> 加配乐</label>
     </div>
     <div class="actions" style="margin-top:12px;">
@@ -523,7 +528,7 @@
     <div style="margin-top:10px; padding:10px 12px; background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:10px;">
       <div style="font-weight:600; color:#2e7d32; margin-bottom:6px;">🔑 一键获取 API Key（点击直达官方申请页）</div>
       <div class="row" style="align-items:flex-end;">
-        <div class="field"><label>视觉模型（看图写文案）</label>
+        <div class="field"><span class="label">视觉模型（看图写文案）</span>
           <div class="row">
             <a class="btn mini ghost" target="_blank" href="https://platform.deepseek.com/api_keys">DeepSeek</a>
             <a class="btn mini ghost" target="_blank" href="https://bailian.console.aliyun.com/"><b>通义·百炼</b></a>
@@ -532,7 +537,7 @@
             <a class="btn mini ghost" target="_blank" href="https://platform.openai.com/api-keys">OpenAI</a>
           </div>
         </div>
-        <div class="field"><label>中文配音 TTS</label>
+        <div class="field"><span class="label">中文配音 TTS</span>
           <div class="row">
             <a class="btn mini ghost" target="_blank" href="https://bailian.console.aliyun.com/">通义·百炼 (DashScope)</a>
             <a class="btn mini ghost" target="_blank" href="https://platform.openai.com/api-keys">OpenAI tts</a>
@@ -547,26 +552,33 @@
       <summary style="cursor:pointer; color:#2e7d32; font-size:13px;">🌐 API 云端配置（① 看图写文案 + ② 中文配音，花少量钱）</summary>
       <div class="row" style="margin-top:8px; border-bottom:1px dashed #ddd; padding-bottom:8px;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">① 看图写文案（视觉模型）</div>
-        <div class="field" style="flex:1"><label>接口地址 base_url</label><input id="visBase" placeholder="例 https://api.deepseek.com/v1"></div>
-        <div class="field" style="flex:1"><label>API Key</label><input id="visKey" type="password" placeholder="视觉模型的 Key"></div>
-        <div class="field" style="flex:1"><label>视觉模型 model</label><input id="visModel" placeholder="例 gpt-4o / qwen-vl-plus / glm-4v"></div>
-        <div class="field"><label>&nbsp;</label><button class="btn ghost" id="testVis" onclick="testAI('vision')">🧪 测试</button></div>
+        <div class="field" style="flex:1"><label for="visBase">接口地址 base_url</label>
+        <input id="visBase" placeholder="例 https://api.deepseek.com/v1"></div>
+        <div class="field" style="flex:1"><label for="visKey">API Key</label>
+        <input id="visKey" type="password" placeholder="视觉模型的 Key"></div>
+        <div class="field" style="flex:1"><label for="visModel">视觉模型 model</label>
+        <input id="visModel" placeholder="例 gpt-4o / qwen-vl-plus / glm-4v"></div>
+        <div class="field"><span>&nbsp;</span><button class="btn ghost" id="testVis" onclick="testAI('vision')">🧪 测试</button></div>
         <div class="hint" id="visTestRes" style="width:100%"> </div>
       </div>
       <div class="row" style="margin-top:10px; padding-bottom:8px;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">② 中文配音 TTS（可留空 = 无配音）</div>
-        <div class="field"><label>供应商 provider</label>
-          <select id="ttsProvider" onchange="ttsProviderHint()">
+        <div class="field"><label for="ttsProvider">供应商 provider</label>
+        <select id="ttsProvider" onchange="ttsProviderHint()">
             <option value="mimo">小米 MiMo</option>
             <option value="dashscope">通义千问 DashScope</option>
             <option value="openai">OpenAI / 兼容</option>
           </select>
         </div>
-        <div class="field" style="flex:1"><label>接口地址 base_url（通义可留空）</label><input id="ttsBase" placeholder="通义留空 / OpenAI例 api.openai.com/v1"></div>
-        <div class="field" style="flex:1"><label>API Key</label><input id="ttsKey" type="password" placeholder="TTS 的 Key"></div>
-        <div class="field"><label>TTS 模型 model</label><input id="ttsModel" placeholder="通义例 qwen-audio-turbo / 兼容例 tts-1"></div>
-        <div class="field"><label>音色 voice</label><input id="ttsVoice" value="allmina" style="width:100px"></div>
-        <div class="field"><label>&nbsp;</label><button class="btn ghost" id="testTts" onclick="testAI('tts')">🧪 测试</button></div>
+        <div class="field" style="flex:1"><label for="ttsBase">接口地址 base_url（通义可留空）</label>
+        <input id="ttsBase" placeholder="通义留空 / OpenAI例 api.openai.com/v1"></div>
+        <div class="field" style="flex:1"><label for="ttsKey">API Key</label>
+        <input id="ttsKey" type="password" placeholder="TTS 的 Key"></div>
+        <div class="field"><label for="ttsModel">TTS 模型 model</label>
+        <input id="ttsModel" placeholder="通义例 qwen-audio-turbo / 兼容例 tts-1"></div>
+        <div class="field"><label for="ttsVoice">音色 voice</label>
+        <input id="ttsVoice" value="allmina" style="width:100px"></div>
+        <div class="field"><span>&nbsp;</span><button class="btn ghost" id="testTts" onclick="testAI('tts')">🧪 测试</button></div>
         <div class="hint">通义音色例：<b>allmina</b>（女声）/ longxiaochun（男声）/ cherry / coffee。OpenAI 例：alloy / onyx / nova。</div>
         <div class="hint" id="ttsTestRes" style="width:100%"> </div>
       </div>
@@ -578,9 +590,11 @@
       <div class="row" style="margin-top:10px; padding-bottom:8px; border-bottom:1px dashed #ddd;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">③ 本地模型（免费·离线，Ollama / qwen 等 OpenAI 兼容端点）</div>
         <div class="field"><label><input type="checkbox" id="localEnabled" style="width:auto" checked> 启用本地模型</label></div>
-        <div class="field" style="flex:1"><label>接口地址 base_url</label><input id="localBase" placeholder="http://localhost:11434/v1"></div>
-        <div class="field" style="flex:1"><label>模型 model</label><input id="localModel" placeholder="qwen2.5:latest"></div>
-        <div class="field"><label>&nbsp;</label>
+        <div class="field" style="flex:1"><label for="localBase">接口地址 base_url</label>
+        <input id="localBase" placeholder="http://localhost:11434/v1"></div>
+        <div class="field" style="flex:1"><label for="localModel">模型 model</label>
+        <input id="localModel" placeholder="qwen2.5:latest"></div>
+        <div class="field"><span>&nbsp;</span>
           <button class="btn ghost" id="testLocal" onclick="testLocal()">🧪 测试连接</button>
           <button class="btn ghost" id="pullLocal" onclick="pullLocalModel()">📥 拉取模型</button>
         </div>
@@ -597,18 +611,12 @@
       <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">④ 台词识别模型（Whisper）</div>
         <details class="bubble"><summary>本步网络要求（点开）</summary><div class="bubble-body">✅ <b>免科学上网</b>：Whisper 权重走 <code>hf-mirror.com</code> 镜像直连。⚠️ 但若你在「🌐 国内下载镜像」的「Ollama 代理」框填了地址、而代理软件没开，会报 <code>10061 连接被拒</code> → 把代理框<b>清空</b>再点下载即可（或先开代理）。<br>ℹ️ 下载时控制台若出现 <code>Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN…</code> —— 这是<b>正常提示、不是报错</b>，只说明没登录、限速稍低，下载照常进行。不用管，等它跑完变「✅ 已下载」即可（想要更快可去 huggingface.co 免费注册拿个 token 填到 ⑥，但个人使用完全不用）。<br>🛟 <b>网页点下载也总失败？</b>用你已验证能下的 <code>aria2c</code> 手动拉：把这 4 个文件下到 <code>C:\Users\XOS\Desktop\spring_video\models\whisper\base\</code>（先建 <code>base</code> 文件夹）即被网页识别为「已下载」：<code>config.json</code>、<code>model.bin</code>、<code>tokenizer.json</code>、<code>vocabulary.txt</code>，地址前缀 <code>https://hf-mirror.com/Systran/faster-whisper-base/resolve/main/</code>。</div></details>
-        <div class="field"><label>模型精度（越大越准、越慢）</label>
-          <select id="whisperModel" onchange="saveWhisper()">
-            <option value="tiny">tiny（最快·最糙）</option>
-            <option value="base" selected>base（默认·平衡）</option>
-            <option value="small">small（更准·推荐）</option>
-            <option value="medium">medium（很准·较慢）</option>
-            <option value="large-v3">large-v3（最准·GPU 加速·12GB 推荐）</option>
-            <option value="distil-large-v3">distil-large-v3（large-v3 蒸馏·更快·精度接近）</option>
-          </select>
-          <div class="hint" style="margin-top:4px;">💡 装了 CUDA 版 torch（见 requirements.txt 注释）后，<b>large-v3-turbo 在显卡上又快又准</b>，中文台词识别明显优于 base；纯 CPU 建议 base/small。</div>
+        <div style="width:100%;">
+          <div class="hint" style="margin-bottom:6px;">🎙 台词识别模型（点击卡片选择并下载，已安装的直接启用）：</div>
+          <div class="row" style="gap:6px; flex-wrap:wrap; align-items:stretch;" id="whisperModelCards"></div>
+          <input type="hidden" id="whisperModel" value="base">
+          <div class="hint" style="margin-top:6px;">💡 装了 CUDA 版 torch 后，<b>large-v3 在显卡上又快又准</b>，中文台词识别明显优于 base；纯 CPU 建议 base/small。</div>
         </div>
-        <div class="field"><label>&nbsp;</label><button class="btn ghost" id="dlWhisper" onclick="downloadWhisper()">⬇ 下载/预载模型</button></div>
         <div class="hint" id="whisperStatus" style="width:100%">状态加载中…</div>
         <div class="cmdbox" id="cmdWhisper"></div>
         <div class="hint" style="width:100%">模型权重自动存到项目目录 <code>models/whisper/</code>，首次生成时若缺失会自动联网下载（仅一次）。点「下载」可提前预载，下方显示就绪状态与进度。</div>
@@ -617,15 +625,17 @@
         <div style="font-weight:600; color:#2e7d32; width:100%;">⑤ 本地视觉理解 VLM（看图写真解说·免费·离线）</div>
         <details class="bubble"><summary>本步网络要求（点开）</summary><div class="bubble-body">⚠️ <b>同第 2 步（拉文字大脑）</b>：qwen2.5vl 也是 Ollama 从境外拉，需代理/科学上网，或走 aria2c 离线导入（把模型名换成 <code>qwen2.5vl</code>）。只有想升级「真解说」才装，不装也能出片。</div></details>
         <div class="field"><label><input type="checkbox" id="vlmEnabled" style="width:auto" onchange="saveVlm()"> 启用本地视觉模型</label></div>
-        <div class="field"><label>服务模式</label>
-          <select id="vlmMode" onchange="saveVlm()">
+        <div class="field"><label for="vlmMode">服务模式</label>
+        <select id="vlmMode" onchange="saveVlm()">
             <option value="ollama" selected>Ollama（本地原生）</option>
             <option value="openai">OpenAI 兼容 /v1（多模态）</option>
           </select>
         </div>
-        <div class="field" style="flex:1"><label>接口地址 base_url</label><input id="vlmBase" value="http://localhost:11434" placeholder="http://localhost:11434" onchange="saveVlm()"></div>
-        <div class="field" style="flex:1"><label>模型 model</label><input id="vlmModel" value="qwen2.5vl:latest" placeholder="qwen2.5vl:latest" onchange="saveVlm()"></div>
-        <div class="field"><label>&nbsp;</label>
+        <div class="field" style="flex:1"><label for="vlmBase">接口地址 base_url</label>
+        <input id="vlmBase" value="http://localhost:11434" placeholder="http://localhost:11434" onchange="saveVlm()"></div>
+        <div class="field" style="flex:1"><label for="vlmModel">模型 model</label>
+        <input id="vlmModel" value="qwen2.5vl:latest" placeholder="qwen2.5vl:latest" onchange="saveVlm()"></div>
+        <div class="field"><span>&nbsp;</span>
           <button class="btn ghost" id="testVlm" onclick="testVlm()">🧪 测试/检测</button>
           <button class="btn ghost" id="pullVlm" onclick="pullVlm()">📥 拉取模型</button>
         </div>
@@ -656,8 +666,8 @@
           选「自动」时优先级：<b>edge-tts → 离线模型 → 系统 SAPI</b>。
           <b>一条解说内部会锁定引擎</b>，不会前半段一个声音后半段另一个。
         </div></details>
-        <div class="field"><label>引擎</label>
-          <select id="ttsLocalEngine" onchange="ttsLocalHint()">
+        <div class="field"><label for="ttsLocalEngine">引擎</label>
+        <select id="ttsLocalEngine" onchange="ttsLocalHint()">
             <option value="auto" selected>自动（edge-tts → 离线模型 → 系统）</option>
             <option value="edge">🌐 edge-tts（情感+顿挫·免 Key）</option>
             <option value="chattts">🎙️ ChatTTS（最自然·本地GPU）</option>
@@ -714,10 +724,13 @@
             </tr>
           </table>
         </div>
-        <div class="field"><label>离线模型</label><select id="ttsSherpaModel" style="min-width:210px"></select></div>
-        <div class="field"><label>音色（edge-tts）</label><select id="ttsLocalVoice" style="min-width:220px"></select></div>
-        <div class="field"><label>语速</label><input id="ttsLocalRate" value="+0%" placeholder="+0%" style="width:80px"></div>
-        <div class="field"><label>&nbsp;</label>
+        <div class="field"><label for="ttsSherpaModel">离线模型</label>
+        <select id="ttsSherpaModel" style="min-width:210px" onchange="saveTtsSherpa()"></select><button class="btn ghost" id="ttsUninstallBtn" onclick="uninstallTtsModel()" style="margin-left:6px;display:none;" title="删除当前选中的离线模型，释放磁盘空间">🗑 卸载</button></div>
+        <div class="field"><label for="ttsLocalVoice">音色（edge-tts）</label>
+        <select id="ttsLocalVoice" style="min-width:220px"></select></div>
+        <div class="field"><label for="ttsLocalRate">语速</label>
+        <input id="ttsLocalRate" value="+0%" placeholder="+0%" style="width:80px"></div>
+        <div class="field"><span>&nbsp;</span>
           <button class="btn ghost" id="ttsEdgeBtn" onclick="installTtsPkg('edge-tts')">📥 装 edge-tts</button>
           <button class="btn ghost" onclick="installChatTts()">📥 装 ChatTTS</button>
           <button class="btn ghost" id="ttsModelBtn" onclick="downloadTtsModel()">📥 下离线模型</button>
@@ -732,14 +745,16 @@
       </div>
       <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
         <div style="font-weight:600; color:#1565c0; width:100%;">🌐 国内下载镜像（免科学上网）</div>
-        <div class="field" style="flex:1"><label>Whisper 走 HF 镜像</label>
-          <select id="mirUseMirror" onchange="saveMirror()">
+        <div class="field" style="flex:1"><label for="mirUseMirror">Whisper 走 HF 镜像</label>
+        <select id="mirUseMirror" onchange="saveMirror()">
             <option value="1" selected>开（默认 hf-mirror.com）</option>
             <option value="0">关（直连 HuggingFace）</option>
           </select>
         </div>
-        <div class="field" style="flex:2"><label>HF 镜像地址</label><input id="mirHf" value="https://hf-mirror.com" placeholder="https://hf-mirror.com" onchange="saveMirror()"></div>
-        <div class="field" style="flex:2"><label>Ollama 代理(可选)</label><input id="mirProxy" placeholder="http://127.0.0.1:7890" onchange="saveMirror()"></div>
+        <div class="field" style="flex:2"><label for="mirHf">HF 镜像地址</label>
+        <input id="mirHf" value="https://hf-mirror.com" placeholder="https://hf-mirror.com" onchange="saveMirror()"></div>
+        <div class="field" style="flex:2"><label for="mirProxy">Ollama 代理(可选)</label>
+        <input id="mirProxy" placeholder="http://127.0.0.1:7890" onchange="saveMirror()"></div>
         <details class="bubble warn"><summary>这框是「总开关」（点开必看）</summary><div class="bubble-body">这框同时管 <b>Ollama 模型</b> 和 <b>Whisper</b> 的下载通道：<br>· 填了代理 → 两者都走代理（代理软件要<b>开着</b>）；<br>· <b>留空</b> → Whisper 直连镜像(免科学上网)、Ollama 直连境外(可能拉不动)。<br>👉 没开代理软件就<b>别填</b>，否则 Whisper 报 <code>10061</code>。</div></details>
         <div class="hint" style="width:100%; color:#b8860b;">⚠️ 这框是 Ollama 模型 和 Whisper 的「<b>总开关</b>」：<b>填了代理就必须开着代理软件</b>，否则 Whisper 会 <code>10061</code>；想免科学上网就<b>留空</b> + 用上方红框离线导入 Ollama 模型。</div>
         <div class="hint" style="width:100%">🪞 <b>Whisper 权重来自 HuggingFace</b>：点「下载/预载」会自动走上方镜像，<b>无需科学上网</b>。若下载报 <b>10061 连接被拒</b>，几乎都是「代理未开」或「镜像在你网络连不上」——把下方<b>代理</b>填成你正在运行的代理（如 Clash 的 <code>http://127.0.0.1:7890</code>），或留空让它直连镜像。该代理<b>对 Whisper 下载同样生效</b>。Ollama 拉模型同理，或手动执行：
@@ -760,19 +775,19 @@
   <div class="card" id="outCard" data-step="output">
     <h2>⚙️ 输出设置</h2>
     <div class="row">
-      <div class="field"><label>分辨率</label>
+      <div class="field"><label for="res">分辨率</label>
         <select id="res"><option value="1920x1080">1920×1080 横屏</option><option value="1080x1920">1080×1920 竖屏</option><option value="1280x720">1280×720</option></select>
       </div>
-      <div class="field"><label>帧率</label>
+      <div class="field"><label for="fps">帧率</label>
         <select id="fps"><option value="30">30</option><option value="24">24</option></select>
       </div>
-      <div class="field"><label>转场</label>
+      <div class="field"><label for="trans">转场</label>
         <select id="trans"><option value="fade">淡入淡出</option><option value="slideleft">左滑</option><option value="slideright">右滑</option><option value="slideup">上滑</option><option value="circleopen">圆形展开</option><option value="circleclose">圆形收拢</option><option value="smoothup">平滑上移</option><option value="fadeblack">淡出黑场</option><option value="wipeleft">擦除左</option><option value="zoomin">缩放进入</option></select>
       </div>
-      <div class="field"><label>转场方式</label>
+      <div class="field"><label for="hardCutSel">转场方式</label>
         <select id="hardCutSel"><option value="0">交叉淡入淡出</option><option value="1">硬切（更准踩点）</option></select>
       </div>
-      <div class="field"><label>视频编码（影响出片速度）</label>
+      <div class="field"><label for="videoEnc">视频编码（影响出片速度）</label>
         <select id="videoEnc" onchange="saveVideoEnc()">
           <option value="auto">自动（GPU 可用则用，最快）</option>
           <option value="cpu">仅 CPU 软编（兼容性最好）</option>
@@ -782,7 +797,7 @@
     </div>
     <div class="hint" id="videoEncInfo" style="margin-top:4px;">编码器中…</div>
     <div class="row" style="margin-top:8px;">
-      <div class="field"><label>一键发布规格</label>
+      <div class="field"><span class="label">一键发布规格</span>
         <div class="row">
           <button class="btn mini ghost" onclick="setRes('1080x1920','抖音竖屏')">抖音竖屏</button>
           <button class="btn mini ghost" onclick="setRes('720x1280','快手竖屏')">快手竖屏</button>
@@ -811,7 +826,20 @@
     </div>
   </div>
 
-  <div class="card" id="histCard" data-step="history">
+  <!-- 任务中心：多任务进度详情 -->
+<div class="card" id="tasksCard" data-step="tasks">
+  <div class="card-title">📋 任务中心 <span class="hint" style="font-weight:400;font-size:12px;">所有运行中的任务实时进度，支持多任务并行查看</span></div>
+  <div id="tasksStats" style="display:flex;gap:16px;margin-bottom:12px;font-size:13px;">
+    <span>运行中：<b id="tasksRunning">0</b></span>
+    <span>已完成：<b id="tasksDone">0</b></span>
+    <span>失败：<b id="tasksFailed">0</b></span>
+  </div>
+  <div id="tasksList" style="display:flex;flex-direction:column;gap:10px;">
+    <div class="hint" style="text-align:center;padding:30px;">暂无任务，提交任务后这里会显示实时进度</div>
+  </div>
+</div>
+
+<div class="card" id="histCard" data-step="history">
     <h2>🕘 最近生成 <button class="btn mini ghost" onclick="clearHistory()">🗑 清空</button></h2>
     <div id="historyList"><div class="hint">还没有生成记录。</div></div>
   </div>
@@ -835,6 +863,19 @@
   <div class="plan-box" id="planBox"></div>
 </div>
 
-<script src="/static/app.js"></script>
+<!-- 增量重生成：编辑解说词弹窗 -->
+<div class="modal" id="narrEditModal" style="display:none; align-items:flex-start; overflow:auto;">
+  <div class="modal-box" style="max-width:720px; width:92%; margin-top:40px;">
+    <div class="modal-title">编辑解说词（改某段只重生成该段）</div>
+    <div class="modal-msg" id="narrEditInfo" style="margin-bottom:10px;"></div>
+    <div id="narrEditList" style="max-height:50vh; overflow-y:auto; margin-bottom:12px;"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" onclick="closeNarrEdit()">取消</button>
+      <button class="btn" id="narrEditSave" onclick="saveNarrEdit()">保存并重生成</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>

@@ -193,6 +193,12 @@ function loadAIConfig(){
     if(res.vision_available) st.push('视觉✅'); else st.push('视觉(离线)');
     if(res.tts_available) st.push('配音✅'); else st.push('配音未配');
     $('aiStatus').textContent = st.join(' · ');
+    // 自动勾选「按画面生成中文文案」：VLM已启用且就绪时自动勾，不用手动选
+    const aiCap = $('aiCap');
+    if(aiCap && res.vlm_enabled && res.vlm_ready && !aiCap.checked){
+      aiCap.checked = true;
+      if(typeof updateBuildModeHint === 'function') updateBuildModeHint();
+    }
     loadHardware();
   }).catch(e=>console.warn('加载 AI 配置失败', e));
 }
@@ -304,6 +310,21 @@ function loadTtsLocal(){
       nv.innerHTML = '🔊 配音：<b>' + escapeHtml(res.label || '未知') + '</b>'
         + '　<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'local\')">⚙️ 换配音引擎/音色</a>';
     }
+    // 填充离线模型下拉框 + 控制卸载按钮
+    const sherpaSel = $('ttsSherpaModel');
+    const uninstBtn = $('ttsUninstallBtn');
+    if(sherpaSel && res.sherpa_models){
+      const curKey = res.sherpa_model || '';
+      sherpaSel.innerHTML = res.sherpa_models.map(m =>
+        '<option value="' + m.key + '"' + (m.key===curKey?' selected':'') + '>'
+        + m.label + (m.ready ? ' ✅' : ' ⬜未下载') + '</option>'
+      ).join('');
+      // 卸载按钮：仅当选中的模型已下载时显示
+      if(uninstBtn){
+        const selModel = res.sherpa_models.find(m => m.key === sherpaSel.value);
+        uninstBtn.style.display = selModel && selModel.ready ? 'inline-block' : 'none';
+      }
+    }
     ttsLocalHint();
   }).catch(e=>console.warn('本地配音状态加载失败', e));
 }
@@ -351,6 +372,33 @@ function downloadTtsModel(){
     }).catch(e=>{ if(st) st.textContent = '❌ 下载请求失败：' + e.message; });
   if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 2000);
 }
+
+function saveTtsSherpa(){
+  const sel = $('ttsSherpaModel'); if(!sel) return;
+  // 保存到配置
+  fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({tts_local: {sherpa_model: sel.value}})})
+    .catch(()=>{});
+  // 刷新状态（控制卸载按钮显示）
+  loadTtsLocal();
+}
+
+function uninstallTtsModel(){
+  const sel = $('ttsSherpaModel'); if(!sel) return;
+  const key = sel.value;
+  if(!key) return;
+  const label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : key;
+  if(!confirm('确定卸载「' + label + '」？\n\n这会删除模型文件释放磁盘空间，之后需要重新下载。')) return;
+  const st = $('ttsLocalState');
+  if(st) st.textContent = '⏳ 正在卸载 ' + label + '…';
+  fetch('/api/tts/model/uninstall', {method:'POST', headers:{'Content-Type':'application/json'},
+                                     body: JSON.stringify({model: key})})
+    .then(r=>r.json()).then(res=>{
+      if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || res.error || '');
+      loadTtsLocal();
+    }).catch(e=>{ if(st) st.textContent = '❌ 卸载请求失败：' + e.message; });
+}
+
 function testLocalTts(){
   const st = $('ttsLocalState'), pl = $('ttsTestPlayer');
   if(st) st.textContent = '⏳ 正在试听合成…';
@@ -461,11 +509,31 @@ function loadWhisperStatus(){
     const cb = $('cmdWhisper'); if(cb){
       cb.textContent = '模型目录：' + dir + (res.available && res.available.length ? '　已缓存：' + res.available.join(', ') : '');
     }
-    const btn = $('dlWhisper');
-    if(btn){ btn.disabled = !!res.downloading; btn.textContent = res.downloading ? '⏳ 下载中…' : '⬇ 下载/预载模型'; }
+    // 渲染模型卡片
+    const installed = res.available || [];
+    const cur = res.selected || 'base';
+    const downloading = res.downloading ? res.download_model : null;
+    if(typeof _renderModelCards === 'function'){
+      _renderModelCards('whisperModelCards', WHISPER_MODEL_CATALOG, cur, installed, downloading, 'pickWhisperModel');
+    }
     // 自动续轮询：下载中持续刷新
     if(res.downloading) setTimeout(loadWhisperStatus, 2000);
   }).catch(e=>console.warn('加载 Whisper 状态失败', e));
+}
+function pickWhisperModel(tag, installed){
+  const el = $('whisperModel'); if(!el) return;
+  el.value = tag;
+  saveWhisper();
+  if(!installed){
+    // 未安装则自动开始下载
+    const btn = $('dlWhisper'); if(btn){ btn.textContent='⏳ 下载中…'; btn.disabled=true; }
+    fetch('/api/whisper/download', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model: tag }) })
+      .then(r=>r.json()).then(res=>{
+        if($('whisperStatus')) $('whisperStatus').textContent = (res.ok?'⏳ ':'❌ ') + (res.message||'');
+        loadWhisperStatus();
+      }).catch(()=>{ if(btn){ btn.textContent='⬇ 下载/预载模型'; btn.disabled=false; } });
+  }
 }
 
 // ---- 本地视觉理解 VLM：启用保存 / 拉取 / 检测轮询 ----
@@ -540,6 +608,15 @@ const VLM_MODEL_CATALOG = [
   {tag:'qwen3-vl:30b',     label:'qwen3-vl:30b (MoE)', desc:'旗舰·激活3B速度快·需16GB显存', size:'≈20GB'},
   {tag:'qwen2.5vl:latest', label:'qwen2.5vl', desc:'稳定基准（回退选）', size:'≈5.6GB'},
 ];
+
+const WHISPER_MODEL_CATALOG = [
+  {tag:'tiny',            label:'tiny', desc:'最快·最糙·适合快速预览', size:'≈75MB'},
+  {tag:'base',            label:'⭐ base', desc:'默认·平衡·纯CPU推荐', size:'≈150MB'},
+  {tag:'small',           label:'small', desc:'更准·推荐·CPU也能跑', size:'≈500MB'},
+  {tag:'medium',          label:'medium', desc:'很准·较慢·需GPU', size:'≈1.5GB'},
+  {tag:'large-v3',        label:'large-v3', desc:'最准·GPU加速·12GB推荐', size:'≈3GB'},
+  {tag:'distil-large-v3', label:'distil-large-v3', desc:'large-v3蒸馏·更快·精度接近', size:'≈1.5GB'},
+];
 function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn){
   const box = $(boxId); if(!box) return;
   box.innerHTML = catalog.map(m=>{
@@ -551,10 +628,11 @@ function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn)
     else if (active){ state = '✅ 使用中'; btnCls = 'btn mini'; btn = '使用中'; }
     else if (inst){ state = '✅ 已安装'; btnCls = 'btn mini ghost'; btn = '点击启用'; }
     else { state = '⬜ 未安装'; btnCls = 'btn mini ghost'; btn = '⬇ 下载并启用'; }
-    return `<button class="${btnCls}" style="flex:1;min-width:150px;text-align:left;${active?'outline:2px solid #16a34a;':''}" onclick="${pickFn}('${m.tag}')" ${pulling?'disabled':''}>
+    const rmBtn = (inst && !active) ? `<span style="display:inline-block;margin-top:4px;font-size:11px;color:#ef4444;cursor:pointer;text-decoration:underline;" onclick="event.stopPropagation();removeModel('${m.tag}')">卸载</span>` : '';
+    return `<button class="${btnCls}" style="flex:1;min-width:150px;text-align:left;${active?'outline:2px solid #16a34a;':''}" onclick="${pickFn}('${m.tag}',${inst})" ${pulling?'disabled':''}>
       <span style="display:block;font-weight:600;">${m.label} · ${m.size}</span>
       <span style="display:block;font-size:12px;opacity:.75;">${m.desc}</span>
-      <span style="display:block;font-size:12px;margin-top:2px;">${state}</span></button>`;
+      <span style="display:block;font-size:12px;margin-top:2px;">${state}</span>${rmBtn}</button>`;
   }).join('');
 }
 function refreshModelCards(){
@@ -567,20 +645,21 @@ function refreshModelCards(){
                       (st.model||'').trim(), st.installed, st.pulling ? st.pull_model : null, 'pickVlmModel');
   }).catch(()=>{});
 }
-function pickLocalModel(tag){
+function pickLocalModel(tag, installed){
   const el = $('localModel'); if(!el) return;
   el.value = tag;
   saveAIConfig();          // 切换立即生效
-  pullLocalModel();        // 后端守卫：已安装秒完成 / 已有下载会拒绝并提示
+  if(!installed) pullLocalModel();  // 未安装才触发拉取，已安装直接用
   refreshModelCards();
 }
-function pickVlmModel(tag){
+function pickVlmModel(tag, installed){
   const el = $('vlmModel'); if(!el) return;
   el.value = tag;
   saveVlm();               // 切换立即生效
-  pullVlm();               // 同上
+  if(!installed) pullVlm();  // 未安装才触发拉取，已安装直接用
   refreshModelCards();
 }
+let _localPullTimer = null;
 function pullLocalModel(){
   const btn = $('pullLocal'); if(btn){ btn.textContent='⏳ 拉取中…'; btn.disabled=true; }
   const bar = $('localPullBar'), pct = $('localPullPct');
@@ -590,8 +669,21 @@ function pullLocalModel(){
   fetch('/api/local/pull', { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ model: $('localModel').value.trim() }) })
     .then(r=>r.json()).then(res=>{
-      if(!res.ok) $('localPullRes').textContent = '❌ ' + (res.message || res.error || '拉取未启动');
-      loadLocalStatus();
+      if(!res.ok){ $('localPullRes').textContent = '❌ ' + (res.message || res.error || '拉取未启动'); return; }
+      if(_localPullTimer) clearInterval(_localPullTimer);
+      _localPullTimer = setInterval(()=>{
+        fetch('/api/local/status').then(r=>r.json()).then(st=>{
+          const fill = $('localPullFill'), pct2 = $('localPullPct');
+          if(fill) fill.style.width = Math.min(100, Number(st.pull_pct||0)) + '%';
+          if(pct2) pct2.textContent = (st.pull_model||'') + '　' + Math.round(Number(st.pull_pct||0)) + '%　' + (st.pull_msg||'');
+          if(!st.pulling){
+            clearInterval(_localPullTimer); _localPullTimer = null;
+            if(btn){ btn.textContent = st.pull_ok ? '✅ 拉取完成' : '📥 拉取模型'; btn.disabled = false; }
+            loadLocalStatus();
+            refreshModelCards();
+          }
+        }).catch(()=>{});
+      }, 2000);
     }).catch(()=>{ if(btn){ btn.textContent='📥 拉取模型'; btn.disabled=false; } });
 }
 function loadLocalStatus(){
@@ -635,6 +727,7 @@ function loadLocalStatus(){
   }).catch(e=>console.warn('加载本地模型状态失败', e));
 }
 // ---- 本地视觉理解 VLM：网页内一键拉取（按钮此前未接，这里补上）----
+let _vlmPullTimer = null;
 function pullVlm(){
   const btn = $('pullVlm'); if(btn){ btn.textContent='⏳ 拉取中…'; btn.disabled=true; }
   const bar = $('vlmPullBar'), pct = $('vlmPullPct');
@@ -644,8 +737,23 @@ function pullVlm(){
   fetch('/api/vlm/pull', { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ model: $('vlmModel').value.trim() }) })
     .then(r=>r.json()).then(res=>{
-      if(!res.ok) $('vlmStatus').textContent = '❌ ' + (res.message || res.error || '拉取未启动');
-      loadVlmStatus();
+      if(!res.ok){ $('vlmStatus').textContent = '❌ ' + (res.message || res.error || '拉取未启动'); return; }
+      // 启动轮询：每2秒刷新进度，直到拉取完成
+      if(_vlmPullTimer) clearInterval(_vlmPullTimer);
+      _vlmPullTimer = setInterval(()=>{
+        fetch('/api/vlm/status').then(r=>r.json()).then(st=>{
+          // 更新进度条
+          const fill = $('vlmPullFill'), pct2 = $('vlmPullPct');
+          if(fill) fill.style.width = Math.min(100, Number(st.pull_pct||0)) + '%';
+          if(pct2) pct2.textContent = (st.pull_model||'') + '　' + Math.round(Number(st.pull_pct||0)) + '%　' + (st.pull_msg||'');
+          if(!st.pulling){
+            clearInterval(_vlmPullTimer); _vlmPullTimer = null;
+            if(btn){ btn.textContent = st.pull_ok ? '✅ 拉取完成' : '📥 拉取模型'; btn.disabled = false; }
+            loadVlmStatus();
+            refreshModelCards();
+          }
+        }).catch(()=>{});
+      }, 2000);
     }).catch(()=>{ if(btn){ btn.textContent='📥 拉取模型'; btn.disabled=false; } });
 }
 
@@ -718,11 +826,19 @@ function loadHistory(){
       d.innerHTML = `${h.cover?`<img class="thumb" src="/media/${h.cover}?t=${Date.now()}" alt="封面">`:''}<div class="meta"><div class="name">🕘 ${escapeHtml(h.time||'')} · ${escapeHtml(secs)}s ${escapeHtml(tag)}${missing?' <span style="color:#b45309;">⚠️ 成片文件已丢失</span>':''}</div>
         <div class="kind">${escapeHtml(capTxt)}</div></div>
         ${missing?'':`<a class="btn mini ghost" href="/media/${escapeHtml(h.file)}" download="spring-${escapeHtml(h.time||'')}.mp4">⬇ 下载</a>
-        <button class="btn mini ghost cov" title="生成或重做该成片的封面">🖼 封面</button>`}
+        <button class="btn mini ghost cov" title="生成或重做该成片的封面">🖼 封面</button>
+        ${(h.captions&&h.captions.length)?'<button class="btn mini ghost narredit" title="编辑解说词，只重生成修改的段落">✏️ 编辑</button>':''}`}
         <button class="btn mini del">🗑 删除</button>`;
-      d.querySelector('a').addEventListener('click', (e)=>{ e.preventDefault(); const a=e.currentTarget; a.href='/media/'+h.file+'?t='+Date.now(); a.click(); });
+      const dlBtn = d.querySelector('a');
+      if(dlBtn) dlBtn.addEventListener('click', (e)=>{ e.preventDefault(); const a=e.currentTarget; a.href='/media/'+h.file+'?t='+Date.now(); a.click(); });
       d.querySelector('button.del').addEventListener('click', () => deleteHistory(h.file));
-      d.querySelector('button.cov').addEventListener('click', () => {
+      const narrEditBtn = d.querySelector('button.narredit');
+      if(narrEditBtn) narrEditBtn.addEventListener('click', () => {
+        const runId = (h.file||'').split('/')[0];
+        openNarrEdit(runId, h.captions||[]);
+      });
+      const covBtn = d.querySelector('button.cov');
+      if(covBtn) covBtn.addEventListener('click', () => {
         let cb = document.getElementById('coverBox_h' + i);
         if (!cb) {
           cb = document.createElement('div');
@@ -932,6 +1048,7 @@ function setModeBadge(id, mode){
 let _gStart = 0;
 function gStart(label){
   _gStart = Date.now();
+  _gSmoothedTotal = null;
   _stopFlag = false;   // 新任务开始：清掉上一次的停止标记，否则状态文案会被锁住
   $('gprogLabel').textContent = label || '处理中…';
   $('gprogPct').textContent = '0%';
@@ -946,9 +1063,15 @@ function gSet(pct, phase){
   $('gprogPct').textContent = Math.floor(pct) + '%';
   const el = (Date.now() - _gStart) / 1000;
   let txt = phase || '';
-  if (pct > 3){
-    const eta = Math.max(0, el / pct * (100 - pct));
-    txt += (txt ? ' · ' : '') + '预计还需 ' + Math.ceil(eta) + 's';
+  if (pct > 3 && el > 5){
+    // 平滑ETA：用指数移动平均估计总时长，避免进度跳变导致ETA猛增猛减
+    const rawTotal = el / (pct / 100);
+    if (typeof _gSmoothedTotal === 'undefined' || _gSmoothedTotal === null) _gSmoothedTotal = rawTotal;
+    else _gSmoothedTotal = _gSmoothedTotal * 0.85 + rawTotal * 0.15;
+    const eta = Math.max(0, _gSmoothedTotal - el);
+    // ETA超过10分钟显示分钟，否则秒
+    if (eta > 600) txt += (txt ? ' · ' : '') + '预计还需 ' + Math.ceil(eta/60) + '分钟';
+    else txt += (txt ? ' · ' : '') + '预计还需 ' + Math.ceil(eta) + 's';
   }
   $('gprogPhase').textContent = txt;
 }
@@ -1142,8 +1265,9 @@ function gPreview(file, name){
 }
 
 // ---- 顶部步骤导航：按执行步骤切换页面（卡片按 data-step 分组显示/隐藏） ----
+let _tasksTimer = null;   // 任务中心轮询定时器（声明在最前，避免 showStep 中 TDZ 报错）
 const STEP_CARDS = {
-  start: ['guideCard', 'instructCard'],
+  start: ['guideCard', 'smartCard', 'instructCard'],
   upload: ['drop'],
   music: ['musicCard', 'libCard'],
   beatcut: ['beatcutCard'],
@@ -1151,6 +1275,7 @@ const STEP_CARDS = {
   ai: ['aiCard'],
   output: ['timelineCard', 'outCard'],
   build: ['buildCard'],
+  tasks: ['tasksCard'],
   history: ['histCard'],
   storage: ['storageCard'],
 };
@@ -1162,6 +1287,16 @@ function showStep(step){
   });
   document.querySelectorAll('.stepbtn').forEach(b => b.classList.toggle('active', b.dataset.step === step));
   try { localStorage.setItem('springStudio.lastStep', step); } catch(e){}
+  // 任务中心：进入时启动轮询，离开时停止（try/catch防御：出错不影响页面切换）
+  try {
+    if(step === 'tasks'){
+      if(typeof loadTasks === 'function') loadTasks();
+      if(_tasksTimer) clearInterval(_tasksTimer);
+      _tasksTimer = setInterval(function(){ try{ if(typeof loadTasks === 'function') loadTasks(); }catch(e){} }, 2000);
+    } else if(_tasksTimer){
+      clearInterval(_tasksTimer); _tasksTimer = null;
+    }
+  } catch(e){ console.warn('任务中心轮询出错:', e); }
 }
 function goStep(targetId){
   const el = document.getElementById(targetId);
@@ -1184,6 +1319,67 @@ function goStep(targetId){
   if (init === 'storage') loadStorage();
 })();
 function scrollTop2(){ window.scrollTo({ top: 0, behavior: 'smooth' }); }
+
+// ---- 任务中心：多任务实时进度 ----
+// （_tasksTimer 已在顶部声明，showStep 中的轮询逻辑已直接写入 showStep 函数）
+function loadTasks(){
+  fetch('/api/tasks').then(r=>r.json()).then(res=>{
+    const tasks = res.tasks || [];
+    const running = tasks.filter(t=>!t.done && !t.error).length;
+    const done = tasks.filter(t=>t.done && !t.error).length;
+    const failed = tasks.filter(t=>t.error).length;
+    if($('tasksRunning')) $('tasksRunning').textContent = running;
+    if($('tasksDone')) $('tasksDone').textContent = done;
+    if($('tasksFailed')) $('tasksFailed').textContent = failed;
+
+    const list = $('tasksList');
+    if(!list) return;
+    if(tasks.length === 0){
+      list.innerHTML = '<div class="hint" style="text-align:center;padding:30px;">暂无任务，提交任务后这里会显示实时进度</div>';
+      return;
+    }
+    list.innerHTML = tasks.map(t=>{
+      const isRunning = !t.done && !t.error;
+      const isFailed = !!t.error;
+      const pct = Math.min(100, Math.max(0, Number(t.pct)||0));
+      let statusCls = isRunning ? 'task-running' : (isFailed ? 'task-failed' : 'task-done');
+      let statusText = isRunning ? '⏳ 运行中' : (isFailed ? '❌ 失败' : '✅ 已完成');
+      let phaseText = t.phase || '';
+      let actions = '';
+      if(isRunning){
+        actions = '<button class="btn mini danger" onclick="cancelTask(\''+t.runid+'\')">⏹ 取消</button>';
+      } else if(t.done && t.file){
+        actions = '<a class="btn mini" href="/media/'+t.file+'" target="_blank">▶ 查看成片</a>';
+      }
+      if(isFailed && t.error){
+        phaseText = '错误：' + String(t.error).slice(0,100);
+      }
+      return '<div class="task-card '+statusCls+'">'
+        + '<div class="task-head">'
+        + '<span class="task-id">'+t.runid+'</span>'
+        + '<span class="task-status">'+statusText+'</span>'
+        + '</div>'
+        + '<div class="task-phase">'+phaseText+'</div>'
+        + '<div class="task-bar"><div class="task-fill" style="width:'+pct+'%"></div></div>'
+        + '<div class="task-foot">'
+        + '<span class="task-pct">'+Math.round(pct)+'%</span>'
+        + actions
+        + '</div></div>';
+    }).join('');
+  }).catch(()=>{});
+}
+function cancelTask(runid){
+  if(!confirm('确定取消任务 '+runid+'？')) return;
+  fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({runid: runid})})
+    .then(r=>r.json()).then(()=>{ setTimeout(loadTasks, 500); })
+    .catch(()=>{});
+}
+// 顶部进度条点击跳任务中心
+document.addEventListener('DOMContentLoaded', () => {
+  const gp = document.getElementById('gprog');
+  if(gp) gp.addEventListener('click', () => showStep('tasks'));
+});
 
 // ---- 存储管理面板：展示占用 + 用户自主删除（不自动清理） ----
 function fmtBytes(n){
@@ -1324,27 +1520,52 @@ async function uploadChunksOnly(file){
   for(let i=0;i<n;i++) if(have.indexOf(i) < 0) todo.push(i);
   const total = todo.length;
   let doneN = 0, failed = null;
-  // 3 路并发上传：本地回环下顺序小片传输时 FileReader+base64 编码是瓶颈，并发可显著提速
+  // 带超时的fetch：60秒超时，超时自动重试（最多3次），避免某片挂住导致整体卡死
+  async function fetchWithTimeout(url, opts, timeoutMs){
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), timeoutMs);
+    try { return await fetch(url, {...opts, signal: ctrl.signal}); }
+    finally { clearTimeout(timer); }
+  }
+  async function uploadOneChunk(i, attempt){
+    const blob = file.slice(i*CH, (i+1)*CH);
+    const fd = new FormData();
+    fd.append('upload_id', uid);
+    fd.append('idx', i);
+    fd.append('chunk', blob, 'part_' + i);
+    const r = await fetchWithTimeout('/api/upload/chunk', {method:'POST', body: fd}, 60000);
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error||('分片'+(i+1)+'上传失败'));
+  }
+  // 3 路并发上传
   async function worker(){
     while(todo.length && !failed){
       const i = todo.shift();
-      try {
-        // FormData 二进制直传：省去 FileReader+base64 的 1.37x 膨胀和 CPU 编码
-        const blob = file.slice(i*CH, (i+1)*CH);
-        const fd = new FormData();
-        fd.append('upload_id', uid);
-        fd.append('idx', i);
-        fd.append('chunk', blob, 'part_' + i);
-        const r = await fetch('/api/upload/chunk',{method:'POST', body: fd}).then(r=>r.json());
-        if(!r.ok) throw new Error(r.error||'分片上传失败');
+      let ok = false;
+      for(let attempt = 1; attempt <= 3 && !ok && !failed; attempt++){
+        try {
+          await uploadOneChunk(i, attempt);
+          ok = true;
+        } catch(e){
+          if(attempt < 3){
+            gSet(2 + Math.round(doneN*20/total), '📤 视频上传中 ' + doneN + '/' + total + '（第'+(i+1)+'片重试 '+attempt+'/3）');
+            await new Promise(r=>setTimeout(r, 500*attempt));
+          } else if(!failed){
+            failed = e;
+          }
+        }
+      }
+      if(ok && !failed){
         doneN++;
         gSet(2 + Math.round(doneN*20/total), '📤 视频上传中 ' + doneN + '/' + total + (have.length ? '（已续传 ' + have.length + ' 片）' : ''));
-      } catch(e){ if(!failed) failed = e; }
+      }
     }
   }
   await Promise.all([worker(), worker(), worker()]);
   if(failed) throw failed;
-  const fin = await fetch('/api/upload/done',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uid, name:file.name, chunks:n})}).then(r=>r.json());
+  // 合并阶段：大文件合并需要几秒到几十秒，单独显示进度避免"假死"
+  gSet(22, '📦 正在合并视频文件（' + (file.size/1024/1024).toFixed(0) + 'MB）…');
+  const fin = await fetchWithTimeout('/api/upload/done', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uid, name:file.name, chunks:n})}, 120000).then(r=>r.json());
   if(!fin.ok) throw new Error(fin.error||'上传收尾失败');
   try { localStorage.removeItem(KEY); } catch(e){}
   return uid;
@@ -2496,7 +2717,7 @@ function detectSmartConfig(){
   fetch('/api/ai_status').then(r=>r.json()).then(s=>{
     const parts = [];
     parts.push(s.vlm_ready ? '视觉模型✅' : '视觉模型❌（用台词匹配）');
-    parts.push(s.tts_ready ? '配音✅' : '配音❌');
+    parts.push(s.tts ? '配音✅' : '配音❌');
     fetch('/api/hardware').then(r=>r.json()).then(h=>{
       if(h.gpu) parts.push(h.gpu + ' ' + h.gpu_vram_gb + 'GB');
       if(h.tier) parts.push('档位:' + h.tier);
@@ -2510,14 +2731,12 @@ function detectSmartConfig(){
 }
 
 function toggleProSettings(){
-  const pro = $('proSettings');
-  const link = event.target;
-  if(pro.style.display === 'none'){
-    pro.style.display = '';
-    link.textContent = '🔽 收起专业设置';
-  } else {
-    pro.style.display = 'none';
-    link.textContent = '⚙️ 需要调参数？展开专业设置';
+  // 专业设置不再整体隐藏（否则包裹在内的所有工作流卡片都无法显示）
+  // 改为滚动到指令成片区域，方便用户找到详细设置
+  const el = document.getElementById('instructCard');
+  if(el){
+    if(typeof showStep === 'function') showStep('start');
+    setTimeout(()=>el.scrollIntoView({behavior:'smooth', block:'start'}), 100);
   }
 }
 
@@ -2573,4 +2792,65 @@ function pollSmart(runid){
     }, 400);
     setTimeout(() => { clearInterval(iv); $('smartStatus').textContent='⚠️ 超时'; resolve(); }, 1800000);
   });
+}
+
+
+// ===== 增量重生成：编辑解说词 =====
+let _narrEditRunId = '';
+let _narrEditList = [];
+function openNarrEdit(runId, captions){
+  _narrEditRunId = runId;
+  _narrEditList = captions.slice();
+  $('narrEditInfo').textContent = '任务: ' + runId + ' · 共 ' + captions.length + ' 段解说词，修改后点保存只重生成改动的段落';
+  const box = $('narrEditList');
+  box.innerHTML = '';
+  captions.forEach((txt, i) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:10px;';
+    wrap.innerHTML = '<div style="font-size:12px;color:#888;margin-bottom:3px;">第 ' + (i+1) + ' 段</div>' +
+      '<textarea data-idx="' + i + '" style="width:100%;min-height:50px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:var(--ink);font-size:13px;resize:vertical;">' + escapeHtml(txt||'') + '</textarea>';
+    box.appendChild(wrap);
+  });
+  $('narrEditModal').style.display = 'flex';
+}
+function closeNarrEdit(){ $('narrEditModal').style.display = 'none'; }
+function saveNarrEdit(){
+  const btn = $('narrEditSave');
+  btn.disabled = true; btn.textContent = '重生成中...';
+  const areas = $('narrEditList').querySelectorAll('textarea');
+  let changed = 0;
+  const doRegen = (idx) => {
+    if(idx >= areas.length){
+      btn.disabled = false; btn.textContent = '保存并重生成';
+      $('narrEditInfo').textContent = '完成！已重生成 ' + changed + ' 段，刷新历史记录查看新成片';
+      setTimeout(()=>{ closeNarrEdit(); loadHistory(); }, 1500);
+      return;
+    }
+    const ta = areas[idx];
+    const newText = ta.value.trim();
+    const oldText = _narrEditList[idx] || '';
+    if(newText !== oldText && newText){
+      changed++;
+      fetch('/api/regen_segment', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({run_id:_narrEditRunId, seg_idx:parseInt(ta.dataset.idx), text:newText})
+      }).then(r=>r.json()).then(res=>{
+        if(res.ok){ _narrEditList[parseInt(ta.dataset.idx)] = newText; ta.style.borderColor = '#4ade80'; }
+        else { ta.style.borderColor = '#f87171'; alert('第'+(parseInt(ta.dataset.idx)+1)+'段重生成失败: '+res.error); }
+        doRegen(idx+1);
+      }).catch(e=>{ ta.style.borderColor='#f87171'; doRegen(idx+1); });
+    } else {
+      doRegen(idx+1);
+    }
+  };
+  doRegen(0);
+}
+
+
+function removeModel(tag){
+  if(!confirm('确定卸载模型 ' + tag + ' ？释放磁盘空间，之后需重新下载。')) return;
+  fetch('/api/model/remove', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({model: tag})}).then(r=>r.json()).then(res=>{
+    if(res.ok){ alert('已卸载 ' + tag); if(typeof refreshModelCards==='function') refreshModelCards(); if(typeof loadVlmStatus==='function') loadVlmStatus(); }
+    else alert('卸载失败: ' + (res.error||res.msg||'未知错误'));
+  }).catch(e=>alert('卸载失败: '+e));
 }
