@@ -1272,6 +1272,7 @@ const STEP_CARDS = {
   music: ['musicCard', 'libCard'],
   beatcut: ['beatcutCard'],
   narrate: ['narCard', 'movieCard'],
+  adjust: ['adjustCard'],
   ai: ['aiCard'],
   output: ['timelineCard', 'outCard'],
   build: ['buildCard'],
