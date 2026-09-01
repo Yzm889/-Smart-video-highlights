@@ -5381,11 +5381,9 @@ def edge_tts_speak(text, out_path, voice=None, rate=None):
     # 外层：重试整轮（本机实测单次成功率仅约 2/3，重试后才谈得上「用得上」）
     for attempt in range(_EDGE_RETRY):
         for cmd in tries:
-            # SSML模式失败后，自动回退到纯文本模式（剥离TTS标记，避免把"停顿"念出来）
+            # SSML模式失败后，自动回退到纯文本模式（剥离TTS标记，避免把"停顿"/"情绪"念出来）
             if use_ssml and attempt >= 1 and 'ssml' in str(cmd):
-                import re as _re_ssml
-                clean_text = _re_ssml.sub(r'\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}', '', text)
-                clean_text = _re_ssml.sub(r'\s+', ' ', clean_text).strip()
+                clean_text = _strip_tts_markup(text)
                 if clean_text:
                     cmd = [sys.executable, '-m', 'edge_tts', '--voice', voice, '--rate=' + rate,
                            '--text', clean_text, '--write-media', out_path]
