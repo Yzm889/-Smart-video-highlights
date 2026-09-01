@@ -3008,12 +3008,25 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
   status.textContent = '🎙️ 共 ' + ttsList.length + ' 段配音 · 逐段试听，可修改文字后重生成，或勾选跳过';
   let html = '';
   ttsList.forEach(function(item, idx){
+    let cleanText = (item.text||'').replace(/\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}/g, '').replace(/\{\/(?:情绪|停顿|慢|快|高音|低音|大声|小声)\}/g, '').replace(/\s+/g, ' ').trim();
+    let vs = item.video_start !== undefined ? item.video_start : 0;
+    let ve = item.video_end !== undefined ? item.video_end : 0;
     html += '<div class="adjust-item" id="adjItem'+idx+'" style="padding:12px;margin:8px 0;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">';
     html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
-    html += '<span style="font-size:13px;font-weight:600">第 '+(idx+1)+' 段 <span style="color:var(--muted);font-weight:400">('+(item.duration||0)+'秒)</span></span>';
+    html += '<span style="font-size:13px;font-weight:600">第 '+(idx+1)+' 段 <span style="color:var(--muted);font-weight:400">配音'+(item.duration||0)+'秒</span></span>';
     html += '<label style="font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="adjSkip'+idx+'" style="margin-right:4px;vertical-align:middle">跳过此段</label>';
     html += '</div>';
-    html += '<textarea id="adjText'+idx+'" rows="2" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" oninput="_adjustState.changed['+idx+']=true">'+(item.text||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>';
+    html += '<textarea id="adjText'+idx+'" rows="2" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" oninput="_adjustState.changed['+idx+']=true">'+cleanText.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>';
+    html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">';
+    html += '<span style="font-size:12px;color:var(--muted);white-space:nowrap">🎬 对应画面:</span>';
+    html += '<span style="font-size:12px;color:var(--muted)">从</span>';
+    html += '<input type="number" id="adjVStart'+idx+'" value="'+vs+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_adjustState.changed['+idx+']=true">';
+    html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
+    html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_adjustState.changed['+idx+']=true">';
+    html += '<span style="font-size:12px;color:var(--muted)">秒</span>';
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 预览</button>';
+    html += '</div>';
+    html += '<div id="adjFrame'+idx+'" style="margin-top:6px;display:none"><img id="adjFrameImg'+idx+'" style="max-width:100%;max-height:160px;border-radius:6px;border:1px solid var(--border)"></div>';
     html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
     html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
     html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
@@ -3030,6 +3043,15 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
   if(rbtn) rbtn.onclick = function(){ if(confirm('确定重新生成全部配音吗？')){ regenAllTts(); } };
   // 滚动到顶部
   window.scrollTo({top:0, behavior:'smooth'});
+}
+
+function previewVideoFrame(idx){
+  const t = parseFloat(document.getElementById('adjVStart'+idx).value) || 0;
+  const frameDiv = document.getElementById('adjFrame'+idx);
+  const img = document.getElementById('adjFrameImg'+idx);
+  frameDiv.style.display = 'block';
+  img.src = '/api/video_frame?run_dir=' + encodeURIComponent(_adjustState.runDir) + '&time=' + t + '&t=' + Date.now();
+  img.onerror = function(){ frameDiv.style.display = 'none'; };
 }
 
 async function regenSingleTts(idx){
@@ -3110,7 +3132,15 @@ async function confirmAdjustAndCompose(){
     const cb = document.getElementById('adjSkip'+i);
     if(cb && cb.checked){ skip.push(i); continue; }
     const t = document.getElementById('adjText'+i);
-    finalItems.push({ index: i, text: t ? t.value.trim() : _adjustState.items[i].text, audio: _adjustState.items[i].audio });
+    const vs = document.getElementById('adjVStart'+i);
+    const ve = document.getElementById('adjVEnd'+i);
+    finalItems.push({
+      index: i,
+      text: t ? t.value.trim() : _adjustState.items[i].text,
+      audio: _adjustState.items[i].audio,
+      video_start: vs ? parseFloat(vs.value) : (_adjustState.items[i].video_start || 0),
+      video_end: ve ? parseFloat(ve.value) : (_adjustState.items[i].video_end || 0)
+    });
   }
   try{
     const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip };

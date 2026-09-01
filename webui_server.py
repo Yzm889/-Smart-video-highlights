@@ -8032,6 +8032,16 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             if item.get('audio'):
                 tts_results.append((new_idx, item['audio']))
             new_idx += 1
+        # 收集用户调整的视频时间范围（按原始索引）
+        user_video_spans = {}
+        for item in adjusted_items:
+            old_i = item.get('index', 0)
+            if old_i in skip_set:
+                continue
+            vs = item.get('video_start')
+            ve = item.get('video_end')
+            if vs is not None and ve is not None and ve > vs:
+                user_video_spans[old_i] = (float(vs), float(ve))
         # 重建segs和narr_map（只保留未跳过的段对应的画面）
         if narr_map and len(narr_map) == len(segs):
             new_segs = []
@@ -8084,6 +8094,14 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             else:
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
+        # 应用用户手动调整的视频时间范围（覆盖自动聚合结果）
+        if adjusted_items and user_video_spans:
+            for old_i, (vs, ve) in user_video_spans.items():
+                if old_i in old_to_new:
+                    new_i = old_to_new[old_i]
+                    if new_i < len(segs):
+                        segs[new_i] = (vs, ve)
+                        print('[DIAG] 用户调整第%d段画面: %.1f-%.1f秒' % (new_i + 1, vs, ve))
         print('[DIAG] 高密度聚合: %d节 -> %d个片段' % (len(narr), len(segs)))
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
     if params.get('autoCut', True):
@@ -9474,16 +9492,65 @@ class Handler(BaseHTTPRequestHandler):
                 import json as _j
                 state = _j.load(open(state_path, encoding='utf-8'))
                 tts_list = []
+                # 计算每段解说词对应的视频时间范围（聚合narr_map+segs）
+                segs_state = [tuple(s) for s in state.get('segs', [])]
+                narr_map_state = state.get('narr_map') or []
+                video_spans = {}
+                if narr_map_state and len(narr_map_state) == len(segs_state):
+                    for bi in range(len(state.get('narr', []))):
+                        bsegs = [segs_state[k] for k in range(len(segs_state)) if narr_map_state[k] == bi]
+                        if bsegs:
+                            video_spans[bi] = {'start': round(bsegs[0][0], 2), 'end': round(bsegs[-1][1], 2)}
+                video_dur = round(probe_audio_len(state['video_path']) or 0, 1)
                 for i, p in state.get('tts_results', []):
+                    span = video_spans.get(i, {'start': 0, 'end': 0})
                     tts_list.append({
                         'index': i,
                         'text': state['narr'][i] if i < len(state.get('narr', [])) else '',
                         'audio': os.path.relpath(p, OUTDIR).replace('\\', '/'),
-                        'duration': round(probe_audio_len(p) or 0, 1)
+                        'duration': round(probe_audio_len(p) or 0, 1),
+                        'video_start': span['start'],
+                        'video_end': span['end']
                     })
-                self._send(200, json.dumps({'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list}).encode('utf-8'), 'application/json')
+                self._send(200, json.dumps({'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list, 'video_duration': video_dur, 'video_path': os.path.basename(state['video_path'])}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/video_frame':
+            # 提取视频指定时间点的帧，返回JPEG（用于手动调整时预览画面）
+            try:
+                qs = parse_qs(urlparse(self.path).query)
+                run_dir_name = (qs.get('run_dir') or [''])[0]
+                t = float((qs.get('time') or ['0'])[0])
+                if not run_dir_name:
+                    self._send(400, b'missing run_dir', 'text/plain')
+                    return
+                run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+                state_path = os.path.join(run_dir, 'tts_state.json')
+                if not os.path.exists(state_path):
+                    self._send(404, b'state not found', 'text/plain')
+                    return
+                import json as _j
+                state = _j.load(open(state_path, encoding='utf-8'))
+                video_path = state['video_path']
+                if not os.path.exists(video_path):
+                    self._send(404, b'video not found', 'text/plain')
+                    return
+                # 用ffmpeg提取帧
+                import imageio_ffmpeg as _iff
+                ff = _iff.get_ffmpeg_exe()
+                frame_path = os.path.join(run_dir, 'preview_%d.jpg' % int(t * 1000))
+                import subprocess as _sp
+                cmd = [ff, '-y', '-ss', str(max(0, t)), '-i', video_path, '-frames:v', '1', '-q:v', '3', frame_path]
+                _sp.run(cmd, capture_output=True, timeout=30)
+                if os.path.exists(frame_path):
+                    with open(frame_path, 'rb') as f:
+                        data = f.read()
+                    self._send(200, data, 'image/jpeg')
+                else:
+                    self._send(500, b'frame extract failed', 'text/plain')
+            except Exception as e:
+                self._send(500, str(e).encode('utf-8'), 'text/plain')
             return
         if path == '/api/progress':
             runid = parse_qs(urlparse(self.path).query).get('run', [None])[0]
