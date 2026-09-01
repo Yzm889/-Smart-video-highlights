@@ -2731,12 +2731,10 @@ function detectSmartConfig(){
 }
 
 function toggleProSettings(){
-  // 专业设置不再整体隐藏（否则包裹在内的所有工作流卡片都无法显示）
-  // 改为滚动到指令成片区域，方便用户找到详细设置
-  const el = document.getElementById('instructCard');
-  if(el){
-    if(typeof showStep === 'function') showStep('start');
-    setTimeout(()=>el.scrollIntoView({behavior:'smooth', block:'start'}), 100);
+  // 跳转到AI配置页面（专业设置都在那里：模型选择、下载、卸载、VLM开关等）
+  if(typeof showStep === 'function'){
+    showStep('ai');
+    setTimeout(()=>window.scrollTo({top:0, behavior:'smooth'}), 50);
   }
 }
 

@@ -7298,6 +7298,79 @@ def _vlm_sample_captions(video_path, vdur, run_dir, n_samples=24, progress=None)
     return captions
 
 
+def _llm_align_beats_to_scenes(beats, scenes, movie_name=''):
+    """用LLM把解说词和场景做语义对齐，返回 {beat_idx: [scene_idx, ...]}，失败返回 {}。"""
+    if not beats or not scenes:
+        return {}
+    scene_lines = []
+    for i, sc in enumerate(scenes):
+        parts = []
+        if sc.get('location'): parts.append('地点:' + sc['location'])
+        if sc.get('characters'): parts.append('人物:' + sc['characters'])
+        if sc.get('event'): parts.append('事件:' + sc['event'])
+        if sc.get('dialogue'): parts.append('台词:' + sc['dialogue'])
+        scene_lines.append('场景%d(%.0f-%.0fs): %s' % (i, sc.get('start', 0), sc.get('end', 0), '；'.join(parts)))
+    beat_lines = ['解说词%d: %s' % (i, t[:120]) for i, t in enumerate(beats)]
+    prompt = '你是影视剪辑师。根据场景描述，把每段解说词对齐到最相关的场景序号。\n'
+    prompt += '输出JSON格式：{"对齐":[{"解说词":0,"场景":[1,2]},...]}\n'
+    prompt += '只输出JSON，不要其他文字。\n\n'
+    if movie_name:
+        prompt += '电影：%s\n\n' % movie_name
+    prompt += '【场景列表】\n' + '\n'.join(scene_lines[:80])
+    prompt += '\n\n【解说词列表】\n' + '\n'.join(beat_lines[:60])
+    # 优先本地LLM
+    try:
+        if local_llm_enabled() and local_llm_ping()[0]:
+            resp = local_llm_chat(prompt, timeout=120)
+            obj = _extract_json_obj(resp) or {}
+            alignment = {}
+            items = obj.get('对齐') or obj.get('alignment') or []
+            if isinstance(items, list):
+                for item in items:
+                    bi = item.get('解说词') or item.get('beat')
+                    sids = item.get('场景') or item.get('scenes')
+                    if isinstance(bi, int) and isinstance(sids, list):
+                        alignment[bi] = [int(x) for x in sids if isinstance(x, (int, float))]
+            for bi in list(alignment.keys()):
+                alignment[bi] = [s for s in alignment[bi] if 0 <= s < len(scenes)]
+                if not alignment[bi]:
+                    del alignment[bi]
+            return alignment
+    except Exception:
+        pass
+    # 云端兜底
+    try:
+        if ai_enabled('chat'):
+            cfg = chat_cfg()
+            import urllib.request, json as _json
+            payload = {'model': cfg.get('model', 'gpt-4o-mini'), 'messages': [
+                {'role': 'system', 'content': '你是影视剪辑师，输出JSON。'},
+                {'role': 'user', 'content': prompt}], 'temperature': 0.3}
+            req = urllib.request.Request(cfg['base_url'].rstrip('/') + '/chat/completions',
+                                         data=_json.dumps(payload).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json',
+                                                  'Authorization': 'Bearer ' + cfg.get('api_key', '')})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                resp = (_json.loads(r.read()).get('choices') or [{}])[0].get('message', {}).get('content', '')
+            obj = _extract_json_obj(resp) or {}
+            alignment = {}
+            items = obj.get('对齐') or obj.get('alignment') or []
+            if isinstance(items, list):
+                for item in items:
+                    bi = item.get('解说词') or item.get('beat')
+                    sids = item.get('场景') or item.get('scenes')
+                    if isinstance(bi, int) and isinstance(sids, list):
+                        alignment[bi] = [int(x) for x in sids if isinstance(x, (int, float))]
+            for bi in list(alignment.keys()):
+                alignment[bi] = [s for s in alignment[bi] if 0 <= s < len(scenes)]
+                if not alignment[bi]:
+                    del alignment[bi]
+            return alignment
+    except Exception:
+        pass
+    return {}
+
+
 def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
 
