@@ -3061,14 +3061,16 @@ async function regenSingleTts(idx){
   btn.disabled = false; btn.textContent = '🔄 重生成';
 }
 
-function pollTaskSimple(runid){
+function pollTaskSimple(runid, onProgress, timeoutMs){
+  const to = timeoutMs || 600000;  // 默认10分钟
   return new Promise((resolve, reject) => {
     const iv = setInterval(() => {
       fetch('/api/progress?run=' + runid).then(r => r.json()).then(p => {
+        if(onProgress && (p.phase || p.pct !== undefined)) onProgress(p);
         if(p.done){ clearInterval(iv); resolve(p); }
       }).catch(() => {});
-    }, 500);
-    setTimeout(() => { clearInterval(iv); reject(new Error('超时')); }, 120000);
+    }, 800);
+    setTimeout(() => { clearInterval(iv); reject(new Error('超时（超过' + Math.round(to/1000) + '秒），可尝试单段重生成')); }, to);
   });
 }
 
@@ -3085,7 +3087,9 @@ async function regenAllTts(){
       body: JSON.stringify({ texts: texts, run_dir: _adjustState.runDir }) });
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '失败');
-    const result = await pollTaskSimple(out.runid);
+    const result = await pollTaskSimple(out.runid, function(p){
+      status.textContent = '🔄 ' + (p.phase || '正在生成…') + (p.pct !== undefined ? '（' + p.pct + '%）' : '');
+    }, 600000);
     if(result.error) throw new Error(result.error);
     // 更新列表
     _adjustState.items = result.items || [];
