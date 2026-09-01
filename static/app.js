@@ -1742,7 +1742,13 @@ async function buildNarrate(){
   if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
   const ok = await preflight('narrate'); if(!ok) return;
   const go=$('narQuickBtn')||$('narGo'); go.disabled=true; $('narResult').style.display='none';
-  const plot = ($('narPlot') && $('narPlot').value.trim()) ? $('narPlot').value.trim() : '';
+  let plot = ($('narPlot') && $('narPlot').value.trim()) ? $('narPlot').value.trim() : '';
+  // 没有填剧情但填了主题/要求时，合并成剧情文本，走剧情驱动（质量更好）
+  if(!plot){
+    const theme = ($('narTheme') ? $('narTheme').value.trim() : '');
+    const req = ($('narReq') ? $('narReq').value.trim() : '');
+    if(theme || req){ plot = (theme ? '主题：'+theme+'\n' : '') + (req ? '要求：'+req : ''); }
+  }
   $('narStatus').textContent = plot ? '🎭 剧情驱动剪辑中（按你的剧情剪分镜+写解说）…' : '上传视频…';
   gStart(plot ? '🎭 剧情驱动剪辑' : '🎬 生成短片解说');
   const videoObj = NAR_VIDEO.mlib ? {name: NAR_VIDEO.name, mlib: NAR_VIDEO.mlib} : await videoToBody(NAR_VIDEO);
@@ -1754,13 +1760,15 @@ async function buildNarrate(){
                          detail_level: ($('detailLevel') ? $('detailLevel').value : 'balanced'),
                          autoCut: $('narAutoCut') ? $('narAutoCut').checked : true,
                          targetSec: parseFloat(($('narTargetSec')||{}).value) || 0} };
-  if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/narrate_movie（movie 名为空，纯按剧情）
+  if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
     else { body.music={name:MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer()))}; }
   }
   try{
-    const r=await fetch(plot ? '/api/narrate_movie' : '/api/narrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    // 有视频+剧情时走两步走：先生成配音，用户确认后再合成
+    const api = (plot && NAR_VIDEO) ? '/api/movie_tts' : (plot ? '/api/narrate_movie' : '/api/narrate');
+    const r=await fetch(api,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const out=await r.json();
     if(!out.ok) throw new Error(out.error||'失败');
     await pollNarrate(out.runid);
@@ -1782,6 +1790,13 @@ function pollNarrate(runid){
           clearInterval(iv); $('narBar').style.display='none';
           _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
           if(p.error){ renderPartial('narPartial', p.partial); showTaskError($('narStatus'), p.error, p); gErr(p.error); resolve(); return; }
+          // 两步走·第一步：配音已生成，展示确认面板
+          if(p.tts_list && p.tts_list.length){
+            $('narStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），请试听确认后合成';
+            renderTtsConfirm('narTtsConfirm', p.tts_list, p.run_dir || '', 'nar');
+            gDone();
+            resolve(); return;
+          }
           $('narStatus').textContent='✅ 完成'; gDone();
           $('narResult').style.display='block';
           $('narPlayer').src='/media/'+p.file+'?t='+Date.now();
