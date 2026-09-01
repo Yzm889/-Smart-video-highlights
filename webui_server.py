@@ -9420,6 +9420,58 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/bili/status':
             self._send(200, json.dumps({'ok': True, **BILI_PULL}).encode('utf-8'), 'application/json')
             return
+        if path == '/api/tts_recent':
+            # 返回最近有tts_state.json的任务列表（用于恢复配音）
+            try:
+                import glob as _glob
+                dirs = sorted(_glob.glob(os.path.join(OUTDIR, '*')), key=os.path.getmtime, reverse=True)
+                recent = []
+                for d in dirs[:20]:
+                    if os.path.isdir(d) and os.path.exists(os.path.join(d, 'tts_state.json')):
+                        import json as _j
+                        try:
+                            st = _j.load(open(os.path.join(d, 'tts_state.json'), encoding='utf-8'))
+                            recent.append({
+                                'run_dir': os.path.basename(d),
+                                'movie': st.get('movie_name', ''),
+                                'narr_count': len(st.get('narr', [])),
+                                'tts_count': len(st.get('tts_results', [])),
+                                'time': time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(d)))
+                            })
+                        except Exception:
+                            pass
+                self._send(200, json.dumps({'ok': True, 'list': recent}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path.startswith('/api/tts_state?'):
+            # 返回指定run_dir的配音列表
+            try:
+                from urllib.parse import parse_qs
+                qs = parse_qs(path.split('?', 1)[1])
+                run_dir_name = (qs.get('run_dir') or [''])[0]
+                if not run_dir_name:
+                    self._send(200, json.dumps({'ok': False, 'error': '缺少run_dir'}).encode('utf-8'), 'application/json')
+                    return
+                run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+                state_path = os.path.join(run_dir, 'tts_state.json')
+                if not os.path.exists(state_path):
+                    self._send(200, json.dumps({'ok': False, 'error': 'tts_state.json不存在'}).encode('utf-8'), 'application/json')
+                    return
+                import json as _j
+                state = _j.load(open(state_path, encoding='utf-8'))
+                tts_list = []
+                for i, p in state.get('tts_results', []):
+                    tts_list.append({
+                        'index': i,
+                        'text': state['narr'][i] if i < len(state.get('narr', [])) else '',
+                        'audio': os.path.relpath(p, OUTDIR).replace('\\', '/'),
+                        'duration': round(probe_audio_len(p) or 0, 1)
+                    })
+                self._send(200, json.dumps({'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
         if path == '/api/progress':
             runid = parse_qs(urlparse(self.path).query).get('run', [None])[0]
             if not runid or runid not in PROGRESS:

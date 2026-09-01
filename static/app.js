@@ -2953,6 +2953,50 @@ function pollMovieCompose(runid, mode){
 
 
 // === ⑥ 手动调整页面 ===
+async function loadRecentTts(){
+  const status = document.getElementById('adjustStatus');
+  const sel = document.getElementById('adjustRestoreSelect');
+  status.textContent = '📂 正在查找最近的配音任务…';
+  try{
+    const r = await fetch('/api/tts_recent');
+    const out = await r.json();
+    if(!out.ok || !out.list || out.list.length === 0){
+      status.textContent = '❌ 没有找到已生成的配音任务，请先在⑤解说生成';
+      return;
+    }
+    // 显示下拉选择
+    sel.style.display = 'inline-block';
+    sel.innerHTML = '';
+    out.list.forEach(function(item){
+      const opt = document.createElement('option');
+      opt.value = item.run_dir;
+      opt.textContent = item.time + ' · ' + (item.movie || '未命名') + ' · ' + item.tts_count + '段配音';
+      sel.appendChild(opt);
+    });
+    sel.onchange = function(){ restoreTtsState(this.value); };
+    status.textContent = '✅ 找到 ' + out.list.length + ' 个配音任务，选择后自动恢复';
+    // 自动恢复最近的一个
+    restoreTtsState(out.list[0].run_dir);
+  }catch(e){
+    status.textContent = '❌ 加载失败：' + e.message;
+  }
+}
+
+async function restoreTtsState(runDir){
+  const status = document.getElementById('adjustStatus');
+  status.textContent = '📂 正在恢复配音…';
+  try{
+    const r = await fetch('/api/tts_state?run_dir=' + encodeURIComponent(runDir));
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '失败');
+    renderAdjustPanel(out.tts_list, runDir, 'movie', []);
+    status.textContent = '✅ 已恢复 ' + out.tts_list.length + ' 段配音，可试听调整后合成';
+  }catch(e){
+    status.textContent = '❌ 恢复失败：' + e.message;
+  }
+}
+
+
 let _adjustState = { runDir: '', mode: '', items: [], changed: {} };
 
 function renderAdjustPanel(ttsList, runDir, mode, script){

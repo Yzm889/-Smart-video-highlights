@@ -494,8 +494,12 @@
     <p>逐段试听配音、修改解说词、重生成单段、跳过不需要的片段，确认后再合成。</p>
   </div>
   <div id="adjustStatus" style="margin:8px 0;color:var(--muted);font-size:13px">请先在「⑤ 解说」生成配音，完成后会自动跳到这里。</div>
+  <div id="adjustRestore" style="margin:8px 0">
+    <button class="btn btn2" onclick="loadRecentTts()" style="padding:8px 16px;font-size:13px">📂 恢复上次配音（不用重跑AI）</button>
+    <select id="adjustRestoreSelect" style="display:none;margin-left:8px;padding:6px;border-radius:6px;background:var(--bg);color:var(--text);border:1px solid var(--border)"></select>
+  </div>
   <div id="adjustList" style="margin:12px 0"></div>
-  <div id="adjustActions" style="display:none;margin-top:12px;display:flex;gap:8px">
+  <div id="adjustActions" style="display:none;margin-top:12px;gap:8px">
     <button id="adjustConfirmBtn" class="btn-primary" style="flex:1;padding:12px;font-size:15px">✅ 确认调整，开始合成视频</button>
     <button id="adjustRegenAllBtn" class="btn-secondary" style="padding:12px 20px">🔄 全部重生成</button>
   </div>
