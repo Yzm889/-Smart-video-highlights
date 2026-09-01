@@ -7981,13 +7981,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None):
 
     src_video = video_path
     cut_info = {'cut_sec': 0.0, 'src_dur': round(probe_audio_len(video_path) or 0.0, 2)}
-    # 裁剪视频
-    if params.get('autoCut', True):
-        up('按分镜剪辑画面', 60)
-        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
-        cut_info['cut_sec'] = cut_sec
-    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
-    # 高密度剪辑聚合
+    # 先聚合：把同属一个beat的多个seg合并成一个时间范围（用原始segs+narr_map，不依赖裁剪后数量）
     if narr_map and len(narr_map) == len(segs):
         beat_ranges = []
         for bi in range(len(narr)):
@@ -7997,7 +7991,14 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None):
             else:
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
-    # 计算voice_spans和tts_paths
+        print('[DIAG] 高密度聚合: %d节 -> %d个片段' % (len(narr), len(segs)))
+    # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
+    if params.get('autoCut', True):
+        up('按分镜剪辑画面', 60)
+        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
+        cut_info['cut_sec'] = cut_sec
+    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
+    # 计算voice_spans和tts_paths（segs[i]就是第i节解说词对应的画面范围）
     tts_paths = []
     voice_spans = {}
     for i, clip in tts_results:
@@ -8005,6 +8006,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None):
         tts_paths.append((clip, seg_span[0], seg_span[1]))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
         voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
+    print('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))
     up('混音+烧字幕+配乐', 80)
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
@@ -8111,14 +8113,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     print('[DIAG] TTS配音已启动（与裁剪并行）')
 
     up('逐段配音+裁剪（并行）', 58)
-    # 主线程继续做裁剪（TTS在后台跑）
-    if params.get('autoCut', True):
-        up('按分镜剪辑画面', 54)
-        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
-        cut_info['cut_sec'] = cut_sec
-        cut_info['segs'] = len(segs)
-    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
-    # 高密度剪辑聚合
+    # 先聚合：同属一个beat的多个seg合并成一个时间范围（用原始segs，不依赖裁剪后数量）
     if narr_map and len(narr_map) == len(segs):
         beat_ranges = []
         for bi in range(len(narr)):
@@ -8128,7 +8123,14 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             else:
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
-        print(f'[DIAG] 高密度剪辑: {len(narr)}节 -> {len(narr_map)}个片段')
+        print(f'[DIAG] 高密度聚合: {len(narr)}节 -> {len(segs)}个片段')
+    # 主线程继续做裁剪（TTS在后台跑，segs现在是每节一个范围）
+    if params.get('autoCut', True):
+        up('按分镜剪辑画面', 54)
+        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
+        cut_info['cut_sec'] = cut_sec
+        cut_info['segs'] = len(segs)
+    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
     # 等待TTS线程完成
     _tts_thread.join()
     if _tts_error[0]:
