@@ -5381,6 +5381,14 @@ def edge_tts_speak(text, out_path, voice=None, rate=None):
     # 外层：重试整轮（本机实测单次成功率仅约 2/3，重试后才谈得上「用得上」）
     for attempt in range(_EDGE_RETRY):
         for cmd in tries:
+            # SSML模式失败后，自动回退到纯文本模式（剥离TTS标记，避免把"停顿"念出来）
+            if use_ssml and attempt >= 1 and 'ssml' in str(cmd):
+                import re as _re_ssml
+                clean_text = _re_ssml.sub(r'\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}', '', text)
+                clean_text = _re_ssml.sub(r'\s+', ' ', clean_text).strip()
+                if clean_text:
+                    cmd = [sys.executable, '-m', 'edge_tts', '--voice', voice, '--rate=' + rate,
+                           '--text', clean_text, '--write-media', out_path]
             try:
                 if os.path.exists(out_path):
                     os.unlink(out_path)
@@ -6642,6 +6650,8 @@ def _clean_caption(text):
     # 元信息括号：画面/镜头/结尾金句/开场/钩子/旁白/字幕 等拍摄说明
     t = _re.sub(r'[（(]\s*(?:画面|镜头|结尾金句|开场|钩子|旁白|字幕|音效|转场)[^）)]{0,60}[）)]',
                 '', t)
+    # TTS控制标记：{停顿:0.6} {情绪:激动} {慢} {快} 等，字幕里不能出现
+    t = _re.sub(r'\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}', '', t)
     t = _re.sub(r'\s+', ' ', t).strip()
     # 去掉首尾成对的引号（含中文弯引号）
     for a, b in (('"', '"'), ("'", "'"), ('“', '”'), ('‘', '’')):
@@ -8021,7 +8031,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
     print(f'[DIAG] TTS并行完成: {len(tts_paths)}/{len(narr)}段配音成功')
     up('混音+烧字幕+配乐', 70)
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:
