@@ -7934,7 +7934,88 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     return segs, texts, asr, {}, 'movie', events, narr_map
 
 
-def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, music_path=None):
+def _generate_all_tts(narr, run_dir, progress=None):
+    """逐段生成所有配音，返回 [(index, clip_path), ...]。不做视频裁剪。"""
+    results = []
+    _tcfg = load_ai_config().get('tts') or {}
+    use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
+    for i, txt in enumerate(narr):
+        if _aborted():
+            break
+        if not txt.strip():
+            continue
+        clip = None
+        if use_mimo:
+            np_ = os.path.join(run_dir, 'narr%d.mp3' % i)
+            if ai_tts(txt, np_):
+                clip = np_
+        if clip is None:
+            ok, _eng, lp = local_tts_speak(txt, os.path.join(run_dir, 'narr%d.mp3' % i))
+            if ok:
+                clip = lp
+        if clip is not None:
+            results.append((i, clip))
+        if progress:
+            progress['phase'] = '逐段配音 %d/%d' % (i + 1, len(narr))
+            progress['pct'] = 55 + int(25 * (i + 1) / max(1, len(narr)))
+    print('[DIAG] TTS生成完成: %d/%d段' % (len(results), len(narr)))
+    return results
+
+
+def compose_movie_from_tts(run_dir, progress=None, music_path=None):
+    """Phase 2：加载已保存的配音状态，裁剪视频+合成。用户确认配音后调用。"""
+    import json as _json
+    state_path = os.path.join(run_dir, 'tts_state.json')
+    if not os.path.exists(state_path):
+        raise RuntimeError('未找到配音状态文件，请先生成配音')
+    state = _json.load(open(state_path, encoding='utf-8'))
+    video_path = state['video_path']
+    segs = [tuple(s) for s in state['segs']]
+    narr = state['narr']
+    narr_map = state.get('narr_map') or []
+    params = state.get('params') or {}
+    tts_results = [(i, p) for i, p in state.get('tts_results', [])]
+    def up(ph, pct):
+        if progress:
+            progress['phase'] = ph; progress['pct'] = pct
+
+    src_video = video_path
+    cut_info = {'cut_sec': 0.0, 'src_dur': round(probe_audio_len(video_path) or 0.0, 2)}
+    # 裁剪视频
+    if params.get('autoCut', True):
+        up('按分镜剪辑画面', 60)
+        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
+        cut_info['cut_sec'] = cut_sec
+    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
+    # 高密度剪辑聚合
+    if narr_map and len(narr_map) == len(segs):
+        beat_ranges = []
+        for bi in range(len(narr)):
+            bsegs = [segs[k] for k in range(len(segs)) if narr_map[k] == bi]
+            if bsegs:
+                beat_ranges.append((bsegs[0][0], bsegs[-1][1]))
+            else:
+                beat_ranges.append((0.0, 0.0))
+        segs = beat_ranges
+    # 计算voice_spans和tts_paths
+    tts_paths = []
+    voice_spans = {}
+    for i, clip in tts_results:
+        seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
+        tts_paths.append((clip, seg_span[0], seg_span[1]))
+        v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
+        voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
+    up('混音+烧字幕+配乐', 80)
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
+    final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
+                                     music_path=music_path, voice_spans=voice_spans)
+    if progress:
+        progress['done'] = True; progress['pct'] = 100
+        progress['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/') if final else ''
+    return final
+
+
+def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, music_path=None, tts_only=False):
     """Phase 3 主流程：联网搜索剧情 → LLM 生成解说稿 → (上传电影时)ASR+语义对齐 → 配音+字幕+配乐成片。
     未上传视频时只产出解说稿（progress['script']）。"""
     def up(ph, pct):
@@ -7959,6 +8040,37 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     # 30 字一句的碎片事件，与完整解说稿不是一回事。
     segs, narr, asr, _frames, mode, events, narr_map = _narrate_by_plot(
         video_path, plot, params, run_dir, progress, movie_name=movie_name)
+
+    # === 两步走模式：先生成配音，等用户确认后再合成 ===
+    if tts_only:
+        up('逐段生成配音', 55)
+        tts_results = _generate_all_tts(narr, run_dir, progress=progress)
+        import json as _json
+        tts_state = {
+            'video_path': os.path.abspath(video_path),
+            'segs': [[float(s), float(e)] for s, e in segs],
+            'narr': list(narr),
+            'narr_map': list(narr_map) if narr_map else [],
+            'params': params,
+            'tts_results': [[i, p] for i, p in tts_results],
+            'movie_name': movie_name,
+        }
+        _json.dump(tts_state, open(os.path.join(run_dir, 'tts_state.json'), 'w', encoding='utf-8'),
+                   ensure_ascii=False, indent=2)
+        if progress:
+            progress['done'] = True
+            progress['pct'] = 100
+            progress['phase'] = '配音已生成，请确认后合成'
+            progress['tts_list'] = [{'index': i, 'text': narr[i] if i < len(narr) else '',
+                                      'audio': os.path.relpath(p, OUTDIR).replace('\\', '/'),
+                                      'duration': round(probe_audio_len(p) or 0, 1)}
+                                     for i, p in tts_results]
+            progress['run_dir'] = os.path.basename(run_dir)
+            progress['script'] = events
+        diag = {'narr': len(narr), 'tts_ok': len(tts_results), 'tts_total': len(narr),
+                'awaiting_confirm': True, 'run_dir': os.path.basename(run_dir)}
+        return None, diag
+
     # ✂ 真剪辑：只保留解说覆盖到的镜头段（此前整链路不剪切，成片恒等于原片时长）
     src_video = video_path
     cut_info = {'cut_sec': 0.0,
@@ -8572,6 +8684,44 @@ def dispatch_movie(req, prog):
         if final:
             prog['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
         prog['diag'] = diag
+        _record_history(req, prog, 'movie')
+    except Exception as e:
+        fail_task(prog, e)
+
+
+def dispatch_movie_tts(req, prog):
+    """Phase 1：生成解说稿+所有配音，暂停等用户确认。"""
+    try:
+        run_dir = prog.get('run_dir') or os.path.join(OUTDIR, time.strftime('%Y%m%d-%H%M%S'))
+        os.makedirs(run_dir, exist_ok=True)
+        vp = _resolve_upload_video(req.get('video'), run_dir, 'src')
+        if vp is None and req.get('video'):
+            raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
+        _final, diag = narrate_movie(req.get('movie', ''), req.get('plot', ''), vp,
+                                     req.get('params', {}), run_dir, prog,
+                                     music_path=_resolve_music(req.get('music')),
+                                     tts_only=True)
+        prog['diag'] = diag
+        _record_history(req, prog, 'movie_tts')
+    except Exception as e:
+        fail_task(prog, e)
+
+
+def dispatch_movie_compose(req, prog):
+    """Phase 2：用户确认配音后，裁剪视频+合成。"""
+    try:
+        run_dir_name = req.get('run_dir') or prog.get('run_dir')
+        if not run_dir_name:
+            raise RuntimeError('缺少run_dir参数')
+        run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+        if not os.path.exists(os.path.join(run_dir, 'tts_state.json')):
+            raise RuntimeError('配音状态不存在，请先生成配音')
+        music_path = _resolve_music(req.get('music'))
+        final = compose_movie_from_tts(run_dir, prog, music_path=music_path)
+        prog['done'] = True
+        prog['pct'] = 100
+        if final:
+            prog['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
         _record_history(req, prog, 'movie')
     except Exception as e:
         fail_task(prog, e)
@@ -9863,6 +10013,31 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
                     return
                 runid = self._spawn(dispatch_movie, req)
+                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/movie_tts':
+            # 两步走·第一步：生成解说稿+所有配音，暂停等用户确认
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                req = self._read_json(length, max_len=300 * 1024 * 1024)
+                if req is None:
+                    self._send(200, json.dumps({'ok': False, 'error': '请求过大或读取失败'}).encode('utf-8'), 'application/json')
+                    return
+                runid = self._spawn(dispatch_movie_tts, req)
+                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/movie_compose':
+            # 两步走·第二步：用户确认配音后，裁剪视频+合成
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                req = self._read_json(length) if length else {}
+                if req is None:
+                    req = {}
+                runid = self._spawn(dispatch_movie_compose, req)
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')

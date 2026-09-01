@@ -1842,7 +1842,8 @@ async function buildMovieNarrate(){
     else { body.music = { name: MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer())) }; }
   }
   try{
-    const r = await fetch('/api/narrate_movie', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const api = MOVIE_VIDEO ? '/api/movie_tts' : '/api/narrate_movie';
+    const r = await fetch(api, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '失败');
     await pollMovie(out.runid);
@@ -1863,6 +1864,12 @@ function pollMovie(runid){
           clearInterval(iv); $('movieBar').style.display = 'none';
           _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
           if(p.error){ renderPartial('moviePartial', p.partial); showTaskError($('movieStatus'), p.error, p); gErr(p.error); resolve(); return; }
+          if(p.tts_list && p.tts_list.length){
+            $('movieStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），请试听确认后合成';
+            renderTtsConfirm('movieTtsConfirm', p.tts_list, p.run_dir || '', 'movie');
+            gDone();
+            resolve(); return;
+          }
           $('movieStatus').textContent = '✅ 完成'; gDone();
           const d = p.diag || {};
           let txt = '事件 ' + (d.events || 0) + ' · 分段 ' + (d.segments || 0) + ' · 台词 ' + (d.asr_lines || 0) + ' 条 · 对齐 ' + (d.aligned || 0) + ' · 配音 ' + (d.voice_clips || 0) + ' 段';
@@ -2851,4 +2858,82 @@ function removeModel(tag){
     if(res.ok){ alert('已卸载 ' + tag); if(typeof refreshModelCards==='function') refreshModelCards(); if(typeof loadVlmStatus==='function') loadVlmStatus(); }
     else alert('卸载失败: ' + (res.error||res.msg||'未知错误'));
   }).catch(e=>alert('卸载失败: '+e));
+}
+
+
+function renderTtsConfirm(containerId, ttsList, runDir, mode){
+  let box = document.getElementById(containerId);
+  if(!box){
+    box = document.createElement('div');
+    box.id = containerId;
+    box.className = 'tts-confirm-panel';
+    const result = document.getElementById(mode === 'movie' ? 'movieResult' : 'narResult');
+    if(result && result.parentNode){ result.parentNode.insertBefore(box, result); }
+    else { document.body.appendChild(box); }
+  }
+  let html = '<div class="tts-confirm-header">';
+  html += '<h4>🎙️ 配音试听确认（'+ttsList.length+'段）</h4>';
+  html += '<p style="font-size:12px;color:var(--muted);margin:4px 0">逐段试听，确认无误后点击开始合成。</p>';
+  html += '</div>';
+  html += '<div class="tts-list" style="max-height:300px;overflow-y:auto;margin:8px 0">';
+  ttsList.forEach(function(item, idx){
+    html += '<div class="tts-item" style="padding:8px;margin:4px 0;border-radius:8px;background:var(--bg2);border:1px solid var(--border)">';
+    html += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">第 '+(idx+1)+' 段（'+(item.duration||0)+'秒）</div>';
+    html += '<div style="font-size:13px;margin-bottom:6px;line-height:1.4">'+(item.text||'').substring(0,80)+((item.text||'').length>80?'…':'')+'</div>';
+    html += '<audio controls preload="none" style="width:100%;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
+    html += '</div>';
+  });
+  html += '</div>';
+  html += '<div style="display:flex;gap:8px;margin-top:8px">';
+  html += '<button id="'+mode+'TtsConfirmBtn" class="btn-primary" style="flex:1">✅ 确认配音，开始合成视频</button>';
+  html += '</div>';
+  box.innerHTML = html;
+  box.style.display = 'block';
+  const btn = document.getElementById(mode+'TtsConfirmBtn');
+  if(btn){ btn.onclick = function(){ confirmTtsAndCompose(runDir, mode, ttsList); }; }
+}
+
+async function confirmTtsAndCompose(runDir, mode, ttsList){
+  if(!runDir){ alert('缺少run_dir'); return; }
+  const btn = document.getElementById(mode+'TtsConfirmBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '合成中…'; }
+  try{
+    const body = { run_dir: runDir };
+    if(mode === 'movie' && document.getElementById('movieBgm') && document.getElementById('movieBgm').checked && MUSIC){
+      if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
+      else { body.music = { name: MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer())) }; }
+    }
+    const r = await fetch('/api/movie_compose', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '失败');
+    await pollMovieCompose(out.runid, mode);
+  }catch(e){
+    alert('合成失败：' + e.message);
+    if(btn){ btn.disabled = false; btn.textContent = '✅ 确认配音，开始合成视频'; }
+  }
+}
+
+function pollMovieCompose(runid, mode){
+  return new Promise(resolve => {
+    let _errs = 0;
+    const iv = setInterval(() => {
+      fetch('/api/progress?run=' + runid).then(r => r.json()).then(p => {
+        if(p.done){
+          clearInterval(iv);
+          if(p.error){ alert('合成失败：' + p.error); resolve(); return; }
+          const box = document.getElementById(mode === 'movie' ? 'movieTtsConfirm' : 'narTtsConfirm');
+          if(box) box.style.display = 'none';
+          if(p.file){
+            const result = document.getElementById(mode === 'movie' ? 'movieResult' : 'narResult');
+            if(result) result.style.display = 'block';
+            const player = document.getElementById(mode === 'movie' ? 'moviePlayer' : 'narPlayer');
+            if(player) player.src = '/media/' + p.file + '?t=' + Date.now();
+            const dl = document.getElementById(mode === 'movie' ? 'movieDl' : 'narDl');
+            if(dl) dl.href = '/media/' + p.file;
+          }
+          resolve();
+        }
+      }).catch(() => { if(++_errs >= 8){ clearInterval(iv); resolve(); } });
+    }, 800);
+  });
 }

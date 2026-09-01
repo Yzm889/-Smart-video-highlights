@@ -948,3 +948,9 @@ header .htools { display: flex; align-items: center; gap: 14px; }
 /* 顶部进度条可点击跳任务中心 */
 .gprog { cursor: pointer; }
 .gprog:hover { opacity: 0.95; }
+
+/* 配音确认面板 */
+.tts-confirm-panel { margin: 12px 0; padding: 16px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--border); }
+.tts-confirm-header h4 { margin: 0 0 4px 0; font-size: 15px; }
+.tts-item:hover { border-color: var(--accent) !important; }
+
