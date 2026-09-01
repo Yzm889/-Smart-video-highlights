@@ -10,6 +10,7 @@
 <header>
   <div class="brand"><h1>一帧成片</h1><div class="sub">FrameCut · AI 节拍短片</div></div>
   <div class="htools">
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">🌙 夜间</button>
     <div id="srv"></div>
   </div>
 </header>
@@ -109,7 +110,7 @@
           <details class="step">
             <summary><b class="num">2</b> 📝 拉取文字大脑（必装）</summary>
             <div class="step-body">
-              <div style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #4a90d9;background:#f3f8ff;">
+              <div style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #6C7AFF;background:rgba(108,122,255,0.08);">
                 <details class="bubble warn"><summary>本步网络要求 / 卡住怎么办（点开）</summary><div class="bubble-body">⚠️ 这步<b>需要代理或科学上网</b>（Ollama 从境外拉 qwen 模型）。两条路：<br>① 在「🌐 国内下载镜像」填你<b>正在运行</b>的代理(如 <code>http://127.0.0.1:7890</code>) → 网页点「📥 拉取模型」；<br>② <b>免科学上网</b>：用下方 <code>aria2c -c</code> 断点续传从 hf-mirror 离线导入（卡 97% 不重来，已实测跑通）。<br>🚫 别用 <code>copy /b</code> 合并分卷。卡住/报错就展开下方「续传导入法」。</div></details>
                 💡 <b>两个模型别搞混：</b>名字只差一个 <code>vl</code>，但干的事完全不同——
                 <table style="border-collapse:collapse;width:100%;margin-top:6px;font-size:12px;">
@@ -195,6 +196,42 @@
         </div>
       </details>
     </div>
+
+    <!-- 一键智能模式 -->
+    <div class="card" id="smartCard">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <h2 style="margin:0;">⚡ 一键智能生成</h2>
+        <span style="font-size:12px; color:var(--accent); background:rgba(201,168,76,0.12); padding:3px 10px; border-radius:12px; border:1px solid rgba(201,168,76,0.25);">推荐普通用户使用</span>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">上传视频 + 填电影名，自动选模型、搜剧情、配解说、剪画面、烧字幕，一步出片。</div>
+      <div id="smartDrop" class="musdrop" style="min-height:80px; display:flex; align-items:center; justify-content:center; font-size:15px; cursor:pointer;">
+        🎬 拖入视频文件，或点此选择
+      </div>
+      <input type="file" id="smartInput" accept="video/*" style="display:none">
+      <div class="hint" id="smartVideoInfo" style="margin-top:6px; display:none; align-items:center; justify-content:space-between;"></div>
+      <div class="row" style="margin-top:10px;">
+        <input type="text" id="smartMovieName" placeholder="电影/动漫名，如：赌圣（不填则自动识别视频内容）" style="flex:1; padding:10px 12px; border-radius:8px; font-size:14px;">
+      </div>
+      <div id="smartAutoConfig" style="margin-top:8px; padding:8px 12px; border-radius:8px; font-size:12px; display:none;">
+        <b>🤖 自动配置：</b><span id="smartConfigText">检测中…</span>
+      </div>
+      <div class="actions" style="margin-top:12px;">
+        <button class="btn" id="smartGo" onclick="smartGenerate()" style="font-size:16px; padding:12px 32px;">⚡ 一键生成解说视频</button>
+        <button class="btn danger" id="smartCancel" onclick="stopRun('smartStatus')" style="display:none;">⏹ 停止</button>
+        <span class="status" id="smartStatus"></span>
+      </div>
+      <div class="bar" id="smartBar"><i></i></div>
+      <div id="smartResult" style="display:none;">
+        <h3 style="margin-top:12px;">✅ 完成</h3>
+        <video id="smartPlayer" controls playsinline style="width:100%;"></video>
+        <div style="margin-top:8px;"><a class="btn ghost" id="smartDl" href="#" download="smart_narration.mp4">💾 保存视频</a></div>
+      </div>
+      <div style="margin-top:10px; text-align:center;">
+        <a href="javascript:void(0)" onclick="toggleProSettings()" style="font-size:13px; color:#1976d2; text-decoration:underline;">⚙️ 需要调参数？展开专业设置</a>
+      </div>
+    </div>
+
+<div id="proSettings" style="display:none;">
 
     <!-- Phase 4 · 指令解析层 -->
     <div class="card" id="instructCard" data-step="start">
@@ -476,14 +513,14 @@
       <div id="hardwareRecs" style="font-size:13px; color:#333;"></div>
       <div id="hardwareActions" style="margin-top:8px;"></div>
     </div>
-    <div style="margin:8px 0; padding:8px 12px; background:#fff8e1; border:1px solid #ffe082; border-radius:8px; font-size:13px;">
+    <div style="margin:8px 0; padding:8px 12px; background:rgba(201,168,76,0.08); border:1px solid rgba(201,168,76,0.25); border-radius:8px; font-size:13px;">
       <label style="cursor:pointer;"><input type="checkbox" id="cleanupMid" style="width:auto;vertical-align:middle;" onchange="saveCleanupMid()"> 🧹 任务完成后自动清理中间产物（保留成片/源视频/封面，省磁盘）</label>
     </div>
     <label><input type="checkbox" id="aiCap" style="width:auto" onchange="updateBuildModeHint()"> 按画面生成中文文案 + 烧字幕 + 配音</label>
     <div class="hint">🤖 <b>自动路径</b>：本地模型（免费）优先 → 配置了云端 key 时用云端看图写文案 + 云端配音 → 都没有时离线模板兜底。</div>
     <div class="mode-hint" id="buildModeHint">💡 <b>自动路径</b>：勾选「按画面生成中文文案」后，自动用当前可用的最优路径生成文案与配音。</div>
 
-    <div style="margin-top:10px; padding:10px 12px; background:#f6fbf6; border:1px solid var(--line); border-radius:10px;">
+    <div style="margin-top:10px; padding:10px 12px; background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:10px;">
       <div style="font-weight:600; color:#2e7d32; margin-bottom:6px;">🔑 一键获取 API Key（点击直达官方申请页）</div>
       <div class="row" style="align-items:flex-end;">
         <div class="field"><label>视觉模型（看图写文案）</label>
@@ -601,7 +638,7 @@
         <div class="hint" id="vlmStatus" style="width:100%">状态加载中…</div>
         <div class="cmdbox" id="cmdVlm"></div>
         <div class="hint" style="width:100%">装好 <b>Ollama</b> 后执行 <code id="cmdOllamaVlm">ollama pull qwen2.5vl:latest</code>（可点「拉取」自动执行），开启后「短片解说」会<b>逐段看画面 + 台词 + 梗概</b>生成真解说，从「台词复读」升级为「真解说」，仍不花一分钱。</div>
-        <div class="hint" style="width:100%; color:#b8860b; border:1px dashed #e7c000; background:#fffdf3; padding:8px 10px; border-radius:8px; margin-top:8px;">
+        <div class="hint" style="width:100%; color:var(--accent); border:1px dashed rgba(201,168,76,0.4); background:rgba(201,168,76,0.06); padding:8px 10px; border-radius:8px; margin-top:8px;">
           ⚠️ <b>qwen2.5vl 的定位局限</b>：它只负责「<b>看懂画面</b>」——识别人物 / 场景 / 事件，<b>不擅长写剧情解说词</b>。
           要写出《赌圣》式剧情解说（点片名、讲人物背景、有年代感），真正的主力是 <b>📝 文字模型</b>（如 <code>qwen2.5:14b</code>）。
           请到「③ 本地模型」把模型填成文字模型，并执行 <code>ollama pull qwen2.5:14b</code> 部署——解说词质量会明显上一个台阶。
@@ -610,8 +647,9 @@
       <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
         <div style="font-weight:600; color:#2e7d32; width:100%;">🔊 本地配音引擎（免费·不花 API 钱）</div>
         <details class="bubble"><summary>三条免费路线怎么选？音质差别很大（点开）</summary><div class="bubble-body">
-          · <b>🌐 edge-tts</b>：<b>最拟真</b>，微软神经语音，十几种音色带语调起伏，<b>不需要任何 Key</b>。
+          · <b>🌐 edge-tts</b>：<b>情感+顿挫</b>，微软神经语音，支持{情绪:xx}/{停顿:n}标记自动转SSML，<b>不需要任何 Key</b>。
             代价是依赖网络，本机实测单次成功率约 2/3（连接会被随时重置），现已带自动重试。<br>
+          · <b>🎙️ ChatTTS</b>：<b>最自然</b>，本地GPU推理，对话式语音，支持停顿标记。需安装torch+ChatTTS（约3GB）。<br>
           · <b>💾 离线模型</b>：下载后<b>完全断网可用</b>。两个可选：<b>MeloTTS</b> 自然度接近在线语音（推荐）；
             <b>华研 piper</b> 体积小、速度快，但机械感重、几乎没有感情——觉得「配音像机器人」多半是选中了它。<br>
           · <b>🪟 系统 SAPI</b>：零安装，但多数 Windows 只带一个中文音色（Microsoft Huihui），机械味重，仅作兜底。<br>
@@ -621,16 +659,67 @@
         <div class="field"><label>引擎</label>
           <select id="ttsLocalEngine" onchange="ttsLocalHint()">
             <option value="auto" selected>自动（edge-tts → 离线模型 → 系统）</option>
-            <option value="edge">🌐 edge-tts（最拟真·免 Key）</option>
+            <option value="edge">🌐 edge-tts（情感+顿挫·免 Key）</option>
+            <option value="chattts">🎙️ ChatTTS（最自然·本地GPU）</option>
             <option value="sherpa">💾 离线模型（断网可用）</option>
             <option value="sapi">🪟 系统 SAPI（兜底）</option>
           </select>
+        </div>
+        <div style="width:100%; margin:6px 0; overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:12px;">
+            <tr style="background:rgba(255,255,255,0.04);">
+              <th style="border:1px solid #ddd; padding:6px; text-align:left;">对比项</th>
+              <th style="border:1px solid #ddd; padding:6px; text-align:left; color:#1565c0;">🌐 edge-tts</th>
+              <th style="border:1px solid #ddd; padding:6px; text-align:left; color:#2e7d32;">🎙️ ChatTTS</th>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">自然度</td>
+              <td style="border:1px solid #ddd; padding:6px;">微软神经网络语音，拟真度高</td>
+              <td style="border:1px solid #ddd; padding:6px;"><b>更自然</b>，对话式语气，像真人说话</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">情感控制</td>
+              <td style="border:1px solid #ddd; padding:6px;"><b>9种情感</b>（激动/悲伤/严肃/紧张/温柔/深情/播报/不满/愤怒），SSML精确控制</td>
+              <td style="border:1px solid #ddd; padding:6px;">靠文本语气自然流露，无显式情感标签</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">停顿/顿挫</td>
+              <td style="border:1px solid #ddd; padding:6px;"><b>{停顿:n}</b>标记精确控制0.1-5秒</td>
+              <td style="border:1px solid #ddd; padding:6px;">[uv_break]/[lbreak]标记，自然停顿</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">语速/音调</td>
+              <td style="border:1px solid #ddd; padding:6px;"><b>{慢}{快}{高音}{低音}</b>分段控制</td>
+              <td style="border:1px solid #ddd; padding:6px;">全局参数，不支持分段</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">速度</td>
+              <td style="border:1px solid #ddd; padding:6px;"><b>快</b>，每段2-5秒（在线）</td>
+              <td style="border:1px solid #ddd; padding:6px;">较慢，CPU每段10-30秒；GPU约2-5秒</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">网络</td>
+              <td style="border:1px solid #ddd; padding:6px;">需联网（微软服务），自动重试</td>
+              <td style="border:1px solid #ddd; padding:6px;"><b>完全离线</b>，本地推理</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">音色</td>
+              <td style="border:1px solid #ddd; padding:6px;">10+中文音色可选（晓晓/云希/云健等）</td>
+              <td style="border:1px solid #ddd; padding:6px;">内置音色，支持随机说话人</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:6px;">推荐场景</td>
+              <td style="border:1px solid #ddd; padding:6px;"><b>电影解说首选</b>：情感丰富、顿挫精准、速度快</td>
+              <td style="border:1px solid #ddd; padding:6px;">追求极致自然度、不介意速度、断网环境</td>
+            </tr>
+          </table>
         </div>
         <div class="field"><label>离线模型</label><select id="ttsSherpaModel" style="min-width:210px"></select></div>
         <div class="field"><label>音色（edge-tts）</label><select id="ttsLocalVoice" style="min-width:220px"></select></div>
         <div class="field"><label>语速</label><input id="ttsLocalRate" value="+0%" placeholder="+0%" style="width:80px"></div>
         <div class="field"><label>&nbsp;</label>
           <button class="btn ghost" id="ttsEdgeBtn" onclick="installTtsPkg('edge-tts')">📥 装 edge-tts</button>
+          <button class="btn ghost" onclick="installChatTts()">📥 装 ChatTTS</button>
           <button class="btn ghost" id="ttsModelBtn" onclick="downloadTtsModel()">📥 下离线模型</button>
           <button class="btn ghost" onclick="testLocalTts()">🧪 试听</button>
           <button class="btn ghost" onclick="resetTtsEngine()" title="edge-tts 连续失败会临时停用，网络恢复后点这里立即启用">🔄 重试配音引擎</button>
@@ -680,13 +769,9 @@
       <div class="field"><label>转场</label>
         <select id="trans"><option value="fade">淡入淡出</option><option value="slideleft">左滑</option><option value="slideright">右滑</option><option value="slideup">上滑</option><option value="circleopen">圆形展开</option><option value="circleclose">圆形收拢</option><option value="smoothup">平滑上移</option><option value="fadeblack">淡出黑场</option><option value="wipeleft">擦除左</option><option value="zoomin">缩放进入</option></select>
       </div>
-      <div class="field"><label>节拍切换</label>
-        <select id="beatStep"><option value="0.5">每 0.5 拍（极快切）</option><option value="1">每 1 拍</option><option value="2">每 2 拍</option></select>
-      </div>
       <div class="field"><label>转场方式</label>
         <select id="hardCutSel"><option value="0">交叉淡入淡出</option><option value="1">硬切（更准踩点）</option></select>
       </div>
-      <div class="field"><label>默认单张时长(秒)</label><input type="number" id="defDur" value="3" min="1" max="20"></div>
       <div class="field"><label>视频编码（影响出片速度）</label>
         <select id="videoEnc" onchange="saveVideoEnc()">
           <option value="auto">自动（GPU 可用则用，最快）</option>
@@ -733,7 +818,8 @@
 
   <div class="card" id="storageCard" data-step="storage">
     <h2>🧹 存储管理（磁盘占用与清理）</h2>
-    <div class="hint">按档位展示项目内各类文件占用。<b>🟢 可清理</b>=任务/上传产生的临时残留（删除不影响成片）；<b>🟡 删除需重下</b>=模型权重；<b>🔒 保留</b>=你的成片与版本历史（本面板不会动）。删除后文件进入系统回收站逻辑由系统决定，请确认后再操作。</div>
+    <div class="hint">按档位展示项目内各类文件占用。<b>🟢 可清理</b>=任务/上传产生的临时残留（删除不影响成片）；<b>🟡 删除需重下</b>=模型权重；<b>🔒 保留</b>=你的成片与版
+</div><!-- /proSettings -->本历史（本面板不会动）。删除后文件进入系统回收站逻辑由系统决定，请确认后再操作。</div>
     <div id="storageSummary" class="st-summary" style="margin-top:8px;">加载中…</div>
     <div class="row" style="margin-top:8px; gap:8px; align-items:center;">
       <button class="btn" onclick="loadStorage()">🔄 刷新占用</button>

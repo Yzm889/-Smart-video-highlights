@@ -15,26 +15,47 @@ import webui_server as S
 
 
 # ---------------- 画面分配：解说决定剪辑 ----------------
+# 注：_allocate_script_spans 现返回 (spans, narr_map)——一节解说词会拆成多个 ~5s 短片段
+# （高密度剪辑），narr_map[k] 指示第 k 个子片段属于第几节解说词。测试按节聚合后再断言。
+
+def _alloc(texts, vdur, asr=None):
+    spans, narr_map = S._allocate_script_spans(texts, vdur, asr=asr)
+    return spans, narr_map
+
+
+def _group_by_section(spans, narr_map, n_sections):
+    """把子片段按节聚合为 [(start, end), ...]，与旧返回形态对齐便于断言。"""
+    out = [None] * n_sections
+    for (a, b), k in zip(spans, narr_map):
+        if out[k] is None:
+            out[k] = [a, b]
+        else:
+            out[k][1] = max(out[k][1], b)   # 同节的多个子片段首尾相接，取并集
+    return [tuple(x) for x in out if x]
+
+
 def test_allocate_longer_text_gets_longer_screen():
     """讲得多的地方必须给更多画面：画面时长 ∝ 解说字数。"""
-    spans = S._allocate_script_spans(['短。' * 10, '长' * 80], 60.0)
-    assert len(spans) == 2
-    d_short = spans[0][1] - spans[0][0]
-    d_long = spans[1][1] - spans[1][0]
-    assert d_long > d_short * 2, '80 字的节应明显长于 10 字的节：%s' % (spans,)
+    spans, narr_map = _alloc(['短。' * 10, '长' * 80], 60.0)
+    secs = _group_by_section(spans, narr_map, 2)
+    assert len(secs) == 2
+    d_short = secs[0][1] - secs[0][0]
+    d_long = secs[1][1] - secs[1][0]
+    assert d_long > d_short * 2, '80 字的节应明显长于 10 字的节：%s' % (secs,)
 
 
 def test_allocate_count_matches_texts():
-    """返回区间数必须等于解说句数，否则字幕与配音会整体错位。"""
+    """返回的节聚合数必须等于解说句数，否则字幕与配音会整体错位。"""
     texts = ['第%d句话，大概二十个字左右。' % i for i in range(7)]
-    spans = S._allocate_script_spans(texts, 120.0)
-    assert len(spans) == len(texts)
+    spans, narr_map = _alloc(texts, 120.0)
+    secs = _group_by_section(spans, narr_map, len(texts))
+    assert len(secs) == len(texts)
+    assert len(narr_map) == len(spans), 'narr_map 必须与子片段一一对应'
 
 
 def test_allocate_skips_when_script_shorter_than_video():
     """解说总时长短于原片时，成片必须短于原片（这就是自动剪辑）。"""
-    # 2 句话约 30 字 → 需要约 6 秒；原片 60 秒 → 应只取约 6 秒
-    spans = S._allocate_script_spans(['这是一句十字的解说。', '这是第二句十字的解说。'], 60.0)
+    spans, _ = _alloc(['这是一句十字的解说。', '这是第二句十字的解说。'], 60.0)
     kept = sum(b - a for a, b in spans)
     assert kept < 20.0, '应跳过大部分原片，实际保留 %.1fs' % kept
 
@@ -42,8 +63,8 @@ def test_allocate_skips_when_script_shorter_than_video():
 def test_allocate_compresses_when_script_longer_than_video():
     """原片不够长时整体压缩，且绝不越界（否则 ffmpeg 会失败）。"""
     texts = ['这是一段大约三十个字的解说词内容测试用。' * 2] * 10
-    spans = S._allocate_script_spans(texts, 30.0)
-    assert len(spans) == 10
+    spans, narr_map = _alloc(texts, 30.0)
+    assert len(_group_by_section(spans, narr_map, 10)) == 10
     assert spans[-1][1] <= 30.0 + 1e-6, '不得超出原片时长：%s' % (spans[-1],)
     for a, b in spans:
         assert b > a, '压缩后区间长度必须为正：%s' % ((a, b),)
@@ -52,14 +73,16 @@ def test_allocate_compresses_when_script_longer_than_video():
 def test_allocate_prefers_regions_with_dialogue():
     """画面应优先取自「有台词」的区间，空镜与过场被跳过。"""
     asr = [{'start': 40.0, 'end': 50.0, 'text': '这里有人在说话说了很长一段台词'}]
-    spans = S._allocate_script_spans(['一句解说。', '另一句解说。'], 60.0, asr=asr)
-    # 两节都应落在台词区附近，而不是从 0 秒的静默段开始
+    spans, _ = _alloc(['一句解说。', '另一句解说。'], 60.0, asr=asr)
+    # 各节都应落在台词区附近，而不是从 0 秒的静默段开始
     assert spans[0][0] > 5.0, '应跳过开头无台词的区间，实际从 %.1fs 开始' % spans[0][0]
 
 
 def test_allocate_handles_empty():
-    assert S._allocate_script_spans([], 60.0) == []
-    assert S._allocate_script_spans(['x'], 0) == []
+    spans, narr_map = S._allocate_script_spans([], 60.0)
+    assert (spans, narr_map) == ([], [])
+    spans, narr_map = S._allocate_script_spans(['x'], 0)
+    assert (spans, narr_map) == ([], [])
 
 
 # ---------------- 解说稿：不再硬截断 ----------------

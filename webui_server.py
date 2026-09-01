@@ -1350,7 +1350,6 @@ def _seg_visual_captions(frames, per_seg, params, max_seg=14):
     if not imgs:
         return {}
     img_list = [p for _, p in imgs]
-    idx_map = {k: i for k, (i, _) in enumerate(imgs)}  # 图片顺序 -> 原始段下标
     sys_ = '你是视频画面描述助手，只描述画面里实际可见的内容。'
     prompt = ('下面是同一段视频按时间顺序抽取的各镜头画面：第1张对应第1段，第2张对应第2段……依此类推。'
               '请严格按顺序逐段输出每段画面里实际可见的内容（人物/动作/场景/屏幕文字）。'
@@ -1747,16 +1746,18 @@ def _model_narr_guide():
 # ---------------------------------------------------------------------------
 HARDWARE_MODEL_RECS = [
     # (最低显存GB, 档位名, VLM推荐, Whisper推荐, TTS推荐, 文本模型推荐, 说明)
-    (12, '高端独显(≥12GB)', 'qwen3-vl:8b', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
-     'VLM 用 8B（Qwen3-VL 目前最大开源版），Whisper 用 GPU 全速，配音用自然度最高的 MeloTTS，文本写稿用 14B'),
-    (8, '中高端独显(8-12GB)', 'qwen3-vl:8b', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
-     '8B 视觉模型流畅，Whisper GPU 加速，MeloTTS 配音'),
-    (6, '中端独显(6-8GB)', 'qwen3-vl:8b', 'medium', 'melo-zh', 'qwen3:14b-q4_K_M',
-     '8B 视觉模型可用，Whisper 用 medium 平衡速度精度'),
+    (16, '旗舰独显(≥16GB)', 'qwen3-vl:30b', 'large-v3', 'melo-zh', 'qwen3:30b-q4_K_M',
+     '16GB显存+32GB内存可跑30B MoE视觉模型（激活3B，速度快理解强），或Qwen3.8-27B原生多模态；MiniCPM-V4.5(8B)是速度优先的替代，视频token压缩96x适合长视频'),
+    (12, '高端独显(12-16GB)', 'minicpm-v4.5', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
+     '推荐MiniCPM-V4.5（8B，视频理解专项优化，96x token压缩，同显存多看10倍帧）；或qwen3-vl:8b（综合强）；内存≥32GB可尝试qwen3-vl:30b MoE'),
+    (8, '中高端独显(8-12GB)', 'minicpm-v4.5', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
+     'MiniCPM-V4.5（8B，视频理解强，显存占用小）或qwen3-vl:8b，Whisper GPU加速，MeloTTS配音'),
+    (6, '中端独显(6-8GB)', 'qwen3-vl:8b', 'medium', 'melo-zh', 'qwen3:8b',
+     '8B视觉模型可用，Whisper用medium平衡速度精度，MiniCPM-V4.5更省显存'),
     (4, '入门独显(4-6GB)', 'qwen3-vl:4b', 'small', 'piper-huayan', 'qwen3:8b',
-     '4B 视觉模型，Whisper 用 small，TTS 用轻量 piper'),
+     '4B视觉模型，Whisper用small，TTS用轻量piper'),
     (0, '纯CPU/无独显', 'qwen3-vl:4b', 'base', 'piper-huayan', 'qwen3:8b',
-     '无显卡，全部走 CPU，选最小模型保证速度'),
+     '无显卡，全部走CPU，选最小模型保证速度'),
 ]
 
 
@@ -3643,13 +3644,39 @@ def _vision_available():
 
 
 def _tts_available():
+    """TTS 是否可用：云端 API 或本地任一引擎（edge-tts/ChatTTS/sherpa/SAPI）。"""
+    # 1. 云端 TTS
     t = load_ai_config().get('tts') or {}
-    if not (t.get('api_key') and t.get('model')):
+    if t.get('api_key') and t.get('model'):
+        if (t.get('provider') or 'openai').lower() in ('dashscope', 'mimo'):
+            return True
+        if t.get('base_url'):
+            return True
+    # 2. 本地引擎
+    try:
+        if edge_tts_available():
+            return True
+    except Exception:
+        pass
+    try:
+        if chattts_available():
+            return True
+    except Exception:
+        pass
+    try:
+        if sherpa_tts_available():
+            return True
+    except Exception:
+        pass
+    # 3. SAPI 兜底（Windows 自带，pyttsx3 存在即视为可用——仅探测不使用）
+    try:
+        import importlib.util
+        if importlib.util.find_spec('pyttsx3') is not None:
+            return True
         return False
-    # DashScope / MiMo have default endpoints, so base_url is optional
-    if (t.get('provider') or 'openai').lower() in ('dashscope', 'mimo'):
-        return True
-    return bool(t.get('base_url'))
+    except Exception:
+        pass
+    return False
 
 
 def ai_describe_image(img_path, name=''):
@@ -4775,7 +4802,7 @@ EDGE_TTS_VOICES = [
 
 
 def tts_local_cfg():
-    """本地配音配置 {engine, voice, rate}；engine ∈ auto|edge|sapi。"""
+    """本地配音配置 {engine, voice, rate}；engine ∈ auto|edge|chattts|sherpa|sapi。"""
     c = load_ai_config().get('tts_local') or {}
     rate = str(c.get('rate') or '+0%').strip()
     if rate and not rate.startswith(('+', '-')):
@@ -4831,14 +4858,420 @@ def _edge_note_failure(reason=''):
     return _EDGE_STATE['fails']
 
 
+# ChatTTS 本地引擎（更自然的对话式语音，需 torch + ChatTTS，延迟加载）
+_CHATTS = {'model': None, 'loading': False, 'error': ''}
+
+
+def chattts_available():
+    """ChatTTS 是否可用（主进程已加载，或 venv 子进程可用）。"""
+    if _CHATTS['model'] is not None:
+        return True
+    if _chattts_venv_python():
+        return True
+    if _CHATTS['error']:
+        return False
+    try:
+        import importlib.util as _u
+        return _u.find_spec('ChatTTS') is not None
+    except Exception:
+        return False
+
+
+def chattts_load(progress=None):
+    """加载 ChatTTS 模型（首次调用较慢，约 30-60 秒）。成功返回 True。"""
+    if _CHATTS['model'] is not None:
+        return True
+    if _CHATTS['loading']:
+        return False
+    _CHATTS['loading'] = True
+    _CHATTS['error'] = ''
+    try:
+        import importlib.util
+        if importlib.util.find_spec('torch') is None:
+            raise ImportError('ChatTTS 需要 torch（未安装）')
+        import ChatTTS
+        if progress:
+            progress['phase'] = '加载 ChatTTS 模型'
+            progress['pct'] = 5
+        model = ChatTTS.Chat()
+        model.load(compile=False)  # compile=False 避免 Windows 编译问题
+        _CHATTS['model'] = model
+        return True
+    except Exception as e:
+        _CHATTS['error'] = str(e)[:300]
+        return False
+    finally:
+        _CHATTS['loading'] = False
+
+
+def _chattts_venv_python():
+    """返回 ChatTTS venv 的 Python 路径（Python 3.11 + CUDA torch），不存在返回 None。"""
+    p = os.path.join(HERE, '.venv_tts', 'Scripts', 'python.exe')
+    return p if os.path.exists(p) else None
+
+
+def chattts_speak(text, out_path, progress=None):
+    """用 ChatTTS 合成语音。支持标记中的停顿（[uv_break]/[lbreak]）。成功返回 True。
+    优先主进程内推理（如果装了 torch），否则用 venv Python 3.11 子进程。"""
+    if not (text or '').strip():
+        return False
+    chat_text = markup_to_chattts_text(text)
+
+    # 方式1：主进程内推理（需要当前 Python 有 torch + ChatTTS）
+    if chattts_load(progress):
+        model = _CHATTS['model']
+        if model is not None:
+            try:
+                wavs = model.infer(chat_text, use_decoder=True, do_sample=True,
+                                   temperature=0.3, top_P=0.7, top_K=20)
+                if wavs and len(wavs) > 0:
+                    import torchaudio
+                    import torch
+                    wav = wavs[0]
+                    if isinstance(wav, torch.Tensor):
+                        if wav.dim() == 1:
+                            wav = wav.unsqueeze(0)
+                        torchaudio.save(out_path, wav.cpu(), 24000)
+                    else:
+                        import numpy as np
+                        import soundfile as sf
+                        sf.write(out_path, np.array(wav[0]), 24000)
+                    return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
+            except Exception as e:
+                _CHATTS['error'] = str(e)[:300]
+
+    # 方式2：venv 子进程（Python 3.11 + CUDA torch）
+    venv_py = _chattts_venv_python()
+    if venv_py:
+        try:
+            d = os.path.dirname(os.path.abspath(out_path))
+            if d:
+                os.makedirs(d, exist_ok=True)
+            txt_file = out_path + '.txt'
+            with open(txt_file, 'w', encoding='utf-8') as f:
+                f.write(chat_text)
+            worker = os.path.join(HERE, 'chattts_worker.py')
+            r = subprocess.run([venv_py, worker, txt_file, out_path],
+                               capture_output=True, timeout=300, cwd=HERE)
+            try:
+                os.unlink(txt_file)
+            except Exception:
+                pass
+            if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                return True
+            _CHATTS['error'] = (r.stderr or b'').decode('utf-8', 'ignore')[-300:]
+        except Exception as e:
+            _CHATTS['error'] = str(e)[:300]
+    return False
+
+
 def edge_tts_reset():
     """手动解除熔断（供界面「重试配音引擎」调用）：网络恢复后不必干等。"""
     _EDGE_STATE.update(fails=0, dead_until=0.0, reason='')
     return True
 
 
+# ---------------------------------------------------------------------------
+# 🎙️ TTS 情感化标记系统
+# 文案标记格式（LLM 生成解说词时使用）：
+#   {情绪:欢快|悲伤|激动|严肃|紧张|温柔|深情|播报|不满} ... {/情绪}
+#   {停顿:0.5}          → 0.5秒停顿
+#   {慢}...{/慢}        → 语速减慢
+#   {快}...{/快}        → 语速加快
+#   {高音}...{/高音}    → 音调升高
+#   {低音}...{/低音}    → 音调降低
+#   {大声}...{/大声}    → 音量增大
+#   {小声}...{/小声}    → 音量减小
+# ---------------------------------------------------------------------------
+
+_EMOTION_MAP = {
+    '欢快': 'cheerful', '开心': 'cheerful', '激动': 'cheerful', '兴奋': 'cheerful',
+    '悲伤': 'sad', '难过': 'sad', '伤感': 'sad',
+    '严肃': 'serious', '郑重': 'serious', '沉稳': 'serious',
+    '紧张': 'fearful', '恐惧': 'fearful', '惊险': 'fearful',
+    '温柔': 'gentle', '柔和': 'gentle',
+    '深情': 'affectionate', '动情': 'affectionate',
+    '播报': 'newscast', '解说': 'newscast', '正式': 'newscast',
+    '不满': 'disgruntled', '愤怒': 'angry', '生气': 'angry',
+    '恐惧': 'fearful', '害怕': 'fearful',
+}
+
+# edge-tts 支持情感的中文声线
+_EMOTION_VOICES = {
+    'zh-CN-XiaoxiaoNeural': list(_EMOTION_MAP.values()),
+    'zh-CN-YunxiNeural': ['cheerful', 'sad', 'angry', 'serious', 'gentle', 'newscast'],
+    'zh-CN-XiaoyiNeural': ['cheerful', 'sad', 'gentle', 'serious'],
+    'zh-CN-YunjianNeural': [],  # 体育解说风格，不支持情感标签
+}
+
+
+def parse_tts_markup(text):
+    """解析文案中的 TTS 标记，返回结构化片段列表。
+    每个片段: {'type': 'text'|'pause'|'emotion_start'|'emotion_end'|'prosody_start'|'prosody_end',
+               'content': str, 'value': str}
+    """
+    import re
+    segments = []
+    # 匹配所有标记
+    pattern = r'\{(情绪|停顿|慢|快|高音|低音|大声|小声)(?::([^}]*))?\}|\{/(情绪|慢|快|高音|低音|大声|小声)\}'
+    pos = 0
+    for m in re.finditer(pattern, text):
+        if m.start() > pos:
+            segments.append({'type': 'text', 'content': text[pos:m.start()], 'value': ''})
+        tag = m.group(1) or m.group(3)  # 开标签或闭标签
+        is_close = m.group(0).startswith('{/')
+        val = (m.group(2) or '').strip()
+        if is_close:
+            if tag == '情绪':
+                segments.append({'type': 'emotion_end', 'content': '', 'value': ''})
+            else:
+                segments.append({'type': 'prosody_end', 'content': '', 'value': tag})
+        else:
+            if tag == '情绪':
+                segments.append({'type': 'emotion_start', 'content': '', 'value': val})
+            elif tag == '停顿':
+                segments.append({'type': 'pause', 'content': '', 'value': val})
+            else:
+                segments.append({'type': 'prosody_start', 'content': '', 'value': tag})
+        pos = m.end()
+    if pos < len(text):
+        segments.append({'type': 'text', 'content': text[pos:], 'value': ''})
+    return segments
+
+
+def markup_to_ssml(text, voice='zh-CN-XiaoxiaoNeural', rate='+0%'):
+    """把带标记的文案转成 edge-tts SSML。"""
+    import re
+    # 先把全局 rate 解析成数字
+    rate_num = 0
+    m = re.search(r'([+-]?\d+)', str(rate))
+    if m:
+        rate_num = int(m.group(1))
+
+    segs = parse_tts_markup(text)
+    # 检查声线是否支持情感
+    support_emotion = bool(_EMOTION_VOICES.get(voice))
+
+    parts = []
+    emotion_stack = []
+    prosody_stack = []
+
+    for seg in segs:
+        t = seg['type']
+        if t == 'text':
+            # XML 转义
+            content = seg['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            parts.append(content)
+        elif t == 'pause':
+            try:
+                sec = float(seg['value']) if seg['value'] else 0.5
+            except ValueError:
+                sec = 0.5
+            ms = max(100, min(5000, int(sec * 1000)))
+            parts.append('<break time="%dms"/>' % ms)
+        elif t == 'emotion_start':
+            if support_emotion:
+                style = _EMOTION_MAP.get(seg['value'], '')
+                if style and style in _EMOTION_VOICES.get(voice, []):
+                    parts.append('<mstts:express-as style="%s">' % style)
+                    emotion_stack.append(style)
+        elif t == 'emotion_end':
+            if emotion_stack:
+                parts.append('</mstts:express-as>')
+                emotion_stack.pop()
+        elif t == 'prosody_start':
+            tag = seg['value']
+            attrs = []
+            if tag == '慢':
+                attrs.append('rate="%d%%"' % (rate_num - 20))
+            elif tag == '快':
+                attrs.append('rate="%d%%"' % (rate_num + 20))
+            elif tag == '高音':
+                attrs.append('pitch="+15%%"')
+            elif tag == '低音':
+                attrs.append('pitch="-15%%"')
+            elif tag == '大声':
+                attrs.append('volume="+20%%"')
+            elif tag == '小声':
+                attrs.append('volume="-20%%"')
+            if attrs:
+                parts.append('<prosody %s>' % ' '.join(attrs))
+                prosody_stack.append(tag)
+        elif t == 'prosody_end':
+            if prosody_stack:
+                parts.append('</prosody>')
+                prosody_stack.pop()
+
+    # 闭合未闭合的标签
+    while emotion_stack:
+        parts.append('</mstts:express-as>')
+        emotion_stack.pop()
+    while prosody_stack:
+        parts.append('</prosody>')
+        prosody_stack.pop()
+
+    body = ''.join(parts)
+    ssml = (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
+        '<voice name="%s">%s</voice></speak>' % (voice, body)
+    )
+    return ssml
+
+
+def markup_to_chattts_text(text):
+    """把带标记的文案转成 ChatTTS 输入文本（用 [uv_break]/[lbreak] 控制停顿）。"""
+    segs = parse_tts_markup(text)
+    parts = []
+    for seg in segs:
+        t = seg['type']
+        if t == 'text':
+            parts.append(seg['content'])
+        elif t == 'pause':
+            try:
+                sec = float(seg['value']) if seg['value'] else 0.5
+            except ValueError:
+                sec = 0.5
+            if sec >= 1.0:
+                parts.append('[lbreak]')
+            else:
+                parts.append('[uv_break]')
+        # emotion/prosody 标记在 ChatTTS 中通过文本本身的语气传达，不做特殊转换
+    return ''.join(parts)
+
+
+def has_tts_markup(text):
+    """检查文案是否包含 TTS 标记。"""
+    import re
+    return bool(re.search(r'\{(情绪|停顿|慢|快|高音|低音|大声|小声)', text or ''))
+
+
+def _enhance_tts_markup(texts):
+    """TTS 标记后处理：检查 LLM 生成的解说词标记是否完整合理，自动补全/修正。
+    - 修复未闭合的 {情绪:xx}/{慢} 等标签
+    - 完全没有标记的段落，根据内容自动添加停顿/情绪
+    - 避免过度标记（每句都加情绪），保持详略得当
+    """
+    import re
+    if not texts:
+        return texts
+
+    # 情绪关键词映射
+    emotion_keywords = {
+        '激动': ['没想到', '竟然', '居然', '惊人', '震撼', '奇迹', '破纪录', '夺冠', '加冕', '巅峰', '高光'],
+        '悲伤': ['死', '牺牲', '悲剧', '去世', '离别', '崩溃', '绝望', '痛苦', '眼泪', '心碎', '遗憾'],
+        '紧张': ['危险', '紧张', '追逐', '打斗', '千钧一发', '命悬一线', '危机', '追杀', '逃亡', '惊险'],
+        '严肃': ['秘密', '真相', '阴谋', '背叛', '悬念', '重要', '关键', '决定', '命运', '历史'],
+        '温柔': ['温柔', '回忆', '温情', '爱情', '家人', '陪伴', '温暖', '幸福', '感动', '深情'],
+    }
+    # 慢读关键词（重要信息）
+    slow_keywords = ['年', '万', '亿', '%', '第', '首次', '唯一', '最', '纪录', '票房', '冠军']
+
+    result = []
+    for idx, text in enumerate(texts):
+        if not text or not text.strip():
+            result.append(text)
+            continue
+
+        t = text.strip()
+        has_markup = has_tts_markup(t)
+
+        # 1. 修复未闭合标签
+        t = _fix_unclosed_tags(t)
+
+        # 2. 如果完全没有标记，根据内容自动添加
+        if not has_markup:
+            added = []
+            # 开头（第一节/hook）加停顿
+            if idx == 0:
+                # 在片名或关键词后加停顿
+                m = re.search(r'《[^》]+》', t)
+                if m:
+                    t = t[:m.end()] + '{停顿:0.6}' + t[m.end():]
+                    added.append('pause')
+                else:
+                    t = '{停顿:0.3}' + t
+                    added.append('pause')
+
+            # 检测情绪（按关键词匹配强度，不按序号奇偶）
+            emotion = None
+            emo_hits = 0
+            for emo, kws in emotion_keywords.items():
+                hits = sum(1 for kw in kws if kw in t)
+                if hits > emo_hits:
+                    emotion = emo
+                    emo_hits = hits
+            # 有情绪关键词时添加，但整段最多50%的节有情绪标记（避免过度）
+            if emotion and emo_hits > 0:
+                for kw in emotion_keywords[emotion]:
+                    if kw in t:
+                        pos = t.find(kw)
+                        # 从关键词前最近的标点或句首开始
+                        start = pos
+                        while start > 0 and t[start-1] not in '，。！？、；：':
+                            start -= 1
+                        t = t[:start] + '{情绪:%s}' % emotion + t[start:] + '{/情绪}'
+                        added.append('emotion:' + emotion)
+                        break
+
+            # 重要信息放慢（只包裹数字本身+后面几个字，不切断词语）
+            if any(kw in t for kw in slow_keywords) and '慢' not in added:
+                m = re.search(r'\d+[万亿%]?', t)
+                if m:
+                    # 从数字前一个标点或句首开始，到数字后最近的标点结束
+                    start = m.start()
+                    while start > 0 and t[start-1] not in '，。！？、；：':
+                        start -= 1
+                    end = m.end()
+                    # 向后找到最近的标点，最多延伸10字
+                    while end < len(t) and t[end] not in '，。！？、；：' and end - m.end() < 10:
+                        end += 1
+                    t = t[:start] + '{慢}' + t[start:end] + '{/慢}' + t[end:]
+                    added.append('slow')
+
+            # 句末加短停顿（如果没有）
+            if not t.endswith(('{停顿:0.3}', '{停顿:0.5}', '{停顿:0.8}', '{停顿:1.0}')):
+                t = t + '{停顿:0.3}'
+                added.append('pause_end')
+
+        # 3. 保证所有开标签都有闭标签（再次检查）
+        t = _fix_unclosed_tags(t)
+
+        result.append(t)
+
+    return result
+
+
+def _fix_unclosed_tags(text):
+    """修复未闭合的 TTS 标记：{情绪:xx} 必须有 {/情绪}，{慢} 必须有 {/慢}。"""
+    import re
+    # 检查情绪标签
+    open_emotion = re.findall(r'\{情绪:([^}]+)\}', text)
+    close_emotion = len(re.findall(r'\{/情绪\}', text))
+    if len(open_emotion) > close_emotion:
+        text = text + '{/情绪}' * (len(open_emotion) - close_emotion)
+    # 检查 prosody 标签
+    for tag in ['慢', '快', '高音', '低音', '大声', '小声']:
+        opens = len(re.findall(r'\{%s\}' % tag, text))
+        closes = len(re.findall(r'\{/%s\}' % tag, text))
+        if opens > closes:
+            text = text + ('{/%s}' % tag) * (opens - closes)
+    return text
+
+
+def strip_tts_markup(text):
+    """去除文案中的 TTS 标记（用于字幕显示）。"""
+    import re
+    if not text:
+        return text
+    text = re.sub(r'\{/?(情绪|慢|快|高音|低音|大声|小声)(?::[^}]*)?\}', '', text)
+    text = re.sub(r'\{停顿:[^}]*\}', '', text)
+    return text.strip()
+
+
 def edge_tts_speak(text, out_path, voice=None, rate=None):
     """用 edge-tts 合成中文配音（免费、无需 API Key，需能访问微软朗读服务）。成功返回 True。
+    支持 SSML 情感/停顿/语速控制：文案中包含 {情绪:xx}/{停顿:n}/{慢} 等标记时自动转 SSML。
     走子进程而非 asyncio，避免与 ffmpeg 子进程/事件循环相互干扰。"""
     if not (text or '').strip():
         return False
@@ -4850,11 +5283,29 @@ def edge_tts_speak(text, out_path, voice=None, rate=None):
     d = os.path.dirname(os.path.abspath(out_path))
     if d:
         os.makedirs(d, exist_ok=True)
-    tries = [['edge-tts', '--voice', voice, '--rate=' + rate, '--text', text,
-              '--write-media', out_path],
-             # 模块装了但命令行未暴露（Windows 常见）→ 用 python -m 兜底
-             [sys.executable, '-m', 'edge_tts', '--voice', voice, '--rate=' + rate,
-              '--text', text, '--write-media', out_path]]
+
+    # 检测标记，有标记则用 SSML 模式（情感+停顿+语速），无标记用纯文本
+    use_ssml = has_tts_markup(text)
+    if use_ssml:
+        ssml = markup_to_ssml(text, voice=voice, rate=rate)
+        # SSML 模式：写临时文件，用 --ssml 或 python -c 调用
+        ssml_file = out_path + '.ssml'
+        with open(ssml_file, 'w', encoding='utf-8') as f:
+            f.write(ssml)
+        tries = [
+            [sys.executable, '-c',
+             'import asyncio,edge_tts,sys;'
+             'async def m():'
+             '  c=edge_tts.Communicate(ssml=open(sys.argv[1],encoding="utf-8").read(),voice="%s");'
+             '  await c.save(sys.argv[2]);'
+             'asyncio.run(m())' % voice,
+             ssml_file, out_path],
+        ]
+    else:
+        tries = [['edge-tts', '--voice', voice, '--rate=' + rate, '--text', text,
+                  '--write-media', out_path],
+                 [sys.executable, '-m', 'edge_tts', '--voice', voice, '--rate=' + rate,
+                  '--text', text, '--write-media', out_path]]
     last_err = ''
     # 外层：重试整轮（本机实测单次成功率仅约 2/3，重试后才谈得上「用得上」）
     for attempt in range(_EDGE_RETRY):
@@ -4894,6 +5345,8 @@ def local_tts_speak(text, out_path):
     eng_set = cfg['engine']
     if eng_set == 'edge':
         order = ['edge', 'sherpa', 'sapi']
+    elif eng_set == 'chattts':
+        order = ['chattts', 'edge', 'sherpa', 'sapi']
     elif eng_set == 'sherpa':
         order = ['sherpa', 'edge', 'sapi']
     elif eng_set == 'sapi':
@@ -4916,6 +5369,13 @@ def local_tts_speak(text, out_path):
             if edge_tts_speak(text, out_path):
                 _TLS.tts_engine = 'edge'      # 锁定：后续段落沿用同一音色
                 return True, 'edge', out_path
+        elif eng == 'chattts':
+            if not chattts_available():
+                continue
+            wv = stem + '_chattts.wav'
+            if chattts_speak(text, wv):
+                _TLS.tts_engine = 'chattts'
+                return True, 'chattts', wv
         elif eng == 'sherpa':
             if not sherpa_tts_available():
                 continue
@@ -5005,7 +5465,6 @@ def sherpa_tts_available():
 
 def _sherpa_load():
     """加载（并缓存）sherpa-onnx 离线 TTS 实例。模型加载较慢，缓存避免每段重复加载。"""
-    global _SHERPA_TTS
     key = sherpa_model_key()
     m = SHERPA_TTS_MODELS.get(key) or {}
     if _SHERPA_TTS.get('obj') is not None and _SHERPA_TTS.get('key') == key:
@@ -5080,7 +5539,6 @@ _SETUP_LOCK = threading.Lock()      # 保护「检查 running → 置位 → 启
 
 def tts_install_async(pkg='edge-tts'):
     """后台 pip 安装本地配音引擎。pkg ∈ edge-tts|sherpa-onnx。"""
-    global TTS_SETUP
     pkg = 'sherpa-onnx' if 'sherpa' in str(pkg).lower() else 'edge-tts'
     # 检查与置位必须在同一把锁内：多线程 HTTP 服务下，两次点击可能同时通过检查，
     # 起两个线程共写同一个进度槽，进度条乱跳、模型目录被 os.replace 两次而报错。
@@ -5110,11 +5568,44 @@ def tts_install_async(pkg='edge-tts'):
     return True, '开始安装 %s（约 1 分钟，可在下方看进度）' % pkg
 
 
+def tts_install_chattts_async():
+    """后台安装 ChatTTS：uv Python 3.11 venv + CUDA torch + ChatTTS。"""
+    with _SETUP_LOCK:
+        if TTS_SETUP['running']:
+            return False, '已有一个安装/下载任务在进行中'
+        TTS_SETUP.update(running=True, op='pip:chattts', pct=5,
+                         msg='正在安装 ChatTTS（torch约2.5GB，首次较慢）…', ok=None)
+
+    def _run():
+        try:
+            venv_py = os.path.join(HERE, '.venv_tts', 'Scripts', 'python.exe')
+            if not os.path.exists(venv_py):
+                TTS_SETUP.update(pct=10, msg='创建 Python 3.11 虚拟环境…')
+                subprocess.run(['uv', 'venv', '--python', '3.11', '.venv_tts'],
+                               cwd=HERE, capture_output=True, timeout=120)
+            TTS_SETUP.update(pct=20, msg='安装 CUDA torch（约2.5GB，较慢）…')
+            subprocess.run(['uv', 'pip', 'install', '--python', venv_py,
+                            'torch', 'torchaudio', '--index-url',
+                            'https://download.pytorch.org/whl/cu121'],
+                           cwd=HERE, capture_output=True, timeout=1800)
+            TTS_SETUP.update(pct=80, msg='安装 ChatTTS…')
+            subprocess.run(['uv', 'pip', 'install', '--python', venv_py,
+                            'ChatTTS', 'soundfile', 'numpy'],
+                           cwd=HERE, capture_output=True, timeout=600)
+            TTS_SETUP.update(ok=True, pct=100, msg='✅ ChatTTS 安装完成（点「🧪 试听」验证）')
+        except Exception as e:
+            TTS_SETUP.update(ok=False, pct=100, msg='❌ 安装异常：' + str(e)[-300:])
+        finally:
+            TTS_SETUP['running'] = False
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return True, '已开始后台安装 ChatTTS，可在下方看进度'
+
+
 def tts_model_download_async(model_key=None):
     """后台下载离线中文配音模型（tar.bz2）到 models/tts/<name>/ 并解压。
 
     model_key：SHERPA_TTS_MODELS 的键；不传则下载当前选中的（或默认推荐）模型。"""
-    global TTS_SETUP
     key = model_key or sherpa_model_key()
     m = SHERPA_TTS_MODELS.get(key)
     if not m:
@@ -5927,7 +6418,7 @@ def _clamp_line(text, max_chars):
 
 
 def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None,
-                    auto_cut=True):
+                    auto_cut=True, narr_map=None):
     """解说渲染阶段：按分镜剪辑(可选)→逐段配音→混音→烧字幕→配乐。
 
     auto_cut=True 时先按保留段真剪辑（剪掉未勾选/无解说的画面），字幕与配音自动对齐到
@@ -5946,6 +6437,17 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
+    # 高密度剪辑：一节解说词对应多个子片段，按 narr_map 聚合
+    if narr_map and len(narr_map) == len(segs):
+        beat_ranges = []
+        for bi in range(len(narr)):
+            bsegs = [segs[k] for k in range(len(segs)) if narr_map[k] == bi]
+            if bsegs:
+                beat_ranges.append((bsegs[0][0], bsegs[-1][1]))
+            else:
+                beat_ranges.append((0.0, 0.0))
+        segs = beat_ranges
+        print(f'[DIAG] 高密度剪辑: {len(narr)}节 -> {len(narr_map)}个片段')
     print(f'[DIAG] auto_cut后: segs={len(segs)} 总时长={sum(b-a for a,b in segs):.1f}s 视频时长={cut_info["out_dur"]}s narr={len(narr)}')
 
     # 长度对齐保护：narr 与 segs 必须一一对应。模型偶尔多输出/少输出行，
@@ -6002,7 +6504,7 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
             voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
     print(f'[DIAG] 配音完成: tts_paths={len(tts_paths)}/{len([t for t in narr if t and t.strip()])} voice_spans={len(voice_spans)}')
     up('混音+烧字幕+配乐', 60)
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else strip_tts_markup(t) for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:
@@ -6419,6 +6921,7 @@ def _char_bigrams(s):
 NAR_BEAT_MIN = 40       # 每节解说词最少字数：少于此讲不成完整的一句
 NAR_BEAT_MAX = 90       # 每节最多字数：超过则口播发赶、字幕一行放不下
 NAR_SCRIPT_CPS = 5.2    # 影视解说话速（字/秒）：比普通解说略快，更贴近 B 站观感
+NAR_SEG_TARGET = 5.0    # 每个视频子片段目标时长（秒）：一节解说词拆成多个短片段，提升剪辑密度
 
 SCRIPT_STYLE_MOVIE = (
     '你是资深影视解说博主（B站/抖音影视解说风格）。请根据片名与剧情资料，'
@@ -6433,6 +6936,15 @@ SCRIPT_STYLE_MOVIE = (
     '- 人物第一次出现要带上姓名与身份，例如「副警长瑞克」「搭档肖恩」。\n'
     '- 用口语衔接词推进节奏：没想到、就在这时、结果、也正是这时、可他不知道的是。\n'
     '- 每节末尾留一点钩子，让观众想继续看。\n\n'
+    '【配音标记】在 text 中适当插入以下标记，让配音有情感起伏和顿挫（不要每句都加，只在关键处）：\n'
+    '- {情绪:欢快}...{/情绪}  激动、兴奋、反转成功时\n'
+    '- {情绪:悲伤}...{/情绪}  悲剧、牺牲、感人时刻\n'
+    '- {情绪:严肃}...{/情绪}  重要设定、悬念、危险降临\n'
+    '- {情绪:紧张}...{/情绪}  追逐、打斗、千钧一发\n'
+    '- {情绪:温柔}...{/情绪}  温情、回忆、感情戏\n'
+    '- {停顿:0.5}  短句后短暂停顿（0.3-1.0秒），{停顿:1.0} 长停顿用于强调\n'
+    '- {慢}...{/慢}  重要信息放慢说，{快}...{/快}  紧张节奏加快\n'
+    '示例：1990年一部名为《赌圣》的电影横空出世{停顿:0.8}{情绪:激动}它不仅斩获4132万港币票房{/情绪}{停顿:0.5}更让跑龙套的星仔正式加冕为星爷{停顿:1.0}\n\n'
     '【禁止】编号、引号、括号注释、markdown、代码块、任何解释性文字。\n\n'
     '只输出如下 JSON：\n'
     '{"title":"片名","hook":"开场白","beats":[{"text":"第1节解说词",'
@@ -6508,35 +7020,222 @@ def _asr_density(asr, vdur, step=0.5):
     return d, step
 
 
-def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0):
-    """按解说词字数给每句话分配画面区间 ——「解说驱动剪辑」的核心。
+def _build_scenes(cuts, vdur, min_len=3.0):
+    """把场景切点转成场景段列表，过短的场景合并到相邻段。
+    返回 [(start, end), ...]，覆盖 [0, vdur]。"""
+    pts = [0.0] + [float(c) for c in (cuts or []) if 0 < float(c) < vdur] + [vdur]
+    pts = sorted(set(round(p, 3) for p in pts))
+    raw = [(pts[i], pts[i+1]) for i in range(len(pts)-1) if pts[i+1] - pts[i] > 0.1]
+    # 合并过短场景
+    merged = []
+    for s, e in raw:
+        if merged and (e - s < min_len or merged[-1][1] - merged[-1][0] < min_len):
+            ps, pe = merged.pop()
+            merged.append((ps, e))
+        else:
+            merged.append((s, e))
+    return merged
 
-    返回 [(start, end)]，长度严格等于 len(texts)（保证解说词与画面一一对应）。
-    两条规则：
-    - 每节画面时长 ∝ 该节字数：讲得多的地方给更多画面，讲得少的一带而过。
-    - 解说需要的总时长 < 原片时长（常态）→ 只在「有台词/有内容」的区间里取画面，
-      空镜与过场被跳过，成片因此**明显短于原片**；这正是自动剪辑。
-      原片反而不够长时按比例压缩，保证解说念得完。
+
+def _vlm_describe_scenes(video_path, scenes, run_dir, progress=None):
+    """对每个场景抽中间帧，VLM做结构化描述（地点/人物/事件/关键台词）。
+    返回 [{'start','end','location','characters','event','dialogue','summary'}, ...]。
+    VLM不可用时返回 []。"""
+    if not vlm_enabled():
+        return []
+    try:
+        if not vlm_ping()[0]:
+            return []
+    except Exception:
+        return []
+
+    frame_dir = os.path.join(run_dir, 'scene_frames')
+    os.makedirs(frame_dir, exist_ok=True)
+    results = []
+    sys_prompt = ('你是影视场景分析助手。根据画面和提供的台词，用JSON格式结构化描述这个场景。'
+                  '字段：location(地点，如赌场室内/火车站台/街头)，'
+                  'characters(出现的主要人物，有名字写名字，没有写外貌特征)，'
+                  'event(正在发生什么事，一句话)，'
+                  'dialogue(这段台词的核心内容，没有则留空)，'
+                  'summary(场景整体概括，不超过30字)。只输出JSON，不要其他文字。')
+
+    for idx, (s0, s1) in enumerate(scenes):
+        if progress:
+            progress['phase'] = '场景理解 %d/%d' % (idx + 1, len(scenes))
+            progress['pct'] = 36 + int(10 * idx / max(1, len(scenes)))
+        mid = (s0 + s1) / 2.0
+        fp = os.path.join(frame_dir, 'scene_%03d.jpg' % idx)
+        rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % mid, '-i', video_path,
+                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,768):-2',
+                                 '-q:v', '4', '-an', fp])
+        if rc != 0 or not os.path.exists(fp):
+            results.append({'start': s0, 'end': s1, 'location': '', 'characters': '',
+                            'event': '', 'dialogue': '', 'summary': ''})
+            continue
+        try:
+            resp = vlm_chat(fp, '请用JSON描述这个场景：location/characters/event/dialogue/summary',
+                            system=sys_prompt, timeout=30)
+            obj = _extract_json_obj(resp) or {}
+            results.append({
+                'start': s0, 'end': s1,
+                'location': str(obj.get('location', '')).strip()[:50],
+                'characters': str(obj.get('characters', '')).strip()[:80],
+                'event': str(obj.get('event', '')).strip()[:100],
+                'dialogue': str(obj.get('dialogue', '')).strip()[:100],
+                'summary': str(obj.get('summary', '')).strip()[:60],
+            })
+        except Exception:
+            results.append({'start': s0, 'end': s1, 'location': '', 'characters': '',
+                            'event': '', 'dialogue': '', 'summary': ''})
+    return results
+
+
+def _llm_align_beats_to_scenes(beats, scenes, movie_name=''):
+    """用LLM把解说词和场景做语义对齐。
+    beats: [text, ...] 解说词列表
+    scenes: [{'start','end','location','characters','event','dialogue','summary'}, ...]
+    返回 {beat_idx: [scene_idx, ...]}，失败返回 {}。"""
+    if not beats or not scenes:
+        return {}
+    # 优先本地LLM（免费），失败则用云端
+    scene_lines = []
+    for i, sc in enumerate(scenes):
+        parts = []
+        if sc['location']: parts.append('地点:' + sc['location'])
+        if sc['characters']: parts.append('人物:' + sc['characters'])
+        if sc['event']: parts.append('事件:' + sc['event'])
+        if sc['dialogue']: parts.append('台词:' + sc['dialogue'])
+        scene_lines.append('场景%d(%.0f-%.0fs): %s' % (i, sc['start'], sc['end'], '；'.join(parts)))
+
+    beat_lines = ['解说词%d: %s' % (i, t[:120]) for i, t in enumerate(beats)]
+
+    prompt = (
+        '你是影视剪辑师。下面是一部电影的场景列表和解说词列表。\n'
+        '请判断每段解说词对应哪个（或哪几个）场景。\n'
+        '注意：解说词按剧情时间顺序排列，场景也按时间顺序排列，对齐必须保持单调递增。\n\n'
+        + ('电影：%s\n\n' % movie_name if movie_name else '')
+        + '【场景列表】\n' + '\n'.join(scene_lines[:60])
+        + '\n\n【解说词列表】\n' + '\n'.join(beat_lines[:60])
+        + '\n\n请输出JSON：{"alignment": [[0,1],[2],[3,4],...]},'
+        '外层数组索引=解说词序号，内层数组=对应的场景序号列表。'
+        '一段解说词可以对应1-3个场景，不确定时选最接近的。只输出JSON。'
+    )
+
+    obj = None
+    # 本地LLM优先
+    if local_llm_enabled():
+        try:
+            if local_llm_ping()[0]:
+                resp = local_llm_chat(prompt, system='你是影视剪辑师，只输出JSON。', timeout=120)
+                obj = _extract_json_obj(resp)
+        except Exception:
+            pass
+    # 云端兜底
+    if not obj and ai_enabled('chat'):
+        try:
+            import urllib.request, json as _json
+            cfg = chat_cfg()
+            payload = {'model': cfg.get('model'),
+                       'messages': [{'role': 'system', 'content': '你是影视剪辑师，只输出JSON。'},
+                                    {'role': 'user', 'content': prompt}],
+                       'max_tokens': 2000, 'temperature': 0.3}
+            url = (cfg.get('base_url', '').rstrip('/')) + '/chat/completions'
+            req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json',
+                                                  'Authorization': 'Bearer ' + cfg.get('api_key', '')})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = _json.loads(r.read().decode('utf-8'))
+            obj = _extract_json_obj(data['choices'][0]['message']['content'])
+        except Exception:
+            pass
+
+    if not obj:
+        return {}
+    align_raw = obj.get('alignment') or obj.get('align') or obj
+    alignment = {}
+    if isinstance(align_raw, list):
+        for bi, sids in enumerate(align_raw):
+            if bi >= len(beats):
+                break
+            if isinstance(sids, int):
+                alignment[bi] = [sids]
+            elif isinstance(sids, list):
+                alignment[bi] = [int(x) for x in sids if isinstance(x, (int, float))]
+    # 校验：场景序号在范围内
+    for bi in list(alignment.keys()):
+        alignment[bi] = [s for s in alignment[bi] if 0 <= s < len(scenes)]
+        if not alignment[bi]:
+            del alignment[bi]
+    return alignment
+
+
+def _vlm_sample_captions(video_path, vdur, run_dir, n_samples=24, progress=None):
+    """均匀采样全片 N 帧，VLM 描述画面内容，返回 [(time_sec, caption), ...]。
+
+    用于「台词匹配 + 画面匹配」融合评分：选片段时不只看台词是否提到关键词，
+    还要看画面内容是否和解说词相关。VLM 不可用时返回 []，退化为纯台词匹配。
+    """
+    if not vlm_enabled():
+        return []
+    try:
+        if not vlm_ping()[0]:
+            return []
+    except Exception:
+        return []
+
+    frame_dir = os.path.join(run_dir, 'vlm_samples')
+    os.makedirs(frame_dir, exist_ok=True)
+
+    # 均匀采样时间点：首尾各留 2% 余量，避免黑帧
+    times = [vdur * (0.02 + 0.96 * i / max(1, n_samples - 1)) for i in range(n_samples)]
+    captions = []
+    for idx, t in enumerate(times):
+        if progress:
+            progress['phase'] = '画面采样 %d/%d' % (idx + 1, n_samples)
+            progress['pct'] = 44 + int(6 * idx / n_samples)
+        fp = os.path.join(frame_dir, 'sample_%03d.jpg' % idx)
+        rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % t, '-i', video_path,
+                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,768):-2',
+                                 '-q:v', '4', '-an', fp])
+        if rc != 0 or not os.path.exists(fp):
+            continue
+        try:
+            cap = vlm_chat(fp, '用一句话描述这个画面里的人物、场景、动作和关键物品。只描述画面，不要推测剧情。',
+                           system='你是影视画面分析助手。', timeout=30)
+            cap = (cap or '').strip().replace('\n', ' ')[:200]
+            if cap:
+                captions.append((round(t, 1), cap))
+        except Exception:
+            continue
+    return captions
+
+
+def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None):
+    """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
+
+    返回 (spans, narr_map)：
+    - spans: 扁平的子片段列表 [(start, end), ...]，每节解说词拆成多个 ~5s 短片段
+    - narr_map: narr_map[k] = 第 k 个子片段属于第几节解说词（与 texts 索引对应）
+
+    高密度剪辑：一节解说词不再只用一个长片段代表，而是从该节时间窗口内裁出多个
+    短片段拼接，避免"第一幕只用一个片段一带而过"的问题。
     """
     cps = float(cps or NAR_SCRIPT_CPS)
     n = len(texts or [])
     if n == 0 or vdur <= 0:
-        return []
+        return [], []
     weights = [max(1, len(str(t or ''))) for t in texts]
-    total_w = float(sum(weights))
     durs = [w / cps for w in weights]
     need = sum(durs)
     if need > vdur:
-        scale = vdur / need          # 原片不够长：整体压缩，宁可赶也不越界
+        scale = vdur / need
         durs = [max(min_dur * 0.5, d * scale) for d in durs]
         need = sum(durs)
-        if need > vdur:              # 极端短片：再按比例硬压一次
+        if need > vdur:
             k = vdur / need
             durs = [max(0.4, d * k) for d in durs]
             need = sum(durs)
-    gap = max(0.0, vdur - need)
 
-    # 台词密度前缀和：窗口信息量查询 O(1)
     dens, step = _asr_density(asr, vdur)
     pref = [0.0] * (len(dens) + 1)
     for i, v in enumerate(dens):
@@ -6547,38 +7246,123 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0):
         i1 = min(len(dens), max(i0 + 1, int(t1 / step)))
         return pref[min(len(pref) - 1, i1)] - pref[min(len(pref) - 1, i0)]
 
+    # 解说词与 ASR 文本的字符级匹配：片段内台词与解说词共享多少字
+    # 解决"只看台词密度导致片段内容和字幕对不上"的问题
+    def _bigrams(text):
+        text = str(text or '')
+        return set(text[i:i+2] for i in range(len(text)-1) if text[i:i+2].strip())
+
+    def _text_match(beat_text, t0, t1):
+        if not asr or not beat_text:
+            return 0.0
+        qbg = _bigrams(beat_text)
+        if not qbg:
+            return 0.0
+        overlap = 0
+        total_bg = 0
+        for x in asr:
+            try:
+                s0, s1 = float(x['start']), float(x['end'])
+            except Exception:
+                continue
+            if s1 <= t0 or s0 >= t1:
+                continue
+            txt = str(x.get('text') or '')
+            bg = _bigrams(txt)
+            total_bg += len(bg)
+            overlap += len(qbg & bg)
+        if total_bg == 0:
+            return 0.0
+        return overlap / total_bg
+
+    # 解说词与 VLM 画面描述的字符级匹配：片段附近的画面内容是否和解说词相关
+    def _visual_match(beat_text, t0, t1):
+        if not vlm_captions or not beat_text:
+            return 0.0
+        beat_chars = set(beat_text)
+        overlap = 0
+        total = 0
+        # 查找片段时间范围内及前后各5秒的 VLM 描述
+        for ct, cap in vlm_captions:
+            if ct < t0 - 5.0 or ct > t1 + 5.0:
+                continue
+            total += len(cap)
+            overlap += sum(1 for c in cap if c in beat_chars)
+        if total == 0:
+            return 0.0
+        return overlap / total
+
     spans = []
+    narr_map = []
+    last_end = 0.0
+
     for i, d in enumerate(durs):
-        # 每节按节数均匀分布到整个视频搜索：中心 = (i+0.5)*vdur/n
-        # 旧逻辑 cur=0 累计，每节只能在"给后面留够空间"的范围内搜，导致画面集中在前面，
-        # 长视频后面的剧情完全没被选到。新逻辑让第 i 节在视频第 i/n 位置附近找最佳片段。
-        center = (i + 0.5) * vdur / n
-        half_win = max(d * 2.5, vdur / n * 0.9)
-        lo = max(0.0, center - half_win)
-        hi = min(vdur - d, center + half_win)
-        # 保证与前一节严格不重叠（后一节起点 >= 前一节终点），
-        # 否则 _cut_video_by_spans 修正重叠时会把过短片段过滤掉，导致后面解说词无对应画面、配音丢失。
-        if spans:
-            lo = max(lo, spans[-1][1])
+        # 每节拆成多个子片段：节时长 / 目标片段时长，至少 1 个
+        n_sub = max(1, int(round(d / NAR_SEG_TARGET)))
+        sub_d = d / n_sub
+
+        # 搜索窗口：优先用场景对齐结果（在匹配的场景范围内选片段），
+        # 没有对齐时退回按节数均匀分布（旧行为）。
+        if scene_alignment and scenes and i in scene_alignment:
+            matched = scene_alignment[i]
+            sc_starts = [scenes[s]['start'] for s in matched if 0 <= s < len(scenes)]
+            sc_ends = [scenes[s]['end'] for s in matched if 0 <= s < len(scenes)]
+            if sc_starts and sc_ends:
+                lo = max(0.0, min(sc_starts))
+                hi = min(vdur - sub_d, max(sc_ends))
+            else:
+                center = (i + 0.5) * vdur / n
+                half_win = max(d * 2.5, vdur / n * 0.9)
+                lo = max(0.0, center - half_win)
+                hi = min(vdur - sub_d, center + half_win)
+        else:
+            center = (i + 0.5) * vdur / n
+            half_win = max(d * 2.5, vdur / n * 0.9)
+            lo = max(0.0, center - half_win)
+            hi = min(vdur - sub_d, center + half_win)
+        lo = max(lo, last_end)  # 不与前一节最后一个片段重叠
         if hi < lo:
             lo = max(0.0, i * vdur / n)
-            hi = min(vdur - d, (i + 1) * vdur / n)
-            if spans:
-                lo = max(lo, spans[-1][1])
+            hi = min(vdur - sub_d, (i + 1) * vdur / n)
+            lo = max(lo, last_end)
             if hi < lo:
-                hi = min(vdur - d, lo + d)
-        # 在 [lo, hi] 范围内搜索台词密度最高的起点
-        scan_step = max(step, (hi - lo) / 30.0) if hi > lo else step
-        best_t, best_s = lo, -1.0
-        t = lo
-        while t <= hi + 1e-6:
-            s = _score(t, min(vdur, t + d))
-            if s > best_s + 1e-9:
-                best_s, best_t = s, t
-            t += scan_step
-        s0 = min(max(0.0, best_t), max(0.0, vdur - d))
-        spans.append((round(s0, 3), round(min(vdur, s0 + d), 3)))
-    return spans
+                hi = min(vdur - sub_d, lo + sub_d)
+
+        # 窗口均分成 n_sub 个子区，每个子区选台词密度最高的起点
+        # 这样片段在节内均匀分布，不会全挤在一处，也保证不重叠
+        win_len = max(0.0, hi - lo)
+        for j in range(n_sub):
+            sub_lo = lo + win_len * j / n_sub
+            sub_hi = lo + win_len * (j + 1) / n_sub
+            sub_hi = min(sub_hi, vdur - sub_d)
+            if spans:
+                sub_lo = max(sub_lo, spans[-1][1])  # 不与前一个子片段重叠
+            if sub_hi < sub_lo:
+                sub_lo = last_end if not spans else spans[-1][1]
+                sub_hi = min(vdur - sub_d, sub_lo + sub_d)
+
+            scan_step = max(step, (sub_hi - sub_lo) / 15.0) if sub_hi > sub_lo else step
+            best_t, best_s = sub_lo, -1.0
+            beat_txt = str(texts[i] or '') if i < len(texts) else ''
+            t = sub_lo
+            while t <= sub_hi + 1e-6:
+                t1 = min(vdur, t + sub_d)
+                density = _score(t, t1)
+                t_match = _text_match(beat_txt, t, t1)
+                v_match = _visual_match(beat_txt, t, t1)
+                # 融合评分：台词密度为基础，台词匹配×2 + 画面匹配×1.5
+                # 画面匹配权重低于台词匹配，因为 VLM 描述可能不够精确，但能排除"台词对但画面不对"的情况
+                s = density * (1.0 + t_match * 2.0 + v_match * 0.0)  # v_match权重暂设0：本地VLM描述+字符重叠是噪声，后续换语义匹配
+                if s > best_s + 1e-9:
+                    best_s, best_t = s, t
+                t += scan_step
+            s0 = min(max(0.0, best_t), max(0.0, vdur - sub_d))
+            s1 = min(vdur, s0 + sub_d)
+            spans.append((round(s0, 3), round(s1, 3)))
+            narr_map.append(i)
+            last_end = s1
+
+    return spans, narr_map
 
 
 def _fallback_full_script(movie_name, plot_text, target_sec=None):
@@ -6641,13 +7425,19 @@ def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None,
         except Exception:
             n_beats = None
     want = ('\n\n这一版请写成约 %d 节。' % n_beats) if n_beats else ''
+    # 严格约束：不添加剧情资料里没有的情节、人物、台词、数字
+    strict = ('\n\n【严格约束】\n'
+              '- 只使用上面【片名与剧情资料】里出现过的内容，严禁编造未提及的人物、情节、台词、数字、结局。\n'
+              '- 资料里没有的细节宁可跳过，也不要自行脑补或拓展。\n'
+              '- 可以调整叙述顺序和表达方式，但不能改变事实。\n'
+              '- 如果资料不足，少写几节也没关系，不要凑字数。')
 
     # ① 本地模型（免费优先）
     if local_llm_enabled() and not economy:
         try:
             if local_llm_ping()[0]:
                 brief = ((movie_name or '') + '\n' + (plot_text or ''))[:8000]
-                prompt = SCRIPT_STYLE_MOVIE + want + '\n\n【片名与剧情资料】\n' + brief
+                prompt = SCRIPT_STYLE_MOVIE + want + strict + '\n\n【片名与剧情资料】\n' + brief
                 obj = _extract_json_obj(local_llm_chat(prompt, timeout=180))
                 sc = _script_from_obj(obj, movie_name)
                 if sc and sc['beats']:
@@ -6659,8 +7449,8 @@ def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None,
         try:
             import urllib.request
             import json as _json
-            brief = ((movie_name or '') + '\n' + (plot_text or ''))[:4000]
-            prompt = SCRIPT_STYLE_MOVIE + want + '\n\n【片名与剧情资料】\n' + brief
+            brief = ((movie_name or '') + '\n' + (plot_text or ''))[:8000]
+            prompt = SCRIPT_STYLE_MOVIE + want + strict + '\n\n【片名与剧情资料】\n' + brief
             cfg = chat_cfg()
             payload = {'model': cfg.get('model'),
                        'messages': [{'role': 'user', 'content': prompt}],
@@ -6925,17 +7715,41 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if not texts:
         raise RuntimeError('解说稿为空（请检查剧情文本或本地模型）')
 
+    # TTS 标记后处理：检查标记完整性，自动补全停顿/情绪（本地LLM可能忽略标记指导）
+    texts = _enhance_tts_markup(texts)
+    n_marked = sum(1 for t in texts if has_tts_markup(t))
+    print(f'[DIAG] TTS标记: {n_marked}/{len(texts)}节含标记')
+
     if _aborted():
         raise AbortError('用户取消了任务')
+
+    # === 三阶段语义对齐：场景级匹配，解决片段和字幕对不上 ===
+    # 阶段1：场景分割 + VLM结构化描述
+    up('检测场景切换', 44)
+    cuts = _cached_scene_cuts(video_path, threshold=0.30, progress=progress)
+    raw_scenes = _build_scenes(cuts, vdur, min_len=3.0)
+    print(f'[DIAG] 场景分割: {len(raw_scenes)}个场景')
+    scene_descs = _vlm_describe_scenes(video_path, raw_scenes, run_dir, progress=progress)
+    if scene_descs:
+        print(f'[DIAG] VLM场景描述: {len(scene_descs)}个场景已描述')
+    # 阶段2：LLM语义对齐
+    scene_alignment = {}
+    if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
+        up('解说词-场景语义对齐', 48)
+        scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name)
+        if scene_alignment:
+            print(f'[DIAG] LLM语义对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
+    # 阶段3：在对齐的场景内选片段（_allocate_script_spans 内部处理），
+    # 对齐失败时自动退回台词bigram匹配保底
     up('按解说分配画面', 52)
-    # 画面时长由解说字数决定；放不下的原片区间会被跳过（后续 _cut_video_by_spans 真剪掉）
-    segs = _allocate_script_spans(texts, vdur, asr=asr)
+    segs, narr_map = _allocate_script_spans(texts, vdur, asr=asr, vlm_captions=None,
+                                             scene_alignment=scene_alignment, scenes=scene_descs)
     if not segs:
         raise RuntimeError('画面分配失败（视频可能过短）')
 
     # events 保持旧格式返回，供 diag 与「按解说词重新匹配分镜」复用
     events = [{'desc': t[:40], 'keywords': []} for t in texts]
-    return segs, texts, asr, {}, 'movie', events
+    return segs, texts, asr, {}, 'movie', events, narr_map
 
 
 def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, music_path=None):
@@ -6961,7 +7775,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     # 有视频：剧情驱动（解说稿 + 画面分配都在 _narrate_by_plot 内一次完成）。
     # 此处不再单独调一次 llm_movie_script——那会白白多跑一轮模型，且旧接口只产出
     # 30 字一句的碎片事件，与完整解说稿不是一回事。
-    segs, narr, asr, _frames, mode, events = _narrate_by_plot(
+    segs, narr, asr, _frames, mode, events, narr_map = _narrate_by_plot(
         video_path, plot, params, run_dir, progress, movie_name=movie_name)
     # ✂ 真剪辑：只保留解说覆盖到的镜头段（此前整链路不剪切，成片恒等于原片时长）
     src_video = video_path
@@ -6974,6 +7788,18 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
+    # 高密度剪辑：一节解说词对应多个子片段，按 narr_map 聚合成每节的时间范围
+    # 配音和字幕按节走（一节一条配音、一行字幕），画面是多片段拼接
+    if narr_map and len(narr_map) == len(segs):
+        beat_ranges = []
+        for bi in range(len(narr)):
+            bsegs = [segs[k] for k in range(len(segs)) if narr_map[k] == bi]
+            if bsegs:
+                beat_ranges.append((bsegs[0][0], bsegs[-1][1]))
+            else:
+                beat_ranges.append((0.0, 0.0))
+        segs = beat_ranges
+        print(f'[DIAG] 高密度剪辑: {len(narr)}节 -> {len(narr_map)}个片段, 每节平均{len(narr_map)/max(1,len(narr)):.1f}个片段')
     up('逐段配音', 58)
     tts_paths = []
     voice_spans = {}   # 字幕窗口跟随配音（与短片解说一致：有声才显字、念完即收）
@@ -7307,7 +8133,7 @@ def _analyze_plan_job(req, prog):
             outline = []
             if plot:
                 # 🎭 剧情驱动：不靠 AI 识别画面，按用户剧情剪分镜 + 写解说
-                segs, narr, asr, _frames, _mode, events = _narrate_by_plot(
+                segs, narr, asr, _frames, _mode, events, _nmap = _narrate_by_plot(
                     vp, plot, params, run_dir, prog, movie_name='')
                 diag = {'segments': len(segs), 'asr_lines': len(asr),
                         'narration': narr, 'plot_driven': True, 'events': len(events)}
@@ -8176,6 +9002,13 @@ class Handler(BaseHTTPRequestHandler):
                                         'pull_pct': VLM_PULL.get('pct', 0)}).encode('utf-8'),
                            'application/json')
             return
+        if path == '/api/storage':
+            # 存储管理：扫描项目磁盘占用（前端用 GET 请求）
+            try:
+                self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+            return
         self._send(404, b'not found')
 
     def do_POST(self):
@@ -8329,6 +9162,16 @@ class Handler(BaseHTTPRequestHandler):
                 raw = self.rfile.read(length) if length else b'{}'
                 data = json.loads(raw.decode('utf-8') or '{}')
                 ok, msg = tts_install_async(str(data.get('pkg') or 'edge-tts'))
+                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                           'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                           'application/json')
+            return
+        if path == '/api/tts/install_chattts':
+            # 安装 ChatTTS：创建 Python 3.11 venv + CUDA torch + ChatTTS（后台异步）
+            try:
+                ok, msg = tts_install_chattts_async()
                 self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
                            'application/json')
             except Exception as e:

@@ -59,7 +59,10 @@ def test_no_cut_when_spans_cover_whole_video(monkeypatch, tmp_path):
 def test_cut_removes_gaps_and_remaps_timeline(monkeypatch, tmp_path):
     """保留 0-10 与 20-30（剪掉中间 10 秒）→ 新时间轴为 (0,10) 与 (10,20)。"""
     calls = _ff(monkeypatch)
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 30.0)
+    # mock 探测需区分原片(30s)与剪辑后成片(20s)：无差别返回 30s 会误触发
+    # 「拼接时长偏差按比例缩放」逻辑，把正确的时间轴拉回 30s
+    monkeypatch.setattr(S, 'probe_audio_len',
+                        lambda p: 20.0 if 'cut' in str(p) else 30.0)
     monkeypatch.setattr(S, '_has_audio_track', lambda p: True)
     out, spans, cut = S._cut_video_by_spans('v.mp4', [(0, 10), (20, 30)], str(tmp_path))
     assert out.endswith('cut.mp4'), '应输出剪辑后的视频：%s' % out

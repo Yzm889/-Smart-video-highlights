@@ -23,3 +23,9 @@ Thumbs.db
 # ---- local models (large runtime files, excluded) ----
 models/
 material_library/
+# 运行日志 / 临时脚本
+_srv.err
+_srv.log
+_patch_*.py
+_diag_*.py
+_fix_*.py

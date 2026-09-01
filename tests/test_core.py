@@ -184,8 +184,9 @@ def test_whisper_device_returns_valid_pair():
     dev, ct = S.whisper_device()
     assert dev in ('cpu', 'cuda')
     assert ct in ('int8', 'float16')
-    # 无 torch / 无显卡的环境应安全回退 CPU(int8)，省流模式仍能跑（只是慢些）
-    if not _torch_cuda_available():
+    # 设备探测以 whisper_device 自身的探测为准（nvidia-smi 优先，不依赖 torch——
+    # faster-whisper 走 CTranslate2 后端，驱动在即可用 CUDA）。无 GPU 环境回退 CPU(int8)。
+    if not S._cuda_available():
         assert (dev, ct) == ('cpu', 'int8')
 
 

@@ -1,3 +1,24 @@
+// ---- 主题切换（日间/夜间） ----
+(function(){
+  const saved = localStorage.getItem('framecut_theme') || 'dark';
+  applyTheme(saved);
+})();
+
+function applyTheme(theme){
+  document.documentElement.setAttribute('data-theme', theme);
+  const btn = document.getElementById('themeToggle');
+  if(btn){
+    btn.textContent = theme === 'dark' ? '🌙 夜间' : '☀️ 日间';
+  }
+}
+
+function toggleTheme(){
+  const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  localStorage.setItem('framecut_theme', next);
+}
+
 
 const ITEMS = [];
 const $ = id => document.getElementById(id);
@@ -7,7 +28,6 @@ fi.addEventListener('change', e => { for (const f of fi.files) handle(f); fi.val
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragover'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
 drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('dragover'); for (const f of e.dataTransfer.files) handle(f); });
-$('defDur').addEventListener('change', () => { clearEmpty(); });
 
 // ---- remember last-used settings across sessions (localStorage) ----
 (function(){
@@ -20,10 +40,8 @@ $('defDur').addEventListener('change', () => { clearEmpty(); });
     if (saved.res && $('res').querySelector('option[value="'+saved.res+'"]')) $('res').value = saved.res;
     if (saved.fps) $('fps').value = saved.fps;
     if (saved.trans) $('trans').value = saved.trans;
-    if (saved.beatStep) $('beatStep').value = saved.beatStep;
-    if (saved.hardCutSel) $('hardCutSel').value = saved.hardCutSel;
-    if (saved.defDur) $('defDur').value = saved.defDur;
-    if ($('aiCap')) $('aiCap').checked = !!saved.aiCap;
+        if (saved.hardCutSel) $('hardCutSel').value = saved.hardCutSel;
+        if ($('aiCap')) $('aiCap').checked = !!saved.aiCap;
     EXT.forEach(id => {
       const el = $(id); if (!el) return;
       const v = saved[id];
@@ -34,11 +52,11 @@ $('defDur').addEventListener('change', () => { clearEmpty(); });
     });
   } catch(e){}
   function save(){
-    const o = { res:$('res').value, fps:$('fps').value, trans:$('trans').value, beatStep:$('beatStep').value, hardCutSel:$('hardCutSel').value, defDur:$('defDur').value, aiCap: $('aiCap')?$('aiCap').checked:false };
+    const o = { res:$('res').value, fps:$('fps').value, trans:$('trans').value, hardCutSel:$('hardCutSel').value, aiCap: $('aiCap')?$('aiCap').checked:false };
     EXT.forEach(id => { const el=$(id); if (el) o[id] = el.type==='checkbox' ? el.checked : el.value; });
     try { localStorage.setItem(KEY, JSON.stringify(o)); } catch(e){}
   }
-  const ids = ['res','fps','trans','beatStep','hardCutSel','defDur','aiCap'].concat(EXT);
+  const ids = ['res','fps','trans','hardCutSel','aiCap'].concat(EXT);
   ids.forEach(id => { const el=$(id); if(el) el.addEventListener('change', save); });
 })();
 
@@ -313,6 +331,16 @@ function installTtsPkg(pkg){
     }).catch(e=>{ if(st) st.textContent = '❌ 安装请求失败：' + e.message; });
   if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 1500);
 }
+function installChatTts(){
+  const st = $('ttsLocalState');
+  if(st) st.textContent = '⏳ 正在安装 ChatTTS（torch+模型约3GB，首次较慢）…';
+  fetch('/api/tts/install_chattts', {method:'POST', headers:{'Content-Type':'application/json'},
+                                     body: JSON.stringify({})})
+    .then(r=>r.json()).then(res=>{
+      if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || res.error || '');
+    }).catch(e=>{ if(st) st.textContent = '❌ 安装请求失败：' + e.message; });
+  if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 3000);
+}
 function downloadTtsModel(){
   const st = $('ttsLocalState');
   if(st) st.textContent = '⏳ 正在下载离线配音模型（约 130MB）…';
@@ -507,7 +535,9 @@ const LOCAL_MODEL_CATALOG = [
   {tag:'qwen3:8b',         label:'qwen3:8b', desc:'轻快省显存 · 共存更稳', size:'≈5.2GB'},
 ];
 const VLM_MODEL_CATALOG = [
-  {tag:'qwen3-vl:8b',      label:'⭐ qwen3-vl:8b', desc:'新一代视觉 · 剧情理解更强', size:'≈6.1GB'},
+  {tag:'minicpm-v4.5:q8_0', label:'⭐ MiniCPM-V 4.5', desc:'视频理解专项·96x压缩·同显存多看10倍帧', size:'≈6.5GB'},
+  {tag:'qwen3-vl:8b',      label:'qwen3-vl:8b', desc:'新一代视觉·综合强·剧情理解好', size:'≈6.1GB'},
+  {tag:'qwen3-vl:30b',     label:'qwen3-vl:30b (MoE)', desc:'旗舰·激活3B速度快·需16GB显存', size:'≈20GB'},
   {tag:'qwen2.5vl:latest', label:'qwen2.5vl', desc:'稳定基准（回退选）', size:'≈5.6GB'},
 ];
 function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn){
@@ -736,7 +766,7 @@ function isVideo(name){ return /\.(mp4|mov|webm|avi|mkv|m4v)$/i.test(name); }
 function handle(file){
   if (!(file.type.startsWith('image/') || file.type.startsWith('video/') || isVideo(file.name))) return;
   const id = 'it' + Date.now() + Math.random().toString(36).slice(2,6);
-  const dur = Math.max(1, parseInt($('defDur').value) || 3);
+  const dur = 3;  // 图片默认时长（原可配置项已从UI移除）
   const it = { id, name:file.name, kind: isVideo(file.name) ? 'video' : 'image', dur, url:URL.createObjectURL(file), file };
   ITEMS.push(it);
   render();
@@ -1711,10 +1741,10 @@ async function build(){
   $('status').textContent = '上传素材…'; setBar(2);
   gStart('✨ 一键合成');
   const [rw, rh] = $('res').value.split('x').map(Number);
-  const beatStep = parseFloat($('beatStep').value) || 1;
+  const beatStep = 1;  // 每拍切换（原可配置项已从UI移除）
   const hardCut = $('hardCutSel').value === '1';
   const aiCap = $('aiCap').checked;
-  const body = { items: [], music: null, params: { w:rw, h:rh, fps:+$('fps').value, transition:$('trans').value, singleDur:+$('defDur').value||3, beatStep, hardCut, ai_captions: aiCap } };
+  const body = { items: [], music: null, params: { w:rw, h:rh, fps:+$('fps').value, transition:$('trans').value, singleDur:3, beatStep, hardCut, ai_captions: aiCap } };
   for (const it of ITEMS){
     if (it.mlib){   // 素材库条目：文件已在服务器，只传引用
       body.items.push({ kind:it.kind, name:it.name, dur:it.dur, mlib: it.mlib });
@@ -2425,3 +2455,122 @@ function mlibToSlot(name, which, btn){
 }
 try { const ng = localStorage.getItem('springStudio.narGenre'); if (ng && $('narGenre')) $('narGenre').value = ng; } catch(e){}
 mlibList();
+
+
+// ---- ⚡ 一键智能模式 ----
+let SMART_VIDEO = null;
+
+(function(){
+  const drop = $('smartDrop'), fi = $('smartInput');
+  if(!drop || !fi) return;
+  drop.addEventListener('click', () => fi.click());
+  fi.addEventListener('change', e => { if(fi.files[0]) handleSmartVideo(fi.files[0]); fi.value=''; });
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background='#e8f5e9'; });
+  drop.addEventListener('dragleave', () => drop.style.background='#fff');
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.style.background='#fff'; if(e.dataTransfer.files[0]) handleSmartVideo(e.dataTransfer.files[0]); });
+})();
+
+function handleSmartVideo(file){
+  if(!file.type.startsWith('video/')){ $('smartStatus').textContent='❌ 请选择视频文件'; return; }
+  SMART_VIDEO = file;
+  $('smartDrop').innerHTML = '✅ 已选：' + file.name + '（' + (file.size/1048576).toFixed(1) + 'MB）';
+  $('smartDrop').style.color = 'var(--accent)';
+  const info = $('smartVideoInfo');
+  info.style.display = 'flex';
+  info.innerHTML = '<span>视频已就绪，填电影名后点一键生成</span><button class="btn mini danger" onclick="removeSmartVideo()" style="padding:3px 10px;font-size:12px;">✕ 移除</button>';
+  detectSmartConfig();
+}
+
+function removeSmartVideo(){
+  SMART_VIDEO = null;
+  $('smartInput').value = '';
+  $('smartDrop').innerHTML = '🎬 拖入视频文件，或点此选择';
+  $('smartDrop').style.color = '';
+  $('smartVideoInfo').style.display = 'none';
+  $('smartAutoConfig').style.display = 'none';
+  $('smartStatus').textContent = '';
+}
+
+function detectSmartConfig(){
+  // 自动检测可用配置并显示
+  fetch('/api/ai_status').then(r=>r.json()).then(s=>{
+    const parts = [];
+    parts.push(s.vlm_ready ? '视觉模型✅' : '视觉模型❌（用台词匹配）');
+    parts.push(s.tts_ready ? '配音✅' : '配音❌');
+    fetch('/api/hardware').then(r=>r.json()).then(h=>{
+      if(h.gpu) parts.push(h.gpu + ' ' + h.gpu_vram_gb + 'GB');
+      if(h.tier) parts.push('档位:' + h.tier);
+      $('smartConfigText').textContent = parts.join(' · ');
+      $('smartAutoConfig').style.display = 'block';
+    }).catch(()=>{
+      $('smartConfigText').textContent = parts.join(' · ');
+      $('smartAutoConfig').style.display = 'block';
+    });
+  }).catch(()=>{});
+}
+
+function toggleProSettings(){
+  const pro = $('proSettings');
+  const link = event.target;
+  if(pro.style.display === 'none'){
+    pro.style.display = '';
+    link.textContent = '🔽 收起专业设置';
+  } else {
+    pro.style.display = 'none';
+    link.textContent = '⚙️ 需要调参数？展开专业设置';
+  }
+}
+
+async function smartGenerate(){
+  const name = ($('smartMovieName').value || '').trim();
+  if(!SMART_VIDEO && !name){ $('smartStatus').textContent='❌ 请上传视频或填电影名'; return; }
+  if(SMART_VIDEO && SMART_VIDEO.size > 2*1024*1024*1024){ $('smartStatus').textContent='❌ 视频过大（>2GB），请先压缩'; return; }
+
+  const go = $('smartGo'); go.disabled = true;
+  $('smartResult').style.display = 'none';
+  $('smartStatus').textContent = '提交任务…';
+  gStart('⚡ 一键智能生成');
+
+  // 自动设置参数：maxSeg 根据视频时长估算（默认25秒一段）
+  const body = { movie: name, plot: '', params: { maxSeg: 25, w:1280, h:720, fps:30 } };
+  if(SMART_VIDEO){ body.video = await videoToBody(SMART_VIDEO); }
+
+  try{
+    const r = await fetch('/api/narrate_movie', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '失败');
+    await pollSmart(out.runid);
+  }catch(e){ $('smartStatus').textContent = '❌ ' + e.message; gErr(e.message); }
+  go.disabled = false;
+}
+
+function pollSmart(runid){
+  return new Promise(resolve => {
+    let _errs = 0;
+    _stopFlag = false;
+    _currentRunid = runid;
+    const cb = $('smartCancel'); if(cb){ cb.style.display=''; cb.disabled=false; }
+    const iv = setInterval(() => {
+      fetch('/api/progress?run=' + runid).then(r=>r.json()).then(p => {
+        const b = $('smartBar').querySelector('i'); $('smartBar').style.display='block';
+        if(p.pct) b.style.width = Math.min(100, p.pct) + '%';
+        gSet(p.pct, p.phase);
+        if(p.done){
+          clearInterval(iv); $('smartBar').style.display='none';
+          _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
+          if(p.error){ $('smartStatus').textContent='❌ ' + (p.error||'失败'); gErr(p.error); resolve(); return; }
+          $('smartStatus').textContent = '✅ 完成！'; gDone();
+          if(p.file){
+            $('smartResult').style.display='block';
+            $('smartPlayer').src = '/media/' + p.file + '?t=' + Date.now();
+            $('smartDl').href = '/media/' + p.file;
+            gPreview(p.file, '智能解说');
+          }
+          resolve(); return;
+        }
+        if(!_stopFlag) $('smartStatus').textContent = (p.phase||'处理中') + '… ' + (p.pct||0) + '%';
+      }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('smartBar').style.display='none'; $('smartStatus').textContent='❌ 与服务失去连接'; resolve(); } });
+    }, 400);
+    setTimeout(() => { clearInterval(iv); $('smartStatus').textContent='⚠️ 超时'; resolve(); }, 1800000);
+  });
+}
