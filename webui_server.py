@@ -5410,6 +5410,16 @@ def edge_tts_speak(text, out_path, voice=None, rate=None):
     return False
 
 
+def _strip_tts_markup(text):
+    """剥离TTS控制标记：{停顿:0.3} {情绪:激动} {慢} {/情绪} 等，供不支持SSML的引擎使用。"""
+    import re as _re
+    if not text:
+        return text
+    t = _re.sub(r'\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}', '', text)
+    t = _re.sub(r'\{/(?:情绪|停顿|慢|快|高音|低音|大声|小声)\}', '', t)
+    return _re.sub(r'\s+', ' ', t).strip()
+
+
 def local_tts_speak(text, out_path):
     """本地免费配音统一入口。
 
@@ -5452,19 +5462,25 @@ def local_tts_speak(text, out_path):
             if not chattts_available():
                 continue
             wv = stem + '_chattts.wav'
-            if chattts_speak(text, wv):
+            # ChatTTS也不支持{停顿:0.3}等花括号标记，先剥离
+            clean_text = _strip_tts_markup(text)
+            if chattts_speak(clean_text, wv):
                 _TLS.tts_engine = 'chattts'
                 return True, 'chattts', wv
         elif eng == 'sherpa':
             if not sherpa_tts_available():
                 continue
             wv = stem + '_sherpa.wav'
-            if sherpa_tts_speak(text, wv, speed=speed):
+            # sherpa不支持{停顿:0.3}{情绪:xx}等标记，先剥离避免念出"停顿"
+            clean_text = _strip_tts_markup(text)
+            if sherpa_tts_speak(clean_text, wv, speed=speed):
                 _TLS.tts_engine = 'sherpa'
                 return True, 'sherpa', wv
         else:
             wv = stem + '.wav'
-            if sapi_tts(text, wv):
+            # SAPI也不支持TTS标记，先剥离
+            clean_text = _strip_tts_markup(text)
+            if sapi_tts(clean_text, wv):
                 _TLS.tts_engine = 'sapi'
                 return True, 'sapi', wv
     return False, None, out_path
