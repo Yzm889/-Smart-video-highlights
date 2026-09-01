@@ -22,9 +22,10 @@
   <button class="stepbtn" data-step="music" title="背景音乐 / 踩点曲库">③ 音乐</button>
   <button class="stepbtn" data-step="beatcut" title="智能强卡点（本应用核心）">④ 卡点</button>
   <button class="stepbtn" data-step="narrate" title="短片解说 / 联网解说">⑤ 解说</button>
-  <button class="stepbtn" data-step="ai" title="AI 文案 / 配音 / 模型配置">⑥ AI</button>
-  <button class="stepbtn" data-step="output" title="时间线 / 输出设置">⑦ 输出</button>
-  <button class="stepbtn" data-step="build" title="一键合成">⑧ 合成</button>
+  <button class="stepbtn" data-step="adjust" title="配音试听 / 解说词微调 / 片段管理">⑥ 手动调整</button>
+  <button class="stepbtn" data-step="ai" title="AI 文案 / 配音 / 模型配置">⑦ AI</button>
+  <button class="stepbtn" data-step="output" title="时间线 / 输出设置">⑧ 输出</button>
+  <button class="stepbtn" data-step="build" title="一键合成">⑨ 合成</button>
   <button class="stepbtn" data-step="tasks" title="任务中心·进度详情">📋 任务</button>
   <button class="stepbtn" data-step="history" title="最近生成记录">⑨ 记录</button>
   <button class="stepbtn" data-step="storage" title="磁盘占用与清理">🧹 存储</button>
@@ -488,7 +489,20 @@
     </div>
   </div>
 
-  <div class="card" id="musicCard" data-step="music">
+  <div class="card" id="adjustCard" data-step="adjust">
+  <div class="card-h">
+    <h2>⑥ 手动调整 <span class="tag">配音·字幕·片段微调</span></h2>
+    <p>逐段试听配音、修改解说词、重生成单段、跳过不需要的片段，确认后再合成。</p>
+  </div>
+  <div id="adjustStatus" style="margin:8px 0;color:var(--muted);font-size:13px">请先在「⑤ 解说」生成配音，完成后会自动跳到这里。</div>
+  <div id="adjustList" style="margin:12px 0"></div>
+  <div id="adjustActions" style="display:none;margin-top:12px;display:flex;gap:8px">
+    <button id="adjustConfirmBtn" class="btn-primary" style="flex:1;padding:12px;font-size:15px">✅ 确认调整，开始合成视频</button>
+    <button id="adjustRegenAllBtn" class="btn-secondary" style="padding:12px 20px">🔄 全部重生成</button>
+  </div>
+</div>
+
+<div class="card" id="musicCard" data-step="music">
     <h2>🎵 背景音乐（可选）</h2>
     <div id="musDrop" class="musdrop">把 mp3/wav 音乐拖到这里，或点此选择背景音乐</div>
     <input type="file" id="musInput" accept="audio/*,.mp3,.wav" style="display:none">

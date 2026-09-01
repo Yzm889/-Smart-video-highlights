@@ -1792,8 +1792,9 @@ function pollNarrate(runid){
           if(p.error){ renderPartial('narPartial', p.partial); showTaskError($('narStatus'), p.error, p); gErr(p.error); resolve(); return; }
           // 两步走·第一步：配音已生成，展示确认面板
           if(p.tts_list && p.tts_list.length){
-            $('narStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），请试听确认后合成';
-            renderTtsConfirm('narTtsConfirm', p.tts_list, p.run_dir || '', 'nar');
+            $('narStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），正在跳转到手动调整…';
+            renderAdjustPanel(p.tts_list, p.run_dir || '', 'nar', p.script || []);
+            if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
           }
@@ -1880,8 +1881,9 @@ function pollMovie(runid){
           _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
           if(p.error){ renderPartial('moviePartial', p.partial); showTaskError($('movieStatus'), p.error, p); gErr(p.error); resolve(); return; }
           if(p.tts_list && p.tts_list.length){
-            $('movieStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），请试听确认后合成';
-            renderTtsConfirm('movieTtsConfirm', p.tts_list, p.run_dir || '', 'movie');
+            $('movieStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），正在跳转到手动调整…';
+            renderAdjustPanel(p.tts_list, p.run_dir || '', 'movie', p.script || []);
+            if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
           }
@@ -2951,4 +2953,138 @@ function pollMovieCompose(runid, mode){
       }).catch(() => { if(++_errs >= 8){ clearInterval(iv); resolve(); } });
     }, 800);
   });
+}
+
+
+// === ⑥ 手动调整页面 ===
+let _adjustState = { runDir: '', mode: '', items: [], changed: {} };
+
+function renderAdjustPanel(ttsList, runDir, mode, script){
+  _adjustState = { runDir: runDir, mode: mode, items: JSON.parse(JSON.stringify(ttsList)), changed: {} };
+  const list = document.getElementById('adjustList');
+  const status = document.getElementById('adjustStatus');
+  const actions = document.getElementById('adjustActions');
+  if(!list) return;
+  status.textContent = '🎙️ 共 ' + ttsList.length + ' 段配音 · 逐段试听，可修改文字后重生成，或勾选跳过';
+  let html = '';
+  ttsList.forEach(function(item, idx){
+    html += '<div class="adjust-item" id="adjItem'+idx+'" style="padding:12px;margin:8px 0;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+    html += '<span style="font-size:13px;font-weight:600">第 '+(idx+1)+' 段 <span style="color:var(--muted);font-weight:400">('+(item.duration||0)+'秒)</span></span>';
+    html += '<label style="font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="adjSkip'+idx+'" style="margin-right:4px;vertical-align:middle">跳过此段</label>';
+    html += '</div>';
+    html += '<textarea id="adjText'+idx+'" rows="2" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" oninput="_adjustState.changed['+idx+']=true">'+(item.text||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>';
+    html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
+    html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
+    html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
+    html += '</div>';
+    html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:4px;display:none"></div>';
+    html += '</div>';
+  });
+  list.innerHTML = html;
+  actions.style.display = 'flex';
+  // 绑定确认按钮
+  const btn = document.getElementById('adjustConfirmBtn');
+  if(btn) btn.onclick = confirmAdjustAndCompose;
+  const rbtn = document.getElementById('adjustRegenAllBtn');
+  if(rbtn) rbtn.onclick = function(){ if(confirm('确定重新生成全部配音吗？')){ regenAllTts(); } };
+  // 滚动到顶部
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+async function regenSingleTts(idx){
+  const text = document.getElementById('adjText'+idx).value.trim();
+  if(!text){ alert('解说词不能为空'); return; }
+  const statusEl = document.getElementById('adjStatus'+idx);
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '生成中…';
+  statusEl.style.display = 'block'; statusEl.style.color = 'var(--muted)'; statusEl.textContent = '正在生成…';
+  try{
+    const r = await fetch('/api/tts_single', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ text: text, run_dir: _adjustState.runDir, index: idx }) });
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '失败');
+    // 轮询任务结果
+    const result = await pollTaskSimple(out.runid);
+    if(result.error) throw new Error(result.error);
+    // 更新音频
+    const audio = document.getElementById('adjAudio'+idx);
+    if(audio && result.audio){ audio.src = '/media/'+result.audio+'?t='+Date.now(); audio.load(); }
+    _adjustState.items[idx].text = text;
+    if(result.audio) _adjustState.items[idx].audio = result.audio;
+    if(result.duration) _adjustState.items[idx].duration = result.duration;
+    statusEl.style.color = '#4ade80'; statusEl.textContent = '✅ 已更新';
+    setTimeout(function(){ statusEl.style.display='none'; }, 2000);
+  }catch(e){
+    statusEl.style.color = '#f87171'; statusEl.textContent = '❌ ' + e.message;
+  }
+  btn.disabled = false; btn.textContent = '🔄 重生成';
+}
+
+function pollTaskSimple(runid){
+  return new Promise((resolve, reject) => {
+    const iv = setInterval(() => {
+      fetch('/api/progress?run=' + runid).then(r => r.json()).then(p => {
+        if(p.done){ clearInterval(iv); resolve(p); }
+      }).catch(() => {});
+    }, 500);
+    setTimeout(() => { clearInterval(iv); reject(new Error('超时')); }, 120000);
+  });
+}
+
+async function regenAllTts(){
+  const status = document.getElementById('adjustStatus');
+  status.textContent = '🔄 正在重新生成全部配音…';
+  try{
+    const texts = [];
+    for(let i=0;i<_adjustState.items.length;i++){
+      const t = document.getElementById('adjText'+i);
+      texts.push(t ? t.value.trim() : _adjustState.items[i].text);
+    }
+    const r = await fetch('/api/tts_regen_all', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ texts: texts, run_dir: _adjustState.runDir }) });
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '失败');
+    const result = await pollTaskSimple(out.runid);
+    if(result.error) throw new Error(result.error);
+    // 更新列表
+    _adjustState.items = result.items || [];
+    renderAdjustPanel(_adjustState.items, _adjustState.runDir, _adjustState.mode, []);
+    status.textContent = '✅ 全部配音已重新生成（'+(_adjustState.items.length)+'段）';
+  }catch(e){
+    status.textContent = '❌ ' + e.message;
+  }
+}
+
+async function confirmAdjustAndCompose(){
+  const btn = document.getElementById('adjustConfirmBtn');
+  btn.disabled = true; btn.textContent = '合成中…';
+  // 收集跳过的段
+  const skip = [];
+  const finalItems = [];
+  for(let i=0;i<_adjustState.items.length;i++){
+    const cb = document.getElementById('adjSkip'+i);
+    if(cb && cb.checked){ skip.push(i); continue; }
+    const t = document.getElementById('adjText'+i);
+    finalItems.push({ index: i, text: t ? t.value.trim() : _adjustState.items[i].text, audio: _adjustState.items[i].audio });
+  }
+  try{
+    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip };
+    // 带上配乐
+    if(_adjustState.mode === 'movie' && document.getElementById('movieBgm') && document.getElementById('movieBgm').checked && MUSIC){
+      if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
+      else { body.music = { name: MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer())) }; }
+    }
+    if(_adjustState.mode === 'nar' && document.getElementById('narBgm') && document.getElementById('narBgm').checked && MUSIC){
+      if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
+      else { body.music = { name: MUSIC.name, data: toB64(new Uint8Array(await MUSIC.file.arrayBuffer())) }; }
+    }
+    const r = await fetch('/api/movie_compose', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '失败');
+    await pollMovieCompose(out.runid, _adjustState.mode);
+  }catch(e){
+    alert('合成失败：' + e.message);
+    btn.disabled = false; btn.textContent = '✅ 确认调整，开始合成视频';
+  }
 }

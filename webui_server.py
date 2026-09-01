@@ -7958,12 +7958,38 @@ def _generate_all_tts(narr, run_dir, progress=None):
         if progress:
             progress['phase'] = '逐段配音 %d/%d' % (i + 1, len(narr))
             progress['pct'] = 55 + int(25 * (i + 1) / max(1, len(narr)))
-    print('[DIAG] TTS生成完成: %d/%d段' % (len(results), len(narr)))
+    print('[DIAG] TTS第一轮完成: %d/%d段' % (len(results), len(narr)))
+    # 失败重试：第一轮没成功的段落再试一次（可能是瞬时网络抖动或熔断恢复）
+    success_idx = set(i for i, _ in results)
+    failed = [i for i in range(len(narr)) if i not in success_idx and narr[i].strip()]
+    if failed:
+        print('[DIAG] TTS重试 %d 个失败段落' % len(failed))
+        import time as _t
+        _t.sleep(1.0)  # 等熔断恢复
+        for i in failed:
+            if _aborted(): break
+            txt = narr[i]
+            clip = None
+            if use_mimo:
+                np_ = os.path.join(run_dir, 'narr%d.mp3' % i)
+                if ai_tts(txt, np_): clip = np_
+            if clip is None:
+                ok, _eng, lp = local_tts_speak(txt, os.path.join(run_dir, 'narr%d.mp3' % i))
+                if ok: clip = lp
+            if clip is not None:
+                results.append((i, clip))
+            if progress:
+                progress['phase'] = '配音重试 %d/%d' % (len([r for r in results if r[0] in failed]), len(failed))
+    results.sort(key=lambda x: x[0])
+    print('[DIAG] TTS最终完成: %d/%d段' % (len(results), len(narr)))
     return results
 
 
-def compose_movie_from_tts(run_dir, progress=None, music_path=None):
-    """Phase 2：加载已保存的配音状态，裁剪视频+合成。用户确认配音后调用。"""
+def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_items=None, skip=None):
+    """Phase 2：加载已保存的配音状态，裁剪视频+合成。用户确认配音后调用。
+    adjusted_items: 用户调整后的片段列表 [{index, text, audio}]，None则用原始状态
+    skip: 要跳过的片段索引列表
+    """
     import json as _json
     state_path = os.path.join(run_dir, 'tts_state.json')
     if not os.path.exists(state_path):
@@ -7974,7 +8000,60 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None):
     narr = state['narr']
     narr_map = state.get('narr_map') or []
     params = state.get('params') or {}
-    tts_results = [(i, p) for i, p in state.get('tts_results', [])]
+    # 应用用户调整：跳过指定段，用调整后的文本/音频
+    skip_set = set(skip or [])
+    if adjusted_items:
+        tts_results = []
+        new_narr = []
+        new_narr_map = []
+        # 重建索引：只保留未跳过的段
+        old_to_new = {}
+        new_idx = 0
+        for item in adjusted_items:
+            old_i = item.get('index', 0)
+            if old_i in skip_set:
+                continue
+            old_to_new[old_i] = new_idx
+            new_narr.append(item.get('text', ''))
+            if item.get('audio'):
+                tts_results.append((new_idx, item['audio']))
+            new_idx += 1
+        # 重建segs和narr_map（只保留未跳过的段对应的画面）
+        if narr_map and len(narr_map) == len(segs):
+            new_segs = []
+            new_narr_map = []
+            for k in range(len(segs)):
+                bi = narr_map[k]
+                if bi in old_to_new:
+                    new_segs.append(segs[k])
+                    new_narr_map.append(old_to_new[bi])
+            segs = new_segs
+            narr_map = new_narr_map
+        narr = new_narr
+    else:
+        tts_results = [(i, p) for i, p in state.get('tts_results', []) if i not in skip_set]
+        if skip_set:
+            # 跳过段后重建索引
+            old_to_new = {}
+            new_idx = 0
+            for i in range(len(narr)):
+                if i not in skip_set:
+                    old_to_new[i] = new_idx
+                    new_idx += 1
+            new_narr = [narr[i] for i in range(len(narr)) if i not in skip_set]
+            new_tts = [(old_to_new[i], p) for i, p in tts_results if i in old_to_new]
+            if narr_map and len(narr_map) == len(segs):
+                new_segs = []
+                new_narr_map = []
+                for k in range(len(segs)):
+                    bi = narr_map[k]
+                    if bi in old_to_new:
+                        new_segs.append(segs[k])
+                        new_narr_map.append(old_to_new[bi])
+                segs = new_segs
+                narr_map = new_narr_map
+            narr = new_narr
+            tts_results = new_tts
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
@@ -8719,12 +8798,64 @@ def dispatch_movie_compose(req, prog):
         if not os.path.exists(os.path.join(run_dir, 'tts_state.json')):
             raise RuntimeError('配音状态不存在，请先生成配音')
         music_path = _resolve_music(req.get('music'))
-        final = compose_movie_from_tts(run_dir, prog, music_path=music_path)
+        adjusted = req.get('items')
+        skip = req.get('skip') or []
+        final = compose_movie_from_tts(run_dir, prog, music_path=music_path,
+                                       adjusted_items=adjusted, skip=skip)
         prog['done'] = True
         prog['pct'] = 100
         if final:
             prog['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
         _record_history(req, prog, 'movie')
+    except Exception as e:
+        fail_task(prog, e)
+
+
+def dispatch_tts_single(req, prog):
+    """单段配音重生成。"""
+    try:
+        text = (req.get('text') or '').strip()
+        run_dir_name = req.get('run_dir') or ''
+        idx = int(req.get('index', 0))
+        if not text or not run_dir_name:
+            prog['error'] = '缺少text或run_dir'
+            prog['done'] = True
+            return
+        run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+        os.makedirs(run_dir, exist_ok=True)
+        out_path = os.path.join(run_dir, 'narr%d.mp3' % idx)
+        ok, _eng, lp = local_tts_speak(text, out_path)
+        if not ok:
+            # 重试一次
+            import time as _t; _t.sleep(0.5)
+            ok, _eng, lp = local_tts_speak(text, out_path)
+        if ok:
+            prog['done'] = True
+            prog['audio'] = os.path.relpath(lp, OUTDIR).replace('\\', '/')
+            prog['duration'] = round(probe_audio_len(lp) or 0, 1)
+        else:
+            prog['error'] = '配音生成失败，请检查网络或TTS引擎'
+            prog['done'] = True
+    except Exception as e:
+        fail_task(prog, e)
+
+
+def dispatch_tts_regen_all(req, prog):
+    """全部配音重生成。"""
+    try:
+        texts = req.get('texts') or []
+        run_dir_name = req.get('run_dir') or ''
+        if not texts or not run_dir_name:
+            prog['error'] = '缺少texts或run_dir'; prog['done'] = True; return
+        run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+        os.makedirs(run_dir, exist_ok=True)
+        results = _generate_all_tts(texts, run_dir, progress=prog)
+        items = [{'index': i, 'text': texts[i] if i < len(texts) else '',
+                  'audio': os.path.relpath(p, OUTDIR).replace('\\', '/'),
+                  'duration': round(probe_audio_len(p) or 0, 1)}
+                 for i, p in results]
+        prog['done'] = True
+        prog['items'] = items
     except Exception as e:
         fail_task(prog, e)
 
@@ -10040,6 +10171,30 @@ class Handler(BaseHTTPRequestHandler):
                 if req is None:
                     req = {}
                 runid = self._spawn(dispatch_movie_compose, req)
+                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/tts_single':
+            # 单段配音重生成
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                req = self._read_json(length) if length else {}
+                if req is None:
+                    req = {}
+                runid = self._spawn(dispatch_tts_single, req)
+                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/tts_regen_all':
+            # 全部配音重生成
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                req = self._read_json(length) if length else {}
+                if req is None:
+                    req = {}
+                runid = self._spawn(dispatch_tts_regen_all, req)
                 self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')

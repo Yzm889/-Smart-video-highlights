@@ -954,3 +954,9 @@ header .htools { display: flex; align-items: center; gap: 14px; }
 .tts-confirm-header h4 { margin: 0 0 4px 0; font-size: 15px; }
 .tts-item:hover { border-color: var(--accent) !important; }
 
+
+/* 手动调整页面 */
+.adjust-item:hover { border-color: var(--accent) !important; }
+.adjust-item textarea:focus { outline: none; border-color: var(--accent); }
+#adjustList { max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+
