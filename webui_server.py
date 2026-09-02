@@ -9718,7 +9718,7 @@ MIME = {
     # 音频：配音试听（/media/_tts_test/sample.mp3）与配音片段走 /media 时
     # 缺 MIME 会退化成 application/octet-stream，<audio> 在部分浏览器上拒绝播放
     '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
-    '.srt': 'text/plain; charset=utf-8', '.webm': 'video/webm',
+    '.mp4': 'video/mp4', '.srt': 'text/plain; charset=utf-8', '.webm': 'video/webm',
 }
 
 class Handler(BaseHTTPRequestHandler):

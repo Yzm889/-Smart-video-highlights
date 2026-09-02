@@ -3167,9 +3167,14 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
     html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_adjustState.changed['+idx+']=true">';
     html += '<span style="font-size:12px;color:var(--muted)">秒</span>'+spanHint;
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 预览画面</button>';
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoSegment('+idx+')">▶️ 预览片段</button>';
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 截图</button>';
     html += '</div>';
     html += '<div id="adjFrame'+idx+'" style="margin-top:6px;display:none"><img id="adjFrameImg'+idx+'" style="max-width:100%;max-height:160px;border-radius:6px;border:1px solid var(--border)"></div>';
+    html += '<div id="adjVideo'+idx+'" style="margin-top:6px;display:none;position:relative">';
+    html += '<video id="adjVideoEl'+idx+'" style="max-width:100%;max-height:240px;border-radius:6px;border:1px solid var(--border);background:#000" playsinline></video>';
+    html += '<div id="adjVideoHint'+idx+'" style="position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.7);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;display:none">🎬 片段预览中…点击视频暂停</div>';
+    html += '</div>';
     html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
     html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
     html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
@@ -3192,9 +3197,74 @@ function previewVideoFrame(idx){
   const t = parseFloat(document.getElementById('adjVStart'+idx).value) || 0;
   const frameDiv = document.getElementById('adjFrame'+idx);
   const img = document.getElementById('adjFrameImg'+idx);
+  // 隐藏视频预览
+  const vDiv = document.getElementById('adjVideo'+idx);
+  if(vDiv) vDiv.style.display = 'none';
   frameDiv.style.display = 'block';
   img.src = '/api/video_frame?run_dir=' + encodeURIComponent(_adjustState.runDir) + '&time=' + t + '&t=' + Date.now();
   img.onerror = function(){ frameDiv.style.display = 'none'; };
+}
+
+// 预览视频片段：同时播放视频段和配音
+let _adjPlayingIdx = -1;
+function previewVideoSegment(idx){
+  const vs = parseFloat(document.getElementById('adjVStart'+idx).value) || 0;
+  const ve = parseFloat(document.getElementById('adjVEnd'+idx).value) || 0;
+  const vDiv = document.getElementById('adjVideo'+idx);
+  const video = document.getElementById('adjVideoEl'+idx);
+  const hint = document.getElementById('adjVideoHint'+idx);
+  const audio = document.getElementById('adjAudio'+idx);
+  const frameDiv = document.getElementById('adjFrame'+idx);
+
+  // 停止之前播放的
+  if(_adjPlayingIdx >= 0 && _adjPlayingIdx !== idx){
+    const oldV = document.getElementById('adjVideoEl'+_adjPlayingIdx);
+    const oldA = document.getElementById('adjAudio'+_adjPlayingIdx);
+    const oldH = document.getElementById('adjVideoHint'+_adjPlayingIdx);
+    if(oldV){ oldV.pause(); }
+    if(oldA){ oldA.pause(); }
+    if(oldH) oldH.style.display = 'none';
+  }
+  _adjPlayingIdx = idx;
+
+  // 隐藏截图
+  if(frameDiv) frameDiv.style.display = 'none';
+  vDiv.style.display = 'block';
+
+  // 设置视频源（源视频在run目录下的src.mp4）
+  const videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
+  if(video.src !== window.location.origin + videoUrl && !video.src.includes('src.mp4')){
+    video.src = videoUrl;
+  }
+
+  video.currentTime = vs;
+  hint.style.display = 'block';
+  hint.textContent = '🎬 ' + vs.toFixed(1) + 's → ' + (ve > vs ? ve.toFixed(1)+'s' : '播放中') + ' · 配音同步';
+
+  // 视频播放到end时停止
+  const onTimeUpdate = function(){
+    if(ve > vs && video.currentTime >= ve){
+      video.pause();
+      if(audio) audio.pause();
+      hint.style.display = 'none';
+      video.removeEventListener('timeupdate', onTimeUpdate);
+    }
+  };
+  video.addEventListener('timeupdate', onTimeUpdate);
+  video.onended = function(){ if(audio) audio.pause(); hint.style.display = 'none'; };
+
+  // 播放视频和音频（同步）
+  video.play().then(()=>{
+    if(audio){ audio.currentTime = 0; audio.play().catch(()=>{}); }
+  }).catch(e=>{
+    hint.textContent = '❌ 视频播放失败: ' + e.message;
+  });
+
+  // 点击视频暂停
+  video.onclick = function(){
+    if(video.paused){ video.play(); if(audio) audio.play().catch(()=>{}); hint.style.display='block'; }
+    else { video.pause(); if(audio) audio.pause(); hint.style.display='none'; }
+  };
 }
 
 async function regenSingleTts(idx){
