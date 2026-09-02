@@ -5138,6 +5138,40 @@ def cosyvoice_speak(text, out_path, progress=None):
     return False
 
 
+def _find_cosyvoice_python():
+    """查找支持PyTorch的Python（3.11或3.12），返回python.exe路径，找不到返回None。
+    PyTorch不支持Python 3.14，必须用3.11/3.12创建venv。"""
+    candidates = [
+        os.path.join(os.environ.get('APPDATA', ''), 'uv', 'python', 'cpython-3.11-windows-x86_64-none', 'python.exe'),
+        os.path.join(os.environ.get('APPDATA', ''), 'uv', 'python', 'cpython-3.12-windows-x86_64-none', 'python.exe'),
+        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Python', 'Python311', 'python.exe'),
+        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Python', 'Python312', 'python.exe'),
+        r'C:\Python311\python.exe',
+        r'C:\Python312\python.exe',
+    ]
+    # 也从ChatTTS venv反查
+    chattts_venv = os.path.join(HERE, '.venv_tts', 'Scripts', 'python.exe')
+    if os.path.exists(chattts_venv):
+        try:
+            r = subprocess.run([chattts_venv, '-c', 'import sys; print(sys.base_prefix)'],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                base = r.stdout.strip()
+                candidates.insert(0, os.path.join(base, 'python.exe'))
+        except Exception:
+            pass
+    for p in candidates:
+        if p and os.path.exists(p):
+            try:
+                r = subprocess.run([p, '--version'], capture_output=True, text=True, timeout=10)
+                ver = r.stdout.strip()
+                if '3.11' in ver or '3.12' in ver:
+                    return p
+            except Exception:
+                continue
+    return None
+
+
 def _run_pip(pip, args, timeout=600, cwd=None, label=''):
     """运行pip命令，检查返回码，失败时返回错误信息。成功返回(0,'')。"""
     try:
@@ -5163,25 +5197,63 @@ def cosyvoice_install_async():
         try:
             import venv as _venv
             MIRROR = ['-i', 'https://mirrors.aliyun.com/pypi/simple/', '--trusted-host', 'mirrors.aliyun.com']
-            # 1. 创建venv
-            TTS_SETUP.update(pct=5, msg='创建 Python 虚拟环境…')
+            # 1. 创建venv（必须用Python 3.11/3.12，PyTorch不支持3.14）
+            TTS_SETUP.update(pct=3, msg='查找 Python 3.11/3.12（PyTorch不支持3.14）…')
+            base_py = _find_cosyvoice_python()
+            if not base_py:
+                TTS_SETUP.update(ok=False, pct=3, msg='❌ 未找到Python 3.11/3.12。请先安装Python 3.11（推荐uv或官网）', running=False)
+                return
+            TTS_SETUP.update(pct=5, msg='创建 Python 虚拟环境（基于 %s）…' % os.path.basename(os.path.dirname(base_py)))
             venv_dir = os.path.join(HERE, '.venv_cosyvoice')
+            # 检查已有venv的Python版本，如果是3.13+（不兼容PyTorch）则删除重建
+            if os.path.exists(COSYVOICE_VENV_PY):
+                try:
+                    vr = subprocess.run([COSYVOICE_VENV_PY, '--version'], capture_output=True, text=True, timeout=10)
+                    ver = vr.stdout.strip()
+                    if '3.13' in ver or '3.14' in ver or '3.15' in ver:
+                        TTS_SETUP.update(pct=5, msg='检测到旧venv为%s（不兼容PyTorch），删除重建…' % ver)
+                        import shutil as _sh
+                        _sh.rmtree(venv_dir, ignore_errors=True)
+                except Exception:
+                    pass
             if not os.path.exists(COSYVOICE_VENV_PY):
-                _venv.create(venv_dir, with_pip=True)
+                # 用找到的Python 3.11创建venv，而不是当前的3.14
+                r = subprocess.run([base_py, '-m', 'venv', venv_dir], capture_output=True, timeout=120)
+                if r.returncode != 0:
+                    TTS_SETUP.update(ok=False, pct=5, msg='❌ venv创建失败：' + (r.stderr or b'').decode('utf-8','ignore')[:200], running=False)
+                    return
             if not os.path.exists(COSYVOICE_VENV_PY):
-                TTS_SETUP.update(ok=False, pct=0, msg='❌ venv创建失败，python.exe不存在', running=False)
+                TTS_SETUP.update(ok=False, pct=5, msg='❌ venv创建失败，python.exe不存在', running=False)
                 return
             pip = os.path.join(venv_dir, 'Scripts', 'pip.exe')
             py = COSYVOICE_VENV_PY
             # 升级pip
             TTS_SETUP.update(pct=8, msg='升级 pip…')
             _run_pip(pip, ['install', '--upgrade', 'pip'] + MIRROR, timeout=120, label='pip升级')
-            # 2. 安装PyTorch CUDA（用官方源，国内镜像没有CUDA版torch）
-            TTS_SETUP.update(pct=15, msg='安装 PyTorch（CUDA版，约2GB，需几分钟）…')
-            rc, err = _run_pip(pip, ['install', 'torch', 'torchaudio', '--index-url',
-                                     'https://download.pytorch.org/whl/cu121'], timeout=900, label='PyTorch安装')
+            # 先验证venv的pip可用
+            TTS_SETUP.update(pct=10, msg='验证 pip 环境…')
+            rc, err = _run_pip(pip, ['--version'], timeout=30, label='pip验证')
             if rc != 0:
-                TTS_SETUP.update(ok=False, pct=15, msg='❌ ' + err[:300], running=False)
+                TTS_SETUP.update(ok=False, pct=10, msg='❌ venv的pip不可用：' + err[:200] + '。请删除.venv_cosyvoice后重试', running=False)
+                return
+            # 2. 安装PyTorch（先试国内CUDA镜像，再试官方源，最后回退CPU版）
+            torch_sources = [
+                ('阿里云CUDA镜像', ['install', 'torch', 'torchaudio', '--index-url',
+                                   'https://mirrors.aliyun.com/pytorch-wheels/cu121/']),
+                ('官方CUDA源', ['install', 'torch', 'torchaudio', '--index-url',
+                               'https://download.pytorch.org/whl/cu121']),
+                ('阿里云CPU版（兜底）', ['install', 'torch', 'torchaudio'] + MIRROR),
+            ]
+            torch_ok = False
+            for src_name, torch_args in torch_sources:
+                TTS_SETUP.update(pct=15, msg='安装 PyTorch（%s，约2GB）…' % src_name)
+                rc, err = _run_pip(pip, torch_args, timeout=900, label='PyTorch(%s)' % src_name)
+                if rc == 0:
+                    torch_ok = True
+                    break
+                TTS_SETUP.update(pct=17, msg='⚠️ %s失败，尝试下一个源…' % src_name)
+            if not torch_ok:
+                TTS_SETUP.update(ok=False, pct=15, msg='❌ PyTorch安装失败，所有源都不可用。最后错误：' + err[:300], running=False)
                 return
             # 3. 克隆CosyVoice仓库
             TTS_SETUP.update(pct=35, msg='克隆 CosyVoice 仓库…')
