@@ -10500,27 +10500,45 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, json.dumps({'ok': False, 'error': '需要音色名称和音频'}).encode('utf-8'), 'application/json')
                     return
                 import base64, re
-                _audio_b64 = re.sub(r'^data:audio/[a-zA-Z0-9]+;base64,', '', _audio_b64)
-                _audio_data = base64.b64decode(_audio_b64)
+                # 放宽正则：支持 audio/m4a, audio/mp4, audio/x-m4a, audio/wav, audio/webm 等
+                _audio_b64 = re.sub(r'^data:audio/[^;]+;base64,', '', _audio_b64)
+                try:
+                    _audio_data = base64.b64decode(_audio_b64)
+                except Exception as _e:
+                    self._send(200, json.dumps({'ok': False, 'error': '音频解码失败: ' + str(_e)[:100]}).encode('utf-8'), 'application/json')
+                    return
+                if len(_audio_data) < 1000:
+                    self._send(200, json.dumps({'ok': False, 'error': '音频文件太小（<1KB），请上传3秒以上的清晰人声'}).encode('utf-8'), 'application/json')
+                    return
                 _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
                 os.makedirs(_vdir, exist_ok=True)
-                _tmp = os.path.join(_vdir, '_tmp_' + _name + '.wav')
+                # 用随机临时名避免中文/特殊字符问题
+                import uuid as _uuid
+                _tmp = os.path.join(_vdir, '_clone_' + _uuid.uuid4().hex[:8] + '.bin')
                 _out = os.path.join(_vdir, _name + '.wav')
                 with open(_tmp, 'wb') as f:
                     f.write(_audio_data)
+                _ff_err = ''
                 try:
                     import imageio_ffmpeg, subprocess as _sp
                     _ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-                    _sp.run([_ffmpeg, '-y', '-i', _tmp, '-ar', '16000', '-ac', '1', _out],
-                            capture_output=True, timeout=30)
-                    os.unlink(_tmp)
-                except Exception:
-                    if os.path.exists(_tmp):
-                        os.rename(_tmp, _out)
+                    _r = _sp.run([_ffmpeg, '-y', '-i', _tmp, '-ar', '16000', '-ac', '1', _out],
+                                 capture_output=True, timeout=120)
+                    if _r.returncode != 0:
+                        _ff_err = _r.stderr.decode('utf-8', errors='ignore')[-300:]
+                except Exception as _e:
+                    _ff_err = str(_e)[:200]
+                # 清理临时文件
+                if os.path.exists(_tmp):
+                    try: os.unlink(_tmp)
+                    except: pass
                 if os.path.exists(_out) and os.path.getsize(_out) > 1000:
                     self._send(200, json.dumps({'ok': True, 'name': _name}).encode('utf-8'), 'application/json')
                 else:
-                    self._send(200, json.dumps({'ok': False, 'error': '音频处理失败'}).encode('utf-8'), 'application/json')
+                    _err = '音频转换失败'
+                    if _ff_err:
+                        _err += ': ' + _ff_err[:150]
+                    self._send(200, json.dumps({'ok': False, 'error': _err}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
             return

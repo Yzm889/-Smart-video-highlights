@@ -334,7 +334,12 @@ function addCosyVoice(){
     if(status) status.textContent = '❌ 请选择音频文件（3秒以上清晰人声）';
     return;
   }
-  if(status) status.textContent = '⏳ 正在处理音频…';
+  const file = fileInput.files[0];
+  if(file.size > 30 * 1024 * 1024){
+    if(status) status.textContent = '❌ 文件太大（>30MB），请用3-10秒的短音频';
+    return;
+  }
+  if(status) status.textContent = '⏳ 正在处理音频（' + (file.size/1024/1024).toFixed(1) + 'MB）…';
   const reader = new FileReader();
   reader.onload = function(e){
     fetch('/api/tts/cosyvoice/add_voice', {
