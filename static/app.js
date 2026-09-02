@@ -3525,6 +3525,7 @@ function seekAdjVideo(tOrIdx){
 function updatePlayhead(t){
   var ph = document.getElementById('playhead');
   var inner = document.getElementById('timelineInner');
+  var video = document.getElementById('adjGlobalVideo');
   if(!ph || !inner) return;
   var totalDur = _adjustState.videoDuration || 600;
   var left = (t / totalDur) * 100;
@@ -3625,15 +3626,55 @@ function zoomTimeline(factor){
 }
 
 function startPlayheadSync(){
-  stopPlayheadSync(); // 先清理旧的
+  stopPlayheadSync();
   var video = document.getElementById('adjGlobalVideo');
   if(!video) return;
-  // 用timeupdate事件检测段结束（比rAF更可靠）
-  video.addEventListener('timeupdate', _onAdjTimeUpdate);
-  // 播放头同步用rAF
+  var _logCounter = 0;
   function tick(){
     if(video && !video.paused){
-      updatePlayhead(video.currentTime);
+      var cur = video.currentTime;
+      updatePlayhead(cur);
+      var items = _adjustState.items;
+      if(items && _playSegIndex >= 0 && _playSegIndex < items.length){
+        var it = items[_playSegIndex];
+        if(it){
+          var vs = it.video_start || 0;
+          var ve = it.video_end || 0;
+          _logCounter++;
+          if(_logCounter % 60 === 0) console.log('[PR] 段'+(_playSegIndex+1)+'/'+items.length+' cur='+cur.toFixed(2)+' range='+vs.toFixed(1)+'-'+ve.toFixed(1));
+          // PR逻辑：每帧强制对齐——超出结尾就切下一段，低于开头就拉回
+          if(ve > vs){
+            if(cur >= ve - 0.02){
+              // 超出结尾：切下一段
+              _playSegIndex++;
+              if(_playSegIndex < items.length){
+                var next = items[_playSegIndex];
+                var nvs = next ? (next.video_start || 0) : 0;
+                console.log('[PR] 段'+(_playSegIndex)+'结束 → 切到段'+(_playSegIndex+1)+' @'+nvs.toFixed(1)+'s');
+                video.currentTime = nvs; // 直接设置，浏览器会seek并继续播
+                var hint = document.getElementById('adjustVideoHint');
+                if(hint) hint.textContent = '✂️ 段'+(_playSegIndex)+'结束 → 段'+(_playSegIndex+1)+' @'+nvs.toFixed(1)+'s';
+                var allSegs = document.querySelectorAll('.tl-vseg');
+                for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
+                if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
+              } else {
+                console.log('[PR] 全部播完');
+                video.pause();
+                var btn = document.getElementById('adjPlayBtn');
+                if(btn) btn.textContent = '▶️ 播放';
+                var hint2 = document.getElementById('adjustVideoHint');
+                if(hint2) hint2.textContent = '✅ 全部'+items.length+'段播放完毕';
+                stopPlayheadSync();
+                return;
+              }
+            } else if(cur < vs - 0.02){
+              // 低于开头（seek未完成或被拖走）：强制拉回
+              console.log('[PR] cur='+cur.toFixed(2)+' 低于开头'+vs.toFixed(2)+'，拉回');
+              video.currentTime = vs;
+            }
+          }
+        }
+      }
       _playheadRAF = requestAnimationFrame(tick);
     } else {
       _playheadRAF = null;
@@ -3642,48 +3683,8 @@ function startPlayheadSync(){
   _playheadRAF = requestAnimationFrame(tick);
 }
 
-function _onAdjTimeUpdate(){
-  var video = document.getElementById('adjGlobalVideo');
-  if(!video || video.paused) return;
-  var items = _adjustState.items;
-  var now = Date.now();
-  if(!items || _playSegIndex < 0 || _playSegIndex >= items.length) return;
-  if(now - _lastJumpAt < 300) return; // 跳转后300ms内不检测
-  var it = items[_playSegIndex];
-  if(!it) return;
-  var ve = it.video_end || 0;
-  var vs = it.video_start || 0;
-  console.log('[时间轴] 段'+(_playSegIndex+1)+'/'+items.length+' cur='+video.currentTime.toFixed(2)+' end='+ve.toFixed(2));
-  if(ve > vs && video.currentTime >= ve - 0.1){
-    console.log('[时间轴] 段'+(_playSegIndex+1)+'结束，跳转下一段');
-    _playSegIndex++;
-    if(_playSegIndex < items.length){
-      var next = items[_playSegIndex];
-      if(next){
-        var nvs = next.video_start || 0;
-        _lastJumpAt = now;
-        video.currentTime = nvs;
-        var hint = document.getElementById('adjustVideoHint');
-        if(hint) hint.textContent = '✂️ 第'+(_playSegIndex)+'段结束 → 第'+(_playSegIndex+1)+'段从'+nvs.toFixed(1)+'s开始';
-        var allSegs = document.querySelectorAll('.tl-vseg');
-        for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
-        if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
-      }
-    } else {
-      video.pause();
-      var btn = document.getElementById('adjPlayBtn');
-      if(btn) btn.textContent = '▶️ 播放';
-      var hint2 = document.getElementById('adjustVideoHint');
-      if(hint2) hint2.textContent = '✅ 全部'+items.length+'段播放完毕';
-      stopPlayheadSync();
-    }
-  }
-}
-
 function stopPlayheadSync(){
   if(_playheadRAF){ cancelAnimationFrame(_playheadRAF); _playheadRAF = null; }
-  var video = document.getElementById('adjGlobalVideo');
-  if(video) video.removeEventListener('timeupdate', _onAdjTimeUpdate);
 }
 
 // 选中片段时，监听视频seek，更新播放索引
