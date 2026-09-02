@@ -5331,22 +5331,54 @@ def cosyvoice_install_async():
             # 确保modelscope已装（下载模型需要）
             rc, err = _run_pip(pip, ['install', 'modelscope'] + MIRROR, timeout=300, label='modelscope')
             # 5. 下载模型（ModelScope国内镜像）
-            TTS_SETUP.update(pct=65, msg='下载 CosyVoice2-0.5B 模型（约9GB，国内镜像，需10-15分钟）…')
+            # 检查是否已有模型文件，有则跳过下载
             os.makedirs(os.path.dirname(COSYVOICE_MODEL_DIR), exist_ok=True)
-            dl_script = os.path.join(HERE, '_cosyvoice_dl.py')
-            with open(dl_script, 'w', encoding='utf-8') as f:
-                f.write('''from modelscope import snapshot_download
+            existing_files = []
+            try:
+                existing_files = os.listdir(COSYVOICE_MODEL_DIR)
+            except Exception:
+                pass
+            has_model = any(f.endswith('.pt') or f.endswith('.onnx') or f == 'config.yaml' for f in existing_files)
+            if has_model:
+                TTS_SETUP.update(pct=90, msg='✅ 模型已存在，跳过下载')
+            else:
+                # 下载心跳
+                _stop_dl = _th.Event()
+                def _dl_heartbeat(stop_evt, base_pct):
+                    m = 0
+                    while not stop_evt.is_set():
+                        time.sleep(20)
+                        m += 1
+                        if TTS_SETUP['running']:
+                            # 检查模型目录大小，估算进度
+                            try:
+                                total = 0
+                                for root, dirs, files in os.walk(COSYVOICE_MODEL_DIR):
+                                    for f in files:
+                                        total += os.path.getsize(os.path.join(root, f))
+                                gb = total / (1024**3)
+                                est = min(95, base_pct + gb * 3.0)  # 9GB约占30%进度
+                                TTS_SETUP.update(pct=est, msg='正在下载模型（已等%d分钟，已下%.1fGB/约9GB）…' % (m, gb))
+                            except Exception:
+                                TTS_SETUP.update(pct=min(base_pct + m, 90), msg='正在下载模型（已等%d分钟）…' % m)
+                _dl_hb = _th.Thread(target=_dl_heartbeat, args=(_stop_dl, 65), daemon=True)
+                _dl_hb.start()
+                TTS_SETUP.update(pct=65, msg='下载 CosyVoice2-0.5B 模型（约9GB，国内镜像，需10-20分钟）…')
+                dl_script = os.path.join(HERE, '_cosyvoice_dl.py')
+                with open(dl_script, 'w', encoding='utf-8') as f:
+                    f.write('''from modelscope import snapshot_download
 snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
 ''' % COSYVOICE_MODEL_DIR.replace('\\', '\\\\'))
-            try:
-                r = subprocess.run([py, dl_script], capture_output=True, timeout=3600, cwd=HERE)
-                if r.returncode != 0:
-                    dl_err = (r.stderr or b'').decode('utf-8', 'ignore')[-400:]
-                    TTS_SETUP.update(ok=False, pct=65, msg='❌ 模型下载失败：' + dl_err, running=False)
-                    return
-            finally:
-                try: os.unlink(dl_script)
-                except Exception: pass
+                try:
+                    r = subprocess.run([py, dl_script], capture_output=True, timeout=3600, cwd=HERE)
+                    if r.returncode != 0:
+                        dl_err = (r.stderr or b'').decode('utf-8', 'ignore')[-400:]
+                        TTS_SETUP.update(ok=False, pct=65, msg='❌ 模型下载失败：' + dl_err, running=False)
+                        return
+                finally:
+                    _stop_dl.set()
+                    try: os.unlink(dl_script)
+                    except Exception: pass
             # 6. 创建worker脚本
             TTS_SETUP.update(pct=95, msg='配置推理脚本…')
             _ensure_cosyvoice_worker()
