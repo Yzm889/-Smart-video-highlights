@@ -498,6 +498,39 @@
     <button class="btn btn2" onclick="loadRecentTts()" style="padding:8px 16px;font-size:13px">📂 恢复上次配音（不用重跑AI）</button>
     <select id="adjustRestoreSelect" style="display:none;margin-left:8px;padding:6px;border-radius:6px;background:var(--bg);color:var(--text);border:1px solid var(--border)"></select>
   </div>
+
+  <!-- 全局视频预览 -->
+  <div id="adjustVideoPreview" style="display:none;margin:12px 0;padding:12px;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span id="adjustVideoTitle" style="font-size:13px;font-weight:600">🎬 预览窗口</span>
+      <span id="adjustVideoTime" style="font-size:12px;color:var(--muted);font-family:monospace">00:00 / 00:00</span>
+    </div>
+    <video id="adjGlobalVideo" style="width:100%;max-height:360px;border-radius:8px;background:#000" playsinline></video>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+      <button class="btn-secondary" id="adjPlayBtn" style="padding:6px 16px;font-size:13px">▶️ 播放</button>
+      <span id="adjustVideoHint" style="font-size:12px;color:var(--muted)">点击时间轴任意位置跳转，拖拽片段边缘调整画面范围</span>
+    </div>
+  </div>
+
+  <!-- PR式时间轴 -->
+  <div id="adjustTimeline" style="display:none;margin:12px 0;padding:12px;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span style="font-size:13px;font-weight:600">📊 时间轴 · 拖拽调整</span>
+      <span style="font-size:11px;color:var(--muted)">视频轨：拖拽左右边缘调整画面范围 | 配音轨：显示每段配音时长</span>
+    </div>
+    <div id="timelineContainer" style="position:relative;height:110px;overflow-x:auto;overflow-y:hidden;border-radius:6px;background:var(--bg);border:1px solid var(--border)">
+      <div id="timelineInner" style="position:relative;height:100%;min-width:100%">
+        <div id="timelineRuler" style="position:absolute;top:0;left:0;right:0;height:22px;border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);font-family:monospace"></div>
+        <div id="videoTrack" style="position:absolute;top:24px;left:0;right:0;height:38px;border-bottom:1px solid var(--border)"></div>
+        <div id="audioTrack" style="position:absolute;top:64px;left:0;right:0;height:38px"></div>
+        <div id="playhead" style="position:absolute;top:0;bottom:0;width:2px;background:#ef4444;z-index:10;pointer-events:none;display:none">
+          <div style="position:absolute;top:-2px;left:-4px;width:10px;height:10px;background:#ef4444;border-radius:50%"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 片段详细编辑列表 -->
   <div id="adjustList" style="margin:12px 0"></div>
   <div id="adjustActions" style="display:none;margin-top:12px;gap:8px">
     <button id="adjustConfirmBtn" class="btn-primary" style="flex:1;padding:12px;font-size:15px">✅ 确认调整，开始合成视频</button>

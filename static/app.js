@@ -3172,7 +3172,7 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
     html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_adjustState.changed['+idx+']=true">';
     html += '<span style="font-size:12px;color:var(--muted)">秒</span>'+spanHint;
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoSegment('+idx+')">▶️ 预览片段</button>';
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="seekAdjVideo('+idx+')">▶️ 预览</button>';
     html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 截图</button>';
     html += '</div>';
     html += '<div id="adjFrame'+idx+'" style="margin-top:6px;display:none"><img id="adjFrameImg'+idx+'" style="max-width:100%;max-height:160px;border-radius:6px;border:1px solid var(--border)"></div>';
@@ -3189,11 +3189,29 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
   });
   list.innerHTML = html;
   actions.style.display = 'flex';
+  // 显示预览区和时间轴
+  const preview = document.getElementById('adjustVideoPreview');
+  const timeline = document.getElementById('adjustTimeline');
+  if(preview) preview.style.display = 'block';
+  if(timeline) timeline.style.display = 'block';
+  // 保存视频时长（从tts_list或探测）
+  if(!_adjustState.videoDuration){
+    _adjustState.videoDuration = 0;
+    // 用最大的video_end估算
+    let maxEnd = 0;
+    ttsList.forEach(function(it){ if(it.video_end > maxEnd) maxEnd = it.video_end; });
+    if(maxEnd > 0) _adjustState.videoDuration = Math.ceil(maxEnd / 60) * 60 + 60;
+  }
+  renderTimeline();
+  ensureAdjVideoLoaded();
   // 绑定确认按钮
   const btn = document.getElementById('adjustConfirmBtn');
   if(btn) btn.onclick = confirmAdjustAndCompose;
   const rbtn = document.getElementById('adjustRegenAllBtn');
   if(rbtn) rbtn.onclick = function(){ if(confirm('确定重新生成全部配音吗？')){ regenAllTts(); } };
+  // 绑定全局播放按钮
+  const playBtn = document.getElementById('adjPlayBtn');
+  if(playBtn) playBtn.onclick = toggleAdjPlay;
   // 滚动到顶部
   window.scrollTo({top:0, behavior:'smooth'});
 }
@@ -3208,6 +3226,241 @@ function previewVideoFrame(idx){
   frameDiv.style.display = 'block';
   img.src = '/api/video_frame?run_dir=' + encodeURIComponent(_adjustState.runDir) + '&time=' + t + '&t=' + Date.now();
   img.onerror = function(){ frameDiv.style.display = 'none'; };
+}
+
+
+// === 时间轴编辑器 ===
+let _tlDrag = null;
+let _playheadRAF = null;
+
+function renderTimeline(){
+  const items = _adjustState.items;
+  if(!items || items.length === 0) return;
+  const totalDur = _adjustState.videoDuration || 600;
+  const inner = document.getElementById('timelineInner');
+  const ruler = document.getElementById('timelineRuler');
+  const vTrack = document.getElementById('videoTrack');
+  const aTrack = document.getElementById('audioTrack');
+  if(!inner || !ruler || !vTrack || !aTrack) return;
+
+  // 时间轴宽度：至少800px，每秒至少8px
+  const pxPerSec = Math.max(8, 800 / totalDur);
+  const width = Math.max(800, totalDur * pxPerSec);
+  inner.style.width = width + 'px';
+
+  // 标尺
+  let rulerHtml = '';
+  const tickInterval = totalDur > 600 ? 60 : (totalDur > 120 ? 30 : (totalDur > 60 ? 10 : 5));
+  for(let t = 0; t <= totalDur; t += tickInterval){
+    const left = (t / totalDur) * 100;
+    const mm = Math.floor(t / 60), ss = Math.floor(t % 60);
+    rulerHtml += '<div style="position:absolute;left:'+left+'%;top:0;height:100%;border-left:1px solid var(--border);padding-left:3px;line-height:22px;white-space:nowrap">'+mm+':'+(ss<10?'0':'')+ss+'</div>';
+  }
+  ruler.innerHTML = rulerHtml;
+
+  // 视频轨片段
+  let vHtml = '';
+  items.forEach(function(it, idx){
+    const vs = it.video_start || 0;
+    const ve = it.video_end || 0;
+    if(ve <= vs) return;
+    const left = (vs / totalDur) * 100;
+    const w = ((ve - vs) / totalDur) * 100;
+    const colors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#ef4444','#84cc16','#f97316'];
+    const c = colors[idx % colors.length];
+    vHtml += '<div class="tl-vseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:'+c+';border-radius:4px;cursor:pointer;overflow:hidden;opacity:0.85;border:1px solid rgba(255,255,255,0.2)">';
+    vHtml += '<div class="tl-resize-l" data-idx="'+idx+'" data-side="l" style="position:absolute;left:0;top:0;width:6px;height:100%;cursor:w-resize;background:rgba(0,0,0,0.3)"></div>';
+    vHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">第'+(idx+1)+'段 '+vs.toFixed(0)+'-'+ve.toFixed(0)+'s</span>';
+    vHtml += '<div class="tl-resize-r" data-idx="'+idx+'" data-side="r" style="position:absolute;right:0;top:0;width:6px;height:100%;cursor:e-resize;background:rgba(0,0,0,0.3)"></div>';
+    vHtml += '</div>';
+  });
+  vTrack.innerHTML = vHtml;
+
+  // 配音轨片段
+  let aHtml = '';
+  let cumTime = 0;
+  items.forEach(function(it, idx){
+    const dur = it.duration || 3;
+    const vs = it.video_start || 0;
+    // 配音块放在对应视频片段的起始位置，宽度=配音时长
+    const left = (vs / totalDur) * 100;
+    const w = (dur / totalDur) * 100;
+    const colors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#ef4444','#84cc16','#f97316'];
+    const c = colors[idx % colors.length];
+    aHtml += '<div class="tl-aseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:'+c+';border-radius:4px;cursor:pointer;opacity:0.6;border:1px solid rgba(255,255,255,0.2);border-style:dashed">';
+    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:11px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 配音'+(idx+1)+' '+dur.toFixed(1)+'s</span>';
+    aHtml += '</div>';
+    cumTime += dur;
+  });
+  aTrack.innerHTML = aHtml;
+
+  // 绑定拖拽
+  var resizeEls = document.querySelectorAll('.tl-resize-l, .tl-resize-r');
+  for(var i=0;i<resizeEls.length;i++){
+    resizeEls[i].addEventListener('mousedown', tlStartResize);
+  }
+  // 点击片段跳转
+  var vSegs = document.querySelectorAll('.tl-vseg');
+  for(var j=0;j<vSegs.length;j++){
+    vSegs[j].addEventListener('click', function(e){
+      if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r')) return;
+      var idx = parseInt(this.getAttribute('data-idx'));
+      var it = _adjustState.items[idx];
+      if(it) seekAdjVideo(it.video_start || 0);
+    });
+  }
+  // 点击时间轴空白处跳转
+  inner.addEventListener('click', function(e){
+    if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r') || e.target.closest('.tl-vseg')) return;
+    var rect = inner.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var t = (x / rect.width) * totalDur;
+    seekAdjVideo(t);
+  });
+}
+
+function tlStartResize(e){
+  e.preventDefault();
+  e.stopPropagation();
+  var idx = parseInt(this.getAttribute('data-idx'));
+  var side = this.getAttribute('data-side');
+  var it = _adjustState.items[idx];
+  if(!it) return;
+  var totalDur = _adjustState.videoDuration || 600;
+  var inner = document.getElementById('timelineInner');
+  var rect = inner.getBoundingClientRect();
+  _tlDrag = {
+    idx: idx, side: side,
+    startX: e.clientX,
+    origStart: it.video_start || 0,
+    origEnd: it.video_end || 0,
+    totalDur: totalDur,
+    rectWidth: rect.width,
+    inner: inner
+  };
+  document.addEventListener('mousemove', tlDoResize);
+  document.addEventListener('mouseup', tlEndResize);
+}
+
+function tlDoResize(e){
+  if(!_tlDrag) return;
+  var dx = e.clientX - _tlDrag.startX;
+  var dt = (dx / _tlDrag.rectWidth) * _tlDrag.totalDur;
+  var it = _adjustState.items[_tlDrag.idx];
+  if(!it) return;
+  if(_tlDrag.side === 'l'){
+    it.video_start = Math.max(0, Math.min(_tlDrag.origStart + dt, (it.video_end || 0) - 0.5));
+  } else {
+    it.video_end = Math.max((it.video_start || 0) + 0.5, Math.min(_tlDrag.origEnd + dt, _tlDrag.totalDur));
+  }
+  // 更新输入框
+  var vsInput = document.getElementById('adjVStart' + _tlDrag.idx);
+  var veInput = document.getElementById('adjVEnd' + _tlDrag.idx);
+  if(vsInput) vsInput.value = it.video_start.toFixed(1);
+  if(veInput) veInput.value = it.video_end.toFixed(1);
+  _adjustState.changed[_tlDrag.idx] = true;
+  renderTimeline();
+}
+
+function tlEndResize(){
+  _tlDrag = null;
+  document.removeEventListener('mousemove', tlDoResize);
+  document.removeEventListener('mouseup', tlEndResize);
+}
+
+// 全局视频预览控制
+function seekAdjVideo(tOrIdx){
+  var video = document.getElementById('adjGlobalVideo');
+  if(!video) return;
+  var totalDur = _adjustState.videoDuration || 600;
+  // 如果传入的是段索引（整数且小于段数），转为该段的video_start
+  var t;
+  if(Number.isInteger(tOrIdx) && _adjustState.items && tOrIdx < _adjustState.items.length){
+    t = (_adjustState.items[tOrIdx].video_start) || 0;
+  } else {
+    t = tOrIdx;
+  }
+  t = Math.max(0, Math.min(t, totalDur));
+  if(video.readyState >= 1){
+    video.currentTime = t;
+  } else {
+    video.addEventListener('loadedmetadata', function onMeta(){
+      video.removeEventListener('loadedmetadata', onMeta);
+      video.currentTime = t;
+    });
+  }
+  updatePlayhead(t);
+}
+
+function updatePlayhead(t){
+  var ph = document.getElementById('playhead');
+  var inner = document.getElementById('timelineInner');
+  if(!ph || !inner) return;
+  var totalDur = _adjustState.videoDuration || 600;
+  var left = (t / totalDur) * 100;
+  ph.style.display = 'block';
+  ph.style.left = left + '%';
+  // 更新时间显示
+  var timeEl = document.getElementById('adjustVideoTime');
+  if(timeEl && video){
+    var cur = video.currentTime || 0;
+    var dur = video.duration || totalDur;
+    timeEl.textContent = fmtTime(cur) + ' / ' + fmtTime(dur);
+  }
+}
+
+function fmtTime(s){
+  var m = Math.floor(s / 60), ss = Math.floor(s % 60);
+  return m + ':' + (ss < 10 ? '0' : '') + ss;
+}
+
+function toggleAdjPlay(){
+  var video = document.getElementById('adjGlobalVideo');
+  var btn = document.getElementById('adjPlayBtn');
+  if(!video) return;
+  // 确保视频源已设置
+  if(!video.src || video.src.indexOf('src.mp4') < 0){
+    var videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
+    video.src = videoUrl;
+  }
+  if(video.paused){
+    video.play().catch(function(e){ if(btn) btn.textContent = '❌ ' + e.message; });
+    if(btn) btn.textContent = '⏸ 暂停';
+    startPlayheadSync();
+  } else {
+    video.pause();
+    if(btn) btn.textContent = '▶️ 播放';
+    stopPlayheadSync();
+  }
+}
+
+function startPlayheadSync(){
+  if(_playheadRAF) return;
+  var video = document.getElementById('adjGlobalVideo');
+  function tick(){
+    if(video && !video.paused){
+      updatePlayhead(video.currentTime);
+      _playheadRAF = requestAnimationFrame(tick);
+    } else {
+      _playheadRAF = null;
+    }
+  }
+  _playheadRAF = requestAnimationFrame(tick);
+}
+
+function stopPlayheadSync(){
+  if(_playheadRAF){ cancelAnimationFrame(_playheadRAF); _playheadRAF = null; }
+}
+
+// 确保全局视频源已加载
+function ensureAdjVideoLoaded(){
+  var video = document.getElementById('adjGlobalVideo');
+  if(!video || !_adjustState.runDir) return;
+  if(!video.src || video.src.indexOf('src.mp4') < 0){
+    var videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
+    video.src = videoUrl;
+    video.load();
+  }
 }
 
 // 预览视频片段：同时播放视频段和配音
