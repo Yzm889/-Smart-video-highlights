@@ -3236,7 +3236,7 @@ let _playheadRAF = null;
 let _selectedSeg = -1;  // 当前选中的片段索引
 let _tlZoom = 1;  // 时间轴缩放级别
 let _playSegIndex = -1;  // 当前播放到第几段（按片段顺序连续播放）
-let _seeking = false;  // 是否正在跳转中（避免重复触发）
+let _lastJumpAt = 0;  // 上次跳转时间戳（跳转后300ms内不检测段结束）
 
 function renderTimeline(){
   const items = _adjustState.items;
@@ -3575,14 +3575,8 @@ function toggleAdjPlay(){
     }
     // 等视频ready后seek再播放
     var doPlay = function(){
-      _seeking = true;
-      var onSeeked = function(){
-        video.removeEventListener('seeked', onSeeked);
-        _seeking = false;
-      };
-      video.addEventListener('seeked', onSeeked);
-      setTimeout(function(){ _seeking = false; }, 500);
-      try { video.currentTime = startT; } catch(e){ _seeking = false; }
+      _lastJumpAt = Date.now();
+      try { video.currentTime = startT; } catch(e){}
       video.play().then(function(){
         if(btn) btn.textContent = '⏸ 暂停';
         startPlayheadSync();
@@ -3632,30 +3626,25 @@ function startPlayheadSync(){
   var video = document.getElementById('adjGlobalVideo');
   function tick(){
     if(video && !video.paused){
+      updatePlayhead(video.currentTime);
       var items = _adjustState.items;
-      if(items && _playSegIndex >= 0 && _playSegIndex < items.length){
+      var now = Date.now();
+      // 跳转后300ms内不检测段结束（等seek完成）
+      if(items && _playSegIndex >= 0 && _playSegIndex < items.length && now - _lastJumpAt > 300){
         var it = items[_playSegIndex];
         if(it){
           var ve = it.video_end || 0;
           var vs = it.video_start || 0;
-          // 当前段播完：跳到下一段（跳转中不重复检测）
-          if(!_seeking && ve > vs && video.currentTime >= ve - 0.08){
+          if(ve > vs && video.currentTime >= ve - 0.05){
             _playSegIndex++;
             if(_playSegIndex < items.length){
               var next = items[_playSegIndex];
               if(next){
                 var nvs = next.video_start || 0;
-                _seeking = true;
-                var onSeeked = function(){
-                  video.removeEventListener('seeked', onSeeked);
-                  _seeking = false;
-                };
-                video.addEventListener('seeked', onSeeked);
-                // 兜底：500ms后强制清除_seeking（防止seeked不触发）
-                setTimeout(function(){ _seeking = false; }, 500);
-                try { video.currentTime = nvs; } catch(e){ _seeking = false; }
+                _lastJumpAt = now;
+                try { video.currentTime = nvs; } catch(e){}
                 var hint = document.getElementById('adjustVideoHint');
-                if(hint) hint.textContent = '🎬 播放第'+(_playSegIndex+1)+'/'+items.length+'段（跳转到'+nvs.toFixed(1)+'s）';
+                if(hint) hint.textContent = '✂️ 第'+(_playSegIndex)+'段结束 → 跳转到第'+(_playSegIndex+1)+'段 '+nvs.toFixed(1)+'s';
                 var allSegs = document.querySelectorAll('.tl-vseg');
                 for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
                 if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
@@ -3665,14 +3654,13 @@ function startPlayheadSync(){
               var btn = document.getElementById('adjPlayBtn');
               if(btn) btn.textContent = '▶️ 播放';
               var hint2 = document.getElementById('adjustVideoHint');
-              if(hint2) hint2.textContent = '✅ 全部片段播放完毕';
+              if(hint2) hint2.textContent = '✅ 全部片段播放完毕（共'+items.length+'段）';
               stopPlayheadSync();
               return;
             }
           }
         }
       }
-      updatePlayhead(video.currentTime);
       _playheadRAF = requestAnimationFrame(tick);
     } else {
       _playheadRAF = null;
