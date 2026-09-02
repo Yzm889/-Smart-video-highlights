@@ -8561,20 +8561,21 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             else:
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
-        # 应用用户手动调整的视频时间范围（覆盖自动聚合结果）
-        if adjusted_items and user_video_spans:
-            video_dur = probe_audio_len(video_path) or 0
-            for old_i, (vs, ve) in user_video_spans.items():
-                if old_i in old_to_new:
-                    new_i = old_to_new[old_i]
-                    if new_i < len(segs):
-                        # 校验：结束时间必须大于开始，且不超过视频时长
-                        if ve > vs and vs >= 0 and (video_dur == 0 or ve <= video_dur + 1):
-                            segs[new_i] = (vs, min(ve, video_dur) if video_dur else ve)
-                            print('[DIAG] 用户调整第%d段画面: %.1f-%.1f秒' % (new_i + 1, vs, ve))
-                        else:
-                            print('[DIAG] 用户调整第%d段画面时间不合理(%.1f-%.1f)，使用自动范围' % (new_i + 1, vs, ve))
         print('[DIAG] 高密度聚合: %d节 -> %d个片段' % (len(narr), len(segs)))
+    # 应用用户手动调整的视频时间范围（必须在所有seg处理之后，用old_to_new映射覆盖）
+    if adjusted_items and user_video_spans:
+        video_dur = probe_audio_len(video_path) or 0
+        print('[DIAG] 用户手动调整了%d段画面时间，视频时长%.1f秒，共%d段画面' % (len(user_video_spans), video_dur, len(segs)))
+        for old_i, (vs, ve) in user_video_spans.items():
+            new_i = old_to_new.get(old_i, old_i) if 'old_to_new' in dir() else old_i
+            if 0 <= new_i < len(segs):
+                if ve > vs and vs >= 0 and (video_dur == 0 or ve <= video_dur + 1):
+                    segs[new_i] = (vs, min(ve, video_dur) if video_dur else ve)
+                    print('[DIAG] 第%d段(原%d)画面已覆盖为: %.1f-%.1f秒' % (new_i + 1, old_i + 1, vs, ve))
+                else:
+                    print('[DIAG] 第%d段(原%d)画面时间不合理(%.1f-%.1f)，保留自动范围%.1f-%.1f' % (new_i + 1, old_i + 1, vs, ve, segs[new_i][0], segs[new_i][1]))
+            else:
+                print('[DIAG] 第%d段(原%d)索引越界(共%d段)，跳过' % (new_i + 1, old_i + 1, len(segs)))
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 60)
