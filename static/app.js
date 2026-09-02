@@ -270,13 +270,15 @@ let _ttsSetupTimer = null;
 function ttsLocalHint(){
   const eng = $('ttsLocalEngine') ? $('ttsLocalEngine').value : 'auto';
   const voiceSel = $('ttsLocalVoice');
-  if(voiceSel) voiceSel.style.display = (eng === 'sapi' || eng === 'sherpa') ? 'none' : '';
+  if(voiceSel) voiceSel.style.display = (eng === 'sapi' || eng === 'sherpa' || eng === 'cosyvoice' || eng === 'chattts') ? 'none' : '';
   const hint = $('ttsLocalHint');
   if(!hint) return;
   const m = {
-    auto: '自动：优先 edge-tts（免 Key、音色最多），不可用时退到离线模型，最后系统 SAPI 兜底。',
+    auto: '自动：优先 edge-tts（免 Key、音色最多）→ CosyVoice → ChatTTS → 离线模型 → 系统 SAPI 兜底。',
     edge: 'edge-tts 免 Key，但要能访问微软朗读服务；连不上会自动改用下一条，并暂时不再重试（不会拖慢出片）。',
-    sherpa: '离线模型需先点「📥 下离线模型」下载一次（约 130MB），之后断网也能配音。',
+    cosyvoice: 'CosyVoice 质量最高（接近商业级），支持3秒声音克隆。需先点「📥 装 CosyVoice」安装（约9GB模型，10-20分钟）。',
+    chattts: 'ChatTTS 很自然，对话式语气，本地GPU推理。需先点「📥 装 ChatTTS」安装（约3GB）。',
+    sherpa: '离线模型需先点「📥 下载选中的离线模型」下载一次（约 130MB），之后断网也能配音。',
     sapi: '系统 SAPI 零安装但音色少（多数 Windows 只有一个中文女声），机械味较重。',
   };
   hint.textContent = m[eng] || m.auto;
@@ -295,7 +297,18 @@ function loadTtsLocal(){
     if(cfg.rate && $('ttsLocalRate')) $('ttsLocalRate').value = cfg.rate;
     const edgeBtn = $('ttsEdgeBtn'), modelBtn = $('ttsModelBtn');
     if(edgeBtn) edgeBtn.textContent = res.edge_installed ? '✅ edge-tts 已装' : '📥 装 edge-tts';
-    if(modelBtn) modelBtn.textContent = res.sherpa_model_ready ? '✅ 离线模型已装' : '📥 下离线模型';
+    if(modelBtn) modelBtn.textContent = res.sherpa_model_ready ? '✅ 离线模型已装' : '📥 下载选中的离线模型';
+    // CosyVoice状态：已装则按钮变灰显示已装
+    const cosyBtn = document.querySelector('button[onclick="installCosyVoice()"]');
+    if(cosyBtn){
+      if(res.cosyvoice_installed){
+        cosyBtn.textContent = '✅ CosyVoice 已装';
+        cosyBtn.disabled = true;
+      } else {
+        cosyBtn.textContent = '📥 装 CosyVoice（推荐）';
+        cosyBtn.disabled = false;
+      }
+    }
     const st = $('ttsLocalState');
     if(st){
       const parts = ['当前配音：' + (res.label||'未知')];
@@ -357,6 +370,16 @@ function installChatTts(){
   if(st) st.textContent = '⏳ 正在安装 ChatTTS（torch+模型约3GB，首次较慢）…';
   fetch('/api/tts/install_chattts', {method:'POST', headers:{'Content-Type':'application/json'},
                                      body: JSON.stringify({})})
+    .then(r=>r.json()).then(res=>{
+      if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || res.error || '');
+    }).catch(e=>{ if(st) st.textContent = '❌ 安装请求失败：' + e.message; });
+  if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 3000);
+}
+function installCosyVoice(){
+  const st = $('ttsLocalState');
+  if(st) st.textContent = '⏳ 正在安装 CosyVoice（venv+PyTorch+9GB模型，约10-20分钟，请勿关闭）…';
+  fetch('/api/tts/cosyvoice/install', {method:'POST', headers:{'Content-Type':'application/json'},
+                                       body: JSON.stringify({})})
     .then(r=>r.json()).then(res=>{
       if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || res.error || '');
     }).catch(e=>{ if(st) st.textContent = '❌ 安装请求失败：' + e.message; });

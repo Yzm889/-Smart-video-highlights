@@ -676,18 +676,20 @@
         <details class="bubble"><summary>三条免费路线怎么选？音质差别很大（点开）</summary><div class="bubble-body">
           · <b>🌐 edge-tts</b>：<b>情感+顿挫</b>，微软神经语音，支持{情绪:xx}/{停顿:n}标记自动转SSML，<b>不需要任何 Key</b>。
             代价是依赖网络，本机实测单次成功率约 2/3（连接会被随时重置），现已带自动重试。<br>
-          · <b>🎙️ ChatTTS</b>：<b>最自然</b>，本地GPU推理，对话式语音，支持停顿标记。需安装torch+ChatTTS（约3GB）。<br>
+          · <b>🎭 CosyVoice</b>：<b>质量最高</b>，阿里开源，接近商业级自然度，支持3秒声音克隆和情感控制。需GPU+约9GB模型。<br>
+          · <b>🎙️ ChatTTS</b>：<b>很自然</b>，本地GPU推理，对话式语音，支持停顿标记。需安装torch+ChatTTS（约3GB）。<br>
           · <b>💾 离线模型</b>：下载后<b>完全断网可用</b>。两个可选：<b>MeloTTS</b> 自然度接近在线语音（推荐）；
             <b>华研 piper</b> 体积小、速度快，但机械感重、几乎没有感情——觉得「配音像机器人」多半是选中了它。<br>
           · <b>🪟 系统 SAPI</b>：零安装，但多数 Windows 只带一个中文音色（Microsoft Huihui），机械味重，仅作兜底。<br>
-          选「自动」时优先级：<b>edge-tts → 离线模型 → 系统 SAPI</b>。
+          选「自动」时优先级：<b>edge-tts → CosyVoice → ChatTTS → 离线模型 → 系统 SAPI</b>。
           <b>一条解说内部会锁定引擎</b>，不会前半段一个声音后半段另一个。
         </div></details>
         <div class="field"><label for="ttsLocalEngine">引擎</label>
         <select id="ttsLocalEngine" onchange="ttsLocalHint()">
             <option value="auto" selected>自动（edge-tts → 离线模型 → 系统）</option>
             <option value="edge">🌐 edge-tts（情感+顿挫·免 Key）</option>
-            <option value="chattts">🎙️ ChatTTS（最自然·本地GPU）</option>
+            <option value="cosyvoice">🎭 CosyVoice（质量最高·声音克隆）</option>
+            <option value="chattts">🎙️ ChatTTS（很自然·本地GPU）</option>
             <option value="sherpa">💾 离线模型（断网可用）</option>
             <option value="sapi">🪟 系统 SAPI（兜底）</option>
           </select>
@@ -749,6 +751,7 @@
         <input id="ttsLocalRate" value="+0%" placeholder="+0%" style="width:80px"></div>
         <div class="field"><span>&nbsp;</span>
           <button class="btn ghost" id="ttsEdgeBtn" onclick="installTtsPkg('edge-tts')">📥 装 edge-tts</button>
+          <button class="btn ghost" onclick="installCosyVoice()" title="一键安装CosyVoice（venv+PyTorch+9GB模型，约10-20分钟）">📥 装 CosyVoice（推荐）</button>
           <button class="btn ghost" onclick="installChatTts()">📥 装 ChatTTS</button>
           <button class="btn ghost" id="ttsModelBtn" onclick="downloadTtsModel()" title="在上方「离线模型」下拉选好要下的模型，再点这里下载">📥 下载选中的离线模型</button>
           <button class="btn ghost" onclick="testLocalTts()">🧪 试听</button>

@@ -4873,7 +4873,7 @@ EDGE_TTS_VOICES = [
 
 
 def tts_local_cfg():
-    """本地配音配置 {engine, voice, rate}；engine ∈ auto|edge|chattts|sherpa|sapi。"""
+    """本地配音配置 {engine, voice, rate}；engine ∈ auto|edge|cosyvoice|chattts|sherpa|sapi。"""
     c = load_ai_config().get('tts_local') or {}
     rate = str(c.get('rate') or '+0%').strip()
     if rate and not rate.startswith(('+', '-')):
@@ -5034,6 +5034,209 @@ def chattts_speak(text, out_path, progress=None):
         except Exception as e:
             _CHATTS['error'] = str(e)[:300]
     return False
+
+
+# ============ CosyVoice 离线配音（阿里开源·质量最高·需GPU） ============
+_COSYVOICE = {'model': None, 'loading': False, 'error': '', 'voice': '中文女'}
+COSYVOICE_REPO_DIR = os.path.join(HERE, 'CosyVoice')
+COSYVOICE_MODEL_DIR = os.path.join(HERE, 'models', 'cosyvoice', 'CosyVoice2-0.5B')
+COSYVOICE_VENV_PY = os.path.join(HERE, '.venv_cosyvoice', 'Scripts', 'python.exe')
+
+
+def _cosyvoice_venv_python():
+    """返回 CosyVoice venv 的 Python 路径，不存在返回 None。"""
+    return COSYVOICE_VENV_PY if os.path.exists(COSYVOICE_VENV_PY) else None
+
+
+def cosyvoice_available():
+    """CosyVoice 是否可用（主进程已加载，或 venv 子进程可用且模型已下载）。"""
+    if _COSYVOICE['model'] is not None:
+        return True
+    if _cosyvoice_venv_python() and os.path.isdir(COSYVOICE_MODEL_DIR):
+        # 检查模型目录有关键文件
+        try:
+            files = os.listdir(COSYVOICE_MODEL_DIR)
+            if any(f.endswith('.pt') or f.endswith('.onnx') or f == 'config.yaml' for f in files):
+                return True
+        except Exception:
+            pass
+    if _COSYVOICE['error']:
+        return False
+    try:
+        import importlib.util as _u
+        if _u.find_spec('cosyvoice') is not None and os.path.isdir(COSYVOICE_MODEL_DIR):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def cosyvoice_speak(text, out_path, progress=None):
+    """用 CosyVoice2-0.5B 合成语音。成功返回 True。
+    优先主进程内推理，否则用 venv 子进程。不支持{{情绪}}标记，会自动剥离。"""
+    if not (text or '').strip():
+        return False
+    clean_text = _strip_tts_markup(text)
+    if not clean_text.strip():
+        return False
+
+    # 方式1：venv 子进程（推荐，隔离PyTorch环境）
+    venv_py = _cosyvoice_venv_python()
+    if venv_py and os.path.isdir(COSYVOICE_MODEL_DIR) and os.path.exists(os.path.join(HERE, 'cosyvoice_worker.py')):
+        try:
+            d = os.path.dirname(os.path.abspath(out_path))
+            if d:
+                os.makedirs(d, exist_ok=True)
+            txt_file = out_path + '.txt'
+            with open(txt_file, 'w', encoding='utf-8') as f:
+                f.write(clean_text)
+            worker = os.path.join(HERE, 'cosyvoice_worker.py')
+            r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _COSYVOICE['voice']],
+                               capture_output=True, timeout=300, cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE)
+            try:
+                os.unlink(txt_file)
+            except Exception:
+                pass
+            if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                return True
+            _COSYVOICE['error'] = (r.stderr or b'').decode('utf-8', 'ignore')[-400:]
+            print('[COSYVOICE] venv推理失败:', _COSYVOICE['error'][:200])
+        except Exception as e:
+            _COSYVOICE['error'] = str(e)[:300]
+
+    # 方式2：主进程内推理（需要当前Python有torch+cosyvoice）
+    if not _COSYVOICE['loading'] and _COSYVOICE['model'] is None:
+        try:
+            import importlib.util
+            if importlib.util.find_spec('cosyvoice') is not None and os.path.isdir(COSYVOICE_MODEL_DIR):
+                _COSYVOICE['loading'] = True
+                try:
+                    import sys as _sys
+                    if os.path.isdir(os.path.join(COSYVOICE_REPO_DIR, 'third_party', 'Matcha-TTS')):
+                        _sys.path.insert(0, os.path.join(COSYVOICE_REPO_DIR, 'third_party', 'Matcha-TTS'))
+                    from cosyvoice.cli.cosyvoice import CosyVoice2
+                    import torchaudio
+                    model = CosyVoice2(COSYVOICE_MODEL_DIR, load_jit=False, load_trt=False, fp16=False)
+                    _COSYVOICE['model'] = model
+                finally:
+                    _COSYVOICE['loading'] = False
+        except Exception as e:
+            _COSYVOICE['error'] = str(e)[:300]
+            _COSYVOICE['loading'] = False
+
+    if _COSYVOICE['model'] is not None:
+        try:
+            model = _COSYVOICE['model']
+            for i, j in enumerate(model.inference_sft(clean_text, _COSYVOICE['voice'], stream=False)):
+                import torchaudio
+                torchaudio.save(out_path, j['tts_speech'], model.sample_rate)
+                break
+            return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
+        except Exception as e:
+            _COSYVOICE['error'] = str(e)[:300]
+            print('[COSYVOICE] 主进程推理失败:', _COSYVOICE['error'][:200])
+    return False
+
+
+def cosyvoice_install_async():
+    """后台安装 CosyVoice：创建venv+装PyTorch+clone仓库+下载模型。返回 (ok, msg)。"""
+    with _SETUP_LOCK:
+        if TTS_SETUP['running']:
+            return False, '已有安装任务在进行中'
+        TTS_SETUP.update(running=True, op='cosyvoice', pct=0, msg='正在准备 CosyVoice 安装环境…', ok=None)
+
+    def _run():
+        try:
+            import venv as _venv
+            import urllib.request as _u
+            # 1. 创建venv
+            TTS_SETUP.update(pct=5, msg='创建 Python 虚拟环境…')
+            venv_dir = os.path.join(HERE, '.venv_cosyvoice')
+            if not os.path.exists(COSYVOICE_VENV_PY):
+                _venv.create(venv_dir, with_pip=True)
+            pip = os.path.join(venv_dir, 'Scripts', 'pip.exe')
+            py = COSYVOICE_VENV_PY
+            # 2. 安装PyTorch CUDA
+            TTS_SETUP.update(pct=15, msg='安装 PyTorch（CUDA版，约2GB，需几分钟）…')
+            subprocess.run([pip, 'install', 'torch', 'torchaudio', '--index-url', 'https://download.pytorch.org/whl/cu121'],
+                           capture_output=True, timeout=600, cwd=HERE)
+            # 3. 克隆CosyVoice仓库
+            TTS_SETUP.update(pct=40, msg='克隆 CosyVoice 仓库…')
+            if not os.path.isdir(COSYVOICE_REPO_DIR):
+                subprocess.run(['git', 'clone', '--depth', '1', 'https://github.com/FunAudioLLM/CosyVoice.git', COSYVOICE_REPO_DIR],
+                               capture_output=True, timeout=300, cwd=HERE)
+            # 4. 安装依赖
+            TTS_SETUP.update(pct=55, msg='安装 CosyVoice 依赖…')
+            req = os.path.join(COSYVOICE_REPO_DIR, 'requirements.txt')
+            if os.path.exists(req):
+                subprocess.run([pip, 'install', '-r', req], capture_output=True, timeout=600, cwd=COSYVOICE_REPO_DIR)
+            # 5. 下载模型（ModelScope国内镜像）
+            TTS_SETUP.update(pct=70, msg='下载 CosyVoice2-0.5B 模型（约9GB，国内镜像）…')
+            os.makedirs(os.path.dirname(COSYVOICE_MODEL_DIR), exist_ok=True)
+            dl_script = os.path.join(HERE, '_cosyvoice_dl.py')
+            with open(dl_script, 'w', encoding='utf-8') as f:
+                f.write('''from modelscope import snapshot_download
+snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
+''' % COSYVOICE_MODEL_DIR.replace('\\', '\\\\'))
+            subprocess.run([py, dl_script], capture_output=True, timeout=1800, cwd=HERE)
+            try:
+                os.unlink(dl_script)
+            except Exception:
+                pass
+            # 6. 创建worker脚本
+            TTS_SETUP.update(pct=95, msg='配置推理脚本…')
+            _ensure_cosyvoice_worker()
+            ok = os.path.isdir(COSYVOICE_MODEL_DIR) and os.path.exists(COSYVOICE_VENV_PY)
+            TTS_SETUP.update(ok=ok, pct=100, msg='CosyVoice 安装完成！' if ok else '安装可能未完成，请检查模型目录', running=False)
+        except Exception as e:
+            TTS_SETUP.update(ok=False, pct=0, msg='安装失败：' + str(e)[:200], running=False)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return True, '开始安装 CosyVoice（约10-20分钟，含9GB模型下载）'
+
+
+def _ensure_cosyvoice_worker():
+    """确保 cosyvoice_worker.py 存在（venv子进程推理脚本）。"""
+    worker = os.path.join(HERE, 'cosyvoice_worker.py')
+    if os.path.exists(worker):
+        return
+    with open(worker, 'w', encoding='utf-8') as f:
+        f.write('''# -*- coding: utf-8 -*-
+import sys, os
+# CosyVoice 需要 third_party/Matcha-TTS 在 path 中
+repo_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'CosyVoice')
+matcha = os.path.join(repo_dir, 'third_party', 'Matcha-TTS')
+if os.path.isdir(matcha):
+    sys.path.insert(0, matcha)
+if os.path.isdir(repo_dir):
+    sys.path.insert(0, repo_dir)
+
+def main():
+    if len(sys.argv) < 5:
+        print('Usage: cosyvoice_worker.py <txt_file> <out_wav> <model_dir> <voice>')
+        sys.exit(1)
+    txt_file, out_path, model_dir, voice = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+    with open(txt_file, encoding='utf-8') as f:
+        text = f.read().strip()
+    if not text:
+        print('empty text')
+        sys.exit(1)
+    from cosyvoice.cli.cosyvoice import CosyVoice2
+    import torchaudio
+    model = CosyVoice2(model_dir, load_jit=False, load_trt=False, fp16=False)
+    for i, j in enumerate(model.inference_sft(text, voice, stream=False)):
+        torchaudio.save(out_path, j['tts_speech'], model.sample_rate)
+        break
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+        print('OK')
+    else:
+        print('FAIL: output too small')
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+''')
 
 
 def edge_tts_reset():
@@ -5431,15 +5634,17 @@ def local_tts_speak(text, out_path):
     cfg = tts_local_cfg()
     eng_set = cfg['engine']
     if eng_set == 'edge':
-        order = ['edge', 'sherpa', 'sapi']
+        order = ['edge', 'cosyvoice', 'chattts', 'sherpa', 'sapi']
+    elif eng_set == 'cosyvoice':
+        order = ['cosyvoice', 'edge', 'chattts', 'sherpa', 'sapi']
     elif eng_set == 'chattts':
-        order = ['chattts', 'edge', 'sherpa', 'sapi']
+        order = ['chattts', 'cosyvoice', 'edge', 'sherpa', 'sapi']
     elif eng_set == 'sherpa':
-        order = ['sherpa', 'edge', 'sapi']
+        order = ['sherpa', 'edge', 'cosyvoice', 'sapi']
     elif eng_set == 'sapi':
         order = ['sapi', 'sherpa', 'edge']
-    else:   # auto：音质优先（edge）→ 离线（sherpa）→ 系统兜底
-        order = ['edge', 'sherpa', 'sapi']
+    else:   # auto：音质优先（edge）→ CosyVoice → ChatTTS → sherpa → 系统兜底
+        order = ['edge', 'cosyvoice', 'chattts', 'sherpa', 'sapi']
     # 本任务已锁定过引擎 → 优先沿用，其余仍作后备
     locked = getattr(_TLS, 'tts_engine', None)
     if locked in order:
@@ -5456,6 +5661,13 @@ def local_tts_speak(text, out_path):
             if edge_tts_speak(text, out_path):
                 _TLS.tts_engine = 'edge'      # 锁定：后续段落沿用同一音色
                 return True, 'edge', out_path
+        elif eng == 'cosyvoice':
+            if not cosyvoice_available():
+                continue
+            wv = stem + '_cosyvoice.wav'
+            if cosyvoice_speak(text, wv):
+                _TLS.tts_engine = 'cosyvoice'
+                return True, 'cosyvoice', wv
         elif eng == 'chattts':
             if not chattts_available():
                 continue
@@ -5794,6 +6006,10 @@ def local_tts_label():
     cfg = tts_local_cfg()
     if cfg['engine'] == 'edge':
         return 'edge-tts（%s）' % cfg['voice'] if edge_tts_available() else 'edge-tts（不可用，已回退系统 SAPI）'
+    if cfg['engine'] == 'cosyvoice':
+        return 'CosyVoice（质量最高·%s）' % _COSYVOICE['voice'] if cosyvoice_available() else 'CosyVoice（未安装，已回退）'
+    if cfg['engine'] == 'chattts':
+        return 'ChatTTS（自然·本地GPU）' if chattts_available() else 'ChatTTS（未安装，已回退）'
     if cfg['engine'] == 'sherpa':
         return '离线模型 · 华研女声' if sherpa_tts_available() else '离线模型（未下载，已回退系统 SAPI）'
     if cfg['engine'] == 'sapi':
@@ -5801,9 +6017,13 @@ def local_tts_label():
     # auto
     if edge_tts_available():
         return 'edge-tts（%s）' % cfg['voice']
+    if cosyvoice_available():
+        return 'CosyVoice（质量最高·%s）' % _COSYVOICE['voice']
+    if chattts_available():
+        return 'ChatTTS（自然·本地GPU）'
     if sherpa_tts_available():
         return '离线模型 · 华研女声'
-    return '系统 SAPI（可选装 edge-tts 或离线模型）'
+    return '系统 SAPI（可选装 edge-tts/CosyVoice/离线模型）'
 
 
 def _cuda_available():
@@ -9768,6 +9988,8 @@ class Handler(BaseHTTPRequestHandler):
                 'sherpa_model': sherpa_model_key(),
                 'sherpa_models': [{'key': k, 'label': m['label'], 'ready': _sherpa_ready(k)}
                                   for k, m in SHERPA_TTS_MODELS.items()],
+                'cosyvoice_installed': cosyvoice_available(),
+                'cosyvoice_voice': _COSYVOICE['voice'],
                 'cfg': tts_local_cfg(),
                 'label': local_tts_label(),
                 'setup': dict(TTS_SETUP),
@@ -9999,6 +10221,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
                            'application/json')
+            return
+        if path == '/api/tts/cosyvoice/install':
+            # 一键安装 CosyVoice（venv+PyTorch+仓库+9GB模型）
+            try:
+                ok, msg = cosyvoice_install_async()
+                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
             return
         if path == '/api/tts/model/download':
             # 下载离线中文配音模型到 models/tts/<name>/（可选 model 指定下载哪一个）
