@@ -3283,7 +3283,7 @@ function renderTimeline(){
     // 左裁剪手柄
     vHtml += '<div class="tl-handle tl-resize-l" data-idx="'+idx+'" data-side="l" title="拖拽裁剪开头" style="position:absolute;left:0;top:0;width:8px;height:100%;cursor:w-resize;background:rgba(0,0,0,0.4);border-right:1px dashed rgba(255,255,255,0.5)"></div>';
     // 中间拖动区域
-    vHtml += '<div class="tl-move" data-idx="'+idx+'" title="拖拽移动取片位置" style="position:absolute;left:8px;right:8px;top:0;height:100%;cursor:grab">';
+    vHtml += '<div class="tl-move" data-idx="'+idx+'" data-side="m" title="拖拽移动取片位置" style="position:absolute;left:8px;right:8px;top:0;height:100%;cursor:grab">';
     vHtml += '<span style="position:absolute;left:6px;top:0;line-height:32px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:6px">第'+(idx+1)+'段 '+vs.toFixed(0)+'-'+ve.toFixed(0)+'s ('+vdur.toFixed(1)+'s)'+warn+'</span>';
     vHtml += '</div>';
     // 右裁剪手柄
@@ -3331,7 +3331,12 @@ function renderTimeline(){
         seekAdjVideo(it.video_start || 0);
         // 更新提示
         var hint = document.getElementById('adjustVideoHint');
-        if(hint) hint.textContent = '📌 正在预览第'+(idx+1)+'段（'+(it.video_start||0).toFixed(1)+'s → '+(it.video_end||0).toFixed(1)+'s），播放到结尾自动停止';
+        if(hint) hint.textContent = '📌 正在预览第'+(idx+1)+'段（'+(it.video_start||0).toFixed(1)+'s → '+(it.video_end||0).toFixed(1)+'s），仅播放此片段范围';
+        // 绑定seek限制：用户拖动进度条也不能超出片段范围
+        var video = document.getElementById('adjGlobalVideo');
+        if(video){
+          video.onseeked = function(){ _enforceSegBounds(); };
+        }
       }
     });
   }
@@ -3595,15 +3600,24 @@ function startPlayheadSync(){
   var video = document.getElementById('adjGlobalVideo');
   function tick(){
     if(video && !video.paused){
-      // 如果选中了片段，播放到片段结尾自动停止
+      // 如果选中了片段，强制限制在片段范围内
       if(_selectedSeg >= 0 && _adjustState.items && _selectedSeg < _adjustState.items.length){
         var it = _adjustState.items[_selectedSeg];
-        if(it && it.video_end && video.currentTime >= it.video_end){
-          video.pause();
-          var btn = document.getElementById('adjPlayBtn');
-          if(btn) btn.textContent = '▶️ 播放';
-          stopPlayheadSync();
-          return;
+        if(it){
+          var vs = it.video_start || 0;
+          var ve = it.video_end || 0;
+          // 超出结尾：暂停
+          if(ve > vs && video.currentTime >= ve){
+            video.pause();
+            var btn = document.getElementById('adjPlayBtn');
+            if(btn) btn.textContent = '▶️ 播放';
+            stopPlayheadSync();
+            return;
+          }
+          // 被拖到开头之前：拉回开头
+          if(video.currentTime < vs){
+            try { video.currentTime = vs; } catch(e){}
+          }
         }
       }
       updatePlayhead(video.currentTime);
@@ -3613,6 +3627,20 @@ function startPlayheadSync(){
     }
   }
   _playheadRAF = requestAnimationFrame(tick);
+}
+
+// 选中片段时，监听视频seek，强制限制在片段范围内
+function _enforceSegBounds(){
+  var video = document.getElementById('adjGlobalVideo');
+  if(!video || _selectedSeg < 0 || !_adjustState.items) return;
+  var it = _adjustState.items[_selectedSeg];
+  if(!it) return;
+  var vs = it.video_start || 0;
+  var ve = it.video_end || 0;
+  if(ve > vs){
+    if(video.currentTime > ve){ try { video.currentTime = ve - 0.1; } catch(e){} }
+    if(video.currentTime < vs){ try { video.currentTime = vs; } catch(e){} }
+  }
 }
 
 function stopPlayheadSync(){
