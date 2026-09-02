@@ -3232,19 +3232,15 @@ function previewVideoSegment(idx){
   }
   _adjPlayingIdx = idx;
 
-  // 隐藏截图
   if(frameDiv) frameDiv.style.display = 'none';
   vDiv.style.display = 'block';
-
-  // 设置视频源（源视频在run目录下的src.mp4）
-  const videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
-  if(video.src !== window.location.origin + videoUrl && !video.src.includes('src.mp4')){
-    video.src = videoUrl;
-  }
-
-  video.currentTime = vs;
   hint.style.display = 'block';
-  hint.textContent = '🎬 ' + vs.toFixed(1) + 's → ' + (ve > vs ? ve.toFixed(1)+'s' : '播放中') + ' · 配音同步';
+  hint.textContent = '⏳ 加载视频中…';
+
+  // 设置视频源
+  const videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
+  const needLoad = !video.src || video.src.indexOf('src.mp4') < 0;
+  if(needLoad){ video.src = videoUrl; }
 
   // 视频播放到end时停止
   const onTimeUpdate = function(){
@@ -3258,14 +3254,29 @@ function previewVideoSegment(idx){
   video.addEventListener('timeupdate', onTimeUpdate);
   video.onended = function(){ if(audio) audio.pause(); hint.style.display = 'none'; };
 
-  // 播放视频和音频（同步）
-  video.play().then(()=>{
-    if(audio){ audio.currentTime = 0; audio.play().catch(()=>{}); }
-  }).catch(e=>{
-    hint.textContent = '❌ 视频播放失败: ' + e.message;
-  });
+  // 等元数据加载后再跳转到指定时间并播放
+  const doPlay = function(){
+    try { video.currentTime = vs; } catch(e){}
+    hint.textContent = '🎬 ' + vs.toFixed(1) + 's → ' + (ve > vs ? ve.toFixed(1)+'s' : '播放中') + ' · 配音同步';
+    video.play().then(()=>{
+      if(audio){ audio.currentTime = 0; audio.play().catch(()=>{}); }
+    }).catch(e=>{
+      hint.textContent = '❌ 播放失败: ' + e.message;
+    });
+  };
 
-  // 点击视频暂停
+  if(video.readyState >= 1){ // HAVE_METADATA
+    doPlay();
+  } else {
+    const onMeta = function(){
+      video.removeEventListener('loadedmetadata', onMeta);
+      doPlay();
+    };
+    video.addEventListener('loadedmetadata', onMeta);
+    if(needLoad) video.load();
+  }
+
+  // 点击视频暂停/继续
   video.onclick = function(){
     if(video.paused){ video.play(); if(audio) audio.play().catch(()=>{}); hint.style.display='block'; }
     else { video.pause(); if(audio) audio.pause(); hint.style.display='none'; }

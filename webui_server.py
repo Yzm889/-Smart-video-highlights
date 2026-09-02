@@ -9983,14 +9983,24 @@ class Handler(BaseHTTPRequestHandler):
                 segs_state = [tuple(s) for s in state.get('segs', [])]
                 narr_map_state = state.get('narr_map') or []
                 video_spans = {}
+                n_narr = len(state.get('narr', []))
                 if narr_map_state and len(narr_map_state) == len(segs_state):
-                    for bi in range(len(state.get('narr', []))):
+                    for bi in range(n_narr):
                         bsegs = [segs_state[k] for k in range(len(segs_state)) if narr_map_state[k] == bi]
                         if bsegs:
                             video_spans[bi] = {'start': round(bsegs[0][0], 2), 'end': round(bsegs[-1][1], 2)}
                 video_dur = round(probe_audio_len(state['video_path']) or 0, 1)
+                # 回退：narr_map不对（全0或不匹配）时，按时长均匀分配默认位置
+                _missing = [i for i in range(n_narr) if i not in video_spans]
+                if _missing and video_dur > 0 and n_narr > 0:
+                    _step = video_dur / n_narr
+                    for i in _missing:
+                        _s = round(i * _step, 2)
+                        _e = round(min((i + 1) * _step, video_dur), 2)
+                        video_spans[i] = {'start': _s, 'end': _e}
+                    print('[DIAG] narr_map不完整，%d段默认时间按均匀分配(每段%.0f秒)' % (len(_missing), _step))
                 for i, p in state.get('tts_results', []):
-                    span = video_spans.get(i, {'start': 0, 'end': 0})
+                    span = video_spans.get(i, {'start': 0, 'end': min(5.0, video_dur) if video_dur else 5.0})
                     tts_list.append({
                         'index': i,
                         'text': state['narr'][i] if i < len(state.get('narr', [])) else '',
