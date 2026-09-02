@@ -515,8 +515,11 @@
   <!-- PR式时间轴 -->
   <div id="adjustTimeline" style="display:none;margin:12px 0;padding:12px;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <span style="font-size:13px;font-weight:600">📊 时间轴 · 拖拽调整</span>
-      <span style="font-size:11px;color:var(--muted)">视频轨：拖拽左右边缘调整画面范围 | 配音轨：显示每段配音时长</span>
+      <span style="font-size:13px;font-weight:600">📊 时间轴 · 裁剪/拖动/对齐</span>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--muted)">左边缘裁剪开头 · 中间拖动取片位置 · 右边缘裁剪结尾 · 靠近配音自动磁吸</span>
+        <button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignAllToAudio()">⇔ 全部对齐配音</button>
+      </div>
     </div>
     <div id="timelineContainer" style="position:relative;height:110px;overflow-x:auto;overflow-y:hidden;border-radius:6px;background:var(--bg);border:1px solid var(--border)">
       <div id="timelineInner" style="position:relative;height:100%;min-width:100%">
