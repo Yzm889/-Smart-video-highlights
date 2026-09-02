@@ -276,6 +276,9 @@ function ttsLocalHint(){
   const cosyField = $('ttsCosyField');
   if(sherpaField) sherpaField.style.display = (eng === 'cosyvoice' || eng === 'chattts' || eng === 'sapi') ? 'none' : '';
   if(cosyField) cosyField.style.display = (eng === 'cosyvoice') ? '' : 'none';
+  const cloneField = $('cosyVoiceCloneField');
+  if(cloneField) cloneField.style.display = (eng === 'cosyvoice') ? 'flex' : 'none';
+  if(eng === 'cosyvoice') loadCosyVoices();
   const hint = $('ttsLocalHint');
   if(!hint) return;
   const m = {
@@ -301,6 +304,55 @@ function saveTtsLocal(){
   }};
   fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(body)}).catch(()=>{});
+}
+
+// 加载CosyVoice所有音色（预设+自定义克隆）
+function loadCosyVoices(){
+  fetch('/api/tts/cosyvoice/voices').then(r=>r.json()).then(res=>{
+    if(!res.ok || !res.voices) return;
+    const sel = $('ttsCosyVoice');
+    if(!sel) return;
+    const cur = sel.value;
+    const presets = ['中文女','中文男','英文女','英文男','粤语女','日语女'];
+    let html = '';
+    for(const v of res.voices){
+      const label = v.custom ? ('🎙️ ' + v.name + '（克隆）') : v.name;
+      html += '<option value="'+escapeHtml(v.name)+'">'+escapeHtml(label)+'</option>';
+    }
+    sel.innerHTML = html;
+    if(cur) sel.value = cur;
+  }).catch(()=>{});
+}
+
+// 上传参考音频添加克隆音色
+function addCosyVoice(){
+  const name = $('cosyCloneName') ? $('cosyCloneName').value.trim() : '';
+  const fileInput = $('cosyCloneAudio');
+  const status = $('cosyCloneStatus');
+  if(!name){ if(status) status.textContent = '❌ 请输入音色名称'; return; }
+  if(!fileInput || !fileInput.files || !fileInput.files[0]){
+    if(status) status.textContent = '❌ 请选择音频文件（3秒以上清晰人声）';
+    return;
+  }
+  if(status) status.textContent = '⏳ 正在处理音频…';
+  const reader = new FileReader();
+  reader.onload = function(e){
+    fetch('/api/tts/cosyvoice/add_voice', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name: name, audio: e.target.result})
+    }).then(r=>r.json()).then(res=>{
+      if(res.ok){
+        if(status) status.textContent = '✅ 音色「' + name + '」已添加';
+        if($('cosyCloneName')) $('cosyCloneName').value = '';
+        if(fileInput) fileInput.value = '';
+        loadCosyVoices();
+        saveTtsLocal();
+      } else {
+        if(status) status.textContent = '❌ ' + (res.error || '添加失败');
+      }
+    }).catch(e=>{ if(status) status.textContent = '❌ ' + e.message; });
+  };
+  reader.readAsDataURL(fileInput.files[0]);
 }
 function loadTtsLocal(){
   fetch('/api/tts/voices').then(r=>r.json()).then(res=>{

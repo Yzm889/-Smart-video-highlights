@@ -5095,7 +5095,11 @@ def cosyvoice_speak(text, out_path, progress=None):
             _cv = tts_local_cfg().get('cosy_voice') or _COSYVOICE['voice']
             # 根据音色名找参考音频（zero-shot声音克隆需要参考音频）
             _ref_dir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
-            _ref_wav = os.path.join(_ref_dir, _cv + '.mp3')
+            _ref_wav = os.path.join(_ref_dir, _cv + '.wav')
+            if not os.path.exists(_ref_wav):
+                _ref_wav = os.path.join(_ref_dir, _cv + '.mp3')
+            if not os.path.exists(_ref_wav):
+                _ref_wav = os.path.join(_ref_dir, '中文女.wav')
             if not os.path.exists(_ref_wav):
                 _ref_wav = os.path.join(_ref_dir, '中文女.mp3')
             if not os.path.exists(_ref_wav):
@@ -5332,7 +5336,7 @@ def cosyvoice_install_async():
                                     'transformers', 'onnxruntime', 'modelscope',
                                     'einops', 'rotary-embedding-torch', 'tqdm', 'pillow',
                                     'hyperpyyaml', 'conformer', 'omegaconf', 'hydra-core',
-                                    'pyworld', 'wetext', 'inflect']
+                                    'pyworld', 'wetext', 'inflect', 'openai-whisper']
                     dep_ok = True
                     dep_err = ''
                     for i, pkg in enumerate(dep_packages):
@@ -10472,6 +10476,52 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/tts/cosyvoice/voices':
+            _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+            _voices = []
+            if os.path.isdir(_vdir):
+                for _f in sorted(os.listdir(_vdir)):
+                    if _f.endswith('.wav') or _f.endswith('.mp3'):
+                        _name = os.path.splitext(_f)[0]
+                        _voices.append({'name': _name, 'file': _f,
+                                        'custom': _name not in ['中文女','中文男','英文女','英文男','粤语女','日语女']})
+            self._send(200, json.dumps({'ok': True, 'voices': _voices}).encode('utf-8'), 'application/json')
+            return
+        if path == '/api/tts/cosyvoice/add_voice':
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(length) if length else b'{}'
+                data = json.loads(raw.decode('utf-8') or '{}')
+                _name = (data.get('name') or '').strip()
+                _audio_b64 = data.get('audio') or ''
+                if not _name or not _audio_b64:
+                    self._send(200, json.dumps({'ok': False, 'error': '需要音色名称和音频'}).encode('utf-8'), 'application/json')
+                    return
+                import base64, re
+                _audio_b64 = re.sub(r'^data:audio/[a-zA-Z0-9]+;base64,', '', _audio_b64)
+                _audio_data = base64.b64decode(_audio_b64)
+                _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+                os.makedirs(_vdir, exist_ok=True)
+                _tmp = os.path.join(_vdir, '_tmp_' + _name + '.wav')
+                _out = os.path.join(_vdir, _name + '.wav')
+                with open(_tmp, 'wb') as f:
+                    f.write(_audio_data)
+                try:
+                    import imageio_ffmpeg, subprocess as _sp
+                    _ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+                    _sp.run([_ffmpeg, '-y', '-i', _tmp, '-ar', '16000', '-ac', '1', _out],
+                            capture_output=True, timeout=30)
+                    os.unlink(_tmp)
+                except Exception:
+                    if os.path.exists(_tmp):
+                        os.rename(_tmp, _out)
+                if os.path.exists(_out) and os.path.getsize(_out) > 1000:
+                    self._send(200, json.dumps({'ok': True, 'name': _name}).encode('utf-8'), 'application/json')
+                else:
+                    self._send(200, json.dumps({'ok': False, 'error': '音频处理失败'}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
             return
         if path == '/api/tts/model/download':
             # 下载离线中文配音模型到 models/tts/<name>/（可选 model 指定下载哪一个）

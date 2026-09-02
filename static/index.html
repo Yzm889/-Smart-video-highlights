@@ -789,6 +789,16 @@
           <option value="粤语女">粤语女</option>
           <option value="日语女">日语女</option>
         </select></div>
+        <div class="field" id="cosyVoiceCloneField" style="display:none; width:100%; flex-direction:column; gap:6px;">
+          <div style="font-size:12px; color:#c9a84c; font-weight:600;">🎙️ 声音克隆（上传3秒以上清晰人声，CosyVoice会克隆这个音色）</div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input id="cosyCloneName" placeholder="音色名称，如：我的声音" style="width:140px; padding:6px; border-radius:6px; border:1px solid #ccc;">
+            <input type="file" id="cosyCloneAudio" accept="audio/*" style="font-size:12px;">
+            <button class="btn ghost" onclick="addCosyVoice()" style="padding:6px 12px;">➕ 添加克隆音色</button>
+            <span id="cosyCloneStatus" style="font-size:12px; color:#888;"></span>
+          </div>
+          <div style="font-size:11px; color:#999;">提示：3-10秒干净人声效果最好，避免背景音乐和噪音。添加后会出现在上方音色列表中。</div>
+        </div>
         <div class="field"><label for="ttsLocalVoice">音色（edge-tts）</label>
         <select id="ttsLocalVoice" style="min-width:220px"></select></div>
         <div class="field"><label for="ttsLocalRate">语速</label>
