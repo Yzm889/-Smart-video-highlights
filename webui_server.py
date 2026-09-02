@@ -5173,7 +5173,13 @@ def _find_cosyvoice_python():
 
 
 def _run_pip(pip, args, timeout=600, cwd=None, label=''):
-    """运行pip命令，检查返回码，失败时返回错误信息。成功返回(0,'')。"""
+    """运行pip命令，检查返回码，失败时返回错误信息。成功返回(0,'')。
+    自动加--timeout 30 --retries 5避免网络卡死。"""
+    # 只在install命令时加网络参数
+    if args and args[0] == 'install':
+        extra = ['--timeout', '30', '--retries', '5', '--progress-bar', 'off']
+        # 插入到install之后、包名之前
+        args = [args[0]] + extra + args[1:]
     try:
         r = subprocess.run([pip] + args, capture_output=True, timeout=timeout, cwd=cwd)
         if r.returncode != 0:
@@ -5301,11 +5307,26 @@ def cosyvoice_install_async():
                 if rc != 0:
                     # requirements.txt失败，尝试最小依赖
                     TTS_SETUP.update(pct=52, msg='⚠️ 完整依赖安装失败，尝试最小依赖…')
-                    rc2, err2 = _run_pip(pip, ['install', 'modelscope', 'numpy', 'scipy', 'librosa',
-                                                'soundfile', 'transformers', 'onnxruntime'] + MIRROR,
-                                         timeout=600, label='最小依赖')
-                    if rc2 != 0:
-                        TTS_SETUP.update(ok=False, pct=52, msg='❌ 依赖安装失败：' + (err or err2)[:300], running=False)
+                    # 分包安装，避免一个大包卡死整个流程
+                    dep_packages = ['numpy', 'scipy', 'librosa', 'soundfile',
+                                    'transformers', 'onnxruntime', 'modelscope',
+                                    'einops', 'rotary-embedding-torch', 'tqdm', 'pillow', 'wget']
+                    dep_ok = True
+                    dep_err = ''
+                    for i, pkg in enumerate(dep_packages):
+                        TTS_SETUP.update(pct=52 + i * 0.9, msg='正在装依赖 %d/%d：%s…' % (i+1, len(dep_packages), pkg))
+                        rc_p, err_p = _run_pip(pip, ['install', pkg] + MIRROR, timeout=300, label=pkg)
+                        if rc_p != 0:
+                            # modelscope是必须的（下载模型用），其他包失败可以继续
+                            if pkg == 'modelscope':
+                                dep_ok = False
+                                dep_err = err_p
+                                break
+                            else:
+                                TTS_SETUP.update(pct=52 + i * 0.9, msg='⚠️ %s装失败，跳过继续…' % pkg)
+                                continue
+                    if not dep_ok:
+                        TTS_SETUP.update(ok=False, pct=55, msg='❌ 关键依赖modelscope安装失败：' + dep_err[:300], running=False)
                         return
             # 确保modelscope已装（下载模型需要）
             rc, err = _run_pip(pip, ['install', 'modelscope'] + MIRROR, timeout=300, label='modelscope')
