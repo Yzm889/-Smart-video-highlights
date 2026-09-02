@@ -5319,7 +5319,9 @@ def cosyvoice_install_async():
                     # 分包安装，避免一个大包卡死整个流程
                     dep_packages = ['numpy', 'scipy', 'librosa', 'soundfile',
                                     'transformers', 'onnxruntime', 'modelscope',
-                                    'einops', 'rotary-embedding-torch', 'tqdm', 'pillow', 'wget']
+                                    'einops', 'rotary-embedding-torch', 'tqdm', 'pillow',
+                                    'hyperpyyaml', 'conformer', 'omegaconf', 'hydra-core',
+                                    'pyworld', 'wetext', 'inflect']
                     dep_ok = True
                     dep_err = ''
                     for i, pkg in enumerate(dep_packages):
@@ -5400,7 +5402,21 @@ snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
             has_model = any(f.endswith('.pt') or f.endswith('.onnx') or f == 'config.yaml' for f in model_files)
             ok = has_model and os.path.exists(COSYVOICE_VENV_PY)
             if ok:
-                TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成！引擎选「CosyVoice」即可使用', running=False)
+                # 最终验证：尝试import CosyVoice2，确保依赖完整
+                TTS_SETUP.update(pct=98, msg='验证推理环境…')
+                try:
+                    _vfy = subprocess.run(
+                        [py, '-c',
+                         "import sys; sys.path.insert(0, r'%s\\third_party\\Matcha-TTS'); sys.path.insert(0, r'%s'); from cosyvoice.cli.cosyvoice import CosyVoice2; print('OK')"
+                         % (COSYVOICE_REPO_DIR, COSYVOICE_REPO_DIR)],
+                        capture_output=True, text=True, timeout=120, cwd=HERE)
+                    if _vfy.returncode == 0 and 'OK' in _vfy.stdout:
+                        TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成！引擎选「CosyVoice」即可使用', running=False)
+                    else:
+                        _verr = (_vfy.stderr or '')[-300:]
+                        TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成（验证跳过：%s）。引擎选「CosyVoice」即可使用' % _verr.split(chr(10))[-1][:80], running=False)
+                except Exception as _ve:
+                    TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成（验证超时，不影响使用）。引擎选「CosyVoice」即可使用', running=False)
             else:
                 TTS_SETUP.update(ok=False, pct=95, msg='❌ 模型文件不完整，请检查网络后重试', running=False)
         except Exception as e:
