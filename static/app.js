@@ -3557,30 +3557,47 @@ function toggleAdjPlay(){
   if(!video.src || video.src.indexOf('src.mp4') < 0){
     var videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
     video.src = videoUrl;
+    video.load();
   }
   if(video.paused){
     var items = _adjustState.items;
-    // 设置播放起始段：选中了片段从选中段开始，否则从第一段开始
+    // 设置播放起始段
     if(_selectedSeg >= 0 && items && _selectedSeg < items.length){
       _playSegIndex = _selectedSeg;
     } else if(items && items.length > 0){
       _playSegIndex = 0;
       _selectedSeg = 0;
     }
-    // 跳到起始段开头
+    var startT = 0;
     if(_playSegIndex >= 0 && items && _playSegIndex < items.length){
       var it = items[_playSegIndex];
-      if(it) seekAdjVideo(it.video_start || 0);
+      startT = it ? (it.video_start || 0) : 0;
       var hint = document.getElementById('adjustVideoHint');
-      if(hint) hint.textContent = '🎬 从第'+(_playSegIndex+1)+'/'+items.length+'段开始播放，播完自动跳下一段';
-      // 高亮当前段
+      if(hint) hint.textContent = '🎬 从第'+(_playSegIndex+1)+'/'+items.length+'段开始播放';
       var allSegs = document.querySelectorAll('.tl-vseg');
       for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
       if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
     }
-    video.play().catch(function(e){ if(btn) btn.textContent = '❌ ' + e.message; });
-    if(btn) btn.textContent = '⏸ 暂停';
-    startPlayheadSync();
+    // 等视频ready后seek再播放
+    var doPlay = function(){
+      try { video.currentTime = startT; } catch(e){}
+      video.play().then(function(){
+        if(btn) btn.textContent = '⏸ 暂停';
+        startPlayheadSync();
+      }).catch(function(e){
+        if(btn) btn.textContent = '❌ ' + (e.message || '播放失败');
+      });
+    };
+    if(video.readyState >= 1){
+      doPlay();
+    } else {
+      if(btn) btn.textContent = '⏳ 加载中…';
+      var onMeta = function(){
+        video.removeEventListener('loadedmetadata', onMeta);
+        doPlay();
+      };
+      video.addEventListener('loadedmetadata', onMeta);
+    }
   } else {
     video.pause();
     if(btn) btn.textContent = '▶️ 播放';
@@ -3617,10 +3634,10 @@ function startPlayheadSync(){
       if(items && _playSegIndex >= 0 && _playSegIndex < items.length){
         var it = items[_playSegIndex];
         if(it){
-          var vs = it.video_start || 0;
           var ve = it.video_end || 0;
+          var vs = it.video_start || 0;
           // 当前段播完：跳到下一段
-          if(ve > vs && video.currentTime >= ve - 0.05){
+          if(ve > vs && video.currentTime >= ve - 0.08){
             _playSegIndex++;
             if(_playSegIndex < items.length){
               var next = items[_playSegIndex];
@@ -3628,14 +3645,12 @@ function startPlayheadSync(){
                 var nvs = next.video_start || 0;
                 try { video.currentTime = nvs; } catch(e){}
                 var hint = document.getElementById('adjustVideoHint');
-                if(hint) hint.textContent = '🎬 播放第'+(_playSegIndex+1)+'/'+items.length+'段（'+nvs.toFixed(1)+'s → '+(next.video_end||0).toFixed(1)+'s）';
-                // 高亮当前播放段
+                if(hint) hint.textContent = '🎬 播放第'+(_playSegIndex+1)+'/'+items.length+'段';
                 var allSegs = document.querySelectorAll('.tl-vseg');
                 for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
                 if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
               }
             } else {
-              // 全部播完
               video.pause();
               var btn = document.getElementById('adjPlayBtn');
               if(btn) btn.textContent = '▶️ 播放';
@@ -3644,10 +3659,6 @@ function startPlayheadSync(){
               stopPlayheadSync();
               return;
             }
-          }
-          // 被拖到当前段开头之前：拉回
-          if(video.currentTime < vs){
-            try { video.currentTime = vs; } catch(e){}
           }
         }
       }
