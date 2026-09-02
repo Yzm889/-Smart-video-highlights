@@ -287,6 +287,20 @@ function ttsLocalHint(){
     sapi: '系统 SAPI 零安装但音色少（多数 Windows 只有一个中文女声），机械味较重。',
   };
   hint.textContent = m[eng] || m.auto;
+  // 引擎切换即时保存（否则试听仍用旧引擎）
+  saveTtsLocal();
+}
+
+function saveTtsLocal(){
+  const body = { tts_local: {
+    engine: $('ttsLocalEngine') ? $('ttsLocalEngine').value : 'auto',
+    voice: $('ttsLocalVoice') ? $('ttsLocalVoice').value : 'zh-CN-XiaoxiaoNeural',
+    rate: $('ttsLocalRate') ? $('ttsLocalRate').value.trim() : '+0%',
+    cosy_voice: $('ttsCosyVoice') ? $('ttsCosyVoice').value : '中文女',
+    sherpa_model: $('ttsSherpaModel') ? $('ttsSherpaModel').value : '',
+  }};
+  fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)}).catch(()=>{});
 }
 function loadTtsLocal(){
   fetch('/api/tts/voices').then(r=>r.json()).then(res=>{
@@ -442,16 +456,11 @@ function downloadTtsModel(){
 
 function saveTtsCosy(){
   const sel = $('ttsCosyVoice'); if(!sel) return;
-  fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({tts_local: {cosy_voice: sel.value}})}).catch(()=>{});
+  saveTtsLocal();
 }
 function saveTtsSherpa(){
   const sel = $('ttsSherpaModel'); if(!sel) return;
-  // 保存到配置
-  fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({tts_local: {sherpa_model: sel.value}})})
-    .catch(()=>{});
-  // 刷新状态（控制卸载按钮显示）
+  saveTtsLocal();
   loadTtsLocal();
 }
 

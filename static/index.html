@@ -672,7 +672,7 @@
         </div>
       </div>
       <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
-        <div style="font-weight:600; color:#2e7d32; width:100%;">🔊 本地配音引擎（免费·不花 API 钱）</div>
+        <div style="font-weight:600; color:#2e7d32; width:100%;">🔊 本地配音引擎（免费·不花 API 钱） <span style="font-weight:400; font-size:11px; color:#888;">↑ 上面「🌐 API云端配置」是付费配音路线，这里是免费本地路线，两条独立</span></div>
         <details class="bubble"><summary>三条免费路线怎么选？音质差别很大（点开）</summary><div class="bubble-body">
           · <b>🌐 edge-tts</b>：<b>情感+顿挫</b>，微软神经语音，支持{情绪:xx}/{停顿:n}标记自动转SSML，<b>不需要任何 Key</b>。
             代价是依赖网络，本机实测单次成功率约 2/3（连接会被随时重置），现已带自动重试。<br>
@@ -684,7 +684,7 @@
           选「自动」时优先级：<b>edge-tts → CosyVoice → ChatTTS → 离线模型 → 系统 SAPI</b>。
           <b>一条解说内部会锁定引擎</b>，不会前半段一个声音后半段另一个。
         </div></details>
-        <div class="field"><label for="ttsLocalEngine">引擎</label>
+        <div class="field"><label for="ttsLocalEngine">本地引擎</label>
         <select id="ttsLocalEngine" onchange="ttsLocalHint()">
             <option value="auto" selected>自动（edge-tts → 离线模型 → 系统）</option>
             <option value="edge">🌐 edge-tts（情感+顿挫·免 Key）</option>
@@ -695,51 +695,86 @@
           </select>
         </div>
         <div style="width:100%; margin:6px 0; overflow-x:auto;">
-          <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <table style="width:100%; border-collapse:collapse; font-size:11px;">
             <tr style="background:rgba(255,255,255,0.04);">
-              <th style="border:1px solid #ddd; padding:6px; text-align:left;">对比项</th>
-              <th style="border:1px solid #ddd; padding:6px; text-align:left; color:#1565c0;">🌐 edge-tts</th>
-              <th style="border:1px solid #ddd; padding:6px; text-align:left; color:#2e7d32;">🎙️ ChatTTS</th>
+              <th style="border:1px solid #ddd; padding:5px; text-align:left;">对比项</th>
+              <th style="border:1px solid #ddd; padding:5px; text-align:left; color:#1565c0;">🌐 edge-tts</th>
+              <th style="border:1px solid #ddd; padding:5px; text-align:left; color:#c9a84c;">🎭 CosyVoice</th>
+              <th style="border:1px solid #ddd; padding:5px; text-align:left; color:#2e7d32;">🎙️ ChatTTS</th>
+              <th style="border:1px solid #ddd; padding:5px; text-align:left; color:#7b1fa2;">💾 离线模型</th>
+              <th style="border:1px solid #ddd; padding:5px; text-align:left; color:#616161;">🪟 SAPI</th>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">自然度</td>
-              <td style="border:1px solid #ddd; padding:6px;">微软神经网络语音，拟真度高</td>
-              <td style="border:1px solid #ddd; padding:6px;"><b>更自然</b>，对话式语气，像真人说话</td>
+              <td style="border:1px solid #ddd; padding:5px;">自然度</td>
+              <td style="border:1px solid #ddd; padding:5px;">微软神经网络，拟真度高</td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>最高</b>，接近商业级，声音克隆</td>
+              <td style="border:1px solid #ddd; padding:5px;">很自然，对话式语气</td>
+              <td style="border:1px solid #ddd; padding:5px;">MeloTTS自然；华研机械感重</td>
+              <td style="border:1px solid #ddd; padding:5px;">机械味重</td>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">情感控制</td>
-              <td style="border:1px solid #ddd; padding:6px;"><b>9种情感</b>（激动/悲伤/严肃/紧张/温柔/深情/播报/不满/愤怒），SSML精确控制</td>
-              <td style="border:1px solid #ddd; padding:6px;">靠文本语气自然流露，无显式情感标签</td>
+              <td style="border:1px solid #ddd; padding:5px;">情感控制</td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>9种情感</b>SSML精确控制</td>
+              <td style="border:1px solid #ddd; padding:5px;">靠参考音频克隆语气</td>
+              <td style="border:1px solid #ddd; padding:5px;">文本语气自然流露</td>
+              <td style="border:1px solid #ddd; padding:5px;">几乎无情感</td>
+              <td style="border:1px solid #ddd; padding:5px;">无</td>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">停顿/顿挫</td>
-              <td style="border:1px solid #ddd; padding:6px;"><b>{停顿:n}</b>标记精确控制0.1-5秒</td>
-              <td style="border:1px solid #ddd; padding:6px;">[uv_break]/[lbreak]标记，自然停顿</td>
+              <td style="border:1px solid #ddd; padding:5px;">停顿/顿挫</td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>{停顿:n}</b>精确0.1-5秒</td>
+              <td style="border:1px solid #ddd; padding:5px;">自动推断，不支持标记</td>
+              <td style="border:1px solid #ddd; padding:5px;">[uv_break]标记</td>
+              <td style="border:1px solid #ddd; padding:5px;">全局语速</td>
+              <td style="border:1px solid #ddd; padding:5px;">全局语速</td>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">语速/音调</td>
-              <td style="border:1px solid #ddd; padding:6px;"><b>{慢}{快}{高音}{低音}</b>分段控制</td>
-              <td style="border:1px solid #ddd; padding:6px;">全局参数，不支持分段</td>
+              <td style="border:1px solid #ddd; padding:5px;">速度</td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>快</b>，2-5秒/段</td>
+              <td style="border:1px solid #ddd; padding:5px;">慢，GPU 5-15秒/段</td>
+              <td style="border:1px solid #ddd; padding:5px;">较慢，GPU 2-5秒/段</td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>最快</b>，1秒/段</td>
+              <td style="border:1px solid #ddd; padding:5px;">快</td>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">速度</td>
-              <td style="border:1px solid #ddd; padding:6px;"><b>快</b>，每段2-5秒（在线）</td>
-              <td style="border:1px solid #ddd; padding:6px;">较慢，CPU每段10-30秒；GPU约2-5秒</td>
+              <td style="border:1px solid #ddd; padding:5px;">网络</td>
+              <td style="border:1px solid #ddd; padding:5px;">需联网，自动重试</td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>完全离线</b></td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>完全离线</b></td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>完全离线</b></td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>完全离线</b></td>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">网络</td>
-              <td style="border:1px solid #ddd; padding:6px;">需联网（微软服务），自动重试</td>
-              <td style="border:1px solid #ddd; padding:6px;"><b>完全离线</b>，本地推理</td>
+              <td style="border:1px solid #ddd; padding:5px;">显存需求</td>
+              <td style="border:1px solid #ddd; padding:5px;">无</td>
+              <td style="border:1px solid #ddd; padding:5px;">≥6GB（推荐8GB+）</td>
+              <td style="border:1px solid #ddd; padding:5px;">≥4GB</td>
+              <td style="border:1px solid #ddd; padding:5px;">无（CPU）</td>
+              <td style="border:1px solid #ddd; padding:5px;">无</td>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">音色</td>
-              <td style="border:1px solid #ddd; padding:6px;">10+中文音色可选（晓晓/云希/云健等）</td>
-              <td style="border:1px solid #ddd; padding:6px;">内置音色，支持随机说话人</td>
+              <td style="border:1px solid #ddd; padding:5px;">音色</td>
+              <td style="border:1px solid #ddd; padding:5px;">10+中文音色</td>
+              <td style="border:1px solid #ddd; padding:5px;">6预设+<b>声音克隆</b></td>
+              <td style="border:1px solid #ddd; padding:5px;">内置+随机</td>
+              <td style="border:1px solid #ddd; padding:5px;">2-3个</td>
+              <td style="border:1px solid #ddd; padding:5px;">1个（系统自带）</td>
             </tr>
             <tr>
-              <td style="border:1px solid #ddd; padding:6px;">推荐场景</td>
-              <td style="border:1px solid #ddd; padding:6px;"><b>电影解说首选</b>：情感丰富、顿挫精准、速度快</td>
-              <td style="border:1px solid #ddd; padding:6px;">追求极致自然度、不介意速度、断网环境</td>
+              <td style="border:1px solid #ddd; padding:5px;">安装体积</td>
+              <td style="border:1px solid #ddd; padding:5px;">pip install edge-tts</td>
+              <td style="border:1px solid #ddd; padding:5px;">venv+PyTorch+<b>9GB模型</b></td>
+              <td style="border:1px solid #ddd; padding:5px;">venv+约3GB</td>
+              <td style="border:1px solid #ddd; padding:5px;">130MB模型</td>
+              <td style="border:1px solid #ddd; padding:5px;">零安装</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #ddd; padding:5px;">推荐场景</td>
+              <td style="border:1px solid #ddd; padding:5px;"><b>电影解说首选</b>：情感+顿挫+速度</td>
+              <td style="border:1px solid #ddd; padding:5px;">追求最高音质、声音克隆</td>
+              <td style="border:1px solid #ddd; padding:5px;">自然对话感、断网</td>
+              <td style="border:1px solid #ddd; padding:5px;">断网+速度优先</td>
+              <td style="border:1px solid #ddd; padding:5px;">兜底备用</td>
             </tr>
           </table>
         </div>
