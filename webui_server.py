@@ -5138,6 +5138,20 @@ def cosyvoice_speak(text, out_path, progress=None):
     return False
 
 
+def _run_pip(pip, args, timeout=600, cwd=None, label=''):
+    """运行pip命令，检查返回码，失败时返回错误信息。成功返回(0,'')。"""
+    try:
+        r = subprocess.run([pip] + args, capture_output=True, timeout=timeout, cwd=cwd)
+        if r.returncode != 0:
+            err = (r.stderr or b'').decode('utf-8', 'ignore')[-500:]
+            return r.returncode, (label + '失败：' + err if label else err)
+        return 0, ''
+    except subprocess.TimeoutExpired:
+        return -1, (label or 'pip') + '超时（%ds）' % timeout
+    except Exception as e:
+        return -2, (label or 'pip') + '异常：' + str(e)[:200]
+
+
 def cosyvoice_install_async():
     """后台安装 CosyVoice：创建venv+装PyTorch+clone仓库+下载模型。返回 (ok, msg)。"""
     with _SETUP_LOCK:
@@ -5148,48 +5162,99 @@ def cosyvoice_install_async():
     def _run():
         try:
             import venv as _venv
-            import urllib.request as _u
+            MIRROR = ['-i', 'https://mirrors.aliyun.com/pypi/simple/', '--trusted-host', 'mirrors.aliyun.com']
             # 1. 创建venv
             TTS_SETUP.update(pct=5, msg='创建 Python 虚拟环境…')
             venv_dir = os.path.join(HERE, '.venv_cosyvoice')
             if not os.path.exists(COSYVOICE_VENV_PY):
                 _venv.create(venv_dir, with_pip=True)
+            if not os.path.exists(COSYVOICE_VENV_PY):
+                TTS_SETUP.update(ok=False, pct=0, msg='❌ venv创建失败，python.exe不存在', running=False)
+                return
             pip = os.path.join(venv_dir, 'Scripts', 'pip.exe')
             py = COSYVOICE_VENV_PY
-            # 2. 安装PyTorch CUDA
+            # 升级pip
+            TTS_SETUP.update(pct=8, msg='升级 pip…')
+            _run_pip(pip, ['install', '--upgrade', 'pip'] + MIRROR, timeout=120, label='pip升级')
+            # 2. 安装PyTorch CUDA（用官方源，国内镜像没有CUDA版torch）
             TTS_SETUP.update(pct=15, msg='安装 PyTorch（CUDA版，约2GB，需几分钟）…')
-            subprocess.run([pip, 'install', 'torch', 'torchaudio', '--index-url', 'https://download.pytorch.org/whl/cu121'],
-                           capture_output=True, timeout=600, cwd=HERE)
+            rc, err = _run_pip(pip, ['install', 'torch', 'torchaudio', '--index-url',
+                                     'https://download.pytorch.org/whl/cu121'], timeout=900, label='PyTorch安装')
+            if rc != 0:
+                TTS_SETUP.update(ok=False, pct=15, msg='❌ ' + err[:300], running=False)
+                return
             # 3. 克隆CosyVoice仓库
-            TTS_SETUP.update(pct=40, msg='克隆 CosyVoice 仓库…')
+            TTS_SETUP.update(pct=35, msg='克隆 CosyVoice 仓库…')
             if not os.path.isdir(COSYVOICE_REPO_DIR):
-                subprocess.run(['git', 'clone', '--depth', '1', 'https://github.com/FunAudioLLM/CosyVoice.git', COSYVOICE_REPO_DIR],
-                               capture_output=True, timeout=300, cwd=HERE)
-            # 4. 安装依赖
-            TTS_SETUP.update(pct=55, msg='安装 CosyVoice 依赖…')
+                try:
+                    r = subprocess.run(['git', 'clone', '--depth', '1',
+                                        'https://github.com/FunAudioLLM/CosyVoice.git', COSYVOICE_REPO_DIR],
+                                       capture_output=True, timeout=300, cwd=HERE)
+                    if r.returncode != 0:
+                        # git失败，尝试用gitee镜像
+                        r2 = subprocess.run(['git', 'clone', '--depth', '1',
+                                             'https://gitee.com/mirrors/CosyVoice.git', COSYVOICE_REPO_DIR],
+                                            capture_output=True, timeout=300, cwd=HERE)
+                        if r2.returncode != 0:
+                            TTS_SETUP.update(ok=False, pct=35,
+                                             msg='❌ git clone失败：' + (r.stderr or r2.stderr or b'').decode('utf-8','ignore')[:200],
+                                             running=False)
+                            return
+                except Exception as e:
+                    TTS_SETUP.update(ok=False, pct=35, msg='❌ git clone异常：' + str(e)[:200], running=False)
+                    return
+            # 4. 安装依赖（国内镜像）
+            TTS_SETUP.update(pct=50, msg='安装 CosyVoice 依赖（国内镜像，约2-3分钟）…')
             req = os.path.join(COSYVOICE_REPO_DIR, 'requirements.txt')
             if os.path.exists(req):
-                subprocess.run([pip, 'install', '-r', req], capture_output=True, timeout=600, cwd=COSYVOICE_REPO_DIR)
+                rc, err = _run_pip(pip, ['install', '-r', req] + MIRROR, timeout=900,
+                                   cwd=COSYVOICE_REPO_DIR, label='依赖安装')
+                if rc != 0:
+                    # requirements.txt失败，尝试最小依赖
+                    TTS_SETUP.update(pct=52, msg='⚠️ 完整依赖安装失败，尝试最小依赖…')
+                    rc2, err2 = _run_pip(pip, ['install', 'modelscope', 'numpy', 'scipy', 'librosa',
+                                                'soundfile', 'transformers', 'onnxruntime'] + MIRROR,
+                                         timeout=600, label='最小依赖')
+                    if rc2 != 0:
+                        TTS_SETUP.update(ok=False, pct=52, msg='❌ 依赖安装失败：' + (err or err2)[:300], running=False)
+                        return
+            # 确保modelscope已装（下载模型需要）
+            rc, err = _run_pip(pip, ['install', 'modelscope'] + MIRROR, timeout=300, label='modelscope')
             # 5. 下载模型（ModelScope国内镜像）
-            TTS_SETUP.update(pct=70, msg='下载 CosyVoice2-0.5B 模型（约9GB，国内镜像）…')
+            TTS_SETUP.update(pct=65, msg='下载 CosyVoice2-0.5B 模型（约9GB，国内镜像，需10-15分钟）…')
             os.makedirs(os.path.dirname(COSYVOICE_MODEL_DIR), exist_ok=True)
             dl_script = os.path.join(HERE, '_cosyvoice_dl.py')
             with open(dl_script, 'w', encoding='utf-8') as f:
                 f.write('''from modelscope import snapshot_download
 snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
 ''' % COSYVOICE_MODEL_DIR.replace('\\', '\\\\'))
-            subprocess.run([py, dl_script], capture_output=True, timeout=1800, cwd=HERE)
             try:
-                os.unlink(dl_script)
-            except Exception:
-                pass
+                r = subprocess.run([py, dl_script], capture_output=True, timeout=3600, cwd=HERE)
+                if r.returncode != 0:
+                    dl_err = (r.stderr or b'').decode('utf-8', 'ignore')[-400:]
+                    TTS_SETUP.update(ok=False, pct=65, msg='❌ 模型下载失败：' + dl_err, running=False)
+                    return
+            finally:
+                try: os.unlink(dl_script)
+                except Exception: pass
             # 6. 创建worker脚本
             TTS_SETUP.update(pct=95, msg='配置推理脚本…')
             _ensure_cosyvoice_worker()
-            ok = os.path.isdir(COSYVOICE_MODEL_DIR) and os.path.exists(COSYVOICE_VENV_PY)
-            TTS_SETUP.update(ok=ok, pct=100, msg='CosyVoice 安装完成！' if ok else '安装可能未完成，请检查模型目录', running=False)
+            # 验证模型目录有关键文件
+            model_files = []
+            try:
+                model_files = os.listdir(COSYVOICE_MODEL_DIR)
+            except Exception:
+                pass
+            has_model = any(f.endswith('.pt') or f.endswith('.onnx') or f == 'config.yaml' for f in model_files)
+            ok = has_model and os.path.exists(COSYVOICE_VENV_PY)
+            if ok:
+                TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成！引擎选「CosyVoice」即可使用', running=False)
+            else:
+                TTS_SETUP.update(ok=False, pct=95, msg='❌ 模型文件不完整，请检查网络后重试', running=False)
         except Exception as e:
-            TTS_SETUP.update(ok=False, pct=0, msg='安装失败：' + str(e)[:200], running=False)
+            import traceback
+            TTS_SETUP.update(ok=False, pct=0, msg='❌ 安装异常：' + str(e)[:200] + ' | ' + traceback.format_exc()[-200:], running=False)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
