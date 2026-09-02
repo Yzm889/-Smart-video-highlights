@@ -352,6 +352,9 @@ function _ttsSetupPoll(){
     if(!s.running){
       clearInterval(_ttsSetupTimer); _ttsSetupTimer = null;
       loadTtsLocal();
+      // 安装完成后恢复CosyVoice按钮状态
+      const cosyBtn = document.querySelector('button[onclick="installCosyVoice()"]');
+      if(cosyBtn && !cosyBtn.disabled) cosyBtn.disabled = false;
     }
   }).catch(()=>{});
 }
@@ -377,13 +380,24 @@ function installChatTts(){
 }
 function installCosyVoice(){
   const st = $('ttsLocalState');
-  if(st) st.textContent = '⏳ 正在安装 CosyVoice（venv+PyTorch+9GB模型，约10-20分钟，请勿关闭）…';
+  const btn = document.querySelector('button[onclick="installCosyVoice()"]');
+  // 防重复安装
+  if(btn && btn.disabled){
+    if(st) st.textContent = '⏳ CosyVoice 正在安装中，请勿重复点击…';
+    return;
+  }
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ 安装中…'; }
+  if(st) st.textContent = '⏳ 正在安装 CosyVoice（venv+PyTorch+9GB模型，约10-20分钟，请勿关闭页面）…';
   fetch('/api/tts/cosyvoice/install', {method:'POST', headers:{'Content-Type':'application/json'},
                                        body: JSON.stringify({})})
     .then(r=>r.json()).then(res=>{
       if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || res.error || '');
-    }).catch(e=>{ if(st) st.textContent = '❌ 安装请求失败：' + e.message; });
-  if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 3000);
+      if(btn && !res.ok){ btn.disabled = false; btn.textContent = '📥 装 CosyVoice（推荐）'; }
+    }).catch(e=>{
+      if(st) st.textContent = '❌ 安装请求失败：' + e.message;
+      if(btn){ btn.disabled = false; btn.textContent = '📥 装 CosyVoice（推荐）'; }
+    });
+  if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 2000);
 }
 function downloadTtsModel(){
   const st = $('ttsLocalState');
@@ -2899,10 +2913,12 @@ function saveNarrEdit(){
 function removeModel(tag){
   if(!confirm('确定卸载模型 ' + tag + ' ？释放磁盘空间，之后需重新下载。')) return;
   fetch('/api/model/remove', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({model: tag})}).then(r=>r.json()).then(res=>{
+    body: JSON.stringify({model: tag})}).then(r=>{
+      return r.text().then(t=>{ try{ return JSON.parse(t); }catch(e){ return {ok:false, error:'服务器返回异常: '+t.slice(0,100)}; } });
+    }).then(res=>{
     if(res.ok){ alert('已卸载 ' + tag); if(typeof refreshModelCards==='function') refreshModelCards(); if(typeof loadVlmStatus==='function') loadVlmStatus(); }
     else alert('卸载失败: ' + (res.error||res.msg||'未知错误'));
-  }).catch(e=>alert('卸载失败: '+e));
+  }).catch(e=>alert('卸载失败: '+e.message));
 }
 
 

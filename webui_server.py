@@ -10685,6 +10685,25 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
             return
+        if path == '/api/model/remove':
+            # 卸载已安装的Ollama模型（POST版，前端用POST调用）
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+            except Exception:
+                body = {}
+            model = str(body.get('model', '')).strip()
+            if not model:
+                self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
+                return
+            try:
+                import subprocess as _sp
+                r = _sp.run(['ollama', 'rm', model], capture_output=True, text=True, timeout=60)
+                ok = (r.returncode == 0)
+                msg = (r.stdout or r.stderr or '').strip()[:200]
+                self._send(200, json.dumps({'ok': ok, 'msg': msg, 'error': '' if ok else msg}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
+            return
         self._send(404, b'not found')
 
 
