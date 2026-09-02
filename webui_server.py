@@ -5236,24 +5236,41 @@ def cosyvoice_install_async():
             if rc != 0:
                 TTS_SETUP.update(ok=False, pct=10, msg='❌ venv的pip不可用：' + err[:200] + '。请删除.venv_cosyvoice后重试', running=False)
                 return
-            # 2. 安装PyTorch（先试国内CUDA镜像，再试官方源，最后回退CPU版）
-            torch_sources = [
-                ('阿里云CUDA镜像', ['install', 'torch', 'torchaudio', '--index-url',
-                                   'https://mirrors.aliyun.com/pytorch-wheels/cu121/']),
-                ('官方CUDA源', ['install', 'torch', 'torchaudio', '--index-url',
-                               'https://download.pytorch.org/whl/cu121']),
-                ('阿里云CPU版（兜底）', ['install', 'torch', 'torchaudio'] + MIRROR),
-            ]
+            # 2. 安装PyTorch CUDA版（官方源，2.4GB，需较长时间）
+            # 心跳：下载中每隔一段时间更新提示，避免用户以为卡死
+            def _torch_heartbeat(stop_event, start_pct):
+                mins = 0
+                while not stop_event.is_set():
+                    time.sleep(20)
+                    mins += 1
+                    if TTS_SETUP['running']:
+                        TTS_SETUP.update(pct=min(start_pct + mins * 0.5, 45),
+                                         msg='正在下载 PyTorch CUDA版（约2.4GB，已等%d分钟，请耐心等待，不要关闭页面）…' % mins)
+            import threading as _th
+            _stop_hb = _th.Event()
+            _hb = _th.Thread(target=_torch_heartbeat, args=(_stop_hb, 15), daemon=True)
+            _hb.start()
             torch_ok = False
-            for src_name, torch_args in torch_sources:
-                TTS_SETUP.update(pct=15, msg='安装 PyTorch（%s，约2GB）…' % src_name)
-                rc, err = _run_pip(pip, torch_args, timeout=900, label='PyTorch(%s)' % src_name)
-                if rc == 0:
-                    torch_ok = True
-                    break
-                TTS_SETUP.update(pct=17, msg='⚠️ %s失败，尝试下一个源…' % src_name)
+            torch_err = ''
+            try:
+                TTS_SETUP.update(pct=15, msg='正在下载 PyTorch CUDA版（约2.4GB，根据网速需5-30分钟）…')
+                rc, torch_err = _run_pip(pip, ['install', 'torch', 'torchaudio', '--index-url',
+                                                'https://download.pytorch.org/whl/cu121', '--no-cache-dir'],
+                                         timeout=3600, label='PyTorch CUDA')
+                torch_ok = (rc == 0)
+            finally:
+                _stop_hb.set()
+            # CUDA版失败，回退CPU版（阿里云pypi镜像，体积小但无GPU加速）
             if not torch_ok:
-                TTS_SETUP.update(ok=False, pct=15, msg='❌ PyTorch安装失败，所有源都不可用。最后错误：' + err[:300], running=False)
+                TTS_SETUP.update(pct=18, msg='⚠️ CUDA版下载失败，尝试CPU版（可运行但较慢）…')
+                rc2, err2 = _run_pip(pip, ['install', 'torch', 'torchaudio'] + MIRROR, timeout=600, label='PyTorch CPU')
+                if rc2 == 0:
+                    torch_ok = True
+                    TTS_SETUP.update(pct=20, msg='✅ PyTorch CPU版安装成功（无GPU加速，CosyVoice推理较慢）')
+                else:
+                    torch_err = torch_err + ' | CPU版也失败: ' + err2
+            if not torch_ok:
+                TTS_SETUP.update(ok=False, pct=15, msg='❌ PyTorch安装失败。请检查网络后重试，或手动下载torch-2.5.1+cu121 wheel放到本地安装。错误：' + torch_err[:300], running=False)
                 return
             # 3. 克隆CosyVoice仓库
             TTS_SETUP.update(pct=35, msg='克隆 CosyVoice 仓库…')
