@@ -3439,26 +3439,20 @@ function tlEndResize(){
   document.removeEventListener('mouseup', tlEndResize);
 }
 
-// 磁吸：查找附近的配音块边缘作为吸附目标
+// 磁吸：只对齐视频块边缘与配音时长，不对齐相邻视频片段
+// （视频片段是源视频中独立取的，首尾相接没有意义）
 function _findSnapPoint(t, idx, which){
   var items = _adjustState.items;
   if(!items) return null;
   var candidates = [];
-  // 当前段配音的开始（=视频开始）和结束（=开始+配音时长）
   var it = items[idx];
-  if(it){
+  if(it && it.duration){
     var aStart = it.video_start || 0;
-    var aEnd = aStart + (it.duration || 0);
-    if(which === 'start' || which === 'move') candidates.push(aStart);
+    var aEnd = aStart + (it.duration || 0) + 0.3; // 配音时长+0.3秒缓冲
+    // 右边缘裁剪时，磁吸到配音结束位置（视频长度=配音长度）
     if(which === 'end') candidates.push(aEnd);
   }
-  // 相邻段的边界
-  if(idx > 0 && items[idx-1]){
-    candidates.push(items[idx-1].video_end || 0);
-  }
-  if(idx < items.length - 1 && items[idx+1]){
-    candidates.push(items[idx+1].video_start || 0);
-  }
+  if(candidates.length === 0) return null;
   // 找最近的
   var best = null, bestDist = Infinity;
   for(var i=0;i<candidates.length;i++){
