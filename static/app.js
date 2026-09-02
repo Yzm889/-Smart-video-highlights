@@ -298,16 +298,27 @@ function loadTtsLocal(){
     const edgeBtn = $('ttsEdgeBtn'), modelBtn = $('ttsModelBtn');
     if(edgeBtn) edgeBtn.textContent = res.edge_installed ? '✅ edge-tts 已装' : '📥 装 edge-tts';
     if(modelBtn) modelBtn.textContent = res.sherpa_model_ready ? '✅ 离线模型已装' : '📥 下载选中的离线模型';
-    // CosyVoice状态：已装则按钮变灰显示已装
+    // CosyVoice状态：已装则按钮变灰显示已装；安装中则显示安装进度
     const cosyBtn = document.querySelector('button[onclick="installCosyVoice()"]');
+    const setup = res.setup || {};
     if(cosyBtn){
-      if(res.cosyvoice_installed){
+      if(setup.running){
+        cosyBtn.textContent = '⏳ 安装中…' + (setup.pct ? Math.round(setup.pct) + '%' : '');
+        cosyBtn.disabled = true;
+      } else if(res.cosyvoice_installed){
         cosyBtn.textContent = '✅ CosyVoice 已装';
         cosyBtn.disabled = true;
       } else {
         cosyBtn.textContent = '📥 装 CosyVoice（推荐）';
         cosyBtn.disabled = false;
       }
+    }
+    // 页面刷新后恢复安装进度轮询
+    if(setup.running && !_ttsSetupTimer){
+      _ttsSetupTimer = setInterval(_ttsSetupPoll, 2000);
+      const bar = $('ttsSetupBar'), fill = $('ttsSetupFill');
+      if(bar) bar.style.display = 'block';
+      if(fill && setup.pct) fill.style.width = Math.min(100, setup.pct) + '%';
     }
     const st = $('ttsLocalState');
     if(st){
@@ -348,13 +359,23 @@ function _ttsSetupPoll(){
     if(bar) bar.style.display = s.running ? 'block' : 'none';
     if(fill && s.pct) fill.style.width = Math.min(100, s.pct) + '%';
     const st = $('ttsLocalState');
-    if(st && s.msg) st.textContent = s.msg;
+    if(st){
+      if(s.running && s.msg){
+        const pct = s.pct ? ' (' + Math.round(s.pct) + '%)' : '';
+        st.textContent = '⏳ ' + s.msg + pct;
+        st.classList.add('tts-installing');
+      } else {
+        st.classList.remove('tts-installing');
+      }
+    }
+    // 更新CosyVoice按钮百分比
+    const cosyBtn = document.querySelector('button[onclick="installCosyVoice()"]');
+    if(cosyBtn && s.running){
+      cosyBtn.textContent = '⏳ 安装中…' + (s.pct ? Math.round(s.pct) + '%' : '');
+    }
     if(!s.running){
       clearInterval(_ttsSetupTimer); _ttsSetupTimer = null;
       loadTtsLocal();
-      // 安装完成后恢复CosyVoice按钮状态
-      const cosyBtn = document.querySelector('button[onclick="installCosyVoice()"]');
-      if(cosyBtn && !cosyBtn.disabled) cosyBtn.disabled = false;
     }
   }).catch(()=>{});
 }
