@@ -5093,7 +5093,16 @@ def cosyvoice_speak(text, out_path, progress=None):
                 f.write(clean_text)
             worker = os.path.join(HERE, 'cosyvoice_worker.py')
             _cv = tts_local_cfg().get('cosy_voice') or _COSYVOICE['voice']
-            r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _cv],
+            # 根据音色名找参考音频（zero-shot声音克隆需要参考音频）
+            _ref_dir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+            _ref_wav = os.path.join(_ref_dir, _cv + '.mp3')
+            if not os.path.exists(_ref_wav):
+                _ref_wav = os.path.join(_ref_dir, '中文女.mp3')
+            if not os.path.exists(_ref_wav):
+                _COSYVOICE['error'] = '参考音频不存在，请重新安装CosyVoice'
+                print('[COSYVOICE] no ref audio')
+                return False
+            r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _ref_wav],
                                capture_output=True, timeout=300, cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE)
             try:
                 os.unlink(txt_file)
