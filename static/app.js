@@ -271,6 +271,11 @@ function ttsLocalHint(){
   const eng = $('ttsLocalEngine') ? $('ttsLocalEngine').value : 'auto';
   const voiceSel = $('ttsLocalVoice');
   if(voiceSel) voiceSel.style.display = (eng === 'sapi' || eng === 'sherpa' || eng === 'cosyvoice' || eng === 'chattts') ? 'none' : '';
+  // 引擎选CosyVoice时：隐藏sherpa离线模型下拉，显示CosyVoice音色下拉
+  const sherpaField = $('ttsSherpaField');
+  const cosyField = $('ttsCosyField');
+  if(sherpaField) sherpaField.style.display = (eng === 'cosyvoice' || eng === 'chattts' || eng === 'sapi') ? 'none' : '';
+  if(cosyField) cosyField.style.display = (eng === 'cosyvoice') ? '' : 'none';
   const hint = $('ttsLocalHint');
   if(!hint) return;
   const m = {
@@ -295,6 +300,7 @@ function loadTtsLocal(){
     const cfg = res.cfg || {};
     if(cfg.engine && $('ttsLocalEngine')) $('ttsLocalEngine').value = cfg.engine;
     if(cfg.rate && $('ttsLocalRate')) $('ttsLocalRate').value = cfg.rate;
+    if(cfg.cosy_voice && $('ttsCosyVoice')) $('ttsCosyVoice').value = cfg.cosy_voice;
     const edgeBtn = $('ttsEdgeBtn'), modelBtn = $('ttsModelBtn');
     if(edgeBtn) edgeBtn.textContent = res.edge_installed ? '✅ edge-tts 已装' : '📥 装 edge-tts';
     if(modelBtn) modelBtn.textContent = res.sherpa_model_ready ? '✅ 离线模型已装' : '📥 下载选中的离线模型';
@@ -434,6 +440,11 @@ function downloadTtsModel(){
   if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 2000);
 }
 
+function saveTtsCosy(){
+  const sel = $('ttsCosyVoice'); if(!sel) return;
+  fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({tts_local: {cosy_voice: sel.value}})}).catch(()=>{});
+}
 function saveTtsSherpa(){
   const sel = $('ttsSherpaModel'); if(!sel) return;
   // 保存到配置

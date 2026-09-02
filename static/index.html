@@ -743,8 +743,17 @@
             </tr>
           </table>
         </div>
-        <div class="field"><label for="ttsSherpaModel">离线模型</label>
+        <div class="field" id="ttsSherpaField"><label for="ttsSherpaModel">离线模型</label>
         <select id="ttsSherpaModel" style="min-width:210px" onchange="saveTtsSherpa()"></select><button class="btn ghost" id="ttsUninstallBtn" onclick="uninstallTtsModel()" style="margin-left:6px;display:none;" title="删除当前选中的离线模型，释放磁盘空间">🗑 卸载</button></div>
+        <div class="field" id="ttsCosyField" style="display:none;"><label for="ttsCosyVoice">CosyVoice 音色</label>
+        <select id="ttsCosyVoice" style="min-width:180px" onchange="saveTtsCosy()">
+          <option value="中文女">中文女（温柔自然·推荐）</option>
+          <option value="中文男">中文男（沉稳磁性）</option>
+          <option value="英文女">英文女（纯正美式）</option>
+          <option value="英文男">英文男（纯正美式）</option>
+          <option value="粤语女">粤语女</option>
+          <option value="日语女">日语女</option>
+        </select></div>
         <div class="field"><label for="ttsLocalVoice">音色（edge-tts）</label>
         <select id="ttsLocalVoice" style="min-width:220px"></select></div>
         <div class="field"><label for="ttsLocalRate">语速</label>

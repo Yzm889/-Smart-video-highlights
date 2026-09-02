@@ -4880,7 +4880,8 @@ def tts_local_cfg():
         rate = '+' + rate.replace('%', '') + '%'
     return {'engine': str(c.get('engine') or 'auto').lower(),
             'voice': str(c.get('voice') or 'zh-CN-XiaoxiaoNeural').strip(),
-            'rate': rate or '+0%'}
+            'rate': rate or '+0%',
+            'cosy_voice': str(c.get('cosy_voice') or '中文女').strip()}
 
 
 # edge-tts 需要访问微软朗读服务。本机实测**单次成功率只有约 2/3**（连接被会随时重置），
@@ -5091,7 +5092,8 @@ def cosyvoice_speak(text, out_path, progress=None):
             with open(txt_file, 'w', encoding='utf-8') as f:
                 f.write(clean_text)
             worker = os.path.join(HERE, 'cosyvoice_worker.py')
-            r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _COSYVOICE['voice']],
+            _cv = tts_local_cfg().get('cosy_voice') or _COSYVOICE['voice']
+            r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _cv],
                                capture_output=True, timeout=300, cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE)
             try:
                 os.unlink(txt_file)
