@@ -5202,6 +5202,7 @@ def cosyvoice_install_async():
     def _run():
         try:
             import venv as _venv
+            import threading as _th
             MIRROR = ['-i', 'https://mirrors.aliyun.com/pypi/simple/', '--trusted-host', 'mirrors.aliyun.com']
             # 1. 创建venv（必须用Python 3.11/3.12，PyTorch不支持3.14）
             TTS_SETUP.update(pct=3, msg='查找 Python 3.11/3.12（PyTorch不支持3.14）…')
@@ -5262,7 +5263,6 @@ def cosyvoice_install_async():
                         if TTS_SETUP['running']:
                             TTS_SETUP.update(pct=min(start_pct + mins * 0.5, 45),
                                              msg='正在下载 PyTorch CUDA版（约2.4GB，已等%d分钟，请耐心等待）…' % mins)
-                import threading as _th
                 _stop_hb = _th.Event()
                 _hb = _th.Thread(target=_torch_heartbeat, args=(_stop_hb, 15), daemon=True)
                 _hb.start()
