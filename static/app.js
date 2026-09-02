@@ -3241,21 +3241,24 @@ let _lastJumpAt = 0;  // 上次跳转时间戳（跳转后300ms内不检测段�
 function renderTimeline(){
   const items = _adjustState.items;
   if(!items || items.length === 0) return;
-  const totalDur = _adjustState.videoDuration || 600;
+  // 成片时间轴：总时长=所有配音时长之和
+  let totalDur = 0;
+  items.forEach(function(it){ totalDur += (it.duration || 3); });
+  _adjustState.timelineDuration = totalDur;
   const inner = document.getElementById('timelineInner');
   const ruler = document.getElementById('timelineRuler');
   const vTrack = document.getElementById('videoTrack');
   const aTrack = document.getElementById('audioTrack');
   if(!inner || !ruler || !vTrack || !aTrack) return;
 
-  // 时间轴宽度：缩放控制，基础每秒8px * zoom
-  const pxPerSec = Math.max(4, 8 * _tlZoom);
+  // 时间轴宽度：缩放控制
+  const pxPerSec = Math.max(6, 12 * _tlZoom);
   const width = Math.max(800, totalDur * pxPerSec);
   inner.style.width = width + 'px';
 
-  // 标尺
+  // 标尺（成片时间）
   let rulerHtml = '';
-  const tickInterval = totalDur > 600 ? 60 : (totalDur > 120 ? 30 : (totalDur > 60 ? 10 : 5));
+  const tickInterval = totalDur > 300 ? 30 : (totalDur > 120 ? 15 : (totalDur > 60 ? 10 : 5));
   for(let t = 0; t <= totalDur; t += tickInterval){
     const left = (t / totalDur) * 100;
     const mm = Math.floor(t / 60), ss = Math.floor(t % 60);
@@ -3263,52 +3266,43 @@ function renderTimeline(){
   }
   ruler.innerHTML = rulerHtml;
 
-  // 视频轨片段（左裁剪|中间拖动|右裁剪）
+  // 视频轨：色块按成片时间顺序排列，宽度=配音时长，显示源取片范围
   let vHtml = '';
+  let cumTime = 0;
   items.forEach(function(it, idx){
+    const adur = it.duration || 3;
     const vs = it.video_start || 0;
     const ve = it.video_end || 0;
-    const adur = it.duration || 0;
-    if(ve <= vs) return;
-    const left = (vs / totalDur) * 100;
-    const w = ((ve - vs) / totalDur) * 100;
-    const vdur = ve - vs;
+    const left = (cumTime / totalDur) * 100;
+    const w = (adur / totalDur) * 100;
     const colors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#ef4444','#84cc16','#f97316'];
     const c = colors[idx % colors.length];
-    // 时长不匹配警告：视频比配音短=配音被截断；视频比配音长=有空洞
+    const vdur = ve - vs;
     let warn = '';
-    if(adur > 0){
-      if(vdur < adur - 0.3){ warn = ' ⚠️视频短于配音'; }
-      else if(vdur > adur + 1){ warn = ' ⚠️视频长于配音'; }
-    }
+    if(vdur < adur - 0.3){ warn = ' ⚠️取片短于配音'; }
+    else if(vdur > adur + 1){ warn = ' ⚠️取片长于配音'; }
     vHtml += '<div class="tl-vseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:'+c+';border-radius:4px;overflow:hidden;opacity:0.85;border:1px solid rgba(255,255,255,0.2)">';
-    // 左裁剪手柄
-    vHtml += '<div class="tl-handle tl-resize-l" data-idx="'+idx+'" data-side="l" title="拖拽裁剪开头" style="position:absolute;left:0;top:0;width:8px;height:100%;cursor:w-resize;background:rgba(0,0,0,0.4);border-right:1px dashed rgba(255,255,255,0.5)"></div>';
-    // 中间拖动区域
-    vHtml += '<div class="tl-move" data-idx="'+idx+'" data-side="m" title="拖拽移动取片位置" style="position:absolute;left:8px;right:8px;top:0;height:100%;cursor:grab">';
-    vHtml += '<span style="position:absolute;left:6px;top:0;line-height:32px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:6px">第'+(idx+1)+'段 '+vs.toFixed(0)+'-'+ve.toFixed(0)+'s ('+vdur.toFixed(1)+'s)'+warn+'</span>';
+    vHtml += '<div class="tl-handle tl-resize-l" data-idx="'+idx+'" data-side="l" title="调整源视频入点" style="position:absolute;left:0;top:0;width:8px;height:100%;cursor:w-resize;background:rgba(0,0,0,0.4);border-right:1px dashed rgba(255,255,255,0.5)"></div>';
+    vHtml += '<div class="tl-move" data-idx="'+idx+'" data-side="m" title="点击选中并播放" style="position:absolute;left:8px;right:8px;top:0;height:100%;cursor:pointer">';
+    vHtml += '<span style="position:absolute;left:6px;top:0;line-height:32px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:6px">第'+(idx+1)+'段 · 源'+vs.toFixed(0)+'-'+ve.toFixed(0)+'s · '+adur.toFixed(1)+'s'+warn+'</span>';
     vHtml += '</div>';
-    // 右裁剪手柄
-    vHtml += '<div class="tl-handle tl-resize-r" data-idx="'+idx+'" data-side="r" title="拖拽裁剪结尾" style="position:absolute;right:0;top:0;width:8px;height:100%;cursor:e-resize;background:rgba(0,0,0,0.4);border-left:1px dashed rgba(255,255,255,0.5)"></div>';
+    vHtml += '<div class="tl-handle tl-resize-r" data-idx="'+idx+'" data-side="r" title="调整源视频出点" style="position:absolute;right:0;top:0;width:8px;height:100%;cursor:e-resize;background:rgba(0,0,0,0.4);border-left:1px dashed rgba(255,255,255,0.5)"></div>';
     vHtml += '</div>';
+    cumTime += adur;
   });
   vTrack.innerHTML = vHtml;
 
-  // 配音轨片段
+  // 配音轨：和视频轨对齐（成片时间），虚线块
   let aHtml = '';
-  let cumTime = 0;
+  let cumTime2 = 0;
   items.forEach(function(it, idx){
     const dur = it.duration || 3;
-    const vs = it.video_start || 0;
-    // 配音块放在对应视频片段的起始位置，宽度=配音时长
-    const left = (vs / totalDur) * 100;
+    const left = (cumTime2 / totalDur) * 100;
     const w = (dur / totalDur) * 100;
-    const colors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#ef4444','#84cc16','#f97316'];
-    const c = colors[idx % colors.length];
-    aHtml += '<div class="tl-aseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:'+c+';border-radius:4px;cursor:pointer;opacity:0.6;border:1px solid rgba(255,255,255,0.2);border-style:dashed">';
-    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:11px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 配音'+(idx+1)+' '+dur.toFixed(1)+'s</span>';
+    aHtml += '<div class="tl-aseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:transparent;border-radius:4px;cursor:pointer;border:1px dashed rgba(255,255,255,0.3)">';
+    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s</span>';
     aHtml += '</div>';
-    cumTime += dur;
+    cumTime2 += dur;
   });
   aTrack.innerHTML = aHtml;
 
@@ -3321,34 +3315,42 @@ function renderTimeline(){
   var vSegs = document.querySelectorAll('.tl-vseg');
   for(var j=0;j<vSegs.length;j++){
     vSegs[j].addEventListener('click', function(e){
-      if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r') || e.target.classList.contains('tl-move')) return;
+      if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r')) return;
       var idx = parseInt(this.getAttribute('data-idx'));
       _selectedSeg = idx;
+      _playSegIndex = idx;
       var it = _adjustState.items[idx];
       if(it){
-        // 高亮选中片段
         var allSegs = document.querySelectorAll('.tl-vseg');
         for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
         this.style.outline = '2px solid #fbbf24';
         seekAdjVideo(it.video_start || 0);
-        // 更新提示
         var hint = document.getElementById('adjustVideoHint');
-        if(hint) hint.textContent = '📌 正在预览第'+(idx+1)+'段（'+(it.video_start||0).toFixed(1)+'s → '+(it.video_end||0).toFixed(1)+'s），仅播放此片段范围';
-        // 绑定seek限制：用户拖动进度条也不能超出片段范围
-        var video = document.getElementById('adjGlobalVideo');
-        if(video){
-          video.onseeked = function(){ _enforceSegBounds(); };
-        }
+        if(hint) hint.textContent = '📌 第'+(idx+1)+'段 · 源视频'+(it.video_start||0).toFixed(1)+'-'+(it.video_end||0).toFixed(1)+'s · 配音'+(it.duration||0).toFixed(1)+'s';
       }
     });
   }
-  // 点击时间轴空白处跳转
+  // 点击时间轴空白处跳转：成片时间→找到对应片段→跳转到源视频对应位置
   inner.addEventListener('click', function(e){
     if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r') || e.target.closest('.tl-vseg')) return;
     var rect = inner.getBoundingClientRect();
     var x = e.clientX - rect.left;
-    var t = (x / rect.width) * totalDur;
-    seekAdjVideo(t);
+    var compT = (x / rect.width) * totalDur;
+    // 找到对应的片段
+    var cum = 0, targetIdx = 0, targetOffset = 0;
+    for(var i=0;i<items.length;i++){
+      var d = items[i].duration || 3;
+      if(compT < cum + d){ targetIdx = i; targetOffset = compT - cum; break; }
+      cum += d;
+      targetIdx = i;
+    }
+    _playSegIndex = targetIdx;
+    _selectedSeg = targetIdx;
+    var srcT = (items[targetIdx].video_start || 0) + targetOffset;
+    seekAdjVideo(srcT);
+    var allSegs = document.querySelectorAll('.tl-vseg');
+    for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
+    if(allSegs[targetIdx]) allSegs[targetIdx].style.outline = '2px solid #fbbf24';
   });
 }
 
@@ -3527,16 +3529,14 @@ function updatePlayhead(t){
   var inner = document.getElementById('timelineInner');
   var video = document.getElementById('adjGlobalVideo');
   if(!ph || !inner) return;
-  var totalDur = _adjustState.videoDuration || 600;
+  var totalDur = _adjustState.timelineDuration || 60;
   var left = (t / totalDur) * 100;
   ph.style.display = 'block';
   ph.style.left = left + '%';
-  // 更新时间显示
+  // 更新时间显示（成片时间）
   var timeEl = document.getElementById('adjustVideoTime');
-  if(timeEl && video){
-    var cur = video.currentTime || 0;
-    var dur = video.duration || totalDur;
-    timeEl.textContent = fmtTime(cur) + ' / ' + fmtTime(dur);
+  if(timeEl){
+    timeEl.textContent = fmtTime(t) + ' / ' + fmtTime(totalDur);
   }
 }
 
@@ -3633,48 +3633,48 @@ function startPlayheadSync(){
   function tick(){
     if(video && !video.paused){
       var cur = video.currentTime;
-      updatePlayhead(cur);
       var items = _adjustState.items;
+      // 计算成片时间播放头位置
+      var compTime = 0;
       if(items && _playSegIndex >= 0 && _playSegIndex < items.length){
+        for(var i=0;i<_playSegIndex;i++){ compTime += (items[i].duration || 3); }
         var it = items[_playSegIndex];
         if(it){
           var vs = it.video_start || 0;
           var ve = it.video_end || 0;
+          var within = Math.max(0, Math.min(cur - vs, it.duration || 3));
+          compTime += within;
           _logCounter++;
-          if(_logCounter % 60 === 0) console.log('[PR] 段'+(_playSegIndex+1)+'/'+items.length+' cur='+cur.toFixed(2)+' range='+vs.toFixed(1)+'-'+ve.toFixed(1));
-          // PR逻辑：每帧强制对齐——超出结尾就切下一段，低于开头就拉回
-          if(ve > vs){
-            if(cur >= ve - 0.02){
-              // 超出结尾：切下一段
-              _playSegIndex++;
-              if(_playSegIndex < items.length){
-                var next = items[_playSegIndex];
-                var nvs = next ? (next.video_start || 0) : 0;
-                console.log('[PR] 段'+(_playSegIndex)+'结束 → 切到段'+(_playSegIndex+1)+' @'+nvs.toFixed(1)+'s');
-                video.currentTime = nvs; // 直接设置，浏览器会seek并继续播
-                var hint = document.getElementById('adjustVideoHint');
-                if(hint) hint.textContent = '✂️ 段'+(_playSegIndex)+'结束 → 段'+(_playSegIndex+1)+' @'+nvs.toFixed(1)+'s';
-                var allSegs = document.querySelectorAll('.tl-vseg');
-                for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
-                if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
-              } else {
-                console.log('[PR] 全部播完');
-                video.pause();
-                var btn = document.getElementById('adjPlayBtn');
-                if(btn) btn.textContent = '▶️ 播放';
-                var hint2 = document.getElementById('adjustVideoHint');
-                if(hint2) hint2.textContent = '✅ 全部'+items.length+'段播放完毕';
-                stopPlayheadSync();
-                return;
-              }
-            } else if(cur < vs - 0.02){
-              // 低于开头（seek未完成或被拖走）：强制拉回
-              console.log('[PR] cur='+cur.toFixed(2)+' 低于开头'+vs.toFixed(2)+'，拉回');
-              video.currentTime = vs;
+          if(_logCounter % 60 === 0) console.log('[PR] 段'+(_playSegIndex+1)+'/'+items.length+' 源='+cur.toFixed(2)+' 成片='+compTime.toFixed(2)+' 取片='+vs.toFixed(1)+'-'+ve.toFixed(1));
+          // 超出取片结尾或配音时长：切下一段
+          if((ve > vs && cur >= ve - 0.02) || (it.duration && within >= it.duration - 0.02)){
+            _playSegIndex++;
+            if(_playSegIndex < items.length){
+              var next = items[_playSegIndex];
+              var nvs = next ? (next.video_start || 0) : 0;
+              console.log('[PR] 切到段'+(_playSegIndex+1)+' 源@'+nvs.toFixed(1)+'s');
+              video.currentTime = nvs;
+              var hint = document.getElementById('adjustVideoHint');
+              if(hint) hint.textContent = '✂️ 段'+(_playSegIndex)+'结束 → 段'+(_playSegIndex+1)+' 源@'+nvs.toFixed(1)+'s';
+              var allSegs = document.querySelectorAll('.tl-vseg');
+              for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
+              if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
+            } else {
+              console.log('[PR] 全部播完');
+              video.pause();
+              var btn = document.getElementById('adjPlayBtn');
+              if(btn) btn.textContent = '▶️ 播放';
+              var hint2 = document.getElementById('adjustVideoHint');
+              if(hint2) hint2.textContent = '✅ 全部'+items.length+'段播放完毕';
+              stopPlayheadSync();
+              return;
             }
+          } else if(cur < vs - 0.02){
+            video.currentTime = vs;
           }
         }
       }
+      updatePlayhead(compTime);
       _playheadRAF = requestAnimationFrame(tick);
     } else {
       _playheadRAF = null;
