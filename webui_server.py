@@ -9742,14 +9742,53 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def _send_file(self, full, ctype, attachment=False):
-        """流式发送文件：不整份读进内存，句柄随 with 关闭。
+        """流式发送文件，支持 HTTP Range（视频跳转/拖拽进度必须）。
 
-        旧实现 `open(full,'rb').read()` 有两个后果：2GB 成片预览时内存峰值等于文件体积
-        （多标签页并发即 OOM）；Windows 下句柄不释放会导致该文件无法被删除/覆盖。"""
+        旧实现不支持 Range：浏览器 video.currentTime 跳转时发 Range 请求，
+        服务器返回完整 200，浏览器无法 seek，视频只能从头播放。"""
         size = os.path.getsize(full)
+        range_header = self.headers.get('Range')
+        if range_header and range_header.startswith('bytes='):
+            # 解析 Range: bytes=start-end
+            try:
+                rng = range_header[6:].split('-')
+                start = int(rng[0]) if rng[0] else 0
+                end = int(rng[1]) if len(rng) > 1 and rng[1] else size - 1
+                if start >= size:
+                    self.send_response(416)
+                    self.send_header('Content-Range', 'bytes */%d' % size)
+                    self.end_headers()
+                    return
+                end = min(end, size - 1)
+                length = end - start + 1
+                self.send_response(206)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Content-Length', str(length))
+                self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, end, size))
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                if attachment:
+                    self.send_header('Content-Disposition',
+                                     _content_disposition(os.path.basename(full)))
+                self.end_headers()
+                with open(full, 'rb') as f:
+                    f.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = f.read(min(1 << 20, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                return
+            except Exception:
+                pass  # Range解析失败，回退完整发送
+        # 无 Range 或解析失败：完整发送
         self.send_response(200)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(size))
+        self.send_header('Accept-Ranges', 'bytes')
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('X-Content-Type-Options', 'nosniff')
         if attachment:
