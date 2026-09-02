@@ -364,9 +364,12 @@ function installChatTts(){
 }
 function downloadTtsModel(){
   const st = $('ttsLocalState');
-  if(st) st.textContent = '⏳ 正在下载离线配音模型（约 130MB）…';
+  const sel = $('ttsSherpaModel');
+  const model = sel ? sel.value : 'melo-zh';
+  const label = sel ? sel.options[sel.selectedIndex].text.replace(' ✅','').replace(' ⬜未下载','') : model;
+  if(st) st.textContent = '⏳ 正在下载 ' + label + '…';
   fetch('/api/tts/model/download', {method:'POST', headers:{'Content-Type':'application/json'},
-                                    body: JSON.stringify({})})
+                                    body: JSON.stringify({model: model})})
     .then(r=>r.json()).then(res=>{
       if(!res.ok && st) st.textContent = '❌ ' + (res.error || res.message || '下载失败');
     }).catch(e=>{ if(st) st.textContent = '❌ 下载请求失败：' + e.message; });
