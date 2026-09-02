@@ -3236,6 +3236,7 @@ let _playheadRAF = null;
 let _selectedSeg = -1;  // 当前选中的片段索引
 let _tlZoom = 1;  // 时间轴缩放级别
 let _playSegIndex = -1;  // 当前播放到第几段（按片段顺序连续播放）
+let _seeking = false;  // 是否正在跳转中（避免重复触发）
 
 function renderTimeline(){
   const items = _adjustState.items;
@@ -3580,7 +3581,14 @@ function toggleAdjPlay(){
     }
     // 等视频ready后seek再播放
     var doPlay = function(){
-      try { video.currentTime = startT; } catch(e){}
+      _seeking = true;
+      var onSeeked = function(){
+        video.removeEventListener('seeked', onSeeked);
+        _seeking = false;
+      };
+      video.addEventListener('seeked', onSeeked);
+      setTimeout(function(){ _seeking = false; }, 500);
+      try { video.currentTime = startT; } catch(e){ _seeking = false; }
       video.play().then(function(){
         if(btn) btn.textContent = '⏸ 暂停';
         startPlayheadSync();
@@ -3636,16 +3644,24 @@ function startPlayheadSync(){
         if(it){
           var ve = it.video_end || 0;
           var vs = it.video_start || 0;
-          // 当前段播完：跳到下一段
-          if(ve > vs && video.currentTime >= ve - 0.08){
+          // 当前段播完：跳到下一段（跳转中不重复检测）
+          if(!_seeking && ve > vs && video.currentTime >= ve - 0.08){
             _playSegIndex++;
             if(_playSegIndex < items.length){
               var next = items[_playSegIndex];
               if(next){
                 var nvs = next.video_start || 0;
-                try { video.currentTime = nvs; } catch(e){}
+                _seeking = true;
+                var onSeeked = function(){
+                  video.removeEventListener('seeked', onSeeked);
+                  _seeking = false;
+                };
+                video.addEventListener('seeked', onSeeked);
+                // 兜底：500ms后强制清除_seeking（防止seeked不触发）
+                setTimeout(function(){ _seeking = false; }, 500);
+                try { video.currentTime = nvs; } catch(e){ _seeking = false; }
                 var hint = document.getElementById('adjustVideoHint');
-                if(hint) hint.textContent = '🎬 播放第'+(_playSegIndex+1)+'/'+items.length+'段';
+                if(hint) hint.textContent = '🎬 播放第'+(_playSegIndex+1)+'/'+items.length+'段（跳转到'+nvs.toFixed(1)+'s）';
                 var allSegs = document.querySelectorAll('.tl-vseg');
                 for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
                 if(allSegs[_playSegIndex]) allSegs[_playSegIndex].style.outline = '2px solid #22c55e';
