@@ -519,6 +519,11 @@
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <span style="font-size:11px;color:var(--muted)">左边缘裁剪开头 · 中间拖动取片位置 · 右边缘裁剪结尾 · 靠近配音自动磁吸</span>
         <button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignAllToAudio()">⇔ 全部对齐配音</button>
+        <span style="display:inline-flex;gap:2px;align-items:center;margin-left:8px">
+          <button class="btn-secondary" style="padding:4px 8px;font-size:12px;min-width:28px" onclick="zoomTimeline(0.7)" title="缩小时间轴">−</button>
+          <span id="tlZoomLevel" style="font-size:11px;color:var(--muted);min-width:36px;text-align:center;font-family:monospace">1.0x</span>
+          <button class="btn-secondary" style="padding:4px 8px;font-size:12px;min-width:28px" onclick="zoomTimeline(1.5)" title="放大时间轴">+</button>
+        </span>
       </div>
     </div>
     <div id="timelineContainer" style="position:relative;height:110px;overflow-x:auto;overflow-y:hidden;border-radius:6px;background:var(--bg);border:1px solid var(--border)">

@@ -3233,6 +3233,8 @@ function previewVideoFrame(idx){
 // === 时间轴编辑器 ===
 let _tlDrag = null;
 let _playheadRAF = null;
+let _selectedSeg = -1;  // 当前选中的片段索引
+let _tlZoom = 1;  // 时间轴缩放级别
 
 function renderTimeline(){
   const items = _adjustState.items;
@@ -3244,8 +3246,8 @@ function renderTimeline(){
   const aTrack = document.getElementById('audioTrack');
   if(!inner || !ruler || !vTrack || !aTrack) return;
 
-  // 时间轴宽度：至少800px，每秒至少8px
-  const pxPerSec = Math.max(8, 800 / totalDur);
+  // 时间轴宽度：缩放控制，基础每秒8px * zoom
+  const pxPerSec = Math.max(4, 8 * _tlZoom);
   const width = Math.max(800, totalDur * pxPerSec);
   inner.style.width = width + 'px';
 
@@ -3313,14 +3315,24 @@ function renderTimeline(){
   for(var i=0;i<allHandles.length;i++){
     allHandles[i].addEventListener('mousedown', tlStartResize);
   }
-  // 点击片段跳转
+  // 点击片段：设为选中，跳转并限制播放范围
   var vSegs = document.querySelectorAll('.tl-vseg');
   for(var j=0;j<vSegs.length;j++){
     vSegs[j].addEventListener('click', function(e){
-      if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r')) return;
+      if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r') || e.target.classList.contains('tl-move')) return;
       var idx = parseInt(this.getAttribute('data-idx'));
+      _selectedSeg = idx;
       var it = _adjustState.items[idx];
-      if(it) seekAdjVideo(it.video_start || 0);
+      if(it){
+        // 高亮选中片段
+        var allSegs = document.querySelectorAll('.tl-vseg');
+        for(var k=0;k<allSegs.length;k++){ allSegs[k].style.outline = ''; }
+        this.style.outline = '2px solid #fbbf24';
+        seekAdjVideo(it.video_start || 0);
+        // 更新提示
+        var hint = document.getElementById('adjustVideoHint');
+        if(hint) hint.textContent = '📌 正在预览第'+(idx+1)+'段（'+(it.video_start||0).toFixed(1)+'s → '+(it.video_end||0).toFixed(1)+'s），播放到结尾自动停止';
+      }
     });
   }
   // 点击时间轴空白处跳转
@@ -3541,6 +3553,13 @@ function toggleAdjPlay(){
     video.src = videoUrl;
   }
   if(video.paused){
+    // 如果选中了片段且当前位置超出片段范围，跳到片段开头
+    if(_selectedSeg >= 0 && _adjustState.items && _selectedSeg < _adjustState.items.length){
+      var it = _adjustState.items[_selectedSeg];
+      if(it && (video.currentTime < (it.video_start||0) || video.currentTime >= (it.video_end||0))){
+        seekAdjVideo(it.video_start || 0);
+      }
+    }
     video.play().catch(function(e){ if(btn) btn.textContent = '❌ ' + e.message; });
     if(btn) btn.textContent = '⏸ 暂停';
     startPlayheadSync();
@@ -3551,11 +3570,42 @@ function toggleAdjPlay(){
   }
 }
 
+// 时间轴缩放
+function zoomTimeline(factor){
+  _tlZoom = Math.max(0.5, Math.min(20, _tlZoom * factor));
+  var zl = document.getElementById('tlZoomLevel');
+  if(zl) zl.textContent = _tlZoom.toFixed(1) + 'x';
+  renderTimeline();
+  // 滚动到选中片段
+  if(_selectedSeg >= 0 && _adjustState.items && _selectedSeg < _adjustState.items.length){
+    var it = _adjustState.items[_selectedSeg];
+    if(it){
+      var container = document.getElementById('timelineContainer');
+      var inner = document.getElementById('timelineInner');
+      if(container && inner){
+        var pxPerSec = Math.max(4, 8 * _tlZoom);
+        container.scrollLeft = (it.video_start || 0) * pxPerSec - container.clientWidth / 3;
+      }
+    }
+  }
+}
+
 function startPlayheadSync(){
   if(_playheadRAF) return;
   var video = document.getElementById('adjGlobalVideo');
   function tick(){
     if(video && !video.paused){
+      // 如果选中了片段，播放到片段结尾自动停止
+      if(_selectedSeg >= 0 && _adjustState.items && _selectedSeg < _adjustState.items.length){
+        var it = _adjustState.items[_selectedSeg];
+        if(it && it.video_end && video.currentTime >= it.video_end){
+          video.pause();
+          var btn = document.getElementById('adjPlayBtn');
+          if(btn) btn.textContent = '▶️ 播放';
+          stopPlayheadSync();
+          return;
+        }
+      }
       updatePlayhead(video.currentTime);
       _playheadRAF = requestAnimationFrame(tick);
     } else {
