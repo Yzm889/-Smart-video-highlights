@@ -29,3 +29,11 @@ _srv.log
 _patch_*.py
 _diag_*.py
 _fix_*.py
+
+# ---- 本地依赖/虚拟环境 ----
+.venv_cosyvoice/
+CosyVoice/
+_dl/
+# ---- 服务日志 ----
+srv_err.txt
+srv_out.txt
