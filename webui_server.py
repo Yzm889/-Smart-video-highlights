@@ -7682,7 +7682,11 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     # 第一遍：标记哪些点需要VLM，先抽帧
     need_vlm = []  # [(idx, ts, fp)]
     skip_count = 0
+    total_samples = len(sample_times)
     for idx, ts in enumerate(sample_times):
+        if progress and idx % 5 == 0:
+            progress['phase'] = '抽取画面帧 %d/%d' % (idx + 1, total_samples)
+            progress['pct'] = 40 + int(4 * idx / max(1, total_samples))
         if not _near_dialogue(ts):
             skip_count += 1
             results.append({'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
@@ -7706,10 +7710,19 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     batch_prompt = ('你是影视场景分析助手。以下按时间顺序给出%d张画面帧。'
                     '请对每张帧分别用JSON描述，帧之间用---分隔。'
                     '每个JSON字段：location/characters/event/dialogue/summary。只输出JSON和---分隔符。' % batch_size)
+    total_batches = (len(need_vlm) + batch_size - 1) // batch_size
     for bi in range(0, len(need_vlm), batch_size):
         batch = need_vlm[bi:bi + batch_size]
+        batch_num = bi // batch_size + 1
+        # 显示当前批量的时间范围（更直观）
+        t_start = batch[0][1]
+        t_end = batch[-1][1]
+        def _fmt_t(s):
+            m, s = divmod(int(s), 60)
+            return '%02d:%02d' % (m, s)
         if progress:
-            progress['phase'] = '画面索引 批量%d/%d（VLM推理中…）' % (bi//batch_size + 1, (len(need_vlm)+batch_size-1)//batch_size)
+            progress['phase'] = '画面理解 %d/%d（%s-%s，VLM推理中…）' % (
+                batch_num, total_batches, _fmt_t(t_start), _fmt_t(t_end))
             progress['pct'] = 44 + int(6 * bi / max(1, len(need_vlm)))
         frames = [b[2] for b in batch]
         vlm_count += 1
@@ -7719,7 +7732,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                                 system=sys_prompt, timeout=20)
                 objs = [_extract_json_obj(resp) or {}]
             else:
-                resp = vlm_chat_multi(frames, batch_prompt, system=sys_prompt, timeout=60)
+                resp = vlm_chat_multi(frames, batch_prompt, system=sys_prompt, timeout=30)
                 parts = resp.split('---')
                 objs = []
                 for part in parts[:len(frames)]:
