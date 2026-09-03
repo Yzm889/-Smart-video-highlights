@@ -3241,10 +3241,17 @@ let _lastJumpAt = 0;  // 上次跳转时间戳（跳转后300ms内不检测段�
 function renderTimeline(){
   const items = _adjustState.items;
   if(!items || items.length === 0) return;
-  // 成片时间轴：总时长=所有配音时长之和
-  let totalDur = 0;
-  items.forEach(function(it){ totalDur += (it.duration || 3); });
+  // 时间轴总时长=max(累计视频取片时长, 累计配音时长)
+  let totalVideoDur = 0, totalAudioDur = 0;
+  items.forEach(function(it){
+    const vs = it.video_start || 0, ve = it.video_end || 0;
+    if(ve > vs) totalVideoDur += (ve - vs);
+    totalAudioDur += (it.duration || 3);
+  });
+  let totalDur = Math.max(totalVideoDur, totalAudioDur, 10);
   _adjustState.timelineDuration = totalDur;
+  _adjustState.totalVideoDur = totalVideoDur;
+  _adjustState.totalAudioDur = totalAudioDur;
   const inner = document.getElementById('timelineInner');
   const ruler = document.getElementById('timelineRuler');
   const vTrack = document.getElementById('videoTrack');
@@ -3266,43 +3273,48 @@ function renderTimeline(){
   }
   ruler.innerHTML = rulerHtml;
 
-  // 视频轨：色块按成片时间顺序排列，宽度=配音时长，显示源取片范围
+  // 视频轨：色块宽度=取片时长，位置=累计视频时长
   let vHtml = '';
-  let cumTime = 0;
+  let cumVideo = 0;
   items.forEach(function(it, idx){
-    const adur = it.duration || 3;
     const vs = it.video_start || 0;
     const ve = it.video_end || 0;
-    const left = (cumTime / totalDur) * 100;
-    const w = (adur / totalDur) * 100;
+    const vdur = Math.max(0.1, ve - vs);
+    const adur = it.duration || 3;
+    const left = (cumVideo / totalDur) * 100;
+    const w = (vdur / totalDur) * 100;
     const colors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#ef4444','#84cc16','#f97316'];
     const c = colors[idx % colors.length];
-    const vdur = ve - vs;
     let warn = '';
-    if(vdur < adur - 0.3){ warn = ' ⚠️取片短于配音'; }
-    else if(vdur > adur + 1){ warn = ' ⚠️取片长于配音'; }
+    if(vdur < adur - 0.3){ warn = ' ⚠️视频短'; }
+    else if(vdur > adur + 1){ warn = ' ⚠️视频长'; }
     vHtml += '<div class="tl-vseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:'+c+';border-radius:4px;overflow:hidden;opacity:0.85;border:1px solid rgba(255,255,255,0.2)">';
     vHtml += '<div class="tl-handle tl-resize-l" data-idx="'+idx+'" data-side="l" title="调整源视频入点" style="position:absolute;left:0;top:0;width:8px;height:100%;cursor:w-resize;background:rgba(0,0,0,0.4);border-right:1px dashed rgba(255,255,255,0.5)"></div>';
     vHtml += '<div class="tl-move" data-idx="'+idx+'" data-side="m" title="点击选中并播放" style="position:absolute;left:8px;right:8px;top:0;height:100%;cursor:pointer">';
-    vHtml += '<span style="position:absolute;left:6px;top:0;line-height:32px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:6px">第'+(idx+1)+'段 · 源'+vs.toFixed(0)+'-'+ve.toFixed(0)+'s · '+adur.toFixed(1)+'s'+warn+'</span>';
+    vHtml += '<span style="position:absolute;left:6px;top:0;line-height:32px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:6px">第'+(idx+1)+'段 · 源'+vs.toFixed(0)+'-'+ve.toFixed(0)+'s · '+vdur.toFixed(1)+'s'+warn+'</span>';
     vHtml += '</div>';
     vHtml += '<div class="tl-handle tl-resize-r" data-idx="'+idx+'" data-side="r" title="调整源视频出点" style="position:absolute;right:0;top:0;width:8px;height:100%;cursor:e-resize;background:rgba(0,0,0,0.4);border-left:1px dashed rgba(255,255,255,0.5)"></div>';
     vHtml += '</div>';
-    cumTime += adur;
+    cumVideo += vdur;
   });
   vTrack.innerHTML = vHtml;
 
-  // 配音轨：和视频轨对齐（成片时间），虚线块
+  // 配音轨：宽度=配音时长，位置=累计配音时长，虚线框
   let aHtml = '';
-  let cumTime2 = 0;
+  let cumAudio = 0;
   items.forEach(function(it, idx){
     const dur = it.duration || 3;
-    const left = (cumTime2 / totalDur) * 100;
+    const left = (cumAudio / totalDur) * 100;
     const w = (dur / totalDur) * 100;
-    aHtml += '<div class="tl-aseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:transparent;border-radius:4px;cursor:pointer;border:1px dashed rgba(255,255,255,0.3)">';
+    const vs = it.video_start || 0, ve = it.video_end || 0;
+    const vdur = ve - vs;
+    let matchColor = 'rgba(255,255,255,0.3)';
+    if(vdur < dur - 0.3) matchColor = 'rgba(239,68,68,0.6)'; // 视频短于配音=红
+    else if(vdur > dur + 1) matchColor = 'rgba(245,158,11,0.6)'; // 视频长于配音=黄
+    aHtml += '<div class="tl-aseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:transparent;border-radius:4px;cursor:pointer;border:1px dashed '+matchColor+'">';
     aHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s</span>';
     aHtml += '</div>';
-    cumTime2 += dur;
+    cumAudio += dur;
   });
   aTrack.innerHTML = aHtml;
 
@@ -3330,18 +3342,19 @@ function renderTimeline(){
       }
     });
   }
-  // 点击时间轴空白处跳转：成片时间→找到对应片段→跳转到源视频对应位置
+  // 点击时间轴空白处跳转：按视频色块位置定位
   inner.addEventListener('click', function(e){
     if(e.target.classList.contains('tl-resize-l') || e.target.classList.contains('tl-resize-r') || e.target.closest('.tl-vseg')) return;
     var rect = inner.getBoundingClientRect();
     var x = e.clientX - rect.left;
     var compT = (x / rect.width) * totalDur;
-    // 找到对应的片段
+    // 按视频累计时长找到对应的片段
     var cum = 0, targetIdx = 0, targetOffset = 0;
     for(var i=0;i<items.length;i++){
-      var d = items[i].duration || 3;
-      if(compT < cum + d){ targetIdx = i; targetOffset = compT - cum; break; }
-      cum += d;
+      var vs = items[i].video_start || 0, ve = items[i].video_end || 0;
+      var vd = Math.max(0, ve - vs);
+      if(compT < cum + vd){ targetIdx = i; targetOffset = compT - cum; break; }
+      cum += vd;
       targetIdx = i;
     }
     _playSegIndex = targetIdx;
@@ -3634,15 +3647,19 @@ function startPlayheadSync(){
     if(video && !video.paused){
       var cur = video.currentTime;
       var items = _adjustState.items;
-      // 计算成片时间播放头位置
+      // 计算播放头位置（按视频轨累计时长）
       var compTime = 0;
       if(items && _playSegIndex >= 0 && _playSegIndex < items.length){
-        for(var i=0;i<_playSegIndex;i++){ compTime += (items[i].duration || 3); }
+        for(var i=0;i<_playSegIndex;i++){
+          var pv = items[i].video_end - items[i].video_start;
+          compTime += Math.max(0, pv);
+        }
         var it = items[_playSegIndex];
         if(it){
           var vs = it.video_start || 0;
           var ve = it.video_end || 0;
-          var within = Math.max(0, Math.min(cur - vs, it.duration || 3));
+          var vdur = Math.max(0, ve - vs);
+          var within = Math.max(0, Math.min(cur - vs, vdur));
           compTime += within;
           _logCounter++;
           if(_logCounter % 60 === 0) console.log('[PR] 段'+(_playSegIndex+1)+'/'+items.length+' 源='+cur.toFixed(2)+' 成片='+compTime.toFixed(2)+' 取片='+vs.toFixed(1)+'-'+ve.toFixed(1));
