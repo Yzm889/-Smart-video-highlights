@@ -3351,24 +3351,31 @@ function renderTimeline(){
   });
   vTrack.innerHTML = vHtml;
 
-  // 配音轨：宽度=配音时长，位置=累计配音时长，虚线框
+  // 配音轨：宽度=配音时长，位置=累计视频时长+audio_offset，可拖动
   let aHtml = '';
-  let cumAudio = 0;
+  let cumVideoForAudio = 0;
   items.forEach(function(it, idx){
     const dur = it.duration || 3;
-    const left = (cumAudio / totalDur) * 100;
-    const w = (dur / totalDur) * 100;
     const vs = it.video_start || 0, ve = it.video_end || 0;
-    const vdur = ve - vs;
+    const vdur = Math.max(0, ve - vs);
+    const offset = it.audio_offset || 0;
+    const left = ((cumVideoForAudio + offset) / totalDur) * 100;
+    const w = (dur / totalDur) * 100;
     let matchColor = 'rgba(255,255,255,0.3)';
-    if(vdur < dur - 0.3) matchColor = 'rgba(239,68,68,0.6)'; // 视频短于配音=红
-    else if(vdur > dur + 1) matchColor = 'rgba(245,158,11,0.6)'; // 视频长于配音=黄
-    aHtml += '<div class="tl-aseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:transparent;border-radius:4px;cursor:pointer;border:1px dashed '+matchColor+'">';
-    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s</span>';
+    if(vdur < dur - 0.3) matchColor = 'rgba(239,68,68,0.6)';
+    else if(vdur > dur + 1) matchColor = 'rgba(245,158,11,0.6)';
+    const offsetLabel = offset !== 0 ? (offset > 0 ? ' +'+offset.toFixed(1)+'s' : ' '+offset.toFixed(1)+'s') : '';
+    aHtml += '<div class="tl-aseg tl-audio-drag" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:rgba(139,92,246,0.15);border-radius:4px;cursor:grab;border:1px dashed '+matchColor+';transition:none">';
+    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s'+offsetLabel+'</span>';
     aHtml += '</div>';
-    cumAudio += dur;
+    cumVideoForAudio += vdur;
   });
   aTrack.innerHTML = aHtml;
+  // 绑定音频块拖动
+  var aSegs = document.querySelectorAll('.tl-audio-drag');
+  for(var ai=0;ai<aSegs.length;ai++){
+    aSegs[ai].addEventListener('mousedown', tlStartAudioDrag);
+  }
 
   // 绑定拖拽（左裁剪|中间拖动|右裁剪）
   var allHandles = document.querySelectorAll('.tl-resize-l, .tl-resize-r, .tl-move');
@@ -3507,6 +3514,51 @@ function tlEndResize(){
   _showSnapLine(null);
   document.removeEventListener('mousemove', tlDoResize);
   document.removeEventListener('mouseup', tlEndResize);
+}
+
+// 音频块拖动：调整audio_offset
+function tlStartAudioDrag(e){
+  e.preventDefault();
+  e.stopPropagation();
+  var idx = parseInt(this.getAttribute('data-idx'));
+  var it = _adjustState.items[idx];
+  if(!it) return;
+  var pxPerSec = Math.max(6, 12 * _tlZoom);
+  _tlDrag = {
+    idx: idx, side: 'audio',
+    startX: e.clientX,
+    origOffset: it.audio_offset || 0,
+    pxPerSec: pxPerSec,
+    inner: document.getElementById('timelineInner')
+  };
+  this.style.cursor = 'grabbing';
+  document.addEventListener('mousemove', tlDoAudioDrag);
+  document.addEventListener('mouseup', tlEndAudioDrag);
+}
+
+function tlDoAudioDrag(e){
+  if(!_tlDrag || _tlDrag.side !== 'audio') return;
+  var dx = e.clientX - _tlDrag.startX;
+  var sensitivity = e.shiftKey ? 0.2 : 1;
+  var dt = (dx / _tlDrag.pxPerSec) * sensitivity;
+  var it = _adjustState.items[_tlDrag.idx];
+  if(!it) return;
+  it.audio_offset = Math.round((_tlDrag.origOffset + dt) * 10) / 10;
+  renderTimeline();
+}
+
+function tlEndAudioDrag(e){
+  if(!_tlDrag || _tlDrag.side !== 'audio') return;
+  var idx = _tlDrag.idx;
+  var it = _adjustState.items[idx];
+  document.removeEventListener('mousemove', tlDoAudioDrag);
+  document.removeEventListener('mouseup', tlEndAudioDrag);
+  _tlDrag = null;
+  if(it){
+    var hint = document.getElementById('adjustVideoHint');
+    if(hint) hint.textContent = '🔊 第'+(idx+1)+'段配音偏移: '+(it.audio_offset||0).toFixed(1)+'s ('+(it.audio_offset>0?'延后':'提前')+')';
+  }
+  renderTimeline();
 }
 
 // 磁吸：只对齐视频块边缘与配音时长，不对齐相邻视频片段
@@ -3968,7 +4020,8 @@ async function confirmAdjustAndCompose(){
       text: t ? t.value.trim() : _adjustState.items[i].text,
       audio: _adjustState.items[i].audio,
       video_start: vs ? parseFloat(vs.value) : (_adjustState.items[i].video_start || 0),
-      video_end: ve ? parseFloat(ve.value) : (_adjustState.items[i].video_end || 0)
+      video_end: ve ? parseFloat(ve.value) : (_adjustState.items[i].video_end || 0),
+      audio_offset: _adjustState.items[i].audio_offset || 0
     });
   }
   if(finalItems.length === 0){

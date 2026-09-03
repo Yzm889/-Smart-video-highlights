@@ -8499,8 +8499,9 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             if item.get('audio'):
                 tts_results.append((new_idx, item['audio']))
             new_idx += 1
-        # 收集用户调整的视频时间范围（按原始索引）
+        # 收集用户调整的视频时间范围和配音偏移（按原始索引）
         user_video_spans = {}
+        user_audio_offsets = {}
         for item in adjusted_items:
             old_i = item.get('index', 0)
             if old_i in skip_set:
@@ -8509,6 +8510,9 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             ve = item.get('video_end')
             if vs is not None and ve is not None and ve > vs:
                 user_video_spans[old_i] = (float(vs), float(ve))
+            ao = item.get('audio_offset')
+            if ao is not None and abs(float(ao)) > 0.01:
+                user_audio_offsets[old_i] = float(ao)
         # 重建segs和narr_map（只保留未跳过的段对应的画面）
         if narr_map and len(narr_map) == len(segs):
             new_segs = []
@@ -8585,11 +8589,25 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     # 计算voice_spans和tts_paths（segs[i]就是第i节解说词对应的画面范围）
     tts_paths = []
     voice_spans = {}
+    # 建立new_idx -> old_idx的反向映射（用于查找audio_offset）
+    _rev_map = {}
+    if adjusted_items:
+        for _item in adjusted_items:
+            _old_i = _item.get('index', 0)
+            if _old_i in skip_set: continue
+            if _old_i in old_to_new:
+                _rev_map[old_to_new[_old_i]] = _old_i
     for i, clip in tts_results:
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
-        tts_paths.append((clip, seg_span[0], seg_span[1]))
+        # 应用用户调整的配音偏移
+        _offset = 0.0
+        if adjusted_items and i in _rev_map:
+            _offset = user_audio_offsets.get(_rev_map[i], 0.0)
+        if _offset != 0:
+            print('[DIAG] 第%d段配音偏移%.1f秒' % (i+1, _offset))
+        tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
-        voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
+        voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
     print('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))
     up('混音+烧字幕+配乐', 80)
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
