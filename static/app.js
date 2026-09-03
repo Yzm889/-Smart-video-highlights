@@ -3162,7 +3162,8 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<div class="adjust-item" id="adjItem'+idx+'" style="padding:12px;margin:8px 0;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">';
     html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
     html += '<span style="font-size:13px;font-weight:600">第 '+(idx+1)+' 段 <span style="color:var(--muted);font-weight:400">配音'+(item.duration||0)+'秒</span></span>';
-    html += '<label style="font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="adjSkip'+idx+'" style="margin-right:4px;vertical-align:middle">跳过此段</label>';
+    html += '<label style="font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="adjSkip'+idx+'" style="margin-right:4px;vertical-align:middle">跳过</label>';
+    html += '<button class="btn-secondary" style="padding:2px 8px;font-size:11px;color:#f87171;border-color:#f87171;background:transparent" onclick="deleteAdjustItem('+idx+')" title="删除此段（不进合成）">🗑 删除</button>';
     html += '</div>';
     html += '<textarea id="adjText'+idx+'" rows="2" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" oninput="_adjustState.changed['+idx+']=true">'+cleanText.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>';
     html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">';
@@ -3215,6 +3216,57 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
   if(playBtn) playBtn.onclick = toggleAdjPlay;
   // 滚动到顶部
   window.scrollTo({top:0, behavior:'smooth'});
+  // 键盘快捷键（只在手动调整页面激活时绑定）
+  if(!window._adjKeyBound){
+    window._adjKeyBound = true;
+    document.addEventListener('keydown', function(e){
+      // 只在手动调整面板可见时响应
+      var panel = document.getElementById('adjustPanel');
+      if(!panel || panel.style.display === 'none') return;
+      // 输入框中不响应快捷键
+      var tag = e.target.tagName;
+      if(tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+      if(e.code === 'Space'){
+        e.preventDefault();
+        toggleAdjPlay();
+      } else if(e.code === 'Delete' || e.code === 'Backspace'){
+        if(_selectedSeg >= 0){
+          e.preventDefault();
+          deleteAdjustItem(_selectedSeg);
+        }
+      } else if(e.code === 'ArrowLeft'){
+        if(_selectedSeg >= 0 && _adjustState.items && _adjustState.items[_selectedSeg]){
+          e.preventDefault();
+          var it = _adjustState.items[_selectedSeg];
+          var step = e.shiftKey ? 0.1 : 0.5;
+          it.video_start = Math.max(0, (it.video_start || 0) - step);
+          it.video_end = Math.max(it.video_start + 0.5, (it.video_end || 0) - step);
+          // 更新输入框
+          var vsI = document.getElementById('adjVStart'+_selectedSeg);
+          var veI = document.getElementById('adjVEnd'+_selectedSeg);
+          if(vsI) vsI.value = it.video_start.toFixed(1);
+          if(veI) veI.value = it.video_end.toFixed(1);
+          renderTimeline();
+          seekAdjVideo(it.video_start);
+        }
+      } else if(e.code === 'ArrowRight'){
+        if(_selectedSeg >= 0 && _adjustState.items && _adjustState.items[_selectedSeg]){
+          e.preventDefault();
+          var it2 = _adjustState.items[_selectedSeg];
+          var step2 = e.shiftKey ? 0.1 : 0.5;
+          var maxDur = _adjustState.videoDuration || 600;
+          it2.video_start = Math.min(maxDur - 1, (it2.video_start || 0) + step2);
+          it2.video_end = Math.min(maxDur, (it2.video_end || 0) + step2);
+          var vsI2 = document.getElementById('adjVStart'+_selectedSeg);
+          var veI2 = document.getElementById('adjVEnd'+_selectedSeg);
+          if(vsI2) vsI2.value = it2.video_start.toFixed(1);
+          if(veI2) veI2.value = it2.video_end.toFixed(1);
+          renderTimeline();
+          seekAdjVideo(it2.video_start);
+        }
+      }
+    });
+  }
 }
 
 function previewVideoFrame(idx){
@@ -3843,6 +3895,21 @@ async function regenSingleTts(idx){
     statusEl.style.color = '#f87171'; statusEl.textContent = '❌ ' + e.message;
   }
   btn.disabled = false; btn.textContent = '🔄 重生成';
+}
+
+function deleteAdjustItem(idx){
+  if(!_adjustState.items || idx < 0 || idx >= _adjustState.items.length) return;
+  var it = _adjustState.items[idx];
+  var textPreview = (it.text || '').substring(0, 30);
+  if(!confirm('确定删除第 '+(idx+1)+' 段吗？\n\n"'+textPreview+'..."\n\n删除后不进合成，可重新生成恢复。')) return;
+  _adjustState.items.splice(idx, 1);
+  // 重置选中和播放索引
+  if(_selectedSeg >= _adjustState.items.length) _selectedSeg = Math.max(0, _adjustState.items.length - 1);
+  if(_playSegIndex >= _adjustState.items.length) _playSegIndex = Math.max(0, _adjustState.items.length - 1);
+  // 重新渲染
+  renderAdjustPanel(_adjustState.items, _adjustState.runDir, _adjustState.mode, []);
+  var status = document.getElementById('adjustStatus');
+  if(status) status.textContent = '🗑 已删除第 '+(idx+1)+' 段，剩余 '+_adjustState.items.length+' 段';
 }
 
 function pollTaskSimple(runid, onProgress, timeoutMs){
