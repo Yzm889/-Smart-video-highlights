@@ -3374,16 +3374,16 @@ function tlStartResize(e){
   var side = this.getAttribute('data-side');
   var it = _adjustState.items[idx];
   if(!it) return;
-  var totalDur = _adjustState.videoDuration || 600;
+  var pxPerSec = Math.max(6, 12 * _tlZoom);
+  var videoDur = _adjustState.videoDuration || 600;
   var inner = document.getElementById('timelineInner');
-  var rect = inner.getBoundingClientRect();
   _tlDrag = {
     idx: idx, side: side,
     startX: e.clientX,
     origStart: it.video_start || 0,
     origEnd: it.video_end || 0,
-    totalDur: totalDur,
-    rectWidth: rect.width,
+    pxPerSec: pxPerSec,
+    videoDur: videoDur,
     inner: inner,
     duration: (it.video_end || 0) - (it.video_start || 0)
   };
@@ -3395,10 +3395,13 @@ function tlStartResize(e){
 function tlDoResize(e){
   if(!_tlDrag) return;
   var dx = e.clientX - _tlDrag.startX;
-  var dt = (dx / _tlDrag.rectWidth) * _tlDrag.totalDur;
+  // 用和时间轴渲染一致的pxPerSec换算，1像素=1/pxPerSec秒
+  // 按住Shift键时5倍精确微调
+  var sensitivity = e.shiftKey ? 0.2 : 1;
+  var dt = (dx / _tlDrag.pxPerSec) * sensitivity;
   var it = _adjustState.items[_tlDrag.idx];
   if(!it) return;
-  var snapThreshold = _tlDrag.totalDur * 0.005; // 磁吸阈值：总时长0.5%
+  var snapThreshold = 1.0; // 磁吸阈值：1秒
   var snapped = false;
 
   if(_tlDrag.side === 'l'){
@@ -3415,14 +3418,14 @@ function tlDoResize(e){
     if(snapTarget2 !== null && Math.abs(newEnd - snapTarget2) < snapThreshold){
       newEnd = snapTarget2; snapped = true;
     }
-    it.video_end = Math.max((it.video_start || 0) + 0.5, Math.min(newEnd, _tlDrag.totalDur));
+    it.video_end = Math.max((it.video_start || 0) + 0.5, Math.min(newEnd, _tlDrag.videoDur));
   } else if(_tlDrag.side === 'm'){
     // 整体拖动：保持长度，同时移动start和end
     var newStart2 = _tlDrag.origStart + dt;
     var newEnd2 = _tlDrag.origEnd + dt;
     // 边界限制
     if(newStart2 < 0){ newEnd2 -= newStart2; newStart2 = 0; }
-    if(newEnd2 > _tlDrag.totalDur){ newStart2 -= (newEnd2 - _tlDrag.totalDur); newEnd2 = _tlDrag.totalDur; }
+    if(newEnd2 > _tlDrag.videoDur){ newStart2 -= (newEnd2 - _tlDrag.videoDur); newEnd2 = _tlDrag.videoDur; }
     // 磁吸：吸附到配音块
     var snapTarget3 = _findSnapPoint(newStart2, _tlDrag.idx, 'start');
     if(snapTarget3 !== null && Math.abs(newStart2 - snapTarget3) < snapThreshold){
