@@ -3254,6 +3254,23 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     ttsList.forEach(function(it){ if(it.video_end > maxEnd) maxEnd = it.video_end; });
     if(maxEnd > 0) _adjustState.videoDuration = Math.ceil(maxEnd / 60) * 60 + 60;
   }
+  // 自动对齐：视频取片比配音长时，裁剪到配音时长+0.3秒缓冲
+  // 避免色块很长但实际只播配音就跳的问题
+  let autoAligned = 0;
+  _adjustState.items.forEach(function(it, idx){
+    const vs = it.video_start || 0, ve = it.video_end || 0;
+    const vdur = ve - vs, adur = it.duration || 3;
+    if(vdur > adur + 0.5){
+      it.video_end = vs + adur + 0.3;
+      autoAligned++;
+      const veInput = document.getElementById('adjVEnd'+idx);
+      if(veInput) veInput.value = it.video_end.toFixed(1);
+    }
+  });
+  if(autoAligned > 0){
+    const hint = document.getElementById('adjustVideoHint');
+    if(hint) hint.textContent = '已自动裁剪'+autoAligned+'段过长画面到配音时长（可手动拖动调整）';
+  }
   renderTimeline();
   ensureAdjVideoLoaded();
   // 绑定确认按钮
