@@ -8709,6 +8709,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             'params': params,
             'tts_results': [[i, p] for i, p in tts_results],
             'movie_name': movie_name,
+            'asr': asr if asr else [],
         }
         _json.dump(tts_state, open(os.path.join(run_dir, 'tts_state.json'), 'w', encoding='utf-8'),
                    ensure_ascii=False, indent=2)
@@ -10319,11 +10320,14 @@ class Handler(BaseHTTPRequestHandler):
         if not video_path or not os.path.exists(video_path):
             self._send(404, json.dumps({'ok': False, 'error': '视频文件不存在'}).encode('utf-8'), 'application/json')
             return
-        whisper_model = whisper_model_name()
-        asr_cache_key = _video_cache_key(video_path, 'asr_%s' % whisper_model)
-        asr = _cache_load(asr_cache_key)
+        # 优先从tts_state.json读ASR（最可靠），fallback到全局缓存
+        asr = st.get('asr') or []
         if not asr:
-            self._send(200, json.dumps({'ok': True, 'candidates': [], 'note': '无ASR数据'}).encode('utf-8'), 'application/json')
+            whisper_model = whisper_model_name()
+            asr_cache_key = _video_cache_key(video_path, 'asr_%s' % whisper_model)
+            asr = _cache_load(asr_cache_key) or []
+        if not asr:
+            self._send(200, json.dumps({'ok': True, 'candidates': [], 'note': '无ASR数据（视频未做台词识别，或任务太旧）'}).encode('utf-8'), 'application/json')
             return
         import re as _re
         keywords = set(_re.findall(r'[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}', text))
