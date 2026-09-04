@@ -8427,14 +8427,25 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
 
 
 def _generate_all_tts(narr, run_dir, progress=None):
-    """逐段生成所有配音，返回 [(index, clip_path), ...]。不做视频裁剪。"""
+    """逐段生成所有配音，返回 [(index, clip_path), ...]。不做视频裁剪。
+    断点续跑：已存在且有效的 narr%d.mp3 直接跳过，只生成缺失的。"""
     results = []
     _tcfg = load_ai_config().get('tts') or {}
     use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
+    skipped = 0
     for i, txt in enumerate(narr):
         if _aborted():
             break
         if not txt.strip():
+            continue
+        # 断点续跑：检查已有文件
+        existing = os.path.join(run_dir, 'narr%d.mp3' % i)
+        if os.path.exists(existing) and os.path.getsize(existing) > 100:
+            results.append((i, existing))
+            skipped += 1
+            if progress:
+                progress['phase'] = '逐段配音 %d/%d（断点续跑，已跳过%d段）' % (i + 1, len(narr), skipped)
+                progress['pct'] = 55 + int(25 * (i + 1) / max(1, len(narr)))
             continue
         clip = None
         if use_mimo:
@@ -8448,8 +8459,10 @@ def _generate_all_tts(narr, run_dir, progress=None):
         if clip is not None:
             results.append((i, clip))
         if progress:
-            progress['phase'] = '逐段配音 %d/%d' % (i + 1, len(narr))
+            progress['phase'] = '逐段配音 %d/%d' % (i + 1, len(narr)) + ('（断点续跑，已跳过%d段）' % skipped if skipped else '')
             progress['pct'] = 55 + int(25 * (i + 1) / max(1, len(narr)))
+    if skipped:
+        print('[DIAG] TTS断点续跑: 跳过%d段已生成配音' % skipped)
     print('[DIAG] TTS第一轮完成: %d/%d段' % (len(results), len(narr)))
     # 失败重试：第一轮没成功的段落再试一次（可能是瞬时网络抖动或熔断恢复）
     success_idx = set(i for i, _ in results)
@@ -10163,7 +10176,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({'ok': True, 'tasks': tasks, 'running': sum(1 for t in tasks if not t['done'])})
                    .encode('utf-8'), 'application/json')
 
-    def _get_regen_segment(self):
+    def _post_regen_segment(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
         except Exception:
@@ -11075,7 +11088,6 @@ class Handler(BaseHTTPRequestHandler):
         '/api/music/search': '_get_music_search',
         '/api/music/use': '_get_music_use',
         '/api/progress': '_get_progress',
-        '/api/regen_segment': '_get_regen_segment',
         '/api/storage': '_get_storage',
         '/api/tasks': '_get_tasks',
         '/api/tts/voices': '_get_tts_voices',
@@ -11129,6 +11141,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/tts/model/uninstall': '_post_tts_model_uninstall',
         '/api/tts/test': '_post_tts_test',
         '/api/tts_regen_all': '_post_tts_regen_all',
+        '/api/regen_segment': '_post_regen_segment',
         '/api/tts_single': '_post_tts_single',
         '/api/upload/chunk': '_post_upload_chunk',
         '/api/upload/done': '_post_upload_done',

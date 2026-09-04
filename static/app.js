@@ -2039,6 +2039,19 @@ function pollMovie(runid){
           if(d.narration && d.narration.length) txt += '\n解说：' + d.narration.join(' / ');
           if(p.script && p.script.length && !p.file) txt += '\n（仅解说稿）' + p.script.map(s => s.desc).join(' / ');
           $('movieDiag').textContent = txt;
+          // 质量自检：标记不匹配片段
+          var qWrap = document.getElementById('movieQuality');
+          if(d.quality && d.quality.mismatch > 0){
+            var mis = (d.quality.report||[]).filter(function(r){return r.flag==='mismatch';});
+            var qHtml = '<div style="margin:8px 0;padding:10px 14px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;font-size:13px">';
+            qHtml += '⚠️ 质量自检：<b>'+d.quality.mismatch+'</b>/'+d.quality.total+'段解说词可能与画面台词不匹配，建议到手动调整页修正：<br>';
+            mis.slice(0,5).forEach(function(r){
+              qHtml += '<span style="color:#fbbf24">第'+(r.seg+1)+'段</span>："'+(r.narration||'').substring(0,30)+'…"<br>';
+            });
+            if(mis.length > 5) qHtml += '<span style="color:var(--muted)">…等共'+mis.length+'段</span>';
+            qHtml += '</div>';
+            if(qWrap){ qWrap.innerHTML = qHtml; qWrap.style.display='block'; }
+          } else if(qWrap){ qWrap.style.display='none'; }
           if(p.file){
             $('movieResult').style.display = 'block';
             $('moviePlayer').src = '/media/' + p.file + '?t=' + Date.now();
@@ -3144,6 +3157,37 @@ async function restoreTtsState(runDir){
 
 
 let _adjustState = { runDir: '', mode: '', items: [], changed: {} };
+let _undoStack = [];
+let _redoStack = [];
+const MAX_UNDO = 50;
+
+function _pushUndo(){
+  if(!_adjustState.items) return;
+  _undoStack.push(JSON.stringify(_adjustState.items));
+  if(_undoStack.length > MAX_UNDO) _undoStack.shift();
+  _redoStack = []; // 新操作清空重做栈
+}
+
+function undoAdjust(){
+  if(_undoStack.length === 0){ return; }
+  // 保存当前状态到重做栈
+  _redoStack.push(JSON.stringify(_adjustState.items));
+  var prev = JSON.parse(_undoStack.pop());
+  _adjustState.items = prev;
+  renderAdjustPanel(prev, _adjustState.runDir, _adjustState.mode, []);
+  var hint = document.getElementById('adjustVideoHint');
+  if(hint) hint.textContent = '↩️ 已撤销（还可撤销'+_undoStack.length+'次）';
+}
+
+function redoAdjust(){
+  if(_redoStack.length === 0){ return; }
+  _undoStack.push(JSON.stringify(_adjustState.items));
+  var next = JSON.parse(_redoStack.pop());
+  _adjustState.items = next;
+  renderAdjustPanel(next, _adjustState.runDir, _adjustState.mode, []);
+  var hint = document.getElementById('adjustVideoHint');
+  if(hint) hint.textContent = '↪️ 已重做（还可重做'+_redoStack.length+'次）';
+}
 
 function renderAdjustPanel(ttsList, runDir, mode, script){
   _adjustState = { runDir: runDir, mode: mode, items: JSON.parse(JSON.stringify(ttsList)), changed: {} };
@@ -3229,6 +3273,12 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
       if(e.code === 'Space'){
         e.preventDefault();
         toggleAdjPlay();
+      } else if((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !e.shiftKey){
+        e.preventDefault();
+        undoAdjust();
+      } else if((e.ctrlKey || e.metaKey) && (e.code === 'KeyY' || (e.code === 'KeyZ' && e.shiftKey))){
+        e.preventDefault();
+        redoAdjust();
       } else if(e.code === 'Delete' || e.code === 'Backspace'){
         if(_selectedSeg >= 0){
           e.preventDefault();
@@ -3436,6 +3486,7 @@ function tlStartResize(e){
   var pxPerSec = Math.max(6, 12 * _tlZoom);
   var videoDur = _adjustState.videoDuration || 600;
   var inner = document.getElementById('timelineInner');
+  _pushUndo(); // 拖拽开始前保存状态
   _tlDrag = {
     idx: idx, side: side,
     startX: e.clientX,
@@ -3524,6 +3575,7 @@ function tlStartAudioDrag(e){
   var it = _adjustState.items[idx];
   if(!it) return;
   var pxPerSec = Math.max(6, 12 * _tlZoom);
+  _pushUndo();
   _tlDrag = {
     idx: idx, side: 'audio',
     startX: e.clientX,
@@ -3953,7 +4005,8 @@ function deleteAdjustItem(idx){
   if(!_adjustState.items || idx < 0 || idx >= _adjustState.items.length) return;
   var it = _adjustState.items[idx];
   var textPreview = (it.text || '').substring(0, 30);
-  if(!confirm('确定删除第 '+(idx+1)+' 段吗？\n\n"'+textPreview+'..."\n\n删除后不进合成，可重新生成恢复。')) return;
+  if(!confirm('确定删除第 '+(idx+1)+' 段吗？\n\n"'+textPreview+'..."\n\n删除后不进合成，可撤销恢复。')) return;
+  _pushUndo();
   _adjustState.items.splice(idx, 1);
   // 重置选中和播放索引
   if(_selectedSeg >= _adjustState.items.length) _selectedSeg = Math.max(0, _adjustState.items.length - 1);
