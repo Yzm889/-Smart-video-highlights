@@ -9905,6 +9905,48 @@ MIME = {
     '.mp4': 'video/mp4', '.srt': 'text/plain; charset=utf-8', '.webm': 'video/webm',
 }
 
+def _start_next_queued():
+    """从排队队列中取出下一个任务并启动。"""
+    with _TASK_QUEUE_LOCK:
+        if not _TASK_QUEUE:
+            return
+        fn, req, runid, run_dir, prog = _TASK_QUEUE.pop(0)
+    # 更新队列中其他任务的排队位置
+    with _TASK_QUEUE_LOCK:
+        for i, (_f, _r, _rid, _rd, _p) in enumerate(_TASK_QUEUE):
+            _p['phase'] = '排队中（前面还有%d个任务）' % (i + 1)
+    if not _TASK_SEM.acquire(blocking=False):
+        # 名额又被占了（极端情况），重新放回队列头部
+        with _TASK_QUEUE_LOCK:
+            _TASK_QUEUE.insert(0, (fn, req, runid, run_dir, prog))
+        return
+    prog['queued'] = False
+    prog['phase'] = '开始执行'
+    print(f'[DIAG] 排队任务启动: {runid}，剩余队列={len(_TASK_QUEUE)}')
+    def _queued_runner():
+        _TLS.runid = runid
+        try:
+            del _TLS.tts_engine
+        except Exception:
+            pass
+        try:
+            fn(req, prog)
+            if not prog.get('error'):
+                _finish_task_credits(req, prog)
+        except AbortError:
+            prog['done'] = True
+            prog['aborted'] = True
+            prog['error'] = '已取消（用户中断）'
+        except Exception as e:
+            fail_task(prog, e)
+        finally:
+            _TASK_SEM.release()
+            _start_next_queued()
+    t = threading.Thread(target=_queued_runner, daemon=True)
+    t.start()
+
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -10010,45 +10052,6 @@ class Handler(BaseHTTPRequestHandler):
         raw = b''.join(parts)
         return json.loads(raw.decode('utf-8'))
 
-def _start_next_queued():
-    """从排队队列中取出下一个任务并启动。"""
-    with _TASK_QUEUE_LOCK:
-        if not _TASK_QUEUE:
-            return
-        fn, req, runid, run_dir, prog = _TASK_QUEUE.pop(0)
-    # 更新队列中其他任务的排队位置
-    with _TASK_QUEUE_LOCK:
-        for i, (_f, _r, _rid, _rd, _p) in enumerate(_TASK_QUEUE):
-            _p['phase'] = '排队中（前面还有%d个任务）' % (i + 1)
-    if not _TASK_SEM.acquire(blocking=False):
-        # 名额又被占了（极端情况），重新放回队列头部
-        with _TASK_QUEUE_LOCK:
-            _TASK_QUEUE.insert(0, (fn, req, runid, run_dir, prog))
-        return
-    prog['queued'] = False
-    prog['phase'] = '开始执行'
-    print(f'[DIAG] 排队任务启动: {runid}，剩余队列={len(_TASK_QUEUE)}')
-    def _queued_runner():
-        _TLS.runid = runid
-        try:
-            del _TLS.tts_engine
-        except Exception:
-            pass
-        try:
-            fn(req, prog)
-            if not prog.get('error'):
-                _finish_task_credits(req, prog)
-        except AbortError:
-            prog['done'] = True
-            prog['aborted'] = True
-            prog['error'] = '已取消（用户中断）'
-        except Exception as e:
-            fail_task(prog, e)
-        finally:
-            _TASK_SEM.release()
-            _start_next_queued()
-    t = threading.Thread(target=_queued_runner, daemon=True)
-    t.start()
 
 
     def _spawn(self, fn, req):
