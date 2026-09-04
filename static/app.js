@@ -1997,7 +1997,7 @@ async function buildMovieNarrate(){
   $('movieStatus').textContent = '提交任务…';
   gStart('🌐 联网解说生成');
   const body = { movie: name, plot: plot,
-    params: { maxSeg: parseFloat($('movieMaxSeg').value) || 25, w:1280, h:720, fps:30 } };
+    params: { maxSeg: parseFloat($('movieMaxSeg').value) || 25, w:1280, h:720, fps:30, plotRefine: $('moviePlotRefine') ? $('moviePlotRefine').checked : true } };
   if(MOVIE_VIDEO){ body.video = await videoToBody(MOVIE_VIDEO); }
   if($('movieBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }

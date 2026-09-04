@@ -7898,6 +7898,76 @@ def _llm_align_beats_to_scenes(beats, scenes, movie_name=''):
     return {}
 
 
+def _llm_refine_beats_with_scenes(beats, scenes, alignment, asr, movie_name=''):
+    """剧情理解层：用VLM画面描述+ASR台词润色每段解说词，让解说更贴合实际画面。
+    不改变剧情主线，只让描述更准确、更有画面感。失败返回原beats。"""
+    if not beats or not scenes or not alignment:
+        return beats
+    beat_contexts = []
+    for bi, beat in enumerate(beats):
+        scene_idxs = alignment.get(bi, [])
+        if not scene_idxs:
+            beat_contexts.append(None)
+            continue
+        si = scene_idxs[0]
+        if si >= len(scenes):
+            beat_contexts.append(None)
+            continue
+        sc = scenes[si]
+        scene_desc = sc.get('event') or sc.get('location') or sc.get('description') or ''
+        t0 = float(sc.get('start', 0))
+        t1 = float(sc.get('end', t0 + 5))
+        scene_asr = []
+        for a in asr:
+            try:
+                a0 = float(a.get('start', 0))
+                if t0 <= a0 <= t1:
+                    scene_asr.append(str(a.get('text', '')))
+            except (ValueError, TypeError):
+                continue
+        asr_text = ' / '.join(scene_asr[:3]) if scene_asr else ''
+        beat_contexts.append({
+            'beat_idx': bi,
+            'original': str(beat.get('text') or beat if isinstance(beat, dict) else str(beat)),
+            'scene': scene_desc[:100],
+            'dialogue': asr_text[:150]
+        })
+    to_refine = [c for c in beat_contexts if c]
+    if not to_refine:
+        return beats
+    prompt = f'你是电影解说文案润色专家。下面是电影《{movie_name or "未知"}》的解说稿片段，'
+    prompt += '请根据每段对应的画面描述和角色台词，把解说词改得更贴合画面、更有画面感。\n'
+    prompt += '规则：1)不改变剧情主线和因果关系 2)只润色描述，不添加画面里没有的情节 3)保持口语化解说风格 4)每段30-60字 5)不要加标题或序号\n\n'
+    for c in to_refine:
+        prompt += f'【第{c["beat_idx"]+1}段】\n'
+        prompt += f'原解说：{c["original"]}\n'
+        prompt += f'画面描述：{c["scene"]}\n'
+        if c['dialogue']:
+            prompt += f'角色台词：{c["dialogue"]}\n'
+        prompt += '\n'
+    prompt += '请按顺序输出润色后的解说词，每行一段，不要加其他文字。'
+    try:
+        resp = ollama_chat(prompt, system='你是专业电影解说文案编辑，擅长让解说词与画面精准对应。')
+        if not resp:
+            return beats
+        lines = [l.strip() for l in resp.split('\n') if l.strip() and not l.strip().startswith(('【', '#', '第'))]
+        if not lines:
+            return beats
+        refined_beats = list(beats)
+        for i, c in enumerate(to_refine):
+            if i < len(lines) and lines[i]:
+                bi = c['beat_idx']
+                if isinstance(refined_beats[bi], dict):
+                    refined_beats[bi]['text'] = lines[i]
+                else:
+                    refined_beats[bi] = lines[i]
+        print(f'[DIAG] 剧情理解润色: {len([l for l in lines if l])}/{len(to_refine)}段已润色')
+        return refined_beats
+    except Exception as e:
+        print(f'[DIAG] 剧情理解润色失败: {e}')
+        return beats
+
+
 def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
 
@@ -8438,6 +8508,14 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name)
         if scene_alignment:
             print(f'[DIAG] LLM语义对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
+    # 阶段2.5：剧情理解层 - 用画面描述+台词润色解说词（可选，默认开启）
+    if params.get('plotRefine', params.get('plot_refine', True)) and scene_alignment and scene_descs:
+        up('剧情理解润色（让解说贴合画面）', 50)
+        refined = _llm_refine_beats_with_scenes(texts, scene_descs, scene_alignment, asr, movie_name=movie_name)
+        if refined and len(refined) == len(texts):
+            texts = refined
+            # 润色后重新检查TTS标记
+            texts = _enhance_tts_markup(texts)
     # 阶段3：在对齐的场景内选片段（_allocate_script_spans 内部处理），
     # 对齐失败时自动退回台词bigram匹配保底
     up('按解说分配画面', 52)
