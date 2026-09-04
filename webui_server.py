@@ -10264,6 +10264,75 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({'ok': True, 'file': os.path.relpath(final, OUTDIR).replace('\\', '/') if final else '',
                                     'narr': narr}).encode('utf-8'), 'application/json')
 
+    def _post_recommend_segments(self):
+        """AI候选片段推荐：根据解说词关键词在ASR台词中匹配，返回3个最佳画面片段。"""
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        except Exception:
+            body = {}
+        run_id = str(body.get('run_id', ''))
+        text = str(body.get('text', '')).strip()
+        if not run_id or not text:
+            self._send(400, json.dumps({'ok': False, 'error': '缺少run_id或text'}).encode('utf-8'), 'application/json')
+            return
+        run_dir = os.path.join(OUTDIR, run_id)
+        state_path = os.path.join(run_dir, 'tts_state.json')
+        if not os.path.exists(state_path):
+            self._send(404, json.dumps({'ok': False, 'error': '未找到任务状态'}).encode('utf-8'), 'application/json')
+            return
+        try:
+            st = json.load(open(state_path, encoding='utf-8'))
+            video_path = st.get('video_path', '')
+        except Exception as e:
+            self._send(500, json.dumps({'ok': False, 'error': '状态读取失败: %s' % e}).encode('utf-8'), 'application/json')
+            return
+        if not video_path or not os.path.exists(video_path):
+            self._send(404, json.dumps({'ok': False, 'error': '视频文件不存在'}).encode('utf-8'), 'application/json')
+            return
+        whisper_model = whisper_model_name()
+        asr_cache_key = _video_cache_key(video_path, 'asr_%s' % whisper_model)
+        asr = _cache_load(asr_cache_key)
+        if not asr:
+            self._send(200, json.dumps({'ok': True, 'candidates': [], 'note': '无ASR数据'}).encode('utf-8'), 'application/json')
+            return
+        import re as _re
+        keywords = set(_re.findall(r'[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}', text))
+        if not keywords:
+            self._send(200, json.dumps({'ok': True, 'candidates': [], 'note': '无有效关键词'}).encode('utf-8'), 'application/json')
+            return
+        scored = []
+        for seg in asr:
+            try:
+                t0 = float(seg.get('start', 0))
+                t1 = float(seg.get('end', t0 + 1))
+                seg_text = str(seg.get('text', ''))
+                seg_words = set(_re.findall(r'[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}', seg_text))
+                overlap = len(keywords & seg_words)
+                if overlap > 0:
+                    scored.append({'start': round(t0, 1), 'end': round(t1, 1),
+                                   'score': overlap, 'dialogue': seg_text[:60],
+                                   'matched': list(keywords & seg_words)[:5]})
+            except (ValueError, TypeError):
+                continue
+        scored.sort(key=lambda x: -x['score'])
+        candidates = []
+        used_ranges = []
+        for c in scored:
+            overlap_existing = False
+            for ur in used_ranges:
+                ov = min(c['end'], ur[1]) - max(c['start'], ur[0])
+                if ov > 0 and ov / (c['end'] - c['start']) > 0.5:
+                    overlap_existing = True
+                    break
+            if not overlap_existing:
+                candidates.append(c)
+                used_ranges.append((c['start'], c['end']))
+            if len(candidates) >= 3:
+                break
+        self._send(200, json.dumps({'ok': True, 'candidates': candidates,
+                                     'total_asr': len(asr),
+                                     'keywords': list(keywords)[:10]}).encode('utf-8'), 'application/json')
+
     def _get_history(self):
         items = load_history(50)
         # 逐条体检：成片文件已丢失的条目标记 missing（前端降级展示，不给下载/封面入口）；
@@ -11142,6 +11211,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/tts/test': '_post_tts_test',
         '/api/tts_regen_all': '_post_tts_regen_all',
         '/api/regen_segment': '_post_regen_segment',
+        '/api/recommend_segments': '_post_recommend_segments',
         '/api/tts_single': '_post_tts_single',
         '/api/upload/chunk': '_post_upload_chunk',
         '/api/upload/done': '_post_upload_done',

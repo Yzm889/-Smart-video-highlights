@@ -3220,7 +3220,9 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="seekAdjVideo('+idx+')">▶️ 预览</button>';
     html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignSegmentToAudio('+idx+')">⇔ 对齐配音</button>';
     html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 截图</button>';
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="recommendSegments('+idx+')">🤖 AI推荐</button>';
     html += '</div>';
+    html += '<div id="adjRecommend'+idx+'" style="margin-top:6px;display:none"></div>';
     html += '<div id="adjFrame'+idx+'" style="margin-top:6px;display:none"><img id="adjFrameImg'+idx+'" style="max-width:100%;max-height:160px;border-radius:6px;border:1px solid var(--border)"></div>';
     html += '<div id="adjVideo'+idx+'" style="margin-top:6px;display:none;position:relative">';
     html += '<video id="adjVideoEl'+idx+'" style="max-width:100%;max-height:240px;border-radius:6px;border:1px solid var(--border);background:#000" playsinline></video>';
@@ -3970,6 +3972,57 @@ function previewVideoSegment(idx){
     if(video.paused){ video.play(); if(audio) audio.play().catch(()=>{}); hint.style.display='block'; }
     else { video.pause(); if(audio) audio.pause(); hint.style.display='none'; }
   };
+}
+
+async function recommendSegments(idx){
+  var text = document.getElementById('adjText'+idx).value.trim();
+  if(!text){ alert('解说词不能为空'); return; }
+  var box = document.getElementById('adjRecommend'+idx);
+  if(!box) return;
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--muted)">⏳ 正在分析台词匹配最佳画面…</span>';
+  try{
+    var r = await fetch('/api/recommend_segments', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({run_id: _adjustState.runDir, text: text, seg_idx: idx})});
+    var out = await r.json();
+    if(!out.ok){ box.innerHTML = '<span style="color:#f87171;font-size:12px">❌ '+out.error+'</span>'; return; }
+    if(!out.candidates || out.candidates.length === 0){
+      box.innerHTML = '<span style="color:var(--muted);font-size:12px">未找到匹配片段（'+(out.note||'无匹配台词')+'），可手动输入时间</span>';
+      return;
+    }
+    var html = '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">🎯 找到'+out.candidates.length+'个匹配片段，点击应用：</div>';
+    out.candidates.forEach(function(c, i){
+      var dur = (c.end - c.start).toFixed(1);
+      html += '<div style="display:flex;gap:6px;align-items:center;margin:3px 0;padding:6px 8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="applyRecommend('+idx+','+c.start+','+c.end+')">';
+      html += '<span style="background:#6366f1;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;white-space:nowrap">候选'+(i+1)+'</span>';
+      html += '<span style="font-size:12px;white-space:nowrap">'+c.start.toFixed(1)+'-'+c.end.toFixed(1)+'s ('+dur+'s)</span>';
+      html += '<span style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">"'+c.dialogue+'"</span>';
+      html += '<span style="font-size:10px;color:#4ade80;white-space:nowrap">匹配'+c.score+'词</span>';
+      html += '</div>';
+    });
+    box.innerHTML = html;
+  }catch(e){
+    box.innerHTML = '<span style="color:#f87171;font-size:12px">❌ '+e.message+'</span>';
+  }
+}
+
+function applyRecommend(idx, start, end){
+  var it = _adjustState.items[idx];
+  if(!it) return;
+  _pushUndo();
+  it.video_start = start;
+  it.video_end = end;
+  // 更新输入框
+  var vsI = document.getElementById('adjVStart'+idx);
+  var veI = document.getElementById('adjVEnd'+idx);
+  if(vsI) vsI.value = start;
+  if(veI) veI.value = end;
+  renderTimeline();
+  seekAdjVideo(start);
+  var box = document.getElementById('adjRecommend'+idx);
+  if(box) box.innerHTML = '<span style="color:#4ade80;font-size:12px">✅ 已应用 '+start.toFixed(1)+'-'+end.toFixed(1)+'s</span>';
+  var hint = document.getElementById('adjustVideoHint');
+  if(hint) hint.textContent = '✅ 第'+(idx+1)+'段已应用AI推荐片段';
 }
 
 async function regenSingleTts(idx){
