@@ -82,6 +82,8 @@ def _max_concurrent_tasks():
 # 超限采用「直接拒绝并提示」而不是无限排队——排队没有任何可见反馈，用户只会以为卡死。
 _MAX_CONCURRENT_TASKS = _max_concurrent_tasks()
 _TASK_SEM = threading.Semaphore(_MAX_CONCURRENT_TASKS)
+_TASK_QUEUE = []  # 排队中的任务 [(fn, req, runid, run_dir, prog), ...]
+_TASK_QUEUE_LOCK = threading.Lock()
 
 class AbortError(Exception):
     """任务被用户取消时抛出。"""
@@ -3497,16 +3499,39 @@ def reset_encoder_probe():
     _ENC_CACHE['probe'] = None
 
 
-def video_encode_args(quality=23):
+def video_encode_args(quality=23, bitrate=None):
     """返回视频编码参数片段（list）。GPU 硬编可用且用户未禁用时用 h264_nvenc，否则回退 libx264。
-    quality：质量档，越小越清晰（libx264 的 crf / nvenc 的 qp，语义对齐）。"""
+    quality：质量档，越小越清晰（libx264 的 crf / nvenc 的 qp，语义对齐）。
+    bitrate：指定码率（如 '4M'）时用码率控制替代CRF/QP。"""
     mode = video_encoder_cfg()
+    if bitrate:
+        # 指定码率时用 -b:v 控制
+        if mode in ('auto', 'gpu') and _nvenc_usable():
+            return ['-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p',
+                    '-preset', 'p4', '-b:v', str(bitrate), '-maxrate', str(bitrate)]
+        return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast',
+                '-b:v', str(bitrate), '-maxrate', str(bitrate)]
     if mode in ('auto', 'gpu') and _nvenc_usable():
         return ['-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p',
                 '-preset', 'p4', '-rc', 'constqp', '-qp', str(int(quality))]
-    # auto 但 GPU 不可用，或用户强制 cpu，或强制 gpu 却探测失败 → 一律回退 CPU 软编
     return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast',
             '-crf', str(int(quality))]
+
+
+def build_video_filter(params):
+    """根据导出参数构建视频滤镜（分辨率缩放）。返回filter字符串或None。"""
+    if not params:
+        return None
+    res = params.get('resolution') or ''
+    if not res or res == 'original':
+        return None
+    # res格式: '1920x1080' 或 '1280x720'
+    parts = str(res).lower().split('x')
+    if len(parts) == 2:
+        w, h = parts[0].strip(), parts[1].strip()
+        if w.isdigit() and h.isdigit():
+            return f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2'
+    return None
 
 
 def video_encoder_label():
@@ -7329,9 +7354,16 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     esc = srt.replace('\\', '/').replace(':', '\\:')
     vsub = os.path.join(run_dir, 'vsub.mp4')
     sub_style = _build_subtitle_style(params)
+    # 导出选项：分辨率缩放 + 码率
+    vf_parts = [f"subtitles='{esc}':force_style='{sub_style}'"]
+    scale_filter = build_video_filter(params)
+    if scale_filter:
+        vf_parts.append(scale_filter)
+    vf_str = ','.join(vf_parts)
+    bitrate = params.get('bitrate') or None
     rc, o, e = ffmpeg_run(['-y', '-i', video_path,
-                           '-vf', f"subtitles='{esc}':force_style='{sub_style}'",
-                           ] + video_encode_args() + ['-threads', '0', '-an', vsub])
+                           '-vf', vf_str,
+                           ] + video_encode_args(bitrate=bitrate) + ['-threads', '0', '-an', vsub])
     base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
 
     has_orig_audio = _has_audio_track(video_path)
@@ -9978,16 +10010,67 @@ class Handler(BaseHTTPRequestHandler):
         raw = b''.join(parts)
         return json.loads(raw.decode('utf-8'))
 
+def _start_next_queued():
+    """从排队队列中取出下一个任务并启动。"""
+    with _TASK_QUEUE_LOCK:
+        if not _TASK_QUEUE:
+            return
+        fn, req, runid, run_dir, prog = _TASK_QUEUE.pop(0)
+    # 更新队列中其他任务的排队位置
+    with _TASK_QUEUE_LOCK:
+        for i, (_f, _r, _rid, _rd, _p) in enumerate(_TASK_QUEUE):
+            _p['phase'] = '排队中（前面还有%d个任务）' % (i + 1)
+    if not _TASK_SEM.acquire(blocking=False):
+        # 名额又被占了（极端情况），重新放回队列头部
+        with _TASK_QUEUE_LOCK:
+            _TASK_QUEUE.insert(0, (fn, req, runid, run_dir, prog))
+        return
+    prog['queued'] = False
+    prog['phase'] = '开始执行'
+    print(f'[DIAG] 排队任务启动: {runid}，剩余队列={len(_TASK_QUEUE)}')
+    def _queued_runner():
+        _TLS.runid = runid
+        try:
+            del _TLS.tts_engine
+        except Exception:
+            pass
+        try:
+            fn(req, prog)
+            if not prog.get('error'):
+                _finish_task_credits(req, prog)
+        except AbortError:
+            prog['done'] = True
+            prog['aborted'] = True
+            prog['error'] = '已取消（用户中断）'
+        except Exception as e:
+            fail_task(prog, e)
+        finally:
+            _TASK_SEM.release()
+            _start_next_queued()
+    t = threading.Thread(target=_queued_runner, daemon=True)
+    t.start()
+
+
     def _spawn(self, fn, req):
         """登记一个后台任务并启动线程，返回 runid 供前端轮询。
         每个任务拥有独立的 run_dir（OUTDIR/runid-时间戳），产物互不干扰；并把 runid 绑定到
         任务线程的 TLS，使 ffmpeg_run 能注册进程并响应「取消」。
         并发上限见 _TASK_SEM：拿不到名额直接拒绝（do_POST 会把这句原样显示给用户）。"""
-        # 非阻塞取名额：宁可明确拒绝，也不让用户在看不到进度的队列里干等
+        # 非阻塞取名额：满了就加入排队队列，前面的跑完自动开始下一个
         if not _TASK_SEM.acquire(blocking=False):
-            raise RuntimeError('已经有 %d 个任务在跑了（同时最多 %d 个），'
-                               '请等其中一个做完再提交'
-                               % (_MAX_CONCURRENT_TASKS, _MAX_CONCURRENT_TASKS))
+            # 加入排队队列
+            runid = 'run-%d' % next(_RUN_CTR)
+            run_dir = os.path.join(OUTDIR, '%s-%s' % (runid, time.strftime('%Y%m%d-%H%M%S')))
+            os.makedirs(run_dir, exist_ok=True)
+            queue_pos = len(_TASK_QUEUE) + 1
+            prog = {'phase': '排队中（前面还有%d个任务）' % queue_pos, 'pct': 0, 'done': False,
+                    'runid': runid, 'run_dir': run_dir, 'queued': True}
+            PROGRESS[runid] = prog
+            _evict_finished_progress(keep=100)
+            with _TASK_QUEUE_LOCK:
+                _TASK_QUEUE.append((fn, req, runid, run_dir, prog))
+            print(f'[DIAG] 任务加入排队: {runid}，队列长度={len(_TASK_QUEUE)}')
+            return runid
         try:
             runid = 'run-%d' % next(_RUN_CTR)
             # 目录名带时间戳：服务重启后 runid 从 1 重新计数会复用 run-N 名字，
@@ -10019,6 +10102,8 @@ class Handler(BaseHTTPRequestHandler):
                     fail_task(prog, e)
                 finally:
                     _TASK_SEM.release()   # 无论成功/失败/取消都必须归还名额
+                    # 启动排队中的下一个任务
+                    _start_next_queued()
 
             _threading.Thread(target=_runner, daemon=True).start()
         except Exception:

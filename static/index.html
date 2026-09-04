@@ -449,6 +449,25 @@
           <input type="number" id="subMarginV" value="50" min="10" max="200" style="width:70px"></div>
       </div>
     </details>
+    <details style="margin-top:8px;">
+      <summary style="cursor:pointer;font-size:13px;color:var(--muted)">⚙️ 导出选项（分辨率/码率）</summary>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px">
+        <div class="field"><label>分辨率</label>
+          <select id="exportResolution" style="width:120px">
+            <option value="original">原始</option>
+            <option value="1920x1080">1080p</option>
+            <option value="1280x720">720p</option>
+            <option value="854x480">480p</option>
+          </select></div>
+        <div class="field"><label>码率</label>
+          <select id="exportBitrate" style="width:100px">
+            <option value="">自动(CRF)</option>
+            <option value="8M">8M 高</option>
+            <option value="5M">5M 中</option>
+            <option value="3M">3M 低</option>
+          </select></div>
+      </div>
+    </details>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="narGo" onclick="planNarrate()">🎙 生成配音并调整</button>
       <button class="btn danger" id="narCancel" onclick="stopRun('narStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
@@ -492,6 +511,13 @@
         <input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
       <label style="align-self:center;"><input type="checkbox" id="movieBgm" style="width:auto"> 加配乐</label>
       <label style="align-self:center;"><input type="checkbox" id="moviePlotRefine" checked style="width:auto"> 🧠 剧情理解润色</label>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+      <select id="presetSelect" style="width:140px" onchange="applyPreset(this.value)">
+        <option value="">📋 预设模板…</option>
+      </select>
+      <button class="btn-secondary" style="padding:6px 12px;font-size:12px" onclick="savePreset()">💾 保存当前</button>
+      <button class="btn-secondary" style="padding:6px 12px;font-size:12px" onclick="deletePreset()">🗑 删除</button>
     </div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="movieGo" onclick="buildMovieNarrate()">🎬 生成（联网）解说</button>

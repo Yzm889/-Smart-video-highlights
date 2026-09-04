@@ -1905,7 +1905,9 @@ async function buildNarrate(){
                          detail_level: ($('detailLevel') ? $('detailLevel').value : 'balanced'),
                          autoCut: $('narAutoCut') ? $('narAutoCut').checked : true,
                          targetSec: parseFloat(($('narTargetSec')||{}).value) || 0,
-                         subtitle: getSubtitleStyle()} };
+                         subtitle: getSubtitleStyle(),
+                         resolution: ($('exportResolution')||{}).value || 'original',
+                         bitrate: ($('exportBitrate')||{}).value || ''} };
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
@@ -2185,6 +2187,7 @@ async function build(){
   _currentRunid = null;
   go.disabled = false;
   loadHistory();
+  loadPresetList();
 }
 function pollRun(runid){
   return new Promise((resolve) => {
@@ -3975,6 +3978,70 @@ function previewVideoSegment(idx){
   };
 }
 
+// ===== 预设模板 =====
+const PRESET_KEY = 'springStudio.presets';
+function getPresets(){ try{ return JSON.parse(localStorage.getItem(PRESET_KEY)||'{}'); }catch(e){ return {}; } }
+function savePresets(p){ localStorage.setItem(PRESET_KEY, JSON.stringify(p)); }
+function loadPresetList(){
+  const sel = document.getElementById('presetSelect');
+  if(!sel) return;
+  const presets = getPresets();
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">📋 预设模板…</option>';
+  Object.keys(presets).sort().forEach(name=>{
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  if(cur && presets[cur]) sel.value = cur;
+}
+function savePreset(){
+  const name = prompt('给这个预设起个名字：', '电影解说-默认');
+  if(!name || !name.trim()) return;
+  const preset = {
+    maxSeg: parseInt((document.getElementById('movieMaxSeg')||{}).value)||25,
+    bgm: !!(document.getElementById('movieBgm')||{}).checked,
+    plotRefine: !!(document.getElementById('moviePlotRefine')||{}).checked,
+    subtitle: getSubtitleStyle(),
+    narrStyle: (document.getElementById('narrStyle')||{}).value || 'movie',
+    detailLevel: (document.getElementById('detailLevel')||{}).value || 'balanced',
+  };
+  const presets = getPresets();
+  presets[name.trim()] = preset;
+  savePresets(presets);
+  loadPresetList();
+  alert('✅ 已保存预设：' + name);
+}
+function applyPreset(name){
+  if(!name) return;
+  const presets = getPresets();
+  const p = presets[name];
+  if(!p){ alert('预设不存在'); return; }
+  if(p.maxSeg && document.getElementById('movieMaxSeg')) document.getElementById('movieMaxSeg').value = p.maxSeg;
+  if(document.getElementById('movieBgm')) document.getElementById('movieBgm').checked = !!p.bgm;
+  if(document.getElementById('moviePlotRefine')) document.getElementById('moviePlotRefine').checked = p.plotRefine !== false;
+  if(p.narrStyle && document.getElementById('narrStyle')) document.getElementById('narrStyle').value = p.narrStyle;
+  if(p.detailLevel && document.getElementById('detailLevel')) document.getElementById('detailLevel').value = p.detailLevel;
+  if(p.subtitle){
+    if(document.getElementById('subFontSize')) document.getElementById('subFontSize').value = p.subtitle.fontSize || 22;
+    if(document.getElementById('subColor')) document.getElementById('subColor').value = p.subtitle.color || '#FFFFFF';
+    if(document.getElementById('subOutlineColor')) document.getElementById('subOutlineColor').value = p.subtitle.outlineColor || '#000000';
+    if(document.getElementById('subOutlineWidth')) document.getElementById('subOutlineWidth').value = p.subtitle.outlineWidth || 2;
+    if(document.getElementById('subAlignment')) document.getElementById('subAlignment').value = p.subtitle.alignment || 2;
+    if(document.getElementById('subMarginV')) document.getElementById('subMarginV').value = p.subtitle.marginV || 50;
+  }
+  alert('✅ 已应用预设：' + name);
+}
+function deletePreset(){
+  const sel = document.getElementById('presetSelect');
+  if(!sel || !sel.value){ alert('请先选择要删除的预设'); return; }
+  if(!confirm('确定删除预设「' + sel.value + '」？')) return;
+  const presets = getPresets();
+  delete presets[sel.value];
+  savePresets(presets);
+  loadPresetList();
+}
+
 function getSubtitleStyle(){
   return {
     fontSize: parseInt((document.getElementById('subFontSize')||{}).value) || 22,
@@ -4148,7 +4215,7 @@ async function confirmAdjustAndCompose(){
     return;
   }
   try{
-    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip, params: { subtitle: getSubtitleStyle() } };
+    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip, params: { subtitle: getSubtitleStyle(), resolution: ($('exportResolution')||{}).value || 'original', bitrate: ($('exportBitrate')||{}).value || '' } };
     // 带上配乐
     if(_adjustState.mode === 'movie' && document.getElementById('movieBgm') && document.getElementById('movieBgm').checked && MUSIC){
       if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
