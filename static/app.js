@@ -1904,7 +1904,8 @@ async function buildNarrate(){
                          narr_style: ($('narrStyle') ? $('narrStyle').value : 'movie'),
                          detail_level: ($('detailLevel') ? $('detailLevel').value : 'balanced'),
                          autoCut: $('narAutoCut') ? $('narAutoCut').checked : true,
-                         targetSec: parseFloat(($('narTargetSec')||{}).value) || 0} };
+                         targetSec: parseFloat(($('narTargetSec')||{}).value) || 0,
+                         subtitle: getSubtitleStyle()} };
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
@@ -3974,6 +3975,17 @@ function previewVideoSegment(idx){
   };
 }
 
+function getSubtitleStyle(){
+  return {
+    fontSize: parseInt((document.getElementById('subFontSize')||{}).value) || 22,
+    color: (document.getElementById('subColor')||{}).value || '#FFFFFF',
+    outlineColor: (document.getElementById('subOutlineColor')||{}).value || '#000000',
+    outlineWidth: parseFloat((document.getElementById('subOutlineWidth')||{}).value) || 2,
+    alignment: parseInt((document.getElementById('subAlignment')||{}).value) || 2,
+    marginV: parseInt((document.getElementById('subMarginV')||{}).value) || 50
+  };
+}
+
 async function recommendSegments(idx){
   var text = document.getElementById('adjText'+idx).value.trim();
   if(!text){ alert('解说词不能为空'); return; }
@@ -4136,7 +4148,7 @@ async function confirmAdjustAndCompose(){
     return;
   }
   try{
-    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip };
+    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip, params: { subtitle: getSubtitleStyle() } };
     // 带上配乐
     if(_adjustState.mode === 'movie' && document.getElementById('movieBgm') && document.getElementById('movieBgm').checked && MUSIC){
       if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }

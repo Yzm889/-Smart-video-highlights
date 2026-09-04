@@ -4644,14 +4644,17 @@ def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=
         cmd = ['-y', '-i', silent, '-i', video_path, '-stream_loop', '-1', '-i', music_path,
                '-filter_complex',
                "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.3[o];"
-               "[2:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.7[bgm];"
+               f"[2:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.7,"
+               f"afade=t=in:st=0:d=1.5,afade=t=out:st={max(0, silent_dur - 2.0):.2f}:d=2.0[bgm];"
                "[o][bgm]amix=inputs=2:normalize=0,aformat=fltp[aout]",
                '-map', '0:v:0', '-map', '[aout]',
                '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
                '-t', '%.2f' % silent_dur, '-movflags', '+faststart', final]
     else:
         # 纯音乐（默认）：音乐铺满视频时长
+        fade_out_st = max(0, silent_dur - 2.0)
         cmd = ['-y', '-stream_loop', '-1', '-i', music_path, '-i', silent,
+               '-filter:a', 'afade=t=in:st=0:d=1.5,afade=t=out:st=%.2f:d=2.0' % fade_out_st,
                '-map', '1:v:0', '-map', '0:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
                '-t', '%.2f' % silent_dur, '-movflags', '+faststart', final]
     rc, o, e = ffmpeg_run(cmd)
@@ -7275,6 +7278,27 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None):
     return out, new_spans, round(max(0.0, gap), 3)
 
 
+def _build_subtitle_style(params):
+    """从params构建ffmpeg force_style字幕样式字符串。支持用户自定义。"""
+    sub = params.get('subtitle') or {}
+    font_size = int(sub.get('fontSize', 22))
+    # 颜色：用户给#RRGGBB，转成ASS的&HBBGGRR格式
+    def _hex_to_ass(h):
+        h = h.lstrip('#')
+        if len(h) == 6:
+            return '&H%s%s%s' % (h[4:6], h[2:4], h[0:2])
+        return '&H00FFFFFF'
+    primary = _hex_to_ass(sub.get('color', '#FFFFFF'))
+    outline_c = _hex_to_ass(sub.get('outlineColor', '#000000'))
+    outline_w = float(sub.get('outlineWidth', 2))
+    alignment = int(sub.get('alignment', 2))  # 1=左下 2=中下 3=右下 5=左上 8=中上
+    margin_v = int(sub.get('marginV', 50))
+    font_name = sub.get('fontName', 'Microsoft YaHei')
+    return (f'FontName={font_name},FontSize={font_size},'
+            f'PrimaryColour={primary},OutlineColour={outline_c},Outline={outline_w},'
+            f'Alignment={alignment},MarginV={margin_v}')
+
+
 def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None,
                              voice_spans=None):
     """把解说配音按时间轴混入原视频，烧录解说字幕，可选叠加背景音乐，输出 final.mp4。
@@ -7304,8 +7328,9 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             f.write(f'{seq}\n{ts(w0)} --> {ts(w1)}\n{cap}\n\n')
     esc = srt.replace('\\', '/').replace(':', '\\:')
     vsub = os.path.join(run_dir, 'vsub.mp4')
+    sub_style = _build_subtitle_style(params)
     rc, o, e = ffmpeg_run(['-y', '-i', video_path,
-                           '-vf', f"subtitles='{esc}':force_style='FontName=Microsoft YaHei,FontSize=22,Alignment=2,MarginV=50'",
+                           '-vf', f"subtitles='{esc}':force_style='{sub_style}'",
                            ] + video_encode_args() + ['-threads', '0', '-an', vsub])
     base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
 
@@ -8490,7 +8515,7 @@ def _generate_all_tts(narr, run_dir, progress=None):
     return results
 
 
-def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_items=None, skip=None):
+def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_items=None, skip=None, user_params=None):
     """Phase 2：加载已保存的配音状态，裁剪视频+合成。用户确认配音后调用。
     adjusted_items: 用户调整后的片段列表 [{index, text, audio}]，None则用原始状态
     skip: 要跳过的片段索引列表
@@ -8505,6 +8530,8 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     narr = state['narr']
     narr_map = state.get('narr_map') or []
     params = state.get('params') or {}
+    if user_params:
+        params.update(user_params)  # 用户在手动调整页设置的参数（如字幕样式）覆盖默认值
     # 应用用户调整：跳过指定段，用调整后的文本/音频
     skip_set = set(skip or [])
     if adjusted_items:
@@ -9347,8 +9374,10 @@ def dispatch_movie_compose(req, prog):
         music_path = _resolve_music(req.get('music'))
         adjusted = req.get('items')
         skip = req.get('skip') or []
+        user_params = req.get('params') or {}
         final = compose_movie_from_tts(run_dir, prog, music_path=music_path,
-                                       adjusted_items=adjusted, skip=skip)
+                                       adjusted_items=adjusted, skip=skip,
+                                       user_params=user_params)
         prog['done'] = True
         prog['pct'] = 100
         if final:
@@ -9678,8 +9707,9 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
         burned = os.path.join(run_dir, 'vid_sub.mp4')
         # escape path for filter
         esc = srt_path.replace('\\', '/').replace(':', '\\:').replace('\'', '\\\'')
+        sub_style2 = _build_subtitle_style(params)
         rc, o, e = ffmpeg_run(['-y', '-i', video_path,
-                               '-vf', f"subtitles='{esc}':force_style='FontName=Microsoft YaHei,FontSize=20,Alignment=2,MarginV=40'",
+                               '-vf', f"subtitles='{esc}':force_style='{sub_style2}'",
                                ] + video_encode_args() + ['-threads', '0', '-an', burned])
         if rc == 0 and os.path.exists(burned):
             video_path = burned

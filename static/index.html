@@ -427,6 +427,28 @@
       <span style="color:#64748b;">　勾选后成片会比原片短；想保留完整原片只加字幕配音，就取消勾选。</span>
     </div>
     <div class="hint" style="margin-top:6px;"><label><input type="checkbox" id="narBgm" style="width:auto"> 加配乐（使用上方🎵选中的背景音乐，低音量铺底）</label></div>
+    <details style="margin-top:8px;">
+      <summary style="cursor:pointer;font-size:13px;color:var(--muted)">🎨 字幕样式（字号/颜色/描边/位置）</summary>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px">
+        <div class="field"><label>字号</label>
+          <input type="number" id="subFontSize" value="22" min="12" max="48" style="width:70px"></div>
+        <div class="field"><label>文字颜色</label>
+          <input type="color" id="subColor" value="#FFFFFF" style="width:50px;height:30px;padding:2px"></div>
+        <div class="field"><label>描边颜色</label>
+          <input type="color" id="subOutlineColor" value="#000000" style="width:50px;height:30px;padding:2px"></div>
+        <div class="field"><label>描边粗细</label>
+          <input type="number" id="subOutlineWidth" value="2" min="0" max="6" step="0.5" style="width:60px"></div>
+        <div class="field"><label>位置</label>
+          <select id="subAlignment" style="width:100px">
+            <option value="2">底部居中</option>
+            <option value="1">底部左</option>
+            <option value="3">底部右</option>
+            <option value="8">顶部居中</option>
+          </select></div>
+        <div class="field"><label>底边距</label>
+          <input type="number" id="subMarginV" value="50" min="10" max="200" style="width:70px"></div>
+      </div>
+    </details>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="narGo" onclick="planNarrate()">🎙 生成配音并调整</button>
       <button class="btn danger" id="narCancel" onclick="stopRun('narStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
