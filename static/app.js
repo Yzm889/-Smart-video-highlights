@@ -3421,8 +3421,8 @@ function renderTimeline(){
     if(vdur < dur - 0.3) matchColor = 'rgba(239,68,68,0.6)';
     else if(vdur > dur + 1) matchColor = 'rgba(245,158,11,0.6)';
     const offsetLabel = offset !== 0 ? (offset > 0 ? ' +'+offset.toFixed(1)+'s' : ' '+offset.toFixed(1)+'s') : '';
-    aHtml += '<div class="tl-aseg tl-audio-drag" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:rgba(139,92,246,0.15);border-radius:4px;cursor:grab;border:1px dashed '+matchColor+';transition:none">';
-    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:32px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s'+offsetLabel+'</span>';
+    aHtml += '<div class="tl-aseg tl-audio-drag" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:36px;background:rgba(139,92,246,0.15);border-radius:3px;cursor:grab;border:1px dashed '+matchColor+';transition:none">';
+    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:36px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s'+offsetLabel+'</span>';
     aHtml += '</div>';
     cumVideoForAudio += vdur;
   });
