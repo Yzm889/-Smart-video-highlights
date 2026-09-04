@@ -581,8 +581,9 @@
         <div id="timelineRuler" style="position:absolute;top:0;left:0;right:0;height:22px;border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);font-family:monospace"></div>
         <div id="videoTrack" style="position:absolute;top:24px;left:0;right:0;height:38px;border-bottom:1px solid var(--border)"></div>
         <div id="audioTrack" style="position:absolute;top:64px;left:0;right:0;height:38px"></div>
-        <div id="playhead" style="position:absolute;top:0;bottom:0;width:2px;background:#ef4444;z-index:10;pointer-events:none;display:none">
-          <div style="position:absolute;top:-2px;left:-4px;width:10px;height:10px;background:#ef4444;border-radius:50%"></div>
+        <div id="playhead" style="position:absolute;top:0;bottom:0;width:3px;background:#f43f5e;z-index:20;pointer-events:none;display:none;box-shadow:0 0 8px rgba(244,63,94,0.6)">
+          <div style="position:absolute;top:-1px;left:-6px;width:15px;height:15px;background:#f43f5e;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4)"></div>
+          <div id="playheadTime" style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);background:#f43f5e;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;white-space:nowrap;font-family:monospace"></div>
         </div>
       </div>
     </div>

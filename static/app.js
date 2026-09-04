@@ -3433,6 +3433,34 @@ function renderTimeline(){
     aSegs[ai].addEventListener('mousedown', tlStartAudioDrag);
   }
 
+  // 点击时间轴空白处定位播放头
+  if(ruler && !ruler._clickBound){
+    ruler._clickBound = true;
+    ruler.addEventListener('click', function(e){
+      var rect = ruler.getBoundingClientRect();
+      var x = e.clientX - rect.left;
+      var totalDur = _adjustState.timelineDuration || 60;
+      var pxPerSec = Math.max(6, 12 * _tlZoom);
+      var t = x / pxPerSec;
+      // 拼接时间 -> 原视频时间：找到t所在的段
+      var cum = 0;
+      if(_adjustState.items){
+        for(var ci=0; ci<_adjustState.items.length; ci++){
+          var cit = _adjustState.items[ci];
+          var cvs = cit.video_start || 0, cve = cit.video_end || 0;
+          var cvd = Math.max(0, cve - cvs);
+          if(t <= cum + cvd){
+            var origT = cvs + (t - cum);
+            seekAdjVideo(origT);
+            _playSegIndex = ci;
+            return;
+          }
+          cum += cvd;
+        }
+      }
+      seekAdjVideo(t);
+    });
+  }
   // 绑定拖拽（左裁剪|中间拖动|右裁剪）
   var allHandles = document.querySelectorAll('.tl-resize-l, .tl-resize-r, .tl-move');
   for(var i=0;i<allHandles.length;i++){
@@ -3699,18 +3727,30 @@ function seekAdjVideo(tOrIdx){
       video.currentTime = t;
     });
   }
-  updatePlayhead(t);
+  // 播放头用拼接时间轴位置（找到t所在的段，计算累计位置）
+  var compT = 0;
+  if(_adjustState.items){
+    for(var si=0; si<_adjustState.items.length; si++){
+      var sit = _adjustState.items[si];
+      var svs = sit.video_start || 0, sve = sit.video_end || 0;
+      if(t >= svs && t <= sve){ compT += Math.max(0, t - svs); break; }
+      compT += Math.max(0, sve - svs);
+    }
+  }
+  updatePlayhead(compT || t);
 }
 
 function updatePlayhead(t){
   var ph = document.getElementById('playhead');
   var inner = document.getElementById('timelineInner');
-  var video = document.getElementById('adjGlobalVideo');
   if(!ph || !inner) return;
   var totalDur = _adjustState.timelineDuration || 60;
   var left = (t / totalDur) * 100;
   ph.style.display = 'block';
   ph.style.left = left + '%';
+  // 播放头时间标签
+  var pt = document.getElementById('playheadTime');
+  if(pt) pt.textContent = fmtTime(t);
   // 更新时间显示（成片时间）
   var timeEl = document.getElementById('adjustVideoTime');
   if(timeEl){
@@ -3888,10 +3928,6 @@ function _enforceSegBounds(){
       break;
     }
   }
-}
-
-function stopPlayheadSync(){
-  if(_playheadRAF){ cancelAnimationFrame(_playheadRAF); _playheadRAF = null; }
 }
 
 // 确保全局视频源已加载
