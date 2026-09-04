@@ -67,7 +67,6 @@ def test_local_tts_respects_explicit_engine(monkeypatch, tmp_path):
 def test_edge_failure_breaks_circuit(monkeypatch, tmp_path):
     """edge-tts 连不上时连续失败应熔断，避免几十段逐段重试把任务拖成假死。
     subprocess 全部打桩为失败，测试不依赖真实网络。"""
-    import subprocess as _sp
 
     class _R:
         returncode = 1

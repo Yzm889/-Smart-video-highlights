@@ -5130,7 +5130,6 @@ def cosyvoice_speak(text, out_path, progress=None):
                     if os.path.isdir(os.path.join(COSYVOICE_REPO_DIR, 'third_party', 'Matcha-TTS')):
                         _sys.path.insert(0, os.path.join(COSYVOICE_REPO_DIR, 'third_party', 'Matcha-TTS'))
                     from cosyvoice.cli.cosyvoice import CosyVoice2
-                    import torchaudio
                     model = CosyVoice2(COSYVOICE_MODEL_DIR, load_jit=False, load_trt=False, fp16=False)
                     _COSYVOICE['model'] = model
                 finally:
@@ -5141,9 +5140,9 @@ def cosyvoice_speak(text, out_path, progress=None):
 
     if _COSYVOICE['model'] is not None:
         try:
+            import torchaudio
             model = _COSYVOICE['model']
             for i, j in enumerate(model.inference_sft(clean_text, _COSYVOICE['voice'], stream=False)):
-                import torchaudio
                 torchaudio.save(out_path, j['tts_speech'], model.sample_rate)
                 break
             return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
@@ -5216,7 +5215,6 @@ def cosyvoice_install_async():
 
     def _run():
         try:
-            import venv as _venv
             import threading as _th
             MIRROR = ['-i', 'https://mirrors.aliyun.com/pypi/simple/', '--trusted-host', 'mirrors.aliyun.com']
             # 1. 创建venv（必须用Python 3.11/3.12，PyTorch不支持3.14）
@@ -5430,7 +5428,7 @@ snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
                     else:
                         _verr = (_vfy.stderr or '')[-300:]
                         TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成（验证跳过：%s）。引擎选「CosyVoice」即可使用' % _verr.split(chr(10))[-1][:80], running=False)
-                except Exception as _ve:
+                except Exception:
                     TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成（验证超时，不影响使用）。引擎选「CosyVoice」即可使用', running=False)
             else:
                 TTS_SETUP.update(ok=False, pct=95, msg='❌ 模型文件不完整，请检查网络后重试', running=False)
@@ -9906,1197 +9904,1260 @@ class Handler(BaseHTTPRequestHandler):
             raise
         return runid
 
-    def do_GET(self):
+    # ==================== HTTP 路由处理器 ====================
+# 每个方法体与拆分前 do_GET/do_POST 内对应分支逐字一致（仅缩进变化），
+# 新增端点时：加一个 _get_/_post_ 方法 + 在下方路由表登记一行即可。
+
+    def _get_index(self):
+        idx = os.path.join(STATIC_DIR, 'index.html')
+        if os.path.exists(idx):
+            self._send_file(idx, 'text/html; charset=utf-8')
+        else:
+            self._send(500, '前端文件缺失：请确保 static/ 目录存在'.encode('utf-8'), 'text/html; charset=utf-8')
+
+    def _get_static_files(self):
         path = urlparse(self.path).path
-        if path in ('/', '/index.html'):
-            idx = os.path.join(STATIC_DIR, 'index.html')
-            if os.path.exists(idx):
-                self._send_file(idx, 'text/html; charset=utf-8')
-            else:
-                self._send(500, '前端文件缺失：请确保 static/ 目录存在'.encode('utf-8'), 'text/html; charset=utf-8')
-            return
-        if path.startswith('/static/'):
-            name = path[len('/static/'):].split('?')[0]
-            full = os.path.join(STATIC_DIR, os.path.basename(name))
-            if os.path.isfile(full):
-                ext = os.path.splitext(full)[1].lower()
-                self._send_file(full, MIME.get(ext, 'application/octet-stream'))
-                return
-            self._send(404, b'not found')
-            return
-        if path.startswith('/media/'):
-            name = path[len('/media/'):].split('?')[0]
-            # 只服务 OUTDIR（成片/中间产物）。
-            # 【安全修复】旧实现会回退到项目根 HERE —— /media/ai_config.json 可无鉴权
-            # 读出明文 API Key，/media/webui_server.py 与 /media/.git/config 同样可读。
-            # 实测确认可泄露，且 HOST=0.0.0.0（Docker）时局域网内任何人可拿。
-            # 内置图片（img1~4.png）由后端按本地路径直接交给 ffmpeg，不经 /media/，删除回退无影响。
-            full = _safe_join(OUTDIR, name)
-            if full:
-                ext = os.path.splitext(full)[1].lower()
-                self._send_file(full, MIME.get(ext, 'application/octet-stream'))
-                return
-            self._send(404, b'not found')
-            return
-        if path.startswith('/music_lib/'):
-            name = path[len('/music_lib/'):].split('?')[0]
-            full = _safe_join(MUSIC_DIR, name)
-            if full:
-                self._send_file(full, MIME.get('.mp3', 'audio/mpeg'))
-                return
-            self._send(404, b'not found')
-            return
-        if path == '/api/music/search':
-            q = parse_qs(urlparse(self.path).query).get('q', [''])[0]
-            self._send(200, json.dumps({'ok': True, 'results': search_catalog(q)}).encode('utf-8'),
-                       'application/json')
-            return
-        if path == '/api/music/use':
-            q = parse_qs(urlparse(self.path).query).get('id', [None])[0]
-            if not q:
-                self._send(200, json.dumps({'ok': False, 'error': '缺少 id'}).encode('utf-8'), 'application/json')
-                return
-            try:
-                p = download_catalog(q)
-                self._send(200, json.dumps({'ok': True, 'file': os.path.basename(p),
-                                            'url': '/music_lib/' + os.path.basename(p)}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/material/list':
-            self._send(200, json.dumps({'ok': True, 'items': material_list()}).encode('utf-8'),
-                       'application/json')
-            return
-        if path.startswith('/material_lib/'):
-            # 中文文件名：URL 里的百分号编码必须解码后再查文件（/media 一直是 ASCII 名所以没暴露过）
-            name = unquote(path[len('/material_lib/'):].split('?')[0])
-            full = _safe_join(MATERIAL_DIR, name)
-            if full:
-                # 【安全修复】素材库接受任意扩展名上传，若按 MIME 返回 text/html，
-                # 上传的 .html 会在 http://localhost:8765 同源下执行 —— 后端无鉴权，
-                # 脚本可直接调 /api/ai/config、/api/history/clear（存储型 XSS）。
-                # 统一以附件下载方式返回，浏览器不会把它当页面渲染。
-                self._send_file(full, 'application/octet-stream', attachment=True)
-                return
-            self._send(404, b'not found')
-            return
-        if path == '/api/bili/search':
-            kw = parse_qs(urlparse(self.path).query).get('kw', [''])[0].strip()
-            if not kw:
-                self._send(200, json.dumps({'ok': False, 'error': '缺少关键词'}).encode('utf-8'), 'application/json')
-                return
-            try:
-                res = bili_search(kw, 8)
-                self._send(200, json.dumps({'ok': True, 'results': res}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/bili/status':
-            self._send(200, json.dumps({'ok': True, **BILI_PULL}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts_reset':
-            # 重置edge-tts熔断状态（网络恢复后立即重新启用）
-            try:
-                _EDGE_STATE.update(fails=0, dead_until=0.0, reason='')
-                # 同时清除TLS引擎锁定，下次配音重新选择最优引擎
-                try:
-                    if hasattr(_TLS, 'tts_engine'):
-                        delattr(_TLS, 'tts_engine')
-                except Exception:
-                    pass
-                self._send(200, json.dumps({'ok': True, 'msg': '配音引擎已重置，edge-tts熔断已解除'}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts_recent':
-            # 返回最近有tts_state.json的任务列表（用于恢复配音）
-            try:
-                import glob as _glob
-                dirs = sorted(_glob.glob(os.path.join(OUTDIR, '*')), key=os.path.getmtime, reverse=True)
-                recent = []
-                for d in dirs[:20]:
-                    if os.path.isdir(d) and os.path.exists(os.path.join(d, 'tts_state.json')):
-                        import json as _j
-                        try:
-                            st = _j.load(open(os.path.join(d, 'tts_state.json'), encoding='utf-8'))
-                            recent.append({
-                                'run_dir': os.path.basename(d),
-                                'movie': st.get('movie_name', ''),
-                                'narr_count': len(st.get('narr', [])),
-                                'tts_count': len(st.get('tts_results', [])),
-                                'time': time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(d)))
-                            })
-                        except Exception:
-                            pass
-                self._send(200, json.dumps({'ok': True, 'list': recent}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts_state':
-            # 返回指定run_dir的配音列表
-            try:
-                qs = parse_qs(urlparse(self.path).query)
-                run_dir_name = (qs.get('run_dir') or [''])[0]
-                if not run_dir_name:
-                    self._send(200, json.dumps({'ok': False, 'error': '缺少run_dir'}).encode('utf-8'), 'application/json')
-                    return
-                run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
-                state_path = os.path.join(run_dir, 'tts_state.json')
-                if not os.path.exists(state_path):
-                    self._send(200, json.dumps({'ok': False, 'error': 'tts_state.json不存在'}).encode('utf-8'), 'application/json')
-                    return
-                import json as _j
-                state = _j.load(open(state_path, encoding='utf-8'))
-                tts_list = []
-                # 计算每段解说词对应的视频时间范围（聚合narr_map+segs）
-                segs_state = [tuple(s) for s in state.get('segs', [])]
-                narr_map_state = state.get('narr_map') or []
-                video_spans = {}
-                n_narr = len(state.get('narr', []))
-                if narr_map_state and len(narr_map_state) == len(segs_state):
-                    for bi in range(n_narr):
-                        bsegs = [segs_state[k] for k in range(len(segs_state)) if narr_map_state[k] == bi]
-                        if bsegs:
-                            video_spans[bi] = {'start': round(bsegs[0][0], 2), 'end': round(bsegs[-1][1], 2)}
-                video_dur = round(probe_audio_len(state['video_path']) or 0, 1)
-                # 回退：narr_map不对（全0或不匹配）时，按时长均匀分配默认位置
-                _missing = [i for i in range(n_narr) if i not in video_spans]
-                if _missing and video_dur > 0 and n_narr > 0:
-                    _step = video_dur / n_narr
-                    for i in _missing:
-                        _s = round(i * _step, 2)
-                        _e = round(min((i + 1) * _step, video_dur), 2)
-                        video_spans[i] = {'start': _s, 'end': _e}
-                    print('[DIAG] narr_map不完整，%d段默认时间按均匀分配(每段%.0f秒)' % (len(_missing), _step))
-                for i, p in state.get('tts_results', []):
-                    span = video_spans.get(i, {'start': 0, 'end': min(5.0, video_dur) if video_dur else 5.0})
-                    tts_list.append({
-                        'index': i,
-                        'text': state['narr'][i] if i < len(state.get('narr', [])) else '',
-                        'audio': os.path.relpath(p, OUTDIR).replace('\\', '/'),
-                        'duration': round(probe_audio_len(p) or 0, 1),
-                        'video_start': span['start'],
-                        'video_end': span['end']
-                    })
-                self._send(200, json.dumps({'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list, 'video_duration': video_dur, 'video_path': os.path.basename(state['video_path'])}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/video_frame':
-            # 提取视频指定时间点的帧，返回JPEG（用于手动调整时预览画面）
-            try:
-                qs = parse_qs(urlparse(self.path).query)
-                run_dir_name = (qs.get('run_dir') or [''])[0]
-                t = float((qs.get('time') or ['0'])[0])
-                if not run_dir_name:
-                    self._send(400, b'missing run_dir', 'text/plain')
-                    return
-                run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
-                state_path = os.path.join(run_dir, 'tts_state.json')
-                if not os.path.exists(state_path):
-                    self._send(404, b'state not found', 'text/plain')
-                    return
-                import json as _j
-                state = _j.load(open(state_path, encoding='utf-8'))
-                video_path = state['video_path']
-                if not os.path.exists(video_path):
-                    self._send(404, b'video not found', 'text/plain')
-                    return
-                # 用ffmpeg提取帧
-                import imageio_ffmpeg as _iff
-                ff = _iff.get_ffmpeg_exe()
-                frame_path = os.path.join(run_dir, 'preview_%d.jpg' % int(t * 1000))
-                import subprocess as _sp
-                cmd = [ff, '-y', '-ss', str(max(0, t)), '-i', video_path, '-frames:v', '1', '-q:v', '3', frame_path]
-                _sp.run(cmd, capture_output=True, timeout=30)
-                if os.path.exists(frame_path):
-                    with open(frame_path, 'rb') as f:
-                        data = f.read()
-                    self._send(200, data, 'image/jpeg')
-                else:
-                    self._send(500, b'frame extract failed', 'text/plain')
-            except Exception as e:
-                self._send(500, str(e).encode('utf-8'), 'text/plain')
-            return
-        if path == '/api/progress':
-            runid = parse_qs(urlparse(self.path).query).get('run', [None])[0]
-            if not runid or runid not in PROGRESS:
-                self._send(404, json.dumps({'error': '未知 run'}).encode('utf-8'), 'application/json')
-                return
-            self._send(200, json.dumps(PROGRESS[runid]).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/model/remove':
-            # 卸载已安装的Ollama模型
-            try:
-                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
-            except Exception:
-                body = {}
-            model = str(body.get('model', '')).strip()
-            if not model:
-                self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
-                return
-            try:
-                import subprocess as _sp
-                r = _sp.run(['ollama', 'rm', model], capture_output=True, text=True, timeout=60)
-                ok = (r.returncode == 0)
-                msg = (r.stdout or r.stderr or '').strip()[:200]
-                self._send(200, json.dumps({'ok': ok, 'msg': msg}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(500, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tasks':
-            # 任务中心：列出所有运行中+最近完成的任务，供任务中心页面多任务展示
-            tasks = []
-            for rid, p in PROGRESS.items():
-                if not isinstance(p, dict):
-                    continue
-                tasks.append({
-                    'runid': rid,
-                    'phase': p.get('phase', ''),
-                    'pct': p.get('pct', 0),
-                    'done': p.get('done', False),
-                    'error': p.get('error', ''),
-                    'file': p.get('file', ''),
-                    'mode': p.get('mode', ''),
-                    'start_time': p.get('start_time', ''),
-                })
-            # 运行中的排前面，然后按时间倒序
-            tasks.sort(key=lambda t: (t['done'], t['runid']), reverse=False)
-            self._send(200, json.dumps({'ok': True, 'tasks': tasks, 'running': sum(1 for t in tasks if not t['done'])})
-                       .encode('utf-8'), 'application/json')
-            return
-        if path == '/api/regen_segment':
-            # 增量重生成：只改某一段解说词，重生成该段TTS并重新合成，不重跑全流程
-            try:
-                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
-            except Exception:
-                body = {}
-            run_id = str(body.get('run_id', ''))
-            seg_idx = int(body.get('seg_idx', -1))
-            new_text = str(body.get('text', '')).strip()
-            if not run_id or seg_idx < 0 or not new_text:
-                self._send(400, json.dumps({'ok': False, 'error': '缺少run_id/seg_idx/text'}).encode('utf-8'), 'application/json')
-                return
-            run_dir = os.path.join(OUTDIR, run_id)
-            state_path = os.path.join(run_dir, 'state.json')
-            if not os.path.exists(state_path):
-                self._send(404, json.dumps({'ok': False, 'error': '该任务没有保存中间状态（可能是旧版本生成的）'}).encode('utf-8'), 'application/json')
-                return
-            try:
-                st = json.load(open(state_path, encoding='utf-8'))
-            except Exception as e:
-                self._send(500, json.dumps({'ok': False, 'error': f'状态读取失败: {e}'}).encode('utf-8'), 'application/json')
-                return
-            narr = st.get('narr', [])
-            if seg_idx >= len(narr):
-                self._send(400, json.dumps({'ok': False, 'error': f'段索引越界: {seg_idx}/{len(narr)}'}).encode('utf-8'), 'application/json')
-                return
-            # 更新解说词
-            narr[seg_idx] = new_text
-            st['narr'] = narr
-            # 重生成该段TTS
-            tts_paths = st.get('tts_paths', [])
-            seg_span = st['segs'][seg_idx] if seg_idx < len(st['segs']) else [0.0, 10.0]
-            _tcfg = load_ai_config().get('tts') or {}
-            use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
-            clip = None
-            if use_mimo:
-                np_ = os.path.join(run_dir, f'narr{seg_idx}_regen.mp3')
-                if ai_tts(new_text, np_):
-                    clip = np_
-            if clip is None:
-                ok, _eng, lp = local_tts_speak(new_text, os.path.join(run_dir, f'narr{seg_idx}_regen.mp3'))
-                if ok:
-                    clip = lp
-            if clip is None:
-                self._send(500, json.dumps({'ok': False, 'error': 'TTS生成失败'}).encode('utf-8'), 'application/json')
-                return
-            # 更新tts_paths和voice_spans
-            tts_paths = [list(t) for t in tts_paths]
-            found = False
-            for i, t in enumerate(tts_paths):
-                # 按起始时间匹配同一段
-                if abs(t[1] - seg_span[0]) < 0.5:
-                    tts_paths[i] = [clip, float(seg_span[0]), float(seg_span[1])]
-                    found = True
-                    break
-            if not found:
-                tts_paths.append([clip, float(seg_span[0]), float(seg_span[1])])
-            st['tts_paths'] = tts_paths
-            v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
-            voice_spans = st.get('voice_spans', {})
-            voice_spans[str(seg_idx)] = [float(seg_span[0]), min(float(seg_span[1]), float(seg_span[0]) + v_len + 0.35)]
-            st['voice_spans'] = voice_spans
-            # 重新合成
-            segs = [tuple(s) for s in st['segs']]
-            narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
-            tps = [(t[0], t[1], t[2]) for t in tts_paths]
-            vs = {int(k): tuple(v) for k, v in voice_spans.items()}
-            music_path = st.get('music_path')
-            params = st.get('params', {})
-            final = _compose_narration_video(st['src_video'], segs, narr_srt, tps, run_dir, params,
-                                             music_path=music_path, voice_spans=vs)
-            st['final'] = os.path.abspath(final) if final else None
-            json.dump(st, open(state_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
-            # 更新历史记录
-            if final:
-                try:
-                    import time as _time
-                    add_history({
-                        'time': _time.strftime('%Y-%m-%d %H:%M:%S'),
-                        'file': os.path.relpath(final, OUTDIR).replace('\\', '/'),
-                        'duration': round(probe_audio_len(final) or 0, 1),
-                        'music': None, 'voice': True, 'captions': narr,
-                        'mode': 'regen', 'w': 0, 'h': 0, 'fps': 0,
-                    })
-                except Exception:
-                    pass
-            self._send(200, json.dumps({'ok': True, 'file': os.path.relpath(final, OUTDIR).replace('\\', '/') if final else '',
-                                        'narr': narr}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/history':
-            items = load_history(50)
-            # 逐条体检：成片文件已丢失的条目标记 missing（前端降级展示，不给下载/封面入口）；
-            # 完好的条目附带 cover.jpg 封面（⑨记录里直接可预览/重生成）
-            for h in items:
-                rel = (h.get('file') or '').replace(chr(92), '/')
-                if not rel:
-                    h['missing'] = True
-                    continue
-                fp = os.path.join(OUTDIR, os.path.dirname(rel.replace('/', os.sep)), os.path.basename(rel))
-                if not os.path.isfile(fp):
-                    h['missing'] = True
-                    continue
-                cover = os.path.join(os.path.dirname(fp), 'cover.jpg')
-                if os.path.isfile(cover):
-                    h['cover'] = os.path.dirname(rel) + '/cover.jpg'
-            self._send(200, json.dumps({'ok': True, 'history': items}).encode('utf-8'),
-                       'application/json')
-            return
-        if path == '/api/ai/config':
-            cfg = load_ai_config()
-            def mask(ch):
-                ch = dict(ch or {})
-                if ch.get('api_key'):
-                    ch['api_key'] = ('*' * 6) + ch['api_key'][-4:]
-                return ch
-            self._send(200, json.dumps({
-                'ok': True,
-                'config': {'vision': mask(cfg.get('vision')), 'tts': mask(cfg.get('tts')),
-                           'local': mask(cfg.get('local')),
-                           'whisper': dict(cfg.get('whisper') or {}),
-                           'vlm': mask(cfg.get('vlm')),
-                           'tts_local': dict(cfg.get('tts_local') or {}),
-                           'mirror': dict(cfg.get('mirror') or {}),
-                           'video': dict(cfg.get('video') or {})},
-                'vision_available': _vision_available(),
-                'tts_available': _tts_available(),
-                'local_enabled': local_llm_enabled(),
-                'whisper_ready': whisper_model_ready(),
-                'vlm_enabled': vlm_enabled(),
-                'video_encoder': video_encoder_label(),
-            }).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/ai_status':
-            self._send(200, json.dumps(ai_status()).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/hardware':
-            self._send(200, json.dumps(detect_hardware()).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts/voices':
-            # 本地配音音色清单 + 各引擎就绪状态（供 AI 配置页渲染下拉与安装按钮）
-            self._send(200, json.dumps({
-                'ok': True,
-                'voices': EDGE_TTS_VOICES,
-                'edge_installed': edge_tts_available(),
-                'edge_dead': edge_tts_dead_reason(),
-                'sherpa_installed': sherpa_tts_available(),
-                'sherpa_model_ready': sherpa_tts_ready(),
-                'sherpa_model': sherpa_model_key(),
-                'sherpa_models': [{'key': k, 'label': m['label'], 'ready': _sherpa_ready(k)}
-                                  for k, m in SHERPA_TTS_MODELS.items()],
-                'cosyvoice_installed': cosyvoice_available(),
-                'cosyvoice_voice': _COSYVOICE['voice'],
-                'cfg': tts_local_cfg(),
-                'label': local_tts_label(),
-                'setup': dict(TTS_SETUP),
-            }).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/local/test':
-            ok, msg = local_llm_ping()
-            self._send(200, json.dumps({'ok': True, 'test_ok': ok, 'message': msg}).encode('utf-8'),
-                       'application/json')
-            return
-        if path == '/api/local/status':
-            ok, msg = (local_llm_ping() if local_llm_enabled() else (False, '本地模型未启用'))
-            self._send(200, json.dumps({'ok': True, 'enabled': local_llm_enabled(), 'ready': bool(ok),
-                                        'message': msg, 'model': local_llm_cfg()['model'],
-                                        'installed': _installed_local_models(),
-                                        'pulling': LOCAL_PULL['running'], 'pull_model': LOCAL_PULL['model'],
-                                        'pull_ok': LOCAL_PULL['ok'], 'pull_msg': LOCAL_PULL['msg'],
-                                        'pull_pct': LOCAL_PULL.get('pct', 0)}).encode('utf-8'),
-                           'application/json')
-            return
-        if path == '/api/ai/test':
-            # run the tests (network) and report both channels; block current thread until done
-            v_ok, v_msg = _test_vision()
-            t_ok, t_msg = _test_tts()
-            self._send(200, json.dumps({'ok': True,
-                                        'vision': {'test_ok': v_ok, 'message': v_msg},
-                                        'tts': {'test_ok': t_ok, 'message': t_msg},
-                                        }).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/whisper/status':
-            md = whisper_models_dir()
-            avail = sorted(d for d in os.listdir(md)) if os.path.isdir(md) else []
-            self._send(200, json.dumps({
-                'ok': True,
-                'selected': whisper_model_name(),
-                'models_dir': md,
-                'ready': whisper_model_ready(),
-                'downloading': WHISPER_DL['running'],
-                'download_model': WHISPER_DL['model'],
-                'download_ok': WHISPER_DL['ok'],
-                'download_msg': WHISPER_DL['msg'],
-                'available': avail,
-                'valid_models': _WHISPER_MODELS,
-            }).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/vlm/status':
-            ok, msg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
-            VLM_PULL['msg'] = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', VLM_PULL.get('msg',''))
-            self._send(200, json.dumps({'ok': True, 'enabled': vlm_enabled(), 'ready': bool(ok),
-                                        'message': msg, 'model': vlm_cfg()['model'],
-                                        'installed': _installed_local_models(),
-                                        'pulling': VLM_PULL['running'], 'pull_model': VLM_PULL['model'],
-                                        'pull_ok': VLM_PULL['ok'], 'pull_msg': VLM_PULL['msg'],
-                                        'pull_pct': VLM_PULL.get('pct', 0)}).encode('utf-8'),
-                           'application/json')
-            return
-        if path == '/api/storage':
-            # 存储管理：扫描项目磁盘占用（前端用 GET 请求）
-            try:
-                self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+        name = path[len('/static/'):].split('?')[0]
+        full = os.path.join(STATIC_DIR, os.path.basename(name))
+        if os.path.isfile(full):
+            ext = os.path.splitext(full)[1].lower()
+            self._send_file(full, MIME.get(ext, 'application/octet-stream'))
             return
         self._send(404, b'not found')
 
-    def do_POST(self):
+    def _get_media_files(self):
         path = urlparse(self.path).path
-        if path == '/api/build':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length, max_len=220 * 1024 * 1024)
-                if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>220MB)或读取失败'}).encode('utf-8'), 'application/json')
-                    return
-                runid = self._spawn(dispatch_build, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/ai/config':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                cfg = load_ai_config()
-                # incoming shape: { vision: {base_url,api_key,model}, tts:{base_url,api_key,model,voice}, local:{enabled,base_url,model,api_key} }
-                for ch in ('vision', 'tts'):
-                    inc = data.get(ch)
-                    if not isinstance(inc, dict):
-                        continue
-                    cur = dict(cfg.get(ch) or {})
-                    for k, v in inc.items():
-                        if v is not None:
-                            cur[k] = str(v).strip()
-                        elif k in cur:
-                            del cur[k]
-                    cfg[ch] = cur
-                if isinstance(data.get('local'), dict):
-                    inc = data['local']
-                    cur = dict(cfg.get('local') or {})
-                    for k in ('base_url', 'model', 'api_key'):
-                        if inc.get(k) is not None:
-                            cur[k] = str(inc[k]).strip()
-                        elif k in cur:
-                            del cur[k]
-                    if 'enabled' in inc:
-                        cur['enabled'] = bool(inc['enabled'])
-                    cfg['local'] = cur
-                if isinstance(data.get('mirror'), dict):
-                    inc = data['mirror']
-                    cur = dict(cfg.get('mirror') or {})
-                    if inc.get('hf_endpoint') is not None:
-                        cur['hf_endpoint'] = str(inc['hf_endpoint']).strip()
-                    if inc.get('ollama_proxy') is not None:
-                        cur['ollama_proxy'] = str(inc['ollama_proxy']).strip()
-                    if 'use_hf_mirror' in inc:
-                        cur['use_hf_mirror'] = bool(inc['use_hf_mirror'])
-                    cfg['mirror'] = cur
-                if isinstance(data.get('whisper'), dict):
-                    inc = data['whisper']
-                    cur = dict(cfg.get('whisper') or {})
-                    if inc.get('model') is not None:
-                        cur['model'] = str(inc['model']).strip()
-                    cfg['whisper'] = cur
-                if isinstance(data.get('vlm'), dict):
-                    inc = data['vlm']
-                    cur = dict(cfg.get('vlm') or {})
-                    for k in ('base_url', 'model', 'api_key', 'mode'):
-                        if inc.get(k) is not None:
-                            cur[k] = str(inc[k]).strip()
-                        elif k in cur:
-                            del cur[k]
-                    if 'enabled' in inc:
-                        cur['enabled'] = bool(inc['enabled'])
-                    cfg['vlm'] = cur
-                if isinstance(data.get('tts_local'), dict):
-                    # 本地免费配音：engine(auto|edge|sherpa|sapi) + voice + rate
-                    inc = data['tts_local']
-                    cur = dict(cfg.get('tts_local') or {})
-                    eng = str(inc.get('engine') or '').strip().lower()
-                    if eng in ('auto', 'edge', 'sherpa', 'sapi'):
-                        cur['engine'] = eng
-                    if inc.get('voice'):
-                        cur['voice'] = str(inc['voice']).strip()
-                    mk = str(inc.get('sherpa_model') or '').strip()
-                    if mk in SHERPA_TTS_MODELS:
-                        cur['sherpa_model'] = mk
-                    rate = str(inc.get('rate') or '').strip()
-                    if rate:
-                        if not rate.startswith(('+', '-')):
-                            rate = '+' + rate.replace('%', '')
-                        if not rate.endswith('%'):
-                            rate += '%'
-                        cur['rate'] = rate
-                    cfg['tts_local'] = cur
-                if isinstance(data.get('video'), dict):
-                    # 编码策略：auto(默认·GPU可用则用) / cpu / gpu
-                    inc = data['video']
-                    cur = dict(cfg.get('video') or {})
-                    enc = str(inc.get('encoder') or '').strip().lower()
-                    if enc in ('auto', 'cpu', 'gpu'):
-                        cur['encoder'] = enc
-                    cfg['video'] = cur
-                save_ai_config(cfg)
-                self._send(200, json.dumps({'ok': True,
-                                            'vision_available': _vision_available(),
-                                            'tts_available': _tts_available(),
-                                            'video_encoder': video_encoder_label()}).encode('utf-8'),
-                              'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/whisper/download':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok, msg = whisper_download_async(data.get('model'))
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/vlm/pull':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok, msg = vlm_pull_async(data.get('model'))
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/local/pull':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok, msg = local_pull_async(data.get('model'))
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/mirror/scan':
-            # 自动探测可用 Ollama 安装包镜像，免去人工替换失效链接；并发探测（约 6s）后返回可用列表与推荐。
-            try:
-                self._send(200, json.dumps({'ok': True, 'result': scan_ollama_mirrors()}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts/install':
-            # 安装本地配音引擎（pip）：edge-tts（免 Key·需联网）/ sherpa-onnx（离线推理运行时）
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok, msg = tts_install_async(str(data.get('pkg') or 'edge-tts'))
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
-                           'application/json')
-            return
-        if path == '/api/tts/install_chattts':
-            # 安装 ChatTTS：创建 Python 3.11 venv + CUDA torch + ChatTTS（后台异步）
-            try:
-                ok, msg = tts_install_chattts_async()
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
-                           'application/json')
-            return
-        if path == '/api/tts/cosyvoice/install':
-            # 一键安装 CosyVoice（venv+PyTorch+仓库+9GB模型）
-            try:
-                ok, msg = cosyvoice_install_async()
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts/cosyvoice/voices':
-            _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
-            _voices = []
-            if os.path.isdir(_vdir):
-                for _f in sorted(os.listdir(_vdir)):
-                    if _f.endswith('.wav') or _f.endswith('.mp3'):
-                        _name = os.path.splitext(_f)[0]
-                        _voices.append({'name': _name, 'file': _f,
-                                        'custom': _name not in ['中文女','中文男','英文女','英文男','粤语女','日语女']})
-            self._send(200, json.dumps({'ok': True, 'voices': _voices}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts/cosyvoice/add_voice':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                _name = (data.get('name') or '').strip()
-                _audio_b64 = data.get('audio') or ''
-                if not _name or not _audio_b64:
-                    self._send(200, json.dumps({'ok': False, 'error': '需要音色名称和音频'}).encode('utf-8'), 'application/json')
-                    return
-                import base64, re
-                # 放宽正则：支持 audio/m4a, audio/mp4, audio/x-m4a, audio/wav, audio/webm 等
-                _audio_b64 = re.sub(r'^data:audio/[^;]+;base64,', '', _audio_b64)
-                try:
-                    _audio_data = base64.b64decode(_audio_b64)
-                except Exception as _e:
-                    self._send(200, json.dumps({'ok': False, 'error': '音频解码失败: ' + str(_e)[:100]}).encode('utf-8'), 'application/json')
-                    return
-                if len(_audio_data) < 1000:
-                    self._send(200, json.dumps({'ok': False, 'error': '音频文件太小（<1KB），请上传3秒以上的清晰人声'}).encode('utf-8'), 'application/json')
-                    return
-                _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
-                os.makedirs(_vdir, exist_ok=True)
-                # 用随机临时名避免中文/特殊字符问题
-                import uuid as _uuid
-                _tmp = os.path.join(_vdir, '_clone_' + _uuid.uuid4().hex[:8] + '.bin')
-                _out = os.path.join(_vdir, _name + '.wav')
-                with open(_tmp, 'wb') as f:
-                    f.write(_audio_data)
-                _ff_err = ''
-                try:
-                    import imageio_ffmpeg, subprocess as _sp
-                    _ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-                    _r = _sp.run([_ffmpeg, '-y', '-i', _tmp, '-ar', '16000', '-ac', '1', _out],
-                                 capture_output=True, timeout=120)
-                    if _r.returncode != 0:
-                        _ff_err = _r.stderr.decode('utf-8', errors='ignore')[-300:]
-                except Exception as _e:
-                    _ff_err = str(_e)[:200]
-                # 清理临时文件
-                if os.path.exists(_tmp):
-                    try: os.unlink(_tmp)
-                    except: pass
-                if os.path.exists(_out) and os.path.getsize(_out) > 1000:
-                    self._send(200, json.dumps({'ok': True, 'name': _name}).encode('utf-8'), 'application/json')
-                else:
-                    _err = '音频转换失败'
-                    if _ff_err:
-                        _err += ': ' + _ff_err[:150]
-                    self._send(200, json.dumps({'ok': False, 'error': _err}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts/model/download':
-            # 下载离线中文配音模型到 models/tts/<name>/（可选 model 指定下载哪一个）
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok, msg = tts_model_download_async(data.get('model'))
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
-                           'application/json')
-            return
-        if path == '/api/tts/model/uninstall':
-            # 卸载已下载的离线配音模型（删除 models/tts/<name>/ 目录）
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok, msg = tts_model_uninstall(str(data.get('model') or ''))
-                self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
-                           'application/json')
-            return
-        if path == '/api/tts/test':
-            # 试听：用当前配置朗读一句，返回可播放的音频（相对 /media 的路径）
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok, msg, engine, rel = tts_test_speak(str(data.get('text') or '这是一段中文配音试听。'))
-                self._send(200, json.dumps({'ok': ok, 'message': msg, 'engine': engine,
-                                            'file': rel}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
-                           'application/json')
-            return
-        if path == '/api/cancel':
-            # 取消任务：置 abort 标记（ffmpeg_run 每 0.3s 轮询到后立即终止并抛 AbortError）+
-            # 立即 terminate 正在运行的 ffmpeg 进程，保证合成/解说可真正中断
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                runid = data.get('runid')
-                if runid and runid in PROGRESS:
-                    PROGRESS[runid]['abort'] = True
-                    with _PROC_LOCK:
-                        proc = RUN_PROCS.get(runid)
-                    if proc is not None:
-                        try:
-                            proc.terminate()
-                        except Exception:
-                            pass
-                        try:
-                            proc.wait(timeout=2)
-                        except Exception:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-                    self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
-                else:
-                    self._send(200, json.dumps({'ok': False, 'error': '未知 run'}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/history/delete':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length) if length else b'{}'
-                data = json.loads(raw.decode('utf-8') or '{}')
-                ok = delete_history(data.get('file'))
-                self._send(200, json.dumps({'ok': ok}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/history/clear':
-            try:
-                clear_history()
-                self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/cover':
-            # 封面生成：ts 为空 → 智能选帧（返回全部候选缩略图供换帧）；带 ts → 按当前设置重渲染
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                fp = _safe_join(OUTDIR, data.get('file') or '')
-                if not fp:
-                    raise RuntimeError('视频不存在或不在产物目录内')
-                run_dir = os.path.dirname(fp)
-                rel = lambda p: os.path.relpath(p, OUTDIR).replace('\\', '/')
-                title = str(data.get('title') or '')[:80]
-                sub = str(data.get('sub') or '')[:40]
-                style = max(0, min(2, int(data.get('style') or 0)))
-                cand_dir = os.path.join(run_dir, 'cover_cand')
-                list_json = os.path.join(cand_dir, 'list.json')
-                cands = []
-                if os.path.isfile(list_json):
-                    try:
-                        with open(list_json, 'r', encoding='utf-8') as f:
-                            cands = json.load(f)
-                    except Exception:
-                        cands = []
-                ts = data.get('ts')
-                if ts is None or not cands:
-                    cands = _cover_candidates(fp, run_dir)
-                    if not cands:
-                        raise RuntimeError('候选帧抽取失败')
-                    ts = max(cands, key=lambda c: c['score'])['ts']
-                    try:
-                        os.makedirs(cand_dir, exist_ok=True)
-                        with open(list_json, 'w', encoding='utf-8') as f:
-                            json.dump(cands, f, ensure_ascii=False)
-                    except Exception:
-                        pass
-                else:
-                    ts = round(float(ts), 2)
-                cover = os.path.join(run_dir, 'cover.jpg')
-                _cover_render(fp, ts, title, sub, style, cover)
-                for c in cands:
-                    c['thumb'] = rel(os.path.join(cand_dir, os.path.basename(c['thumb'])))
-                self._send(200, json.dumps({'ok': True, 'cover': rel(cover), 'ts': ts, 'title': title,
-                                            'candidates': cands}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/material/upload':
-            # 小文件（≤64MB 由前端判定）直接 base64 存入素材库
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=220 * 1024 * 1024) or {}
-                name, err = material_save_bytes(data.get('name') or '',
-                                                base64.b64decode(data.get('data', '') or ''))
-                self._send(200, json.dumps({'ok': bool(name), 'name': name, 'error': err}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/material/from_upload':
-            # 大文件：把分片上传会话的成品 move 进素材库
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                src = _upload_final_path(data.get('upload_id'), data.get('name'))
-                if not src:
-                    raise RuntimeError('上传会话不存在或未完成')
-                name = material_save_file(src)
-                try:
-                    d = _upload_dir_of(data.get('upload_id'))
-                    if d and os.path.isdir(d):
-                        shutil.rmtree(d, ignore_errors=True)
-                except OSError:
-                    pass
-                self._send(200, json.dumps({'ok': True, 'name': name}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/material/save_from_media':
-            # 把产物目录里的文件（如 B 站下载的视频）复制进素材库
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                src = _safe_join(OUTDIR, data.get('file') or '')
-                if not src:
-                    raise RuntimeError('源文件不存在')
-                name = material_save_file(src)
-                self._send(200, json.dumps({'ok': True, 'name': name}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/material/delete':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                ok, err = material_delete(data.get('name') or '')
-                self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/bili/download':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                self._send(200, json.dumps(_bili_start_download((data.get('bvid') or '').strip())).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/bili/cancel':
-            try:
-                BILI_PULL['abort'] = True
-                self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/upload/init':
-            # 大视频分片上传第一步：开会话；带 upload_id 则为断点续传（返回已到齐分片列表，
-            # 前端跳过这些分片——会话在磁盘上，服务重启后也能续传）。顺手清理超 24h 的废弃会话。
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                have = None
-                uid = data.get('upload_id')
-                if uid:
-                    d = _upload_dir_of(uid)
-                    if d is not None and os.path.isdir(d) and any(
-                            fn.startswith('final__') for fn in os.listdir(d)):
-                        uid = None   # 该会话已完成（成品待任务取走）→ 按新会话处理，避免重传覆盖
-                    else:
-                        have = _upload_have_parts(uid)
-                        if have is None:
-                            uid = None   # 会话过期/非法 → 按新会话处理
-                if uid is None:
-                    uid = 'up-%d-%s' % (int(time.time() * 1000), ''.join(random.choice('0123456789abcdef') for _ in range(6)))
-                    d = _upload_dir_of(uid)
-                    if d is None:
-                        raise RuntimeError('会话 id 生成失败')
-                    os.makedirs(d, exist_ok=True)
-                    have = []
-                # 清理放在会话创建之后：新会话也计入数量上限（否则长期停在 上限+1）
-                _upload_prune()
-                self._send(200, json.dumps({'ok': True, 'upload_id': uid, 'have': have}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/upload/chunk':
-            # 单分片：支持 FormData 二进制直传（新，省 base64 1.37x 膨胀+CPU 编码）和 JSON base64（旧兼容）
-            try:
-                ctype = self.headers.get('Content-Type', '')
-                if 'multipart/form-data' in ctype:
-                    boundary = ctype.split('boundary=')[-1].strip().encode()
-                    length = int(self.headers.get('Content-Length', 0))
-                    raw = self.rfile.read(length) if length else b''
-                    fields = _parse_multipart(raw, boundary)
-                    ok, err = _upload_chunk_write(fields.get('upload_id'), fields.get('idx'),
-                                                  fields.get('chunk') or b'')
-                else:
-                    length = int(self.headers.get('Content-Length', 0))
-                    data = self._read_json(length, max_len=16 * 1024 * 1024)
-                    if data is None:
-                        raise RuntimeError('分片过大或读取失败')
-                    ok, err = _upload_chunk_write(data.get('upload_id'), data.get('idx'),
-                                                  base64.b64decode(data.get('data', '') or ''))
-                self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/upload/done':
-            # 收尾：按序合并分片。成品留在会话目录，由任务 dispatch 取走（move，免二次拷贝）
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                final, err = _upload_finalize(data.get('upload_id'), data.get('name'), data.get('chunks'))
-                self._send(200, json.dumps({'ok': bool(final), 'error': err,
-                                            'size': os.path.getsize(final) if final else 0}).encode('utf-8'),
-                           'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/beatcut':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length, max_len=300 * 1024 * 1024)
-                if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
-                    return
-                runid = self._spawn(dispatch_beatcut, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/narrate':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length, max_len=300 * 1024 * 1024)
-                if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
-                    return
-                runid = self._spawn(dispatch_narrate, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/narrate_movie':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length, max_len=300 * 1024 * 1024)
-                if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
-                    return
-                runid = self._spawn(dispatch_movie, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/movie_tts':
-            # 两步走·第一步：生成解说稿+所有配音，暂停等用户确认
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length, max_len=300 * 1024 * 1024)
-                if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大或读取失败'}).encode('utf-8'), 'application/json')
-                    return
-                runid = self._spawn(dispatch_movie_tts, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/movie_compose':
-            # 两步走·第二步：用户确认配音后，裁剪视频+合成
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length) if length else {}
-                if req is None:
-                    req = {}
-                runid = self._spawn(dispatch_movie_compose, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts_single':
-            # 单段配音重生成
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length) if length else {}
-                if req is None:
-                    req = {}
-                runid = self._spawn(dispatch_tts_single, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/tts_regen_all':
-            # 全部配音重生成
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length) if length else {}
-                if req is None:
-                    req = {}
-                runid = self._spawn(dispatch_tts_regen_all, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/plan':
-            # 人机协同·分析：分析素材生成「规划方案」，等待用户在预览界面微调
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length, max_len=300 * 1024 * 1024)
-                if req is None:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
-                    return
-                runid = self._spawn(_analyze_plan_job, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/confirm':
-            # 人机协同·渲染：按用户微调后的方案合成成片
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                req = self._read_json(length) if length else {}
-                if req is None:
-                    req = {}
-                runid = req.get('runid')
-                if not runid or runid not in PROGRESS or runid not in PLANS:
-                    self._send(200, json.dumps({'ok': False, 'error': '方案不存在或已过期，请重新分析'}).encode('utf-8'), 'application/json')
-                    return
-                nrunid = self._spawn(_render_plan_job, req)
-                self._send(200, json.dumps({'ok': True, 'runid': nrunid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/narrate/align':
-            # 解说词驱动的分镜重匹配：用户改完解说词后，按新解说把候选镜头重新分配、重剪分镜
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = json.loads(self.rfile.read(length).decode('utf-8') or '{}') if length else {}
-                runid = data.get('runid')
-                plan = PLANS.get(runid) if runid else None
-                if not plan or plan.get('type') != 'narrate':
-                    self._send(200, json.dumps({'ok': False, 'error': '方案不存在/已过期或不是解说方案，请重新分析'}).encode('utf-8'), 'application/json')
-                    return
-                lines = [str(x).strip() for x in (data.get('lines') or []) if str(x).strip()]
-                if not lines:
-                    self._send(200, json.dumps({'ok': False, 'error': '解说词为空'}).encode('utf-8'), 'application/json')
-                    return
-                shots = plan.get('shots') or plan.get('segs') or []
-                use_model = (str(data.get('mode') or 'auto').lower() != 'algo')
-                segs, src = _align_shots_to_lines(shots, lines, plan.get('asr'),
-                                                 plan.get('params'), use_model=use_model)
-                if not segs:
-                    self._send(200, json.dumps({'ok': False, 'error': '分镜重匹配失败'}).encode('utf-8'), 'application/json')
-                    return
-                # 回写方案：后续 /api/confirm 直接用新分镜渲染
-                plan['segs'] = segs
-                plan['narr'] = lines
-                plan['align_source'] = src
-                try:
-                    plan['thumbs'] = _plan_thumbs(plan['video'], segs,
-                                                  plan.get('run_dir') or os.path.dirname(plan['video']))
-                except Exception:
-                    pass
-                rel = lambda p: (os.path.relpath(p, OUTDIR).replace('\\', '/') if p and os.path.exists(p) else '')
-                self._send(200, json.dumps({
-                    'ok': True, 'source': src, 'shots': len(shots),
-                    'msg': ('已按解说词语义重新匹配分镜' if src == 'model' else '模型不可用，已按解说词长度比例分配分镜'),
-                    'segs': [{'i': i, 'start': round(a, 3), 'end': round(b, 3), 'caption': c,
-                              'thumb': rel(plan.get('thumbs', {}).get(i))}
-                             for i, ((a, b), c) in enumerate(zip(segs, lines))],
-                }).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/instruct':
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                if length > 300 * 1024 * 1024:
-                    self._send(200, json.dumps({'ok': False, 'error': '请求过大'}).encode('utf-8'), 'application/json')
-                    return
-                req = self._read_json(length) or {}
-                runid = self._spawn(dispatch_instruct, req)
-                self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/storage':
-            # 扫描项目内各类磁盘占用，分组返回（供存储管理面板展示）
-            try:
-                self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/storage/delete':
-            # 删除单条可清理项：路径必须命中白名单且仍在项目内（防穿越/越权）
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                data = self._read_json(length, max_len=64 * 1024) or {}
-                full = _storage_resolve_deletable(data.get('path') or '')
-                if not full:
-                    raise RuntimeError('该路径不在可清理范围内，或尝试越权删除（已拒绝）')
-                if os.path.isdir(full):
-                    shutil.rmtree(full)
-                else:
-                    os.remove(full)
-                self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
-            return
-        if path == '/api/model/remove':
-            # 卸载已安装的Ollama模型（POST版，前端用POST调用）
-            try:
-                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
-            except Exception:
-                body = {}
-            model = str(body.get('model', '')).strip()
-            if not model:
-                self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
-                return
-            try:
-                import subprocess as _sp
-                r = _sp.run(['ollama', 'rm', model], capture_output=True, text=True, timeout=60)
-                ok = (r.returncode == 0)
-                msg = (r.stdout or r.stderr or '').strip()[:200]
-                self._send(200, json.dumps({'ok': ok, 'msg': msg, 'error': '' if ok else msg}).encode('utf-8'), 'application/json')
-            except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
+        name = path[len('/media/'):].split('?')[0]
+        # 只服务 OUTDIR（成片/中间产物）。
+        # 【安全修复】旧实现会回退到项目根 HERE —— /media/ai_config.json 可无鉴权
+        # 读出明文 API Key，/media/webui_server.py 与 /media/.git/config 同样可读。
+        # 实测确认可泄露，且 HOST=0.0.0.0（Docker）时局域网内任何人可拿。
+        # 内置图片（img1~4.png）由后端按本地路径直接交给 ffmpeg，不经 /media/，删除回退无影响。
+        full = _safe_join(OUTDIR, name)
+        if full:
+            ext = os.path.splitext(full)[1].lower()
+            self._send_file(full, MIME.get(ext, 'application/octet-stream'))
             return
         self._send(404, b'not found')
+
+    def _get_music_lib_files(self):
+        path = urlparse(self.path).path
+        name = path[len('/music_lib/'):].split('?')[0]
+        full = _safe_join(MUSIC_DIR, name)
+        if full:
+            self._send_file(full, MIME.get('.mp3', 'audio/mpeg'))
+            return
+        self._send(404, b'not found')
+
+    def _get_music_search(self):
+        q = parse_qs(urlparse(self.path).query).get('q', [''])[0]
+        self._send(200, json.dumps({'ok': True, 'results': search_catalog(q)}).encode('utf-8'),
+                   'application/json')
+
+    def _get_music_use(self):
+        q = parse_qs(urlparse(self.path).query).get('id', [None])[0]
+        if not q:
+            self._send(200, json.dumps({'ok': False, 'error': '缺少 id'}).encode('utf-8'), 'application/json')
+            return
+        try:
+            p = download_catalog(q)
+            self._send(200, json.dumps({'ok': True, 'file': os.path.basename(p),
+                                        'url': '/music_lib/' + os.path.basename(p)}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _get_material_list(self):
+        self._send(200, json.dumps({'ok': True, 'items': material_list()}).encode('utf-8'),
+                   'application/json')
+
+    def _get_material_lib_files(self):
+        path = urlparse(self.path).path
+        name = unquote(path[len('/material_lib/'):].split('?')[0])
+        full = _safe_join(MATERIAL_DIR, name)
+        if full:
+            # 【安全修复】素材库接受任意扩展名上传，若按 MIME 返回 text/html，
+            # 上传的 .html 会在 http://localhost:8765 同源下执行 —— 后端无鉴权，
+            # 脚本可直接调 /api/ai/config、/api/history/clear（存储型 XSS）。
+            # 统一以附件下载方式返回，浏览器不会把它当页面渲染。
+            self._send_file(full, 'application/octet-stream', attachment=True)
+            return
+        self._send(404, b'not found')
+
+    def _get_bili_search(self):
+        kw = parse_qs(urlparse(self.path).query).get('kw', [''])[0].strip()
+        if not kw:
+            self._send(200, json.dumps({'ok': False, 'error': '缺少关键词'}).encode('utf-8'), 'application/json')
+            return
+        try:
+            res = bili_search(kw, 8)
+            self._send(200, json.dumps({'ok': True, 'results': res}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+
+    def _get_bili_status(self):
+        self._send(200, json.dumps({'ok': True, **BILI_PULL}).encode('utf-8'), 'application/json')
+
+    def _get_tts_reset(self):
+        try:
+            _EDGE_STATE.update(fails=0, dead_until=0.0, reason='')
+            # 同时清除TLS引擎锁定，下次配音重新选择最优引擎
+            try:
+                if hasattr(_TLS, 'tts_engine'):
+                    delattr(_TLS, 'tts_engine')
+            except Exception:
+                pass
+            self._send(200, json.dumps({'ok': True, 'msg': '配音引擎已重置，edge-tts熔断已解除'}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _get_tts_recent(self):
+        try:
+            import glob as _glob
+            dirs = sorted(_glob.glob(os.path.join(OUTDIR, '*')), key=os.path.getmtime, reverse=True)
+            recent = []
+            for d in dirs[:20]:
+                if os.path.isdir(d) and os.path.exists(os.path.join(d, 'tts_state.json')):
+                    import json as _j
+                    try:
+                        st = _j.load(open(os.path.join(d, 'tts_state.json'), encoding='utf-8'))
+                        recent.append({
+                            'run_dir': os.path.basename(d),
+                            'movie': st.get('movie_name', ''),
+                            'narr_count': len(st.get('narr', [])),
+                            'tts_count': len(st.get('tts_results', [])),
+                            'time': time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(d)))
+                        })
+                    except Exception:
+                        pass
+            self._send(200, json.dumps({'ok': True, 'list': recent}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _get_tts_state(self):
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            run_dir_name = (qs.get('run_dir') or [''])[0]
+            if not run_dir_name:
+                self._send(200, json.dumps({'ok': False, 'error': '缺少run_dir'}).encode('utf-8'), 'application/json')
+                return
+            run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+            state_path = os.path.join(run_dir, 'tts_state.json')
+            if not os.path.exists(state_path):
+                self._send(200, json.dumps({'ok': False, 'error': 'tts_state.json不存在'}).encode('utf-8'), 'application/json')
+                return
+            import json as _j
+            state = _j.load(open(state_path, encoding='utf-8'))
+            tts_list = []
+            # 计算每段解说词对应的视频时间范围（聚合narr_map+segs）
+            segs_state = [tuple(s) for s in state.get('segs', [])]
+            narr_map_state = state.get('narr_map') or []
+            video_spans = {}
+            n_narr = len(state.get('narr', []))
+            if narr_map_state and len(narr_map_state) == len(segs_state):
+                for bi in range(n_narr):
+                    bsegs = [segs_state[k] for k in range(len(segs_state)) if narr_map_state[k] == bi]
+                    if bsegs:
+                        video_spans[bi] = {'start': round(bsegs[0][0], 2), 'end': round(bsegs[-1][1], 2)}
+            video_dur = round(probe_audio_len(state['video_path']) or 0, 1)
+            # 回退：narr_map不对（全0或不匹配）时，按时长均匀分配默认位置
+            _missing = [i for i in range(n_narr) if i not in video_spans]
+            if _missing and video_dur > 0 and n_narr > 0:
+                _step = video_dur / n_narr
+                for i in _missing:
+                    _s = round(i * _step, 2)
+                    _e = round(min((i + 1) * _step, video_dur), 2)
+                    video_spans[i] = {'start': _s, 'end': _e}
+                print('[DIAG] narr_map不完整，%d段默认时间按均匀分配(每段%.0f秒)' % (len(_missing), _step))
+            for i, p in state.get('tts_results', []):
+                span = video_spans.get(i, {'start': 0, 'end': min(5.0, video_dur) if video_dur else 5.0})
+                tts_list.append({
+                    'index': i,
+                    'text': state['narr'][i] if i < len(state.get('narr', [])) else '',
+                    'audio': os.path.relpath(p, OUTDIR).replace('\\', '/'),
+                    'duration': round(probe_audio_len(p) or 0, 1),
+                    'video_start': span['start'],
+                    'video_end': span['end']
+                })
+            self._send(200, json.dumps({'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list, 'video_duration': video_dur, 'video_path': os.path.basename(state['video_path'])}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _get_video_frame(self):
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            run_dir_name = (qs.get('run_dir') or [''])[0]
+            t = float((qs.get('time') or ['0'])[0])
+            if not run_dir_name:
+                self._send(400, b'missing run_dir', 'text/plain')
+                return
+            run_dir = os.path.join(OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+            state_path = os.path.join(run_dir, 'tts_state.json')
+            if not os.path.exists(state_path):
+                self._send(404, b'state not found', 'text/plain')
+                return
+            import json as _j
+            state = _j.load(open(state_path, encoding='utf-8'))
+            video_path = state['video_path']
+            if not os.path.exists(video_path):
+                self._send(404, b'video not found', 'text/plain')
+                return
+            # 用ffmpeg提取帧
+            import imageio_ffmpeg as _iff
+            ff = _iff.get_ffmpeg_exe()
+            frame_path = os.path.join(run_dir, 'preview_%d.jpg' % int(t * 1000))
+            import subprocess as _sp
+            cmd = [ff, '-y', '-ss', str(max(0, t)), '-i', video_path, '-frames:v', '1', '-q:v', '3', frame_path]
+            _sp.run(cmd, capture_output=True, timeout=30)
+            if os.path.exists(frame_path):
+                with open(frame_path, 'rb') as f:
+                    data = f.read()
+                self._send(200, data, 'image/jpeg')
+            else:
+                self._send(500, b'frame extract failed', 'text/plain')
+        except Exception as e:
+            self._send(500, str(e).encode('utf-8'), 'text/plain')
+
+    def _get_progress(self):
+        runid = parse_qs(urlparse(self.path).query).get('run', [None])[0]
+        if not runid or runid not in PROGRESS:
+            self._send(404, json.dumps({'error': '未知 run'}).encode('utf-8'), 'application/json')
+            return
+        self._send(200, json.dumps(PROGRESS[runid]).encode('utf-8'), 'application/json')
+
+    def _get_model_remove(self):
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        except Exception:
+            body = {}
+        model = str(body.get('model', '')).strip()
+        if not model:
+            self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
+            return
+        try:
+            import subprocess as _sp
+            r = _sp.run(['ollama', 'rm', model], capture_output=True, text=True, timeout=60)
+            ok = (r.returncode == 0)
+            msg = (r.stdout or r.stderr or '').strip()[:200]
+            self._send(200, json.dumps({'ok': ok, 'msg': msg}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(500, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _get_tasks(self):
+        tasks = []
+        for rid, p in PROGRESS.items():
+            if not isinstance(p, dict):
+                continue
+            tasks.append({
+                'runid': rid,
+                'phase': p.get('phase', ''),
+                'pct': p.get('pct', 0),
+                'done': p.get('done', False),
+                'error': p.get('error', ''),
+                'file': p.get('file', ''),
+                'mode': p.get('mode', ''),
+                'start_time': p.get('start_time', ''),
+            })
+        # 运行中的排前面，然后按时间倒序
+        tasks.sort(key=lambda t: (t['done'], t['runid']), reverse=False)
+        self._send(200, json.dumps({'ok': True, 'tasks': tasks, 'running': sum(1 for t in tasks if not t['done'])})
+                   .encode('utf-8'), 'application/json')
+
+    def _get_regen_segment(self):
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        except Exception:
+            body = {}
+        run_id = str(body.get('run_id', ''))
+        seg_idx = int(body.get('seg_idx', -1))
+        new_text = str(body.get('text', '')).strip()
+        if not run_id or seg_idx < 0 or not new_text:
+            self._send(400, json.dumps({'ok': False, 'error': '缺少run_id/seg_idx/text'}).encode('utf-8'), 'application/json')
+            return
+        run_dir = os.path.join(OUTDIR, run_id)
+        state_path = os.path.join(run_dir, 'state.json')
+        if not os.path.exists(state_path):
+            self._send(404, json.dumps({'ok': False, 'error': '该任务没有保存中间状态（可能是旧版本生成的）'}).encode('utf-8'), 'application/json')
+            return
+        try:
+            st = json.load(open(state_path, encoding='utf-8'))
+        except Exception as e:
+            self._send(500, json.dumps({'ok': False, 'error': f'状态读取失败: {e}'}).encode('utf-8'), 'application/json')
+            return
+        narr = st.get('narr', [])
+        if seg_idx >= len(narr):
+            self._send(400, json.dumps({'ok': False, 'error': f'段索引越界: {seg_idx}/{len(narr)}'}).encode('utf-8'), 'application/json')
+            return
+        # 更新解说词
+        narr[seg_idx] = new_text
+        st['narr'] = narr
+        # 重生成该段TTS
+        tts_paths = st.get('tts_paths', [])
+        seg_span = st['segs'][seg_idx] if seg_idx < len(st['segs']) else [0.0, 10.0]
+        _tcfg = load_ai_config().get('tts') or {}
+        use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
+        clip = None
+        if use_mimo:
+            np_ = os.path.join(run_dir, f'narr{seg_idx}_regen.mp3')
+            if ai_tts(new_text, np_):
+                clip = np_
+        if clip is None:
+            ok, _eng, lp = local_tts_speak(new_text, os.path.join(run_dir, f'narr{seg_idx}_regen.mp3'))
+            if ok:
+                clip = lp
+        if clip is None:
+            self._send(500, json.dumps({'ok': False, 'error': 'TTS生成失败'}).encode('utf-8'), 'application/json')
+            return
+        # 更新tts_paths和voice_spans
+        tts_paths = [list(t) for t in tts_paths]
+        found = False
+        for i, t in enumerate(tts_paths):
+            # 按起始时间匹配同一段
+            if abs(t[1] - seg_span[0]) < 0.5:
+                tts_paths[i] = [clip, float(seg_span[0]), float(seg_span[1])]
+                found = True
+                break
+        if not found:
+            tts_paths.append([clip, float(seg_span[0]), float(seg_span[1])])
+        st['tts_paths'] = tts_paths
+        v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
+        voice_spans = st.get('voice_spans', {})
+        voice_spans[str(seg_idx)] = [float(seg_span[0]), min(float(seg_span[1]), float(seg_span[0]) + v_len + 0.35)]
+        st['voice_spans'] = voice_spans
+        # 重新合成
+        segs = [tuple(s) for s in st['segs']]
+        narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
+        tps = [(t[0], t[1], t[2]) for t in tts_paths]
+        vs = {int(k): tuple(v) for k, v in voice_spans.items()}
+        music_path = st.get('music_path')
+        params = st.get('params', {})
+        final = _compose_narration_video(st['src_video'], segs, narr_srt, tps, run_dir, params,
+                                         music_path=music_path, voice_spans=vs)
+        st['final'] = os.path.abspath(final) if final else None
+        json.dump(st, open(state_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+        # 更新历史记录
+        if final:
+            try:
+                import time as _time
+                add_history({
+                    'time': _time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'file': os.path.relpath(final, OUTDIR).replace('\\', '/'),
+                    'duration': round(probe_audio_len(final) or 0, 1),
+                    'music': None, 'voice': True, 'captions': narr,
+                    'mode': 'regen', 'w': 0, 'h': 0, 'fps': 0,
+                })
+            except Exception:
+                pass
+        self._send(200, json.dumps({'ok': True, 'file': os.path.relpath(final, OUTDIR).replace('\\', '/') if final else '',
+                                    'narr': narr}).encode('utf-8'), 'application/json')
+
+    def _get_history(self):
+        items = load_history(50)
+        # 逐条体检：成片文件已丢失的条目标记 missing（前端降级展示，不给下载/封面入口）；
+        # 完好的条目附带 cover.jpg 封面（⑨记录里直接可预览/重生成）
+        for h in items:
+            rel = (h.get('file') or '').replace(chr(92), '/')
+            if not rel:
+                h['missing'] = True
+                continue
+            fp = os.path.join(OUTDIR, os.path.dirname(rel.replace('/', os.sep)), os.path.basename(rel))
+            if not os.path.isfile(fp):
+                h['missing'] = True
+                continue
+            cover = os.path.join(os.path.dirname(fp), 'cover.jpg')
+            if os.path.isfile(cover):
+                h['cover'] = os.path.dirname(rel) + '/cover.jpg'
+        self._send(200, json.dumps({'ok': True, 'history': items}).encode('utf-8'),
+                   'application/json')
+
+    def _get_ai_config(self):
+        cfg = load_ai_config()
+        def mask(ch):
+            ch = dict(ch or {})
+            if ch.get('api_key'):
+                ch['api_key'] = ('*' * 6) + ch['api_key'][-4:]
+            return ch
+        self._send(200, json.dumps({
+            'ok': True,
+            'config': {'vision': mask(cfg.get('vision')), 'tts': mask(cfg.get('tts')),
+                       'local': mask(cfg.get('local')),
+                       'whisper': dict(cfg.get('whisper') or {}),
+                       'vlm': mask(cfg.get('vlm')),
+                       'tts_local': dict(cfg.get('tts_local') or {}),
+                       'mirror': dict(cfg.get('mirror') or {}),
+                       'video': dict(cfg.get('video') or {})},
+            'vision_available': _vision_available(),
+            'tts_available': _tts_available(),
+            'local_enabled': local_llm_enabled(),
+            'whisper_ready': whisper_model_ready(),
+            'vlm_enabled': vlm_enabled(),
+            'video_encoder': video_encoder_label(),
+        }).encode('utf-8'), 'application/json')
+
+    def _get_ai_status(self):
+        self._send(200, json.dumps(ai_status()).encode('utf-8'), 'application/json')
+
+    def _get_hardware(self):
+        self._send(200, json.dumps(detect_hardware()).encode('utf-8'), 'application/json')
+
+    def _get_tts_voices(self):
+        self._send(200, json.dumps({
+            'ok': True,
+            'voices': EDGE_TTS_VOICES,
+            'edge_installed': edge_tts_available(),
+            'edge_dead': edge_tts_dead_reason(),
+            'sherpa_installed': sherpa_tts_available(),
+            'sherpa_model_ready': sherpa_tts_ready(),
+            'sherpa_model': sherpa_model_key(),
+            'sherpa_models': [{'key': k, 'label': m['label'], 'ready': _sherpa_ready(k)}
+                              for k, m in SHERPA_TTS_MODELS.items()],
+            'cosyvoice_installed': cosyvoice_available(),
+            'cosyvoice_voice': _COSYVOICE['voice'],
+            'cfg': tts_local_cfg(),
+            'label': local_tts_label(),
+            'setup': dict(TTS_SETUP),
+        }).encode('utf-8'), 'application/json')
+
+    def _get_local_test(self):
+        ok, msg = local_llm_ping()
+        self._send(200, json.dumps({'ok': True, 'test_ok': ok, 'message': msg}).encode('utf-8'),
+                   'application/json')
+
+    def _get_local_status(self):
+        ok, msg = (local_llm_ping() if local_llm_enabled() else (False, '本地模型未启用'))
+        self._send(200, json.dumps({'ok': True, 'enabled': local_llm_enabled(), 'ready': bool(ok),
+                                    'message': msg, 'model': local_llm_cfg()['model'],
+                                    'installed': _installed_local_models(),
+                                    'pulling': LOCAL_PULL['running'], 'pull_model': LOCAL_PULL['model'],
+                                    'pull_ok': LOCAL_PULL['ok'], 'pull_msg': LOCAL_PULL['msg'],
+                                    'pull_pct': LOCAL_PULL.get('pct', 0)}).encode('utf-8'),
+                       'application/json')
+
+    def _get_ai_test(self):
+        v_ok, v_msg = _test_vision()
+        t_ok, t_msg = _test_tts()
+        self._send(200, json.dumps({'ok': True,
+                                    'vision': {'test_ok': v_ok, 'message': v_msg},
+                                    'tts': {'test_ok': t_ok, 'message': t_msg},
+                                    }).encode('utf-8'), 'application/json')
+
+    def _get_whisper_status(self):
+        md = whisper_models_dir()
+        avail = sorted(d for d in os.listdir(md)) if os.path.isdir(md) else []
+        self._send(200, json.dumps({
+            'ok': True,
+            'selected': whisper_model_name(),
+            'models_dir': md,
+            'ready': whisper_model_ready(),
+            'downloading': WHISPER_DL['running'],
+            'download_model': WHISPER_DL['model'],
+            'download_ok': WHISPER_DL['ok'],
+            'download_msg': WHISPER_DL['msg'],
+            'available': avail,
+            'valid_models': _WHISPER_MODELS,
+        }).encode('utf-8'), 'application/json')
+
+    def _get_vlm_status(self):
+        ok, msg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
+        VLM_PULL['msg'] = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', VLM_PULL.get('msg',''))
+        self._send(200, json.dumps({'ok': True, 'enabled': vlm_enabled(), 'ready': bool(ok),
+                                    'message': msg, 'model': vlm_cfg()['model'],
+                                    'installed': _installed_local_models(),
+                                    'pulling': VLM_PULL['running'], 'pull_model': VLM_PULL['model'],
+                                    'pull_ok': VLM_PULL['ok'], 'pull_msg': VLM_PULL['msg'],
+                                    'pull_pct': VLM_PULL.get('pct', 0)}).encode('utf-8'),
+                       'application/json')
+
+    def _get_storage(self):
+        try:
+            self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+
+    def _post_build(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=220 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大(>220MB)或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(dispatch_build, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_ai_config(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            cfg = load_ai_config()
+            # incoming shape: { vision: {base_url,api_key,model}, tts:{base_url,api_key,model,voice}, local:{enabled,base_url,model,api_key} }
+            for ch in ('vision', 'tts'):
+                inc = data.get(ch)
+                if not isinstance(inc, dict):
+                    continue
+                cur = dict(cfg.get(ch) or {})
+                for k, v in inc.items():
+                    if v is not None:
+                        cur[k] = str(v).strip()
+                    elif k in cur:
+                        del cur[k]
+                cfg[ch] = cur
+            if isinstance(data.get('local'), dict):
+                inc = data['local']
+                cur = dict(cfg.get('local') or {})
+                for k in ('base_url', 'model', 'api_key'):
+                    if inc.get(k) is not None:
+                        cur[k] = str(inc[k]).strip()
+                    elif k in cur:
+                        del cur[k]
+                if 'enabled' in inc:
+                    cur['enabled'] = bool(inc['enabled'])
+                cfg['local'] = cur
+            if isinstance(data.get('mirror'), dict):
+                inc = data['mirror']
+                cur = dict(cfg.get('mirror') or {})
+                if inc.get('hf_endpoint') is not None:
+                    cur['hf_endpoint'] = str(inc['hf_endpoint']).strip()
+                if inc.get('ollama_proxy') is not None:
+                    cur['ollama_proxy'] = str(inc['ollama_proxy']).strip()
+                if 'use_hf_mirror' in inc:
+                    cur['use_hf_mirror'] = bool(inc['use_hf_mirror'])
+                cfg['mirror'] = cur
+            if isinstance(data.get('whisper'), dict):
+                inc = data['whisper']
+                cur = dict(cfg.get('whisper') or {})
+                if inc.get('model') is not None:
+                    cur['model'] = str(inc['model']).strip()
+                cfg['whisper'] = cur
+            if isinstance(data.get('vlm'), dict):
+                inc = data['vlm']
+                cur = dict(cfg.get('vlm') or {})
+                for k in ('base_url', 'model', 'api_key', 'mode'):
+                    if inc.get(k) is not None:
+                        cur[k] = str(inc[k]).strip()
+                    elif k in cur:
+                        del cur[k]
+                if 'enabled' in inc:
+                    cur['enabled'] = bool(inc['enabled'])
+                cfg['vlm'] = cur
+            if isinstance(data.get('tts_local'), dict):
+                # 本地免费配音：engine(auto|edge|sherpa|sapi) + voice + rate
+                inc = data['tts_local']
+                cur = dict(cfg.get('tts_local') or {})
+                eng = str(inc.get('engine') or '').strip().lower()
+                if eng in ('auto', 'edge', 'sherpa', 'sapi'):
+                    cur['engine'] = eng
+                if inc.get('voice'):
+                    cur['voice'] = str(inc['voice']).strip()
+                mk = str(inc.get('sherpa_model') or '').strip()
+                if mk in SHERPA_TTS_MODELS:
+                    cur['sherpa_model'] = mk
+                rate = str(inc.get('rate') or '').strip()
+                if rate:
+                    if not rate.startswith(('+', '-')):
+                        rate = '+' + rate.replace('%', '')
+                    if not rate.endswith('%'):
+                        rate += '%'
+                    cur['rate'] = rate
+                cfg['tts_local'] = cur
+            if isinstance(data.get('video'), dict):
+                # 编码策略：auto(默认·GPU可用则用) / cpu / gpu
+                inc = data['video']
+                cur = dict(cfg.get('video') or {})
+                enc = str(inc.get('encoder') or '').strip().lower()
+                if enc in ('auto', 'cpu', 'gpu'):
+                    cur['encoder'] = enc
+                cfg['video'] = cur
+            save_ai_config(cfg)
+            self._send(200, json.dumps({'ok': True,
+                                        'vision_available': _vision_available(),
+                                        'tts_available': _tts_available(),
+                                        'video_encoder': video_encoder_label()}).encode('utf-8'),
+                          'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_whisper_download(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = whisper_download_async(data.get('model'))
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_vlm_pull(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = vlm_pull_async(data.get('model'))
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_local_pull(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = local_pull_async(data.get('model'))
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_mirror_scan(self):
+        try:
+            self._send(200, json.dumps({'ok': True, 'result': scan_ollama_mirrors()}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_tts_install(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = tts_install_async(str(data.get('pkg') or 'edge-tts'))
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_tts_install_chattts(self):
+        try:
+            ok, msg = tts_install_chattts_async()
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_tts_cosyvoice_install(self):
+        try:
+            ok, msg = cosyvoice_install_async()
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_tts_cosyvoice_voices(self):
+        _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+        _voices = []
+        if os.path.isdir(_vdir):
+            for _f in sorted(os.listdir(_vdir)):
+                if _f.endswith('.wav') or _f.endswith('.mp3'):
+                    _name = os.path.splitext(_f)[0]
+                    _voices.append({'name': _name, 'file': _f,
+                                    'custom': _name not in ['中文女','中文男','英文女','英文男','粤语女','日语女']})
+        self._send(200, json.dumps({'ok': True, 'voices': _voices}).encode('utf-8'), 'application/json')
+
+    def _post_tts_cosyvoice_add_voice(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            _name = (data.get('name') or '').strip()
+            _audio_b64 = data.get('audio') or ''
+            if not _name or not _audio_b64:
+                self._send(200, json.dumps({'ok': False, 'error': '需要音色名称和音频'}).encode('utf-8'), 'application/json')
+                return
+            import base64, re
+            # 放宽正则：支持 audio/m4a, audio/mp4, audio/x-m4a, audio/wav, audio/webm 等
+            _audio_b64 = re.sub(r'^data:audio/[^;]+;base64,', '', _audio_b64)
+            try:
+                _audio_data = base64.b64decode(_audio_b64)
+            except Exception as _e:
+                self._send(200, json.dumps({'ok': False, 'error': '音频解码失败: ' + str(_e)[:100]}).encode('utf-8'), 'application/json')
+                return
+            if len(_audio_data) < 1000:
+                self._send(200, json.dumps({'ok': False, 'error': '音频文件太小（<1KB），请上传3秒以上的清晰人声'}).encode('utf-8'), 'application/json')
+                return
+            _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+            os.makedirs(_vdir, exist_ok=True)
+            # 用随机临时名避免中文/特殊字符问题
+            import uuid as _uuid
+            _tmp = os.path.join(_vdir, '_clone_' + _uuid.uuid4().hex[:8] + '.bin')
+            _out = os.path.join(_vdir, _name + '.wav')
+            with open(_tmp, 'wb') as f:
+                f.write(_audio_data)
+            _ff_err = ''
+            try:
+                import imageio_ffmpeg, subprocess as _sp
+                _ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+                _r = _sp.run([_ffmpeg, '-y', '-i', _tmp, '-ar', '16000', '-ac', '1', _out],
+                             capture_output=True, timeout=120)
+                if _r.returncode != 0:
+                    _ff_err = _r.stderr.decode('utf-8', errors='ignore')[-300:]
+            except Exception as _e:
+                _ff_err = str(_e)[:200]
+            # 清理临时文件
+            if os.path.exists(_tmp):
+                try: os.unlink(_tmp)
+                except: pass
+            if os.path.exists(_out) and os.path.getsize(_out) > 1000:
+                self._send(200, json.dumps({'ok': True, 'name': _name}).encode('utf-8'), 'application/json')
+            else:
+                _err = '音频转换失败'
+                if _ff_err:
+                    _err += ': ' + _ff_err[:150]
+                self._send(200, json.dumps({'ok': False, 'error': _err}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
+
+    def _post_tts_model_download(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = tts_model_download_async(data.get('model'))
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_tts_model_uninstall(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = tts_model_uninstall(str(data.get('model') or ''))
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_tts_test(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg, engine, rel = tts_test_speak(str(data.get('text') or '这是一段中文配音试听。'))
+            self._send(200, json.dumps({'ok': ok, 'message': msg, 'engine': engine,
+                                        'file': rel}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_cancel(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            runid = data.get('runid')
+            if runid and runid in PROGRESS:
+                PROGRESS[runid]['abort'] = True
+                with _PROC_LOCK:
+                    proc = RUN_PROCS.get(runid)
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
+            else:
+                self._send(200, json.dumps({'ok': False, 'error': '未知 run'}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_history_delete(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok = delete_history(data.get('file'))
+            self._send(200, json.dumps({'ok': ok}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_history_clear(self):
+        try:
+            clear_history()
+            self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_cover(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            fp = _safe_join(OUTDIR, data.get('file') or '')
+            if not fp:
+                raise RuntimeError('视频不存在或不在产物目录内')
+            run_dir = os.path.dirname(fp)
+            rel = lambda p: os.path.relpath(p, OUTDIR).replace('\\', '/')
+            title = str(data.get('title') or '')[:80]
+            sub = str(data.get('sub') or '')[:40]
+            style = max(0, min(2, int(data.get('style') or 0)))
+            cand_dir = os.path.join(run_dir, 'cover_cand')
+            list_json = os.path.join(cand_dir, 'list.json')
+            cands = []
+            if os.path.isfile(list_json):
+                try:
+                    with open(list_json, 'r', encoding='utf-8') as f:
+                        cands = json.load(f)
+                except Exception:
+                    cands = []
+            ts = data.get('ts')
+            if ts is None or not cands:
+                cands = _cover_candidates(fp, run_dir)
+                if not cands:
+                    raise RuntimeError('候选帧抽取失败')
+                ts = max(cands, key=lambda c: c['score'])['ts']
+                try:
+                    os.makedirs(cand_dir, exist_ok=True)
+                    with open(list_json, 'w', encoding='utf-8') as f:
+                        json.dump(cands, f, ensure_ascii=False)
+                except Exception:
+                    pass
+            else:
+                ts = round(float(ts), 2)
+            cover = os.path.join(run_dir, 'cover.jpg')
+            _cover_render(fp, ts, title, sub, style, cover)
+            for c in cands:
+                c['thumb'] = rel(os.path.join(cand_dir, os.path.basename(c['thumb'])))
+            self._send(200, json.dumps({'ok': True, 'cover': rel(cover), 'ts': ts, 'title': title,
+                                        'candidates': cands}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+
+    def _post_material_upload(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=220 * 1024 * 1024) or {}
+            name, err = material_save_bytes(data.get('name') or '',
+                                            base64.b64decode(data.get('data', '') or ''))
+            self._send(200, json.dumps({'ok': bool(name), 'name': name, 'error': err}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_material_from_upload(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            src = _upload_final_path(data.get('upload_id'), data.get('name'))
+            if not src:
+                raise RuntimeError('上传会话不存在或未完成')
+            name = material_save_file(src)
+            try:
+                d = _upload_dir_of(data.get('upload_id'))
+                if d and os.path.isdir(d):
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                pass
+            self._send(200, json.dumps({'ok': True, 'name': name}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_material_save_from_media(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            src = _safe_join(OUTDIR, data.get('file') or '')
+            if not src:
+                raise RuntimeError('源文件不存在')
+            name = material_save_file(src)
+            self._send(200, json.dumps({'ok': True, 'name': name}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_material_delete(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            ok, err = material_delete(data.get('name') or '')
+            self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_bili_download(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            self._send(200, json.dumps(_bili_start_download((data.get('bvid') or '').strip())).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_bili_cancel(self):
+        try:
+            BILI_PULL['abort'] = True
+            self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_upload_init(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            have = None
+            uid = data.get('upload_id')
+            if uid:
+                d = _upload_dir_of(uid)
+                if d is not None and os.path.isdir(d) and any(
+                        fn.startswith('final__') for fn in os.listdir(d)):
+                    uid = None   # 该会话已完成（成品待任务取走）→ 按新会话处理，避免重传覆盖
+                else:
+                    have = _upload_have_parts(uid)
+                    if have is None:
+                        uid = None   # 会话过期/非法 → 按新会话处理
+            if uid is None:
+                uid = 'up-%d-%s' % (int(time.time() * 1000), ''.join(random.choice('0123456789abcdef') for _ in range(6)))
+                d = _upload_dir_of(uid)
+                if d is None:
+                    raise RuntimeError('会话 id 生成失败')
+                os.makedirs(d, exist_ok=True)
+                have = []
+            # 清理放在会话创建之后：新会话也计入数量上限（否则长期停在 上限+1）
+            _upload_prune()
+            self._send(200, json.dumps({'ok': True, 'upload_id': uid, 'have': have}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_upload_chunk(self):
+        try:
+            ctype = self.headers.get('Content-Type', '')
+            if 'multipart/form-data' in ctype:
+                boundary = ctype.split('boundary=')[-1].strip().encode()
+                length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(length) if length else b''
+                fields = _parse_multipart(raw, boundary)
+                ok, err = _upload_chunk_write(fields.get('upload_id'), fields.get('idx'),
+                                              fields.get('chunk') or b'')
+            else:
+                length = int(self.headers.get('Content-Length', 0))
+                data = self._read_json(length, max_len=16 * 1024 * 1024)
+                if data is None:
+                    raise RuntimeError('分片过大或读取失败')
+                ok, err = _upload_chunk_write(data.get('upload_id'), data.get('idx'),
+                                              base64.b64decode(data.get('data', '') or ''))
+            self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_upload_done(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            final, err = _upload_finalize(data.get('upload_id'), data.get('name'), data.get('chunks'))
+            self._send(200, json.dumps({'ok': bool(final), 'error': err,
+                                        'size': os.path.getsize(final) if final else 0}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_beatcut(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=300 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(dispatch_beatcut, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_narrate(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=300 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(dispatch_narrate, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_narrate_movie(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=300 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(dispatch_movie, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_movie_tts(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=300 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(dispatch_movie_tts, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_movie_compose(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length) if length else {}
+            if req is None:
+                req = {}
+            runid = self._spawn(dispatch_movie_compose, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_tts_single(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length) if length else {}
+            if req is None:
+                req = {}
+            runid = self._spawn(dispatch_tts_single, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_tts_regen_all(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length) if length else {}
+            if req is None:
+                req = {}
+            runid = self._spawn(dispatch_tts_regen_all, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_plan(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=300 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(_analyze_plan_job, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_confirm(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length) if length else {}
+            if req is None:
+                req = {}
+            runid = req.get('runid')
+            if not runid or runid not in PROGRESS or runid not in PLANS:
+                self._send(200, json.dumps({'ok': False, 'error': '方案不存在或已过期，请重新分析'}).encode('utf-8'), 'application/json')
+                return
+            nrunid = self._spawn(_render_plan_job, req)
+            self._send(200, json.dumps({'ok': True, 'runid': nrunid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_narrate_align(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = json.loads(self.rfile.read(length).decode('utf-8') or '{}') if length else {}
+            runid = data.get('runid')
+            plan = PLANS.get(runid) if runid else None
+            if not plan or plan.get('type') != 'narrate':
+                self._send(200, json.dumps({'ok': False, 'error': '方案不存在/已过期或不是解说方案，请重新分析'}).encode('utf-8'), 'application/json')
+                return
+            lines = [str(x).strip() for x in (data.get('lines') or []) if str(x).strip()]
+            if not lines:
+                self._send(200, json.dumps({'ok': False, 'error': '解说词为空'}).encode('utf-8'), 'application/json')
+                return
+            shots = plan.get('shots') or plan.get('segs') or []
+            use_model = (str(data.get('mode') or 'auto').lower() != 'algo')
+            segs, src = _align_shots_to_lines(shots, lines, plan.get('asr'),
+                                             plan.get('params'), use_model=use_model)
+            if not segs:
+                self._send(200, json.dumps({'ok': False, 'error': '分镜重匹配失败'}).encode('utf-8'), 'application/json')
+                return
+            # 回写方案：后续 /api/confirm 直接用新分镜渲染
+            plan['segs'] = segs
+            plan['narr'] = lines
+            plan['align_source'] = src
+            try:
+                plan['thumbs'] = _plan_thumbs(plan['video'], segs,
+                                              plan.get('run_dir') or os.path.dirname(plan['video']))
+            except Exception:
+                pass
+            rel = lambda p: (os.path.relpath(p, OUTDIR).replace('\\', '/') if p and os.path.exists(p) else '')
+            self._send(200, json.dumps({
+                'ok': True, 'source': src, 'shots': len(shots),
+                'msg': ('已按解说词语义重新匹配分镜' if src == 'model' else '模型不可用，已按解说词长度比例分配分镜'),
+                'segs': [{'i': i, 'start': round(a, 3), 'end': round(b, 3), 'caption': c,
+                          'thumb': rel(plan.get('thumbs', {}).get(i))}
+                         for i, ((a, b), c) in enumerate(zip(segs, lines))],
+            }).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_instruct(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if length > 300 * 1024 * 1024:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大'}).encode('utf-8'), 'application/json')
+                return
+            req = self._read_json(length) or {}
+            runid = self._spawn(dispatch_instruct, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_storage(self):
+        try:
+            self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+
+    def _post_storage_delete(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            full = _storage_resolve_deletable(data.get('path') or '')
+            if not full:
+                raise RuntimeError('该路径不在可清理范围内，或尝试越权删除（已拒绝）')
+            if os.path.isdir(full):
+                shutil.rmtree(full)
+            else:
+                os.remove(full)
+            self._send(200, json.dumps(_storage_scan()).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+
+    def _post_model_remove(self):
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        except Exception:
+            body = {}
+        model = str(body.get('model', '')).strip()
+        if not model:
+            self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
+            return
+        try:
+            import subprocess as _sp
+            r = _sp.run(['ollama', 'rm', model], capture_output=True, text=True, timeout=60)
+            ok = (r.returncode == 0)
+            msg = (r.stdout or r.stderr or '').strip()[:200]
+            self._send(200, json.dumps({'ok': ok, 'msg': msg, 'error': '' if ok else msg}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
+
+    # ==================== 路由表（精确匹配优先，前缀其次，均未命中 → 404） ====================
+    GET_EXACT = {
+        '/': '_get_index',
+        '/api/ai/config': '_get_ai_config',
+        '/api/ai/test': '_get_ai_test',
+        '/api/ai_status': '_get_ai_status',
+        '/api/bili/search': '_get_bili_search',
+        '/api/bili/status': '_get_bili_status',
+        '/api/hardware': '_get_hardware',
+        '/api/history': '_get_history',
+        '/api/local/status': '_get_local_status',
+        '/api/local/test': '_get_local_test',
+        '/api/material/list': '_get_material_list',
+        '/api/model/remove': '_get_model_remove',
+        '/api/music/search': '_get_music_search',
+        '/api/music/use': '_get_music_use',
+        '/api/progress': '_get_progress',
+        '/api/regen_segment': '_get_regen_segment',
+        '/api/storage': '_get_storage',
+        '/api/tasks': '_get_tasks',
+        '/api/tts/voices': '_get_tts_voices',
+        '/api/tts_recent': '_get_tts_recent',
+        '/api/tts_reset': '_get_tts_reset',
+        '/api/tts_state': '_get_tts_state',
+        '/api/video_frame': '_get_video_frame',
+        '/api/vlm/status': '_get_vlm_status',
+        '/api/whisper/status': '_get_whisper_status',
+        '/index.html': '_get_index',
+    }
+    GET_PREFIX = [
+        ('/static/', '_get_static_files'),
+        ('/media/', '_get_media_files'),
+        ('/music_lib/', '_get_music_lib_files'),
+        ('/material_lib/', '_get_material_lib_files'),
+    ]
+    POST_EXACT = {
+        '/api/ai/config': '_post_ai_config',
+        '/api/beatcut': '_post_beatcut',
+        '/api/bili/cancel': '_post_bili_cancel',
+        '/api/bili/download': '_post_bili_download',
+        '/api/build': '_post_build',
+        '/api/cancel': '_post_cancel',
+        '/api/confirm': '_post_confirm',
+        '/api/cover': '_post_cover',
+        '/api/history/clear': '_post_history_clear',
+        '/api/history/delete': '_post_history_delete',
+        '/api/instruct': '_post_instruct',
+        '/api/local/pull': '_post_local_pull',
+        '/api/material/delete': '_post_material_delete',
+        '/api/material/from_upload': '_post_material_from_upload',
+        '/api/material/save_from_media': '_post_material_save_from_media',
+        '/api/material/upload': '_post_material_upload',
+        '/api/mirror/scan': '_post_mirror_scan',
+        '/api/model/remove': '_post_model_remove',
+        '/api/movie_compose': '_post_movie_compose',
+        '/api/movie_tts': '_post_movie_tts',
+        '/api/narrate': '_post_narrate',
+        '/api/narrate/align': '_post_narrate_align',
+        '/api/narrate_movie': '_post_narrate_movie',
+        '/api/plan': '_post_plan',
+        '/api/storage': '_post_storage',
+        '/api/storage/delete': '_post_storage_delete',
+        '/api/tts/cosyvoice/add_voice': '_post_tts_cosyvoice_add_voice',
+        '/api/tts/cosyvoice/install': '_post_tts_cosyvoice_install',
+        '/api/tts/cosyvoice/voices': '_post_tts_cosyvoice_voices',
+        '/api/tts/install': '_post_tts_install',
+        '/api/tts/install_chattts': '_post_tts_install_chattts',
+        '/api/tts/model/download': '_post_tts_model_download',
+        '/api/tts/model/uninstall': '_post_tts_model_uninstall',
+        '/api/tts/test': '_post_tts_test',
+        '/api/tts_regen_all': '_post_tts_regen_all',
+        '/api/tts_single': '_post_tts_single',
+        '/api/upload/chunk': '_post_upload_chunk',
+        '/api/upload/done': '_post_upload_done',
+        '/api/upload/init': '_post_upload_init',
+        '/api/vlm/pull': '_post_vlm_pull',
+        '/api/whisper/download': '_post_whisper_download',
+    }
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        h = self.GET_EXACT.get(path)
+        if h is None:
+            for prefix, hname in self.GET_PREFIX:
+                if path.startswith(prefix):
+                    h = hname
+                    break
+        if h:
+            getattr(self, h)()
+        else:
+            self._send(404, b'not found')
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        h = self.POST_EXACT.get(path)
+        if h:
+            getattr(self, h)()
+        else:
+            self._send(404, b'not found')
+
 
 
 def start_server(port=8765, open_browser=True):

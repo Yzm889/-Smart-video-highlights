@@ -159,7 +159,6 @@ def test_compute_mode_ai_when_key_and_explicit(monkeypatch):
 
 
 def test_ai_status_reports_readiness(monkeypatch):
-    import webui_server as S
     S2 = _cfg(monkeypatch, chat={'api_key': 'K', 'base_url': 'U', 'model': 'M'}, vision=None)
     st = S2.ai_status()
     assert st['chat'] is True
@@ -539,11 +538,9 @@ def test_web_search_parses_baidu_blocks(monkeypatch):
 
 
 def test_cancel_endpoint_registered():
-    """回归：/api/cancel 取消接口必须存在（此前为 mirror/scan 后的死代码，取消合成会 404）。"""
-    import webui_server as S, inspect
-    src = inspect.getsource(S.Handler.do_POST)
-    assert '/api/cancel' in src, '/api/cancel 接口缺失，取消合成会 404'
-    assert src.find('/api/cancel') < src.find('/api/history/delete'), '取消接口应在死代码位置之后正常注册'
+    """回归：/api/cancel 取消接口必须注册在 POST 路由表（此前为 mirror/scan 后的死代码，取消合成会 404）。"""
+    import webui_server as S
+    assert '/api/cancel' in S.Handler.POST_EXACT, '/api/cancel 接口缺失，取消合成会 404'
 
 
 def test_narrate_movie_auto_routing():
@@ -551,7 +548,9 @@ def test_narrate_movie_auto_routing():
     import webui_server as S, inspect
     src = inspect.getsource(S.narrate_movie)
     assert "economy=not ai_enabled('chat')" in src, '未配置云端 key 时应走免费离线切句'
-    assert 'use_mimo = _tts_available()' in src, '未配置云端 TTS 时应走免费 SAPI 配音'
+    assert 'use_mimo = bool(_tcfg2.get(\'api_key\')) and bool(_tcfg2.get(\'model\'))' in src, \
+        '云端 TTS 必须由 key+model 配置决定（未配置即为 False）'
+    assert 'local_tts_speak(' in src, '云端 TTS 不可用时必须有本地配音兜底'
 
 
 def test_local_llm_cfg_disabled_by_default(monkeypatch):
@@ -781,10 +780,9 @@ def test_render_plan_narrate_edits_captions(monkeypatch, tmp_path):
 
 
 def test_plan_confirm_endpoints_registered():
-    """人机协同接口 /api/plan 与 /api/confirm 必须注册在 do_POST。"""
-    import webui_server as S, inspect
-    src = inspect.getsource(S.Handler.do_POST)
-    assert '/api/plan' in src and '/api/confirm' in src
+    """人机协同接口 /api/plan 与 /api/confirm 必须注册在 POST 路由表。"""
+    import webui_server as S
+    assert '/api/plan' in S.Handler.POST_EXACT and '/api/confirm' in S.Handler.POST_EXACT
 
 
 # ---------------------------------------------------------------------------
@@ -1380,9 +1378,9 @@ def test_cover_candidates_falls_back_when_batch_fails(monkeypatch, tmp_path):
 
 
 def test_cover_endpoint_registered():
-    """/api/cover 必须注册在 do_POST。"""
-    import webui_server as S, inspect
-    assert '/api/cover' in inspect.getsource(S.Handler.do_POST)
+    """/api/cover 必须注册在 POST 路由表。"""
+    import webui_server as S
+    assert '/api/cover' in S.Handler.POST_EXACT
 
 
 def test_upload_prune_caps_sessions(monkeypatch, tmp_path):
@@ -1407,7 +1405,7 @@ def test_upload_prune_caps_sessions(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 def test_material_roundtrip_and_dedupe(monkeypatch, tmp_path):
     """素材库：字节保存→列表→重名自动加序号→删除。"""
-    import webui_server as S, os
+    import webui_server as S
     monkeypatch.setattr(S, 'MATERIAL_DIR', str(tmp_path / 'material_library'))
     n1, err = S.material_save_bytes('我的视频.mp4', b'vvv')
     assert not err and n1 == '我的视频.mp4'
@@ -2058,7 +2056,7 @@ def test_vlm_pull_rejects_while_local_downloading(monkeypatch):
 def test_pull_allowed_when_idle(monkeypatch):
     """空闲时应允许发起拉取（且线程以 daemon 方式启动，不在测试中真下载）。"""
     import webui_server as S, threading
-    monkeypatch.setattr(S, 'LOCAL_PULL', {'model': None, 'running': False, 'ok': True, 'pct': 100, 'msg': '', 'model': 'x'})
+    monkeypatch.setattr(S, 'LOCAL_PULL', {'model': 'x', 'running': False, 'ok': True, 'pct': 100, 'msg': ''})
     monkeypatch.setattr(S, 'VLM_PULL', {'model': None, 'running': False, 'ok': None, 'msg': '', 'pct': 0})
     started = []
     real_thread = threading.Thread

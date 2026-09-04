@@ -1,12 +1,13 @@
 # 一帧成片 (FrameCut) 依赖
 # 安装：pip install -r requirements.txt
-Pillow>=10.0
-numpy>=1.24
-imageio-ffmpeg>=0.4
-librosa>=0.10
+# 版本策略：下限=实测可用，上限=排除未验证的未来主版本（Python 3.9~3.14 兼容）
+Pillow>=10.0,<13
+numpy>=1.24,<3
+imageio-ffmpeg>=0.4,<1
+librosa>=0.10,<2
 # 电影解说 · 本地台词识别（免费、中文模型，需联网下载一次 ~140MB 模型权重）
-faster-whisper>=1.0
-# B 站素材：搜索与下载（/api/bili/*，yt-dlp 原生支持 B 站）
+faster-whisper>=1.0,<2
+# B 站素材：搜索与下载（/api/bili/*，yt-dlp 原生支持 B 站）；日期版本滚动更新，不设上限
 yt-dlp>=2024.8
 # 想让「省流(本地离线)」模式用显卡加速 Whisper 转写，需安装 CUDA 版 PyTorch（自动检测，无显卡则回退 CPU）：
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121

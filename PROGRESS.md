@@ -186,9 +186,32 @@
 
 ---
 
+## 🧰 工程化加固（2026-09-04：路由表化 + CI + 依赖约束 + 清理）
+
+1. **HTTP 路由表化**：`Handler.do_GET/do_POST` 的 29+41 个 `if path ==` 分支，用 AST 脚本机械化拆成
+   `_get_*`/`_post_*` 独立方法 + `GET_EXACT / GET_PREFIX / POST_EXACT` 路由表（方法体与原实现逐字一致，
+   仅缩进归位；拆分后起真实服务逐端点比对 200/404 行为）。**新增端点 = 写一个方法 + 路由表登记一行**。
+   do_POST 由 ~715 行缩到 15 行，为后续把单文件（11.2K 行 / 300 个顶层函数）按域拆模块铺路。
+   端点注册类测试改为断言路由表（`'/api/cancel' in Handler.POST_EXACT`），不再依赖 `inspect.getsource`。
+2. **CI**：新增 `.github/workflows/ci.yml`——push/PR 触发，Python 3.9 + 3.11 双矩阵（ubuntu），
+   `pyflakes webui_server.py tests/` 门禁 + pytest 全量。pyflakes 清零（修掉 torchaudio 循环内遮蔽导入、
+   死 import `venv as _venv` ×2、未用 `_ve`、测试文件 5 处未用导入/重复键）。
+3. **依赖版本约束**：requirements.txt 全部加主版本上限（`numpy>=1.24,<3` 等，兼容 Python 3.9~3.14；
+   yt-dlp 为日期滚动版本不设限，防刮取能力退化）。
+4. **Dockerfile**：新增 `HEALTHCHECK`（GET /api/tasks——只读、零磁盘开销，探测端口取自 PORT 环境变量）。
+5. **本地清理**：删除 `_dl/`（4.8GB 未完成的 qwen3-vl GGUF 残片，模型已装入 Ollama，可随时重新拉取）、
+   `srv_out.txt`/`srv_err.txt`、一次性补丁脚本 `_fix_global_video.py`。存储面板白名单
+   （run-* 残留 / 上传会话 / 临时文件 / analysis_cache / models）此前已覆盖中间产物清理，未改动。
+6. **测试真实性修正**：`test_narrate_movie_auto_routing` 断言的源码串已过时（`use_mimo` 判断早已从
+   `_tts_available()` 改为 `_tcfg2` key+model），更新为锁定当前契约：云端可选 + `local_tts_speak` 兜底。
+
+---
+
 ## 📊 质量指标
 
-- **191 测试全绿**（初始 48 → 191），pyflakes 清零、node --check OK
+- **195 个测试**（初始 48 → 195）；pyflakes 清零、node --check OK
+- ⚠️ 本机直跑 pytest 有 6 个**环境敏感失败**（本机装有 ChatTTS/CosyVoice venv 与大 Whisper 权重，
+  引擎优先级/默认模型类断言不匹配；CI 干净环境为准）+ 1 个 ffmpeg 行为差异（`test_render_narrate_cuts_before_voicing`）
 - 新增 `tests/test_fatal_fixes.py`（13 条）：锁定上述每一条修复，含超时/资源回收/原子写/淘汰/并发置位
 - 新增端到端冒烟：
   - `tests/test_plan_plot_smoke.py` 剧情驱动剪辑（`/api/plan` + plot）→ 回归 outline 未赋值

@@ -307,9 +307,6 @@ def test_progress_eviction_keeps_running_tasks(monkeypatch):
 # ---------------------------------------------------------------------------
 def test_upload_workfile_name_includes_runid():
     """两个并发任务素材结构相同时不能写到同一路径，否则成片混入他人素材。"""
-    src = None
-    for pat in (r'up_%s_{idx}_img', ):
-        src = pat
     import inspect
     code = inspect.getsource(S.dispatch_build)
     assert "_rid" in code and "up_{_rid}_{idx}_img" in code, \

@@ -26,4 +26,8 @@ COPY . .
 
 EXPOSE 8765
 
+# 健康检查：/api/tasks 只读且零磁盘开销，容器不健康时便于编排层自动重启
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import os,sys,urllib.request; p=int(os.environ.get('PORT', 8765)); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%d/api/tasks' % p, timeout=4).status == 200 else 1)"
+
 CMD ["python", "webui_server.py"]
