@@ -8716,17 +8716,11 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
 
     src_video = video_path
     cut_info = {'cut_sec': 0.0, 'src_dur': round(probe_audio_len(video_path) or 0.0, 2)}
-    # 先聚合：把同属一个beat的多个seg合并成一个时间范围（用原始segs+narr_map，不依赖裁剪后数量）
-    if narr_map and len(narr_map) == len(segs):
-        beat_ranges = []
-        for bi in range(len(narr)):
-            bsegs = [segs[k] for k in range(len(segs)) if narr_map[k] == bi]
-            if bsegs:
-                beat_ranges.append((bsegs[0][0], bsegs[-1][1]))
-            else:
-                beat_ranges.append((0.0, 0.0))
-        segs = beat_ranges
-        print('[DIAG] 高密度聚合: %d节 -> %d个片段' % (len(narr), len(segs)))
+    # 保存原始narr_map用于剪辑后聚合（剪辑前不聚合，避免把不连续片段间的空白也保留）
+    orig_narr_map = list(narr_map) if narr_map and len(narr_map) == len(segs) else None
+    orig_segs_count = len(segs)
+    # 注意：这里不聚合！用原始独立segs剪辑，空白段会被真正剪掉。
+    # 剪辑后再按beat聚合（此时视频已无空白，聚合不会包含多余内容）。
     # 应用用户手动调整的视频时间范围（必须在所有seg处理之后，用old_to_new映射覆盖）
     if adjusted_items and user_video_spans:
         video_dur = probe_audio_len(video_path) or 0
@@ -8746,6 +8740,17 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         up('按分镜剪辑画面', 60)
         src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
         cut_info['cut_sec'] = cut_sec
+    # 剪辑后聚合：把同属一个beat的多个seg在剪辑后的时间轴上合并（此时无空白，聚合安全）
+    if orig_narr_map and len(orig_narr_map) == orig_segs_count and len(segs) == orig_segs_count:
+        beat_ranges = []
+        for bi in range(len(narr)):
+            bsegs = [segs[k] for k in range(len(segs)) if orig_narr_map[k] == bi]
+            if bsegs:
+                beat_ranges.append((bsegs[0][0], bsegs[-1][1]))
+            else:
+                beat_ranges.append((0.0, 0.0))
+        segs = beat_ranges
+        print('[DIAG] 剪辑后聚合: %d节 -> %d个片段（已跳过空白）' % (len(narr), len(segs)))
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
     # 计算voice_spans和tts_paths（segs[i]就是第i节解说词对应的画面范围）
     tts_paths = []
