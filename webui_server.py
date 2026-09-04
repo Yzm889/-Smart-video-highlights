@@ -8838,8 +8838,21 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                                      for i, p in tts_results]
             progress['run_dir'] = os.path.basename(run_dir)
             progress['script'] = events
+            progress['diag'] = {'segments': len(segs), 'asr_lines': len(asr) if asr else 0,
+                                'voice_clips': len(tts_results), 'narration': narr,
+                                'awaiting_confirm': True}
+            try:
+                cover_path = os.path.join(run_dir, 'cover.jpg')
+                ffmpeg_run(['-y', '-i', video_path, '-vframes', '1', '-q:v', '3', cover_path])
+                if os.path.exists(cover_path):
+                    progress['cover'] = os.path.relpath(cover_path, OUTDIR).replace('\\', '/')
+                    progress['file'] = progress['cover']
+            except Exception:
+                pass
         diag = {'narr': len(narr), 'tts_ok': len(tts_results), 'tts_total': len(narr),
-                'awaiting_confirm': True, 'run_dir': os.path.basename(run_dir)}
+                'awaiting_confirm': True, 'run_dir': os.path.basename(run_dir),
+                'segments': len(segs), 'asr_lines': len(asr) if asr else 0,
+                'voice_clips': len(tts_results)}
         return None, diag
 
     # ✂ 真剪辑：只保留解说覆盖到的镜头段（此前整链路不剪切，成片恒等于原片时长）
