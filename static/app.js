@@ -4871,12 +4871,14 @@ function applyRecommend(idx, start, end){
   if(hint) hint.textContent = '✅ 第'+(idx+1)+'段已应用AI推荐片段';
 }
 
-async function setOrigVolume(idx, val){
+function setOrigVolume(idx, val){
   if(_adjustState.items && _adjustState.items[idx]){
     _adjustState.items[idx].orig_volume = parseInt(val) || 0;
+    _adjustState.changed[idx] = true;
     var label = document.getElementById('adjOrigVolVal'+idx);
     if(label) label.textContent = val + '%';
   }
+  if(typeof scheduleAutoSave === 'function') scheduleAutoSave();
 }
 
 async function regenSingleTts(idx){
@@ -5040,6 +5042,13 @@ function _rerenderAdjustList(){
       html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
       html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
       html += '</div>';
+      // 原视频音量控制
+      var origVol2 = (item.orig_volume !== undefined) ? item.orig_volume : 0;
+      html += '<div style="display:flex;gap:8px;margin-top:4px;align-items:center;font-size:11px;color:var(--muted)">';
+      html += '<span title="保留原视频声音的比例（0=完全静音，100=原声音量）">🔊 原片声音</span>';
+      html += '<input type="range" id="adjOrigVol'+idx+'" min="0" max="100" value="'+origVol2+'" style="flex:1;max-width:160px" oninput="setOrigVolume('+idx+',this.value)">';
+      html += '<span id="adjOrigVolVal'+idx+'" style="min-width:32px;text-align:right;font-family:monospace">'+origVol2+'%</span>';
+      html += '</div>';
       html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:4px;display:none"></div>';
       html += '</div>';
     }
@@ -5118,6 +5127,7 @@ async function confirmAdjustAndCompose(){
     const t = document.getElementById('adjText'+i);
     const vs = document.getElementById('adjVStart'+i);
     const ve = document.getElementById('adjVEnd'+i);
+    const vol = document.getElementById('adjOrigVol'+i);
     finalItems.push({
       index: i,
       text: t ? t.value.trim() : _adjustState.items[i].text,
@@ -5125,6 +5135,7 @@ async function confirmAdjustAndCompose(){
       video_start: vs ? parseFloat(vs.value) : (_adjustState.items[i].video_start || 0),
       video_end: ve ? parseFloat(ve.value) : (_adjustState.items[i].video_end || 0),
       audio_offset: _adjustState.items[i].audio_offset || 0,
+      orig_volume: vol ? parseFloat(vol.value) : (_adjustState.items[i].orig_volume !== undefined ? _adjustState.items[i].orig_volume : 0),
       isBroll: !!_adjustState.items[i].isBroll
     });
   }
