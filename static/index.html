@@ -1117,6 +1117,9 @@
 
 <div class="card" id="histCard" data-step="history">
     <h2>🕘 最近生成 <button class="btn mini ghost" onclick="clearHistory()">🗑 清空</button></h2>
+    <div class="row" style="margin:6px 0 10px;">
+      <input type="text" id="histSearch" placeholder="🔍 搜索成片：片名 / 时间 / 解说词…" style="flex:1; padding:7px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); font-size:13px;" oninput="loadHistory()">
+    </div>
     <div id="historyList"><div class="hint">还没有生成记录。</div></div>
   </div>
 
@@ -1152,7 +1155,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=21"></script>
+<script src="/static/app.js?v=22"></script>
 </body>
 </html>
 

@@ -994,8 +994,15 @@ function loadHistory(){
   fetch('/api/history').then(r=>r.json()).then(res=>{
     const box = $('historyList');
     if(!res.ok || !res.history || !res.history.length){ box.innerHTML='<div class="hint">还没有生成记录。</div>'; return; }
+    // [P1 输出可发现性] 搜索过滤：片名 / 时间 / 解说词 / 文件名 任一命中即显示
+    const kw = (($('histSearch') && $('histSearch').value) || '').trim().toLowerCase();
+    const items = !kw ? res.history : res.history.filter(h => {
+      const hay = [(h.time||''), (h.file||''), (h.captions||[]).join(' '), (h.mode||'')].join(' ').toLowerCase();
+      return hay.indexOf(kw) !== -1;
+    });
+    if(!items.length){ box.innerHTML='<div class="hint">没有匹配「'+escapeHtml(kw)+'」的记录。</div>'; return; }
     box.innerHTML = '';
-    res.history.forEach((h, i) => {
+    items.forEach((h, i) => {
       const d = document.createElement('div');
       d.className = 'item';
       const secs = h.duration || 0;
@@ -1004,12 +1011,24 @@ function loadHistory(){
       const missing = !!h.missing;
       d.innerHTML = `${h.cover?`<img class="thumb" src="/media/${h.cover}?t=${Date.now()}" alt="封面">`:''}<div class="meta"><div class="name">🕘 ${escapeHtml(h.time||'')} · ${escapeHtml(secs)}s ${escapeHtml(tag)}${missing?' <span style="color:#b45309;">⚠️ 成片文件已丢失</span>':''}</div>
         <div class="kind">${escapeHtml(capTxt)}</div></div>
-        ${missing?'':`<a class="btn mini ghost" href="/media/${escapeHtml(h.file)}" download="spring-${escapeHtml(h.time||'')}.mp4">⬇ 下载</a>
+        ${missing?'':`<a class="btn mini ghost play" href="/media/${escapeHtml(h.file)}" target="_blank" title="在浏览器新标签播放">▶ 播放</a>
+        <a class="btn mini ghost" href="/media/${escapeHtml(h.file)}" download="spring-${escapeHtml(h.time||'')}.mp4">⬇ 下载</a>
+        <button class="btn mini ghost loc" title="在文件管理器中显示位置">📂 位置</button>
         <button class="btn mini ghost cov" title="生成或重做该成片的封面">🖼 封面</button>
         ${(h.captions&&h.captions.length)?'<button class="btn mini ghost narredit" title="编辑解说词，只重生成修改的段落">✏️ 编辑</button>':''}`}
         <button class="btn mini del">🗑 删除</button>`;
-      const dlBtn = d.querySelector('a');
+      const dlBtn = d.querySelector('a[download]');
       if(dlBtn) dlBtn.addEventListener('click', (e)=>{ e.preventDefault(); const a=e.currentTarget; a.href='/media/'+h.file+'?t='+Date.now(); a.click(); });
+      const locBtn = d.querySelector('button.loc');
+      if(locBtn) locBtn.addEventListener('click', () => {
+        fetch('/api/reveal', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({file: h.file})}).then(r=>r.json()).then(res=>{
+          if(res.ok){ toast('已在文件管理器中选中该文件', 'success'); }
+          else if(res.path){ toast('系统不支持自动打开，路径：'+res.path, 'warning', 8000, [
+            {label:'📋 复制路径', onClick:({close})=>{ copyString(res.path); close(); }}]); }
+          else { toastFromResponse(res, '打开文件位置'); }
+        }).catch(e=>toast(e.message,'error'));
+      });
       d.querySelector('button.del').addEventListener('click', () => deleteHistory(h.file));
       const narrEditBtn = d.querySelector('button.narredit');
       if(narrEditBtn) narrEditBtn.addEventListener('click', () => {

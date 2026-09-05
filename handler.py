@@ -1464,6 +1464,39 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
 
+    def _post_reveal(self):
+        """[P1 输出可发现性] 在系统文件管理器中显示成片位置。
+
+        安全：路径必须过 _safe_join(OUTDIR, ...)，拒绝穿越；仅 Windows 用
+        explorer /select, 其他平台返回 ok=False + 提示（前端 toast 展示路径）。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length) if length else b'{}')
+        except Exception:
+            body = {}
+        rel = str(body.get('file', '')).strip()
+        if not rel:
+            self._send_err(400, 'param', '缺少 file 参数', stage='参数校验')
+            return
+        full = _w._safe_join(_w.OUTDIR, rel)
+        if not full or not os.path.exists(full):
+            self._send_err(404, 'path', '文件不存在或不在成片目录内', stage='定位文件',
+                           hint='该文件可能已被清理或移动。刷新「最近生成」列表确认。')
+            return
+        if os.name == 'nt':
+            try:
+                import subprocess as _sp
+                # explorer /select,<path>：选中文件而非打开。shell=False，数组传参防注入。
+                _sp.Popen(['explorer', '/select,', os.path.normpath(full)])
+                self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
+            except Exception as e:
+                kind, m = _classify_exception(e)
+                self._send_err(500, kind, m, stage='打开文件管理器', detail=str(e))
+        else:
+            # 非 Windows：告诉前端路径，让用户自己复制
+            self._send(200, json.dumps({'ok': False, 'error': '当前系统不支持自动打开文件管理器',
+                                        'path': full}).encode('utf-8'), 'application/json')
+
     def _post_tts_single(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -1679,6 +1712,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/tts_regen_all': '_post_tts_regen_all',
         '/api/regen_segment': '_post_regen_segment',
         '/api/recommend_segments': '_post_recommend_segments',
+        '/api/reveal': '_post_reveal',
         '/api/tts_single': '_post_tts_single',
         '/api/upload/chunk': '_post_upload_chunk',
         '/api/upload/done': '_post_upload_done',
