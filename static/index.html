@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>一帧成片 · FrameCut</title>
-<link rel="stylesheet" href="/static/style.css?v=11">
+<link rel="stylesheet" href="/static/style.css?v=12">
 </head>
 <body>
 <header>
@@ -274,6 +274,7 @@
       <div class="row" style="margin-top:8px;">
         <input type="text" id="instructInput" placeholder="例如：帮我解说《盗梦空间》配这首音乐 / 把这段视频剪个强卡点 / 用春景图合成一个竖屏短视频" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
         <button class="btn" id="instructGo" onclick="runInstruct()">🚀 执行</button>
+        <button class="btn mini ghost" onclick="restoreParams('instruct')" title="回填上次执行的指令">📋 上次</button>
         <button class="btn danger" id="instructCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
       </div>
       <div class="hint" id="instructHint">支持：解说《片名》· 解说这段视频 · 强卡点/配乐 · 合成/成片（可带「竖屏/横屏」）。回车直接执行。</div>
@@ -510,6 +511,7 @@
     </details>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="narGo" onclick="planNarrate()" title="Ctrl+Enter 快速生成">🎙 生成配音并调整</button>
+      <button class="btn mini ghost" onclick="restoreParams('narrate')" title="回填上次成功生成时的全部参数">📋 上次参数</button>
       <button class="btn danger" id="narCancel" onclick="stopRun('narStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
       <span class="status" id="narStatus"></span>
     </div>
@@ -565,6 +567,7 @@
     <div id="presetHint" style="font-size:12px;color:#10b981;margin-top:6px;min-height:16px"></div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="movieGo" onclick="buildMovieNarrate()" title="Ctrl+Enter 快速生成">🎬 生成（联网）解说</button>
+      <button class="btn mini ghost" onclick="restoreParams('movie')" title="回填上次成功生成时的全部参数">📋 上次参数</button>
       <button class="btn danger" id="movieCancel" onclick="stopRun('movieStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
       <span class="status" id="movieStatus"></span>
     </div>
@@ -1155,7 +1158,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=22"></script>
+<script src="/static/app.js?v=24"></script>
 </body>
 </html>
 

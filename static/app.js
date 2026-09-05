@@ -1029,7 +1029,8 @@ function loadHistory(){
           else { toastFromResponse(res, '打开文件位置'); }
         }).catch(e=>toast(e.message,'error'));
       });
-      d.querySelector('button.del').addEventListener('click', () => deleteHistory(h.file));
+      const delBtn = d.querySelector('button.del');
+      if(delBtn) delBtn.addEventListener('click', () => deleteHistory(h.file));
       const narrEditBtn = d.querySelector('button.narredit');
       if(narrEditBtn) narrEditBtn.addEventListener('click', () => {
         const runId = (h.file||'').split('/')[0];
@@ -1810,6 +1811,38 @@ window.addEventListener('online', () => {
 });
 
 // ---- [P2] Ctrl+Enter 快速提交：textarea 绑定到对应生成按钮；input 回车直达 ----
+// ---- [P2] 复用上次参数：成功发起生成时快照表单，「📋 上次参数」一键回填 ----
+const PARAM_FIELDS = {
+  narrate:  ['narMaxSeg','narTheme','narReq','narrStyle','detailLevel','narPlot','narAutoCut','narTargetSec','exportResolution','exportBitrate','narBgm'],
+  movie:    ['movieName','moviePlot','movieMaxSeg','moviePlotRefine','movieBgm'],
+  instruct: ['instructInput'],
+};
+function snapshotParams(key){
+  try {
+    const ids = PARAM_FIELDS[key] || [];
+    const snap = { __ts: Date.now() };
+    ids.forEach(id => {
+      const el = $(id); if (!el) return;
+      snap[id] = (el.type === 'checkbox') ? !!el.checked : el.value;
+    });
+    localStorage.setItem('springStudio.params.' + key, JSON.stringify(snap));
+  } catch(e){}
+}
+function restoreParams(key){
+  let snap = null;
+  try { snap = JSON.parse(localStorage.getItem('springStudio.params.' + key) || 'null'); } catch(e){}
+  if (!snap){ toast('还没有保存过的参数（成功发起一次生成后会自动记住）', 'info'); return; }
+  let n = 0;
+  Object.keys(snap).forEach(id => {
+    if (id === '__ts') return;
+    const el = $(id); if (!el) return;
+    if (el.type === 'checkbox') el.checked = !!snap[id];
+    else el.value = String(snap[id] == null ? '' : snap[id]);
+    n++;
+  });
+  const dt = new Date(snap.__ts || Date.now());
+  toast('已回填 ' + n + ' 个字段（上次生成：' + dt.toLocaleString() + '）', 'success');
+}
 function bindQuickSubmit(inputId, btnId){
   const el = $(inputId);
   if (!el) return;
@@ -1830,6 +1863,8 @@ document.addEventListener('DOMContentLoaded', () => {
   bindQuickSubmit('instructInput', 'instructGo');   // 指令成片：回车执行
   bindQuickSubmit('narPlot', 'narGo');              // 剧情驱动剪辑：Ctrl+Enter 生成配音
   bindQuickSubmit('moviePlot', 'movieGo');          // 联网解说：Ctrl+Enter 生成
+  if(typeof loadPresetList === 'function') loadPresetList();
+  if(typeof loadNarrPrefs === 'function') loadNarrPrefs();
 });
 // 顶部进度条点击跳任务中心
 document.addEventListener('DOMContentLoaded', () => {
@@ -2248,6 +2283,7 @@ async function buildNarrate(){
   try{
     // 有视频+剧情时走两步走：先生成配音，用户确认后再合成
     const api = (plot && NAR_VIDEO) ? '/api/movie_tts' : (plot ? '/api/narrate_movie' : '/api/narrate');
+    snapshotParams('narrate');   // [P2] 发起即记住参数，下次一键回填
     const r=await fetch(api,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const out=await r.json();
     if(!out.ok) throw new Error(out.error||'失败');
@@ -2340,6 +2376,7 @@ async function buildMovieNarrate(){
   }
   try{
     const api = MOVIE_VIDEO ? '/api/movie_tts' : '/api/narrate_movie';
+    snapshotParams('movie');   // [P2] 发起即记住参数
     const r = await fetch(api, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '失败');
@@ -2427,6 +2464,7 @@ async function runInstruct(){
   if(items.length) ctx.items = items;
   const body = { instruction: text, context: ctx };
   try{
+    snapshotParams('instruct');   // [P2] 发起即记住指令
     const r = await fetch('/api/instruct', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '失败');
@@ -2522,6 +2560,7 @@ async function build(){
   go.disabled = false;
   loadHistory();
   loadPresetList();
+  loadNarrPrefs();
 }
 function pollRun(runid){
   return new Promise((resolve) => {
@@ -4517,36 +4556,42 @@ const PRESET_KEY = 'springStudio.presets';
 const BUILTIN_TEMPLATES = {
   '⭐ 电影解说（经典）': {
     desc: '经典电影解说风格，白色字幕黑描边，自动剪辑+配乐',
+    tts: {engine:'edge', voice:'zh-CN-YunxiNeural', rate:'+5%'},
     maxSeg: 25, bgm: true, plotRefine: true, autoCut: true,
     narrStyle: 'movie', detailLevel: 'balanced', targetSec: 'auto',
     subtitle: {fontSize: 22, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 科普讲解': {
     desc: '知识科普风格，蓝色字幕，详细展开',
+    tts: {engine:'edge', voice:'zh-CN-XiaoxiaoNeural', rate:'+0%'},
     maxSeg: 30, bgm: false, plotRefine: true, autoCut: true,
     narrStyle: 'science', detailLevel: 'detailed', targetSec: 'auto',
     subtitle: {fontSize: 20, color: '#60A5FA', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 搞笑吐槽': {
     desc: '搞笑吐槽风格，黄色字幕，精简概括',
+    tts: {engine:'edge', voice:'zh-CN-XiaoyiNeural', rate:'+10%'},
     maxSeg: 20, bgm: true, plotRefine: false, autoCut: true,
     narrStyle: 'funny', detailLevel: 'concise', targetSec: '3',
     subtitle: {fontSize: 24, color: '#FBBF24', outlineColor: '#000000', outlineWidth: 3, alignment: 2, marginV: 60}
   },
   '⭐ 悬疑解读': {
     desc: '悬疑烧脑风格，红色字幕，详细展开',
+    tts: {engine:'edge', voice:'zh-CN-YunyangNeural', rate:'-5%'},
     maxSeg: 25, bgm: true, plotRefine: true, autoCut: true,
     narrStyle: 'suspense', detailLevel: 'detailed', targetSec: '5',
     subtitle: {fontSize: 22, color: '#F87171', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 极简旁白（保留全片）': {
     desc: '不剪辑，保留完整原片，只加旁白字幕',
+    tts: {engine:'edge', voice:'zh-CN-YunjianNeural', rate:'+0%'},
     maxSeg: 40, bgm: false, plotRefine: false, autoCut: false,
     narrStyle: 'movie', detailLevel: 'concise', targetSec: 'auto',
     subtitle: {fontSize: 20, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 短视频风（1分钟）': {
     desc: '抖音/短视频风格，精简到1分钟，大字幕',
+    tts: {engine:'edge', voice:'zh-CN-XiaoxiaoNeural', rate:'+15%'},
     maxSeg: 15, bgm: true, plotRefine: true, autoCut: true,
     narrStyle: 'movie', detailLevel: 'concise', targetSec: '1',
     subtitle: {fontSize: 28, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 3, alignment: 2, marginV: 80}
@@ -4597,6 +4642,11 @@ function savePreset(){
     subtitle: getSubtitleStyle(),
     narrStyle: (document.getElementById('narrStyle')||{}).value || 'movie',
     detailLevel: (document.getElementById('detailLevel')||{}).value || 'balanced',
+    tts: {
+      engine: (document.getElementById('ttsLocalEngine')||{}).value || 'edge',
+      voice: (document.getElementById('ttsLocalVoice')||{}).value || '',
+      rate: (document.getElementById('ttsLocalRate')||{}).value || '+0%'
+    }
   };
   const presets = getPresets();
   presets[name.trim()] = preset;
@@ -4629,6 +4679,14 @@ function applyPreset(name){
     if(document.getElementById('subAlignment')) document.getElementById('subAlignment').value = p.subtitle.alignment || 2;
     if(document.getElementById('subMarginV')) document.getElementById('subMarginV').value = p.subtitle.marginV || 50;
   }
+  // 应用TTS设置（引擎/音色/语速）
+  if(p.tts){
+    if(p.tts.engine && document.getElementById('ttsLocalEngine')) document.getElementById('ttsLocalEngine').value = p.tts.engine;
+    if(p.tts.voice && document.getElementById('ttsLocalVoice')) document.getElementById('ttsLocalVoice').value = p.tts.voice;
+    if(p.tts.rate && document.getElementById('ttsLocalRate')) document.getElementById('ttsLocalRate').value = p.tts.rate;
+    if(typeof ttsLocalHint === 'function') ttsLocalHint();
+    if(typeof saveAIConfig === 'function') saveAIConfig();
+  }
   var label = isBuiltin ? '官方模板' : '预设';
   var hint = document.getElementById('presetHint');
   if(hint) hint.textContent = '已应用' + label + '：' + name + (p.desc ? '（' + p.desc + '）' : '');
@@ -4654,6 +4712,25 @@ function getSubtitleStyle(){
     alignment: parseInt((document.getElementById('subAlignment')||{}).value) || 2,
     marginV: parseInt((document.getElementById('subMarginV')||{}).value) || 50
   };
+}
+
+
+// 解说偏好持久化（narrStyle/detailLevel 切换时自动保存）
+const NARR_PREFS_KEY = 'springStudio.narrPrefs';
+function saveNarrPrefs(){
+  try {
+    localStorage.setItem(NARR_PREFS_KEY, JSON.stringify({
+      narrStyle: (document.getElementById('narrStyle')||{}).value || 'movie',
+      detailLevel: (document.getElementById('detailLevel')||{}).value || 'balanced'
+    }));
+  } catch(e){}
+}
+function loadNarrPrefs(){
+  try {
+    const p = JSON.parse(localStorage.getItem(NARR_PREFS_KEY)||'{}');
+    if(p.narrStyle && document.getElementById('narrStyle')) document.getElementById('narrStyle').value = p.narrStyle;
+    if(p.detailLevel && document.getElementById('detailLevel')) document.getElementById('detailLevel').value = p.detailLevel;
+  } catch(e){}
 }
 
 async function recommendSegments(idx){
