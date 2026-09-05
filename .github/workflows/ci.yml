@@ -1,0 +1,35 @@
+# CI：回归测试 + 静态检查
+# - pytest：tests/ 全量回归（重依赖已在测试内做函数级导入，CI 无需 GPU/模型）
+# - pyflakes：后端与测试代码静态检查（未用导入/未用变量/重复键等）
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # README 声明 Python 3.9+，Docker 镜像用 3.11，两头都验证
+        python-version: ['3.9', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: pyflakes 静态检查
+        run: python -m pyflakes webui_server.py tests/
+
+      - name: pytest 回归测试
+        run: python -m pytest tests -q --tb=short

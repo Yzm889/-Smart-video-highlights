@@ -1,0 +1,39 @@
+# ---- 密钥与本地配置（绝对不要提交）----
+ai_config.json
+
+# ---- 运行时生成数据 / 产物 ----
+webui_output/
+webui_workspace/
+music_library/
+history.json
+__pycache__/
+*.pyc
+
+# ---- 生成的视频 / 图片（demo.gif / demo.mp4 是演示素材，保留提交）----
+*.mp4
+!demo.mp4
+spring10s.mp4
+
+# ---- 系统 / 编辑器 / 会话工具 ----
+.DS_Store
+Thumbs.db
+.zcode/
+.workbuddy/
+.pytest_cache/
+# ---- local models (large runtime files, excluded) ----
+models/
+material_library/
+# 运行日志 / 临时脚本
+_srv.err
+_srv.log
+_patch_*.py
+_diag_*.py
+_fix_*.py
+
+# ---- 本地依赖/虚拟环境 ----
+.venv_cosyvoice/
+CosyVoice/
+_dl/
+# ---- 服务日志 ----
+srv_err.txt
+srv_out.txt

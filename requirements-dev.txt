@@ -1,0 +1,4 @@
+# 开发/回归依赖（运行项目本身只需 requirements.txt）
+# 安装：pip install -r requirements-dev.txt
+pytest>=8
+pyflakes>=3

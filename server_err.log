@@ -1,0 +1,110 @@
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 5376)
+Traceback (most recent call last):
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 496, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 484, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 12048, in do_GET
+    getattr(self, h)()
+    ~~~~~~~~~~~~~~~~^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 11196, in _get_ai_status
+    self._send(200, json.dumps(ai_status()).encode('utf-8'), 'application/json')
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 10553, in _send
+    self.wfile.write(content)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 4546)
+Traceback (most recent call last):
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 496, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 484, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 12048, in do_GET
+    getattr(self, h)()
+    ~~~~~~~~~~~~~~~~^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 11226, in _get_local_status
+    self._send(200, json.dumps({'ok': True, 'enabled': local_llm_enabled(), 'ready': bool(ok),
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                'message': msg, 'model': local_llm_cfg()['model'],
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+                                'pull_pct': LOCAL_PULL.get('pct', 0)}).encode('utf-8'),
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                   'application/json')
+                   ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 10553, in _send
+    self.wfile.write(content)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 4560)
+Traceback (most recent call last):
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 496, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 484, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 12048, in do_GET
+    getattr(self, h)()
+    ~~~~~~~~~~~~~~~~^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 11261, in _get_vlm_status
+    self._send(200, json.dumps({'ok': True, 'enabled': vlm_enabled(), 'ready': bool(ok),
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                'message': msg, 'model': vlm_cfg()['model'],
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+                                'pull_pct': VLM_PULL.get('pct', 0)}).encode('utf-8'),
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                   'application/json')
+                   ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XOS\Desktop\spring_video\webui_server.py", line 10553, in _send
+    self.wfile.write(content)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\XOS\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------

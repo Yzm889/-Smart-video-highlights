@@ -1,0 +1,8 @@
+{
+  "permission_rules": [
+    {
+      "tool": "Cmd(cd *)",
+      "decision": "allow"
+    }
+  ]
+}
