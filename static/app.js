@@ -4165,26 +4165,70 @@ function tlDoResize(e){
   }
   // 显示磁吸辅助线
   _showSnapLine(snapped ? it.video_start : null);
-  // 更新输入框
+  // 更新输入框（实时同步到片段列表）
   var vsInput = document.getElementById('adjVStart' + _tlDrag.idx);
   var veInput = document.getElementById('adjVEnd' + _tlDrag.idx);
   if(vsInput) vsInput.value = it.video_start.toFixed(1);
   if(veInput) veInput.value = it.video_end.toFixed(1);
+  // 实时更新被拖动色块的位置（不重渲染整个时间轴，避免卡顿）
+  var totalDur = _adjustState.timelineDuration || 60;
+  var cumBefore = 0;
+  for(var _ci=0; _ci<_tlDrag.idx; _ci++){
+    var _cit = _adjustState.items[_ci];
+    cumBefore += Math.max(0, (_cit.video_end||0)-(_cit.video_start||0));
+  }
+  var segEl = document.querySelector('.tl-vseg[data-idx="'+_tlDrag.idx+'"]');
+  if(segEl){
+    var _left = (cumBefore / totalDur) * 100;
+    var _w = (Math.max(0,(it.video_end||0)-(it.video_start||0)) / totalDur) * 100;
+    segEl.style.left = _left + '%';
+    segEl.style.width = _w + '%';
+    var _label = segEl.querySelector('span');
+    if(_label){
+      var _warn = '';
+      var _vdur = Math.max(0,(it.video_end||0)-(it.video_start||0));
+      var _adur = it.duration || 3;
+      if(_vdur < _adur - 0.3) _warn = ' ⚠️视频短';
+      else if(_vdur > _adur + 1) _warn = ' ⚠️视频长';
+      _label.textContent = '第'+(_tlDrag.idx+1)+'段 · 源'+it.video_start.toFixed(0)+'-'+it.video_end.toFixed(0)+'s · '+_vdur.toFixed(1)+'s'+_warn;
+    }
+  }
+  // 显示拖动数值提示
+  var tip = document.getElementById('tlDragTip');
+  if(!tip){
+    tip = document.createElement('div');
+    tip.id = 'tlDragTip';
+    tip.style.cssText = 'position:fixed;z-index:9999;background:rgba(0,0,0,0.85);color:#fff;padding:4px 10px;border-radius:6px;font-size:12px;font-family:monospace;pointer-events:none;display:none';
+    document.body.appendChild(tip);
+  }
+  tip.style.display = 'block';
+  tip.style.left = (e.clientX + 12) + 'px';
+  tip.style.top = (e.clientY - 30) + 'px';
+  tip.textContent = (it.video_start||0).toFixed(1) + 's → ' + (it.video_end||0).toFixed(1) + 's （' + ((it.video_end||0)-(it.video_start||0)).toFixed(1) + 's）';
   if(Math.abs((it.video_start||0) - _tlDrag.origStart) > 1e-6 || Math.abs((it.video_end||0) - _tlDrag.origEnd) > 1e-6){
     _tlDrag.dirty = true;
   }
   _adjustState.changed[_tlDrag.idx] = true;
-  renderTimeline();
 }
 
 function tlEndResize(){
   if(_tlDrag){
     var el = document.querySelector('.tl-move[data-idx="'+_tlDrag.idx+'"]');
     if(el) el.style.cursor = 'grab';
-    if(!_tlDrag.dirty) _dropUndoIfUnchanged(_tlDrag.undoDepth);  // 只是点了一下，没有真的改动
+    if(!_tlDrag.dirty) _dropUndoIfUnchanged(_tlDrag.undoDepth);
+    else {
+      renderTimeline();
+      var it = _adjustState.items[_tlDrag.idx];
+      if(it){
+        toast('✅ 第'+(_tlDrag.idx+1)+'段已调整: '+it.video_start.toFixed(1)+'-'+it.video_end.toFixed(1)+'s，已同步到片段列表','success');
+      }
+      scheduleAutoSave();
+    }
   }
   _tlDrag = null;
   _showSnapLine(null);
+  var tip = document.getElementById('tlDragTip');
+  if(tip) tip.style.display = 'none';
   document.removeEventListener('mousemove', tlDoResize);
   document.removeEventListener('mouseup', tlEndResize);
   if(_undoStack.length || _redoStack.length) _updateUndoButtons();
