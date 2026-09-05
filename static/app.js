@@ -3772,6 +3772,13 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
     html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
     html += '</div>';
+    // 原视频音量控制
+    var origVol = (item.orig_volume !== undefined) ? item.orig_volume : 0;
+    html += '<div style="display:flex;gap:8px;margin-top:4px;align-items:center;font-size:11px;color:var(--muted)">';
+    html += '<span title="保留原视频声音的比例（0=完全静音，100=原声音量）">🔊 原片声音</span>';
+    html += '<input type="range" id="adjOrigVol'+idx+'" min="0" max="100" value="'+origVol+'" style="flex:1;max-width:160px" oninput="setOrigVolume('+idx+',this.value)">';
+    html += '<span id="adjOrigVolVal'+idx+'" style="min-width:32px;text-align:right;font-family:monospace">'+origVol+'%</span>';
+    html += '</div>';
     html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:4px;display:none"></div>';
     html += '</div>';
     // 段间插入B-roll按钮
@@ -4355,6 +4362,25 @@ function fmtTime(s){
   return m + ':' + (ss < 10 ? '0' : '') + ss;
 }
 
+// 播放指定片段的配音（暂停其他所有配音）
+let _currentAudioIdx = -1;
+function _playSegmentAudio(idx){
+  // 暂停所有配音
+  var allAudios = document.querySelectorAll('[id^="adjAudio"]');
+  for(var i=0;i<allAudios.length;i++){
+    try { allAudios[i].pause(); } catch(e){}
+  }
+  if(idx < 0) return;
+  var audio = document.getElementById('adjAudio'+idx);
+  if(audio){
+    try {
+      audio.currentTime = 0;
+      audio.play().catch(function(){});
+      _currentAudioIdx = idx;
+    } catch(e){}
+  }
+}
+
 function toggleAdjPlay(){
   var video = document.getElementById('adjGlobalVideo');
   var btn = document.getElementById('adjPlayBtn');
@@ -4393,6 +4419,7 @@ function toggleAdjPlay(){
       try { video.currentTime = startT; } catch(e){}
       video.play().then(function(){
         if(btn) btn.textContent = '⏸ 暂停';
+        _playSegmentAudio(_playSegIndex);
         startPlayheadSync();
       }).catch(function(e){
         if(btn) btn.textContent = '❌ ' + (e.message || '播放失败');
@@ -4410,6 +4437,7 @@ function toggleAdjPlay(){
     }
   } else {
     video.pause();
+    _playSegmentAudio(-1);
     if(btn) btn.textContent = '▶️ 播放';
     stopPlayheadSync();
   }
@@ -4468,6 +4496,7 @@ function startPlayheadSync(){
               var nvs = next ? (next.video_start || 0) : 0;
               console.log('[PR] 切到段'+(_playSegIndex+1)+' 源@'+nvs.toFixed(1)+'s');
               video.currentTime = nvs;
+              _playSegmentAudio(_playSegIndex);
               var hint = document.getElementById('adjustVideoHint');
               if(hint) hint.textContent = '✂️ 段'+(_playSegIndex)+'结束 → 段'+(_playSegIndex+1)+' 源@'+nvs.toFixed(1)+'s';
               var allSegs = document.querySelectorAll('.tl-vseg');
@@ -4499,6 +4528,7 @@ function startPlayheadSync(){
 
 function stopPlayheadSync(){
   if(_playheadRAF){ cancelAnimationFrame(_playheadRAF); _playheadRAF = null; }
+  _playSegmentAudio(-1);  // 停止所有配音
 }
 
 // 选中片段时，监听视频seek，更新播放索引
@@ -4841,6 +4871,14 @@ function applyRecommend(idx, start, end){
   if(hint) hint.textContent = '✅ 第'+(idx+1)+'段已应用AI推荐片段';
 }
 
+async function setOrigVolume(idx, val){
+  if(_adjustState.items && _adjustState.items[idx]){
+    _adjustState.items[idx].orig_volume = parseInt(val) || 0;
+    var label = document.getElementById('adjOrigVolVal'+idx);
+    if(label) label.textContent = val + '%';
+  }
+}
+
 async function regenSingleTts(idx){
   const text = document.getElementById('adjText'+idx).value.trim();
   if(!text){ toast('解说词不能为空','warning'); return; }
@@ -5110,6 +5148,13 @@ async function confirmAdjustAndCompose(){
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '失败');
     await pollMovieCompose(out.runid, _adjustState.mode);
+    // 合成完成后跳转到解说页查看结果
+    setTimeout(function(){
+      if(typeof goStep === 'function'){
+        goStep(_adjustState.mode === 'movie' ? 'movieCard' : 'narCard');
+      }
+      toast('✅ 合成完成，已跳转到结果页','success');
+    }, 500);
   }catch(e){
     toast('合成失败：' + e.message, 'error');
     btn.disabled = false; btn.textContent = '✅ 确认调整，开始合成视频';

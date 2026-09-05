@@ -6334,9 +6334,12 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     # tts_paths 元素：2 元组 (audio, start) 或 3 元组 (audio, start, end)，后者用于把配音裁剪在本镜头段内，
     # 避免配音时长超过镜头段导致的跨段语音重叠。
     def _tt_span(item):
+        # item: (path, start, end, orig_volume_or_None)
+        if len(item) >= 4:
+            return item[0], item[1], item[2], item[3]
         if len(item) >= 3:
-            return item[0], item[1], item[2]
-        return item[0], item[1], None
+            return item[0], item[1], item[2], None
+        return item[0], item[1], None, None
 
     inputs = ['-y', '-i', base_video]   # 0 = 字幕视频(画面)
     fparts = []
@@ -6345,12 +6348,14 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     if has_orig_audio:
         inputs += ['-i', video_path]    # 1 = 原视频(音频)
         if tts_paths:
-            # 解说配音存在时做 ducking：解说段内原声压到 0.08，缝隙还原 0.5，杜绝双声重叠
+            # 解说配音存在时做 ducking：解说段内原声按用户设置音量，缝隙还原 0.5
             expr = '0.5'
             for item in tts_paths:
-                np_, od, _oe = _tt_span(item)
+                np_, od, _oe, _ovol = _tt_span(item)
                 dur = probe_audio_len(np_) or 3.0
-                expr = "if(between(t,%.2f,%.2f),0.08,%s)" % (od, od + dur, expr)
+                # 用户设置了原片音量则用用户值（0-100 -> 0-1.0），否则默认0.08
+                vol = (_ovol / 100.0) if (_ovol is not None and _ovol > 0) else 0.08
+                expr = "if(between(t,%.2f,%.2f),%.3f,%s)" % (od, od + dur, vol, expr)
             # 注意：表达式含逗号，必须用单引号包裹，否则 ffmpeg 会把逗号当作滤镜链分隔符导致解析失败
             fparts.append("[1:a]volume='%s':eval=frame[orig]" % expr)
         else:
@@ -6358,7 +6363,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         mixin = '[orig]'
         next_idx += 1
     for k2, item in enumerate(tts_paths):
-        np_, od, oe = _tt_span(item)
+        np_, od, oe, _ov = _tt_span(item)
         inputs += ['-i', np_]
         if oe is not None and oe > od:
             # 限制配音时长不超过本镜头段，杜绝「这段解说拖到下一段画面」的重叠
@@ -8119,6 +8124,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         # 收集用户调整的视频时间范围和配音偏移（按原始索引）
         user_video_spans = {}
         user_audio_offsets = {}
+        user_orig_volumes = {}  # 每段原视频音量（0-100）
         for item in adjusted_items:
             old_i = item.get('index', 0)
             if old_i in skip_set:
@@ -8130,6 +8136,9 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             ao = item.get('audio_offset')
             if ao is not None and abs(float(ao)) > 0.01:
                 user_audio_offsets[old_i] = float(ao)
+            ov = item.get('orig_volume')
+            if ov is not None:
+                user_orig_volumes[old_i] = max(0, min(100, float(ov)))
         # 重建segs和narr_map（只保留未跳过的段对应的画面）
         if narr_map and len(narr_map) == len(segs):
             new_segs = []
@@ -8278,11 +8287,15 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
         # 应用用户调整的配音偏移
         _offset = 0.0
+        _orig_vol = None
         if adjusted_items and i in _rev_map:
             _offset = user_audio_offsets.get(_rev_map[i], 0.0)
+            _orig_vol = user_orig_volumes.get(_rev_map[i])
         if _offset != 0:
             print('[DIAG] 第%d段配音偏移%.1f秒' % (i+1, _offset))
-        tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset))
+        if _orig_vol is not None:
+            print('[DIAG] 第%d段原片音量%.0f%%' % (i+1, _orig_vol))
+        tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
         voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
     print('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))
