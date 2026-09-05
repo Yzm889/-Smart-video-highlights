@@ -3769,7 +3769,7 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<div id="adjVideoHint'+idx+'" style="position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.7);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;display:none">🎬 片段预览中…点击视频暂停</div>';
     html += '</div>';
     html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
-    html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
+    html += '<audio controls preload="auto" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
     html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
     html += '</div>';
     // 原视频音量控制
@@ -4409,19 +4409,33 @@ function fmtTime(s){
 // 播放指定片段的配音（暂停其他所有配音）
 let _currentAudioIdx = -1;
 function _playSegmentAudio(idx){
-  // 暂停所有配音
+  // 暂停片段列表中的所有音频
   var allAudios = document.querySelectorAll('[id^="adjAudio"]');
   for(var i=0;i<allAudios.length;i++){
     try { allAudios[i].pause(); } catch(e){}
   }
-  if(idx < 0) return;
-  var audio = document.getElementById('adjAudio'+idx);
-  if(audio){
+  // 使用全局预览音频元素（不受tab可见性影响）
+  var globalAudio = document.getElementById('adjGlobalAudio');
+  if(idx < 0){
+    if(globalAudio){ try{ globalAudio.pause(); }catch(e){} }
+    return;
+  }
+  if(!_adjustState.items || !_adjustState.items[idx]) return;
+  var audioPath = _adjustState.items[idx].audio;
+  if(!audioPath){ console.warn('[段'+idx+'] 无配音文件'); return; }
+  var audioUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/' + audioPath;
+  if(globalAudio){
     try {
-      audio.currentTime = 0;
-      audio.play().catch(function(){});
+      // 只有路径变化时才重新设置src
+      if(globalAudio.src !== audioUrl){
+        globalAudio.src = audioUrl;
+        globalAudio.load();
+      }
+      globalAudio.currentTime = 0;
+      var p = globalAudio.play();
+      if(p && p.catch){ p.catch(function(err){ console.warn('[配音播放失败] 段'+idx, err.message); }); }
       _currentAudioIdx = idx;
-    } catch(e){}
+    } catch(e){ console.warn('[配音播放异常] 段'+idx, e.message); }
   }
 }
 
@@ -5083,7 +5097,7 @@ function _rerenderAdjustList(){
       html += '</div>';
       html += '<div id="adjRecommend'+idx+'" style="margin-top:6px;display:none"></div>';
       html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
-      html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
+      html += '<audio controls preload="auto" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
       html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
       html += '</div>';
       // 原视频音量控制
