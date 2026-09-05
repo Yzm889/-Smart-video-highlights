@@ -259,6 +259,19 @@ class Handler(BaseHTTPRequestHandler):
                     del _w._TLS.tts_engine
                 except Exception:
                     pass
+                # 保存活动任务状态（崩溃恢复用）
+                _w._save_active_task(runid, phase=prog.get('phase',''), pct=prog.get('pct',0),
+                                     run_dir=run_dir, task_type=getattr(fn, '__name__', 'unknown'))
+                # 监听prog变化，实时更新活动任务状态
+                _orig_phase = prog.get('phase', '')
+                class _ProgProxy(dict):
+                    def __setitem__(self, k, v):
+                        super().__setitem__(k, v)
+                        if k in ('phase', 'pct'):
+                            _w._save_active_task(runid, phase=self.get('phase',''), pct=self.get('pct',0),
+                                                 run_dir=run_dir, task_type=getattr(fn, '__name__', 'unknown'))
+                prog = _ProgProxy(prog)
+                _w.PROGRESS[runid] = prog  # PROGRESS也指向proxy，前端轮询能看到更新
                 try:
                     fn(req, prog)
                     # 成功收尾才署名：失败的视频不会流出去，也就没有署名义务
@@ -272,6 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     _w.fail_task(prog, e)
                 finally:
+                    _w._clear_active_task()   # 任务结束，清除活动状态
                     _w._TASK_SEM.release()   # 无论成功/失败/取消都必须归还名额
                     # 启动排队中的下一个任务
                     _w._start_next_queued()
@@ -524,6 +538,14 @@ class Handler(BaseHTTPRequestHandler):
             kind, m = _classify_exception(e)
             self._send_err(500, kind, m, stage='ollama rm 模型',
                            detail=str(e), hint='请确认：1) ollama 服务还在跑；2) 模型名拼写正确。')
+
+    def _get_active_task(self):
+        """检查是否有崩溃后未完成的活动任务。"""
+        task = _w._get_active_task()
+        if task:
+            self._send(200, json.dumps({'ok': True, 'task': task}).encode('utf-8'), 'application/json')
+        else:
+            self._send(200, json.dumps({'ok': True, 'task': None}).encode('utf-8'), 'application/json')
 
     def _get_tasks(self):
         tasks = []
@@ -1150,6 +1172,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
                        'application/json')
 
+    def _post_clear_active_task(self):
+        """用户确认后清除活动任务状态标记。"""
+        _w._clear_active_task()
+        self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
+
     def _post_cancel(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -1659,6 +1686,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/progress': '_get_progress',
         '/api/storage': '_get_storage',
         '/api/tasks': '_get_tasks',
+        '/api/active_task': '_get_active_task',
         '/api/tts/voices': '_get_tts_voices',
         '/api/tts_recent': '_get_tts_recent',
         '/api/tts_reset': '_get_tts_reset',
@@ -1681,6 +1709,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/bili/download': '_post_bili_download',
         '/api/build': '_post_build',
         '/api/cancel': '_post_cancel',
+        '/api/active_task/clear': '_post_clear_active_task',
         '/api/confirm': '_post_confirm',
         '/api/cover': '_post_cover',
         '/api/history/clear': '_post_history_clear',

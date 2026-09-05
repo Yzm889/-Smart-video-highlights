@@ -132,6 +132,39 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PLANS = {}             # runid -> 人机协同「规划方案」（分析结果，等待用户确认/微调后再渲染）
 import threading as _threading
 OUTDIR = os.path.join(HERE, 'webui_output')
+_ACTIVE_TASK_FILE = os.path.join(OUTDIR, '_active_task.json')
+
+def _save_active_task(runid, phase='', pct=0, run_dir='', task_type=''):
+    """保存当前活动任务状态，崩溃后可恢复提示。"""
+    try:
+        os.makedirs(OUTDIR, exist_ok=True)
+        import json as _j
+        with open(_ACTIVE_TASK_FILE + '.tmp', 'w', encoding='utf-8') as f:
+            _j.dump({'runid': runid, 'phase': phase, 'pct': pct,
+                     'run_dir': run_dir, 'task_type': task_type,
+                     'updated_at': time.time()}, f, ensure_ascii=False)
+        os.replace(_ACTIVE_TASK_FILE + '.tmp', _ACTIVE_TASK_FILE)
+    except Exception:
+        pass
+
+def _clear_active_task():
+    """任务完成/取消时清除活动任务状态。"""
+    try:
+        if os.path.exists(_ACTIVE_TASK_FILE):
+            os.remove(_ACTIVE_TASK_FILE)
+    except Exception:
+        pass
+
+def _get_active_task():
+    """读取活动任务状态，不存在返回None。"""
+    try:
+        if os.path.exists(_ACTIVE_TASK_FILE):
+            import json as _j
+            with open(_ACTIVE_TASK_FILE, 'r', encoding='utf-8') as f:
+                return _j.load(f)
+    except Exception:
+        pass
+    return None
 PROGRESS_FILE = os.path.join(OUTDIR, 'progress_state.json')  # 进度持久化（服务重启不丢失）
 
 

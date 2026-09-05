@@ -1865,7 +1865,37 @@ document.addEventListener('DOMContentLoaded', () => {
   bindQuickSubmit('moviePlot', 'movieGo');          // 联网解说：Ctrl+Enter 生成
   if(typeof loadPresetList === 'function') loadPresetList();
   if(typeof loadNarrPrefs === 'function') loadNarrPrefs();
+  if(typeof checkCrashedTask === 'function') checkCrashedTask();
 });
+
+// 崩溃任务检测与恢复提示
+function checkCrashedTask(){
+  fetch('/api/active_task').then(r=>r.json()).then(res=>{
+    if(!res.ok || !res.task) return;
+    const t = res.task;
+    // 检查是否真的崩溃了（如果PROGRESS里还有这个runid且没done，说明是正常运行中）
+    const banner = document.createElement('div');
+    banner.id = 'crashRecoveryBanner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;background:#fef3c7;border-bottom:2px solid #f59e0b;padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:12px;';
+    const timeStr = t.updated_at ? new Date(t.updated_at * 1000).toLocaleString('zh-CN') : '未知时间';
+    banner.innerHTML = '<span style="font-size:18px;">⚠️</span>' +
+      '<div style="flex:1;"><b>检测到未完成的任务</b><br>' +
+      '<span style="color:#78716c;">阶段：' + (t.phase || '未知') + ' · 进度：' + (t.pct || 0) + '% · 时间：' + timeStr + '</span>' +
+      (t.run_dir ? '<br><span style="color:#78716c;font-size:11px;">中间产物保存在：' + t.run_dir + '（TTS/VLM结果可断点续跑）</span>' : '') +
+      '</div>' +
+      '<button class="btn-secondary" style="padding:4px 12px;font-size:12px;" onclick="dismissCrashBanner()">知道了</button>';
+    document.body.appendChild(banner);
+    // 把页面内容往下推
+    document.body.style.paddingTop = '60px';
+  }).catch(()=>{});
+}
+function dismissCrashBanner(){
+  const b = document.getElementById('crashRecoveryBanner');
+  if(b) b.remove();
+  document.body.style.paddingTop = '';
+  // 清除活动任务状态
+  fetch('/api/active_task/clear', {method:'POST'}).catch(()=>{});
+}
 // 顶部进度条点击跳任务中心
 document.addEventListener('DOMContentLoaded', () => {
   const gp = document.getElementById('gprog');
