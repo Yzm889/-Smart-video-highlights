@@ -3774,6 +3774,10 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '</div>';
     html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:4px;display:none"></div>';
     html += '</div>';
+    // 段间插入B-roll按钮
+    if(idx < ttsList.length - 1){
+      html += '<div style="text-align:center;margin:4px 0"><button class="btn-secondary" style="padding:3px 16px;font-size:11px;color:#6b7280;border-color:#d1d5db;background:transparent" onclick="insertBroll('+idx+')" title="在此处插入B-roll空镜/补充画面">➕ 插入B-roll</button></div>';
+    }
   });
   list.innerHTML = html;
   actions.style.display = 'flex';
@@ -4868,6 +4872,147 @@ async function regenSingleTts(idx){
   btn.disabled = false; btn.textContent = '🔄 重生成';
 }
 
+// ---- B-roll 插入功能 ----
+async function insertBroll(afterIdx){
+  // 用前后两段解说词的上下文来搜索B-roll
+  const items = _adjustState.items;
+  let contextText = '';
+  if(items[afterIdx]) contextText += items[afterIdx].text || '';
+  if(items[afterIdx+1]) contextText += ' ' + (items[afterIdx+1].text || '');
+  if(!contextText.trim()){ toast('无法获取上下文','warning'); return; }
+  // 创建临时候选框
+  const boxId = 'brollBox_'+afterIdx;
+  let box = document.getElementById(boxId);
+  if(box){ box.remove(); return; }
+  // 在插入按钮位置添加候选框
+  const insertBtn = document.querySelector('button[onclick="insertBroll('+afterIdx+')"]');
+  if(!insertBtn) return;
+  const container = insertBtn.parentElement;
+  box = document.createElement('div');
+  box.id = boxId;
+  box.style.cssText = 'margin:6px 0;padding:10px;border-radius:8px;background:rgba(107,114,128,0.1);border:1px dashed #9ca3af;';
+  box.innerHTML = '<span style="font-size:12px;color:var(--muted)">⏳ 正在分析B-roll候选画面…</span>';
+  container.appendChild(box);
+  try{
+    const r = await fetch('/api/recommend_segments', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({run_id: _adjustState.runDir, text: contextText, seg_idx: afterIdx})});
+    const out = await r.json();
+    if(!out.ok || !out.candidates || out.candidates.length === 0){
+      box.innerHTML = '<span style="color:#f87171;font-size:12px">❌ 未找到合适的B-roll片段，可手动输入时间</span>';
+      return;
+    }
+    let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">🎬 选择B-roll片段（插入到第'+(afterIdx+1)+'段后）：</div>';
+    out.candidates.forEach(function(c, i){
+      const dur = (c.end - c.start).toFixed(1);
+      html += '<div style="display:flex;gap:6px;align-items:center;margin:3px 0;padding:6px 8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="applyBroll('+afterIdx+','+c.start+','+c.end+')">';
+      html += '<span style="background:#6b7280;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;white-space:nowrap">B-roll</span>';
+      html += '<span style="font-size:12px;white-space:nowrap">'+c.start.toFixed(1)+'-'+c.end.toFixed(1)+'s ('+dur+'s)</span>';
+      html += '<span style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">"'+(c.dialogue||'')+'"</span>';
+      html += '</div>';
+    });
+    // 手动输入选项
+    html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
+    html += '<input type="number" id="brollStart_'+afterIdx+'" placeholder="起始秒" step="0.5" min="0" style="width:80px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px">';
+    html += '<span style="font-size:12px;color:var(--muted)">到</span>';
+    html += '<input type="number" id="brollEnd_'+afterIdx+'" placeholder="结束秒" step="0.5" min="0" style="width:80px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px">';
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px" onclick="applyBrollManual('+afterIdx+')">插入</button>';
+    html += '</div>';
+    box.innerHTML = html;
+  }catch(e){
+    box.innerHTML = '<span style="color:#f87171;font-size:12px">❌ '+e.message+'</span>';
+  }
+}
+
+function applyBroll(afterIdx, start, end){
+  _pushUndo();
+  const brollItem = {
+    index: _adjustState.items.length,
+    text: '',
+    audio: '',
+    duration: 0,
+    video_start: start,
+    video_end: end,
+    isBroll: true
+  };
+  _adjustState.items.splice(afterIdx + 1, 0, brollItem);
+  // 重新渲染列表
+  _rerenderAdjustList();
+  renderTimeline();
+  toast('✅ 已插入B-roll片段（'+start.toFixed(1)+'-'+end.toFixed(1)+'s）','success');
+}
+
+function applyBrollManual(afterIdx){
+  const s = parseFloat(document.getElementById('brollStart_'+afterIdx).value);
+  const e = parseFloat(document.getElementById('brollEnd_'+afterIdx).value);
+  if(isNaN(s) || isNaN(e) || e <= s){ toast('请输入有效的时间范围','warning'); return; }
+  applyBroll(afterIdx, s, e);
+}
+
+// 重新渲染调整列表（B-roll插入后调用）
+function _rerenderAdjustList(){
+  const list = document.getElementById('adjustList');
+  if(!list) return;
+  const status = document.getElementById('adjustStatus');
+  const ttsList = _adjustState.items;
+  if(status) status.textContent = '🎙️ 共 ' + ttsList.filter(function(i){return !i.isBroll;}).length + ' 段配音 + ' + ttsList.filter(function(i){return i.isBroll;}).length + ' 段B-roll · 逐段试听，可修改文字后重生成';
+  let html = '';
+  ttsList.forEach(function(item, idx){
+    if(item.isBroll){
+      // B-roll项渲染
+      html += '<div class="adjust-item" id="adjItem'+idx+'" style="padding:10px;margin:8px 0;border-radius:10px;background:rgba(107,114,128,0.08);border:1px dashed #9ca3af">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+      html += '<span style="font-size:13px;font-weight:600;color:#6b7280">🎬 B-roll 空镜 <span style="font-weight:400;font-size:11px">无配音·纯画面</span></span>';
+      html += '<button class="btn-secondary" style="padding:2px 8px;font-size:11px;color:#f87171;border-color:#f87171;background:transparent" onclick="deleteAdjustItem('+idx+')" title="删除此B-roll">🗑 删除</button>';
+      html += '</div>';
+      html += '<div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">';
+      html += '<span style="font-size:12px;color:var(--muted);white-space:nowrap">🎬 画面:</span>';
+      html += '<span style="font-size:12px;color:var(--muted)">从</span>';
+      html += '<input type="number" id="adjVStart'+idx+'" value="'+(item.video_start||0)+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_onSegFieldChange('+idx+',\'vs\')">';
+      html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
+      html += '<input type="number" id="adjVEnd'+idx+'" value="'+(item.video_end||0)+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_onSegFieldChange('+idx+',\'ve\')">';
+      html += '<span style="font-size:12px;color:var(--muted)">秒</span>';
+      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="seekAdjVideo('+idx+')">▶️ 预览</button>';
+      html += '</div>';
+      html += '</div>';
+    } else {
+      // 普通项渲染（简化版，保持一致）
+      let cleanText = (item.text||'').replace(/\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}/g, '').replace(/\{\/(?:情绪|停顿|慢|快|高音|低音|大声|小声)\}/g, '').replace(/\s+/g, ' ').trim();
+      let vs = item.video_start !== undefined ? item.video_start : 0;
+      let ve = item.video_end !== undefined ? item.video_end : 0;
+      html += '<div class="adjust-item" id="adjItem'+idx+'" style="padding:12px;margin:8px 0;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+      html += '<span style="font-size:13px;font-weight:600">第 '+(idx+1)+' 段 <span style="color:var(--muted);font-weight:400">配音'+(item.duration||0)+'秒</span></span>';
+      html += '<label style="font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="adjSkip'+idx+'" style="margin-right:4px;vertical-align:middle">跳过</label>';
+      html += '<button class="btn-secondary" style="padding:2px 8px;font-size:11px;color:#f87171;border-color:#f87171;background:transparent" onclick="deleteAdjustItem('+idx+')">🗑 删除</button>';
+      html += '</div>';
+      html += '<textarea id="adjText'+idx+'" rows="2" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'text\')">'+cleanText.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>';
+      html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">';
+      html += '<span style="font-size:12px;color:var(--muted);white-space:nowrap">🎬 对应画面:</span>';
+      html += '<span style="font-size:12px;color:var(--muted)">从</span>';
+      html += '<input type="number" id="adjVStart'+idx+'" value="'+vs+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'vs\')">';
+      html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
+      html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'ve\')">';
+      html += '<span style="font-size:12px;color:var(--muted)">秒</span>';
+      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="seekAdjVideo('+idx+')">▶️ 预览</button>';
+      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignSegmentToAudio('+idx+')">⇔ 对齐</button>';
+      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="recommendSegments('+idx+')">🤖 推荐</button>';
+      html += '</div>';
+      html += '<div id="adjRecommend'+idx+'" style="margin-top:6px;display:none"></div>';
+      html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
+      html += '<audio controls preload="none" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
+      html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
+      html += '</div>';
+      html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:4px;display:none"></div>';
+      html += '</div>';
+    }
+    // 段间插入B-roll按钮
+    if(idx < ttsList.length - 1){
+      html += '<div style="text-align:center;margin:4px 0"><button class="btn-secondary" style="padding:3px 16px;font-size:11px;color:#6b7280;border-color:#d1d5db;background:transparent" onclick="insertBroll('+idx+')">➕ 插入B-roll</button></div>';
+    }
+  });
+  list.innerHTML = html;
+}
+
 function deleteAdjustItem(idx){
   if(!_adjustState.items || idx < 0 || idx >= _adjustState.items.length) return;
   var it = _adjustState.items[idx];
@@ -4941,7 +5086,8 @@ async function confirmAdjustAndCompose(){
       audio: _adjustState.items[i].audio,
       video_start: vs ? parseFloat(vs.value) : (_adjustState.items[i].video_start || 0),
       video_end: ve ? parseFloat(ve.value) : (_adjustState.items[i].video_end || 0),
-      audio_offset: _adjustState.items[i].audio_offset || 0
+      audio_offset: _adjustState.items[i].audio_offset || 0,
+      isBroll: !!_adjustState.items[i].isBroll
     });
   }
   if(finalItems.length === 0){

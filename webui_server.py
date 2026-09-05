@@ -8191,6 +8191,61 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                     print('[DIAG] 第%d段(原%d)画面时间不合理(%.1f-%.1f)，保留自动范围%.1f-%.1f' % (new_i + 1, old_i + 1, vs, ve, segs[new_i][0], segs[new_i][1]))
             else:
                 print('[DIAG] 第%d段(原%d)索引越界(共%d段)，跳过' % (new_i + 1, old_i + 1, len(segs)))
+    # === B-roll 支持：插入无配音的纯画面段 ===
+    if adjusted_items:
+        broll_items = [(i, it) for i, it in enumerate(adjusted_items) if it.get('isBroll')]
+        if broll_items:
+            print('[DIAG] 检测到%d个B-roll段，插入到画面序列' % len(broll_items))
+            # 按顺序重建segs和narr，插入B-roll段
+            new_segs = []
+            new_narr = []
+            # 建立 old_index -> new_index 映射（非B-roll项）
+            non_broll = [it for it in adjusted_items if not it.get('isBroll') and it.get('index', -1) not in skip_set]
+            old_to_pos = {}
+            for pos, it in enumerate(non_broll):
+                old_to_pos[it.get('index', 0)] = pos
+            # 遍历adjusted_items，按顺序插入
+            seg_idx = 0
+            for it in adjusted_items:
+                if it.get('index', -1) in skip_set:
+                    continue
+                if it.get('isBroll'):
+                    vs = float(it.get('video_start', 0))
+                    ve = float(it.get('video_end', 0))
+                    if ve > vs:
+                        new_segs.append((vs, ve))
+                        new_narr.append('')  # B-roll无解说词
+                        print('[DIAG] B-roll段插入: %.1f-%.1f秒' % (vs, ve))
+                else:
+                    if seg_idx < len(segs):
+                        new_segs.append(segs[seg_idx])
+                    else:
+                        new_segs.append((0.0, 1.0))
+                    if seg_idx < len(narr):
+                        new_narr.append(narr[seg_idx])
+                    else:
+                        new_narr.append('')
+                    seg_idx += 1
+            segs = new_segs
+            narr = new_narr
+            # 重建tts_results索引：B-roll项无配音，非B-roll项索引已偏移
+            if tts_results:
+                old_to_new_tts = {}
+                new_tts_idx = 0
+                for it in adjusted_items:
+                    if it.get('index', -1) in skip_set:
+                        continue
+                    if not it.get('isBroll'):
+                        old_i = it.get('index', 0)
+                        old_to_new_tts[old_i] = new_tts_idx
+                        new_tts_idx += 1
+                new_tts_results = []
+                for old_i, audio in tts_results:
+                    if old_i in old_to_new_tts:
+                        new_tts_results.append((old_to_new_tts[old_i], audio))
+                tts_results = new_tts_results
+                print('[DIAG] B-roll后重建配音索引: %d段配音' % len(tts_results))
+            print('[DIAG] B-roll插入后: %d个画面段, %d段解说词' % (len(segs), len(narr)))
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 60)
