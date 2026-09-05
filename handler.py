@@ -45,6 +45,47 @@ _w = _host()
 
 
 # ---------------------------------------------------------------------------
+# 错误体验 (P0-first) — 统一分类 + 翻译：[P0 toast 升级]
+# ---------------------------------------------------------------------------
+# 后端所有 self._send(5xx, {'ok':False,'error':str(e)}) 这类调用，全部改走 _send_err(...)
+# 前端 ERR_RULES 在收到 error_kind 后渲染「人话 + 修复指引」toast，不再 alert 乱码。
+_ERROR_KIND_RULES = [
+    # (regex, kind) — 命中第一个匹配的；kind 必须与前端 ERR_RULES 一致
+    (re.compile(r'\berrno 2\b|no such file|找不到|系统找不到指定的路径|file not found', re.I), 'path'),
+    (re.compile(r'\berrno 28\b|no space|disk full|磁盘|空间不足', re.I), 'disk'),
+    (re.compile(r'timed out|timeout|超时', re.I), 'timeout'),
+    (re.compile(r'connection refused|connectionerror|unauthorized|api[_-]?key|401|403|429|ssl|proxy|网络连接|certificate|远程拒绝|网络断开', re.I), 'net'),
+    (re.compile(r'permission|access is denied|\berrno 13\b|拒绝访问', re.I), 'perm'),
+    (re.compile(r'显存|cuda out of memory|oom|cublas', re.I), 'oom'),
+    (re.compile(r'model not found|no such model|whisper|ollama|qwen|未下载|未部署|未就绪', re.I), 'model'),
+    (re.compile(r'ffmpeg|exit code|invalid data|no such filter|moov atom', re.I), 'frame'),
+    (re.compile(r'字体|font|cjk|glyph|豆腐', re.I), 'font'),
+    (re.compile(r'并发上限|已达上限|queue is full|too many|已有任务', re.I), 'busy'),
+]
+
+
+def _classify_exception(e, fallback='other'):
+    """把任意异常字符串化后归到 ERR_RULES 的 kind。
+
+    用法：
+        kind, message = _classify_exception(e)
+        self._send_err(500, kind, message, stage='配音', detail=str(e))
+    """
+    raw = str(e) if e is not None else ''
+    msg = raw[:300] if raw else '未知错误'
+    for r, k in _ERROR_KIND_RULES:
+        if r.search(raw):
+            return k, msg
+    return fallback, msg
+
+
+def _http_status_for_kind(kind):
+    """根据错误种类映射 HTTP 状态码（前端已分类，不需要翻译的 200 也行，
+    但 5xx 让反向代理 / 监控更清晰）。"""
+    return 400 if kind in ('path', 'disk', 'perm', 'model', 'busy') else 500
+
+
+# ---------------------------------------------------------------------------
 # 本地 HTTP 服务 + 图形化前端
 # ---------------------------------------------------------------------------
 MIME = {
@@ -78,6 +119,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header(k, v)
         self.end_headers()
         self.wfile.write(content)
+
+    def _send_err(self, code, kind, msg, *, stage=None, detail=None, jump=None, hint=None):
+        """统一错误响应（前端 ERR_RULES 按 kind 命中并渲染「人话 + 修复建议」toast）。
+
+        同时保留顶级 `error` 键以兼容尚未升级的前端调用方。
+        """
+        body = {'ok': False, 'error': msg, 'error_kind': kind}
+        if stage:  body['error_stage']  = stage
+        if detail: body['error_detail'] = detail
+        if jump:   body['jump']         = jump
+        if hint:   body['hint']         = hint
+        self._send(code, json.dumps(body, ensure_ascii=False).encode('utf-8'), 'application/json')
 
     def _send_file(self, full, ctype, attachment=False):
         """流式发送文件，支持 HTTP Range（视频跳转/拖拽进度必须）。
@@ -406,7 +459,8 @@ class Handler(BaseHTTPRequestHandler):
                 })
             self._send(200, json.dumps({'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list, 'video_duration': video_dur, 'video_path': os.path.basename(state['video_path'])}).encode('utf-8'), 'application/json')
         except Exception as e:
-            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            kind, msg = _classify_exception(e)
+            self._send_err(500, kind, msg, stage='读取 tts_state.json', detail=str(e))
 
     def _get_video_frame(self):
         try:
@@ -457,7 +511,8 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
         model = str(body.get('model', '')).strip()
         if not model:
-            self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
+            self._send_err(400, 'other', '缺少model参数', stage='参数校验',
+                           hint='要删哪个本地模型？例如 qwen2.5:7b / llama3.1:8b。先到「🤖 AI 配置」确认名字。')
             return
         try:
             import subprocess as _sp
@@ -466,7 +521,9 @@ class Handler(BaseHTTPRequestHandler):
             msg = (r.stdout or r.stderr or '').strip()[:200]
             self._send(200, json.dumps({'ok': ok, 'msg': msg}).encode('utf-8'), 'application/json')
         except Exception as e:
-            self._send(500, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+            kind, m = _classify_exception(e)
+            self._send_err(500, kind, m, stage='ollama rm 模型',
+                           detail=str(e), hint='请确认：1) ollama 服务还在跑；2) 模型名拼写正确。')
 
     def _get_tasks(self):
         tasks = []
@@ -503,21 +560,27 @@ class Handler(BaseHTTPRequestHandler):
         seg_idx = int(body.get('seg_idx', -1))
         new_text = str(body.get('text', '')).strip()
         if not run_id or seg_idx < 0 or not new_text:
-            self._send(400, json.dumps({'ok': False, 'error': '缺少run_id/seg_idx/text'}).encode('utf-8'), 'application/json')
+            self._send_err(400, 'other', '缺少run_id/seg_idx/text', stage='参数校验',
+                           hint='请确保三个参数都填了（run_id、seg_idx 从 0 起、text 非空）。')
             return
         run_dir = os.path.join(_w.OUTDIR, run_id)
         state_path = os.path.join(run_dir, 'state.json')
         if not os.path.exists(state_path):
-            self._send(404, json.dumps({'ok': False, 'error': '该任务没有保存中间状态（可能是旧版本生成的）'}).encode('utf-8'), 'application/json')
+            self._send_err(404, 'path', '该任务没有保存中间状态（可能是旧版本生成的）',
+                           stage='定位 state.json',
+                           hint='试着用 ▶ 重新触发一次解说（自动保存 state.json），或到「OUTDIR/run_id/」手动检查文件。')
             return
         try:
             st = json.load(open(state_path, encoding='utf-8'))
         except Exception as e:
-            self._send(500, json.dumps({'ok': False, 'error': f'状态读取失败: {e}'}).encode('utf-8'), 'application/json')
+            kind, msg = _classify_exception(e)
+            self._send_err(500, kind, f'状态读取失败', stage='解析 state.json',
+                           detail=str(e), hint='state.json 可能写坏了。可以备份后删除让下次重跑重新生成。')
             return
         narr = st.get('narr', [])
         if seg_idx >= len(narr):
-            self._send(400, json.dumps({'ok': False, 'error': f'段索引越界: {seg_idx}/{len(narr)}'}).encode('utf-8'), 'application/json')
+            self._send_err(400, 'other', f'段索引越界: {seg_idx}/{len(narr)}', stage='参数校验',
+                           hint=f'该任务只有 {len(narr)} 段解说，可填 0~{max(0, len(narr)-1)}。')
             return
         # 更新解说词
         narr[seg_idx] = new_text
@@ -537,7 +600,9 @@ class Handler(BaseHTTPRequestHandler):
             if ok:
                 clip = lp
         if clip is None:
-            self._send(500, json.dumps({'ok': False, 'error': 'TTS生成失败'}).encode('utf-8'), 'application/json')
+            self._send_err(500, 'model', 'TTS生成失败', stage='配音',
+                           hint='请检查：(1) 是否已选配音声音？(2) edge-tts 是否熔断？(3) 本地模型（sherpa-onnx/CosyVoice/ChatTTS）是否已部署？(4) API Key 是否有效？',
+                           detail='所有 TTS 路径都返回了失败标记。')
             return
         # 更新tts_paths和voice_spans
         tts_paths = [list(t) for t in tts_paths]
@@ -592,21 +657,26 @@ class Handler(BaseHTTPRequestHandler):
         run_id = str(body.get('run_id', ''))
         text = str(body.get('text', '')).strip()
         if not run_id or not text:
-            self._send(400, json.dumps({'ok': False, 'error': '缺少run_id或text'}).encode('utf-8'), 'application/json')
+            self._send_err(400, 'other', '缺少run_id或text', stage='参数校验',
+                           hint='run_id 在「⑨记录 → 已完成任务」有；text 是当前编辑框的解说词。')
             return
         run_dir = os.path.join(_w.OUTDIR, run_id)
         state_path = os.path.join(run_dir, 'tts_state.json')
         if not os.path.exists(state_path):
-            self._send(404, json.dumps({'ok': False, 'error': '未找到任务状态'}).encode('utf-8'), 'application/json')
+            self._send_err(404, 'path', '未找到任务状态', stage='定位 tts_state.json',
+                           hint='该 run_id 可能没跑过，或产物已被清理。在「⑨记录」选一个已完成的 run 重试。')
             return
         try:
             st = json.load(open(state_path, encoding='utf-8'))
             video_path = st.get('video_path', '')
         except Exception as e:
-            self._send(500, json.dumps({'ok': False, 'error': '状态读取失败: %s' % e}).encode('utf-8'), 'application/json')
+            kind, msg = _classify_exception(e)
+            self._send_err(500, kind, '状态读取失败', stage='解析 tts_state.json',
+                           detail=str(e), hint='tts_state.json 可能写坏了，建议删掉该 run 重新跑。')
             return
         if not video_path or not os.path.exists(video_path):
-            self._send(404, json.dumps({'ok': False, 'error': '视频文件不存在'}).encode('utf-8'), 'application/json')
+            self._send_err(404, 'path', '视频文件不存在', stage='检查源视频',
+                           hint='视频路径记录在 tts_state.json，可能已被清理或改名。建议：1) 重新上传该视频；2) 从「素材库」把它加入；3) 重新发起剧情驱动剪辑。')
             return
         # 优先从tts_state.json读ASR（最可靠），fallback到全局缓存
         asr = st.get('asr') or []
@@ -1523,7 +1593,8 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
         model = str(body.get('model', '')).strip()
         if not model:
-            self._send(400, json.dumps({'ok': False, 'error': '缺少model参数'}).encode('utf-8'), 'application/json')
+            self._send_err(400, 'other', '缺少model参数', stage='参数校验',
+                           hint='要删哪个本地模型？例如 qwen2.5:7b / llama3.1:8b。先到「🤖 AI 配置」确认名字。')
             return
         try:
             import subprocess as _sp
@@ -1532,7 +1603,9 @@ class Handler(BaseHTTPRequestHandler):
             msg = (r.stdout or r.stderr or '').strip()[:200]
             self._send(200, json.dumps({'ok': ok, 'msg': msg, 'error': '' if ok else msg}).encode('utf-8'), 'application/json')
         except Exception as e:
-            self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'), 'application/json')
+            kind, m = _classify_exception(e)
+            self._send_err(500, kind, m, stage='ollama rm 模型',
+                           detail=str(e), hint='请确认：1) ollama 服务还在跑；2) 模型名拼写正确。')
 
     # ==================== 路由表（精确匹配优先，前缀其次，均未命中 → 404） ====================
     GET_EXACT = {

@@ -169,7 +169,7 @@ function previewMusic(id, url, btn){
 }
 function useMusic(id, title){
   fetch('/api/music/use?id=' + encodeURIComponent(id)).then(r=>r.json()).then(res=>{
-    if (!res.ok) { alert('❌ ' + (res.error||'载入失败')); return; }
+    if (!res.ok) { toast((res.error||'载入失败'), 'error'); return; }
     MUSIC = { name:title, catalogId:id, url:res.url };
     musDrop.textContent = '🎵 已选（曲库）：' + title;
     $('musInfo').style.display = 'none';
@@ -178,7 +178,7 @@ function useMusic(id, title){
     updateMusicHint();
     // refresh result list to mark cached
     doSearch();
-  }).catch(()=>alert('❌ 载入失败'));
+  }).catch(()=>toast('载入失败','error'));
 }
 
 // ---- AI config (vision & tts are two independent channels) ----
@@ -568,8 +568,8 @@ function uninstallTtsModel(){
 
 function resetTtsEngine(){
   fetch('/api/tts_reset').then(r=>r.json()).then(out=>{
-    alert(out.ok ? '✅ 配音引擎已重置，edge-tts熔断已解除' : ('❌ ' + (out.error||'失败')));
-  }).catch(e=>alert('❌ '+e.message));
+    toast(out.ok ? '配音引擎已重置，edge-tts熔断已解除' : ('失败：'+(out.error||'未分类错误')), out.ok?'success':'error');
+  }).catch(e=>toast(e.message, 'error'));
 }
 
 function testLocalTts(){
@@ -1037,14 +1037,14 @@ function deleteHistory(file){
   if(!confirm('确定删除这条生成记录及其成片文件？')) return;
   fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({file})}).then(r=>r.json()).then(res=>{
-    if(res.ok){ loadHistory(); } else { alert('删除失败：' + (res.error||'')); }
-  }).catch(()=>alert('删除失败'));
+    if(res.ok){ loadHistory(); } else { toast('删除失败：' + (res.error||'未分类错误'), 'error'); }
+  }).catch(()=>toast('删除失败','error'));
 }
 function clearHistory(){
   if(!confirm('确定清空全部生成记录与成片文件？此操作不可恢复。')) return;
   fetch('/api/history/clear', {method:'POST'}).then(r=>r.json()).then(res=>{
-    if(res.ok){ loadHistory(); } else { alert('清空失败'); }
-  }).catch(()=>alert('清空失败'));
+    if(res.ok){ loadHistory(); } else { toast('清空失败','error'); }
+  }).catch(()=>toast('清空失败','error'));
 }
 loadAIConfig();
 loadHistory();
@@ -1304,6 +1304,23 @@ const ERR_RULES = [
     head:'💾 磁盘空间不足', tip:'请到「🧹 存储」页清理可回收的临时文件，腾出空间后重试。' },
   { kind:'net',     re:/超时|timeout|连接失败|connection|网络|api ?key|401|403|429|quota|unauthorized|ssl|proxy/i,
     head:'🌐 AI / 网络请求失败', tip:'请检查网络连通性，以及「🤖 AI 配置」里的接口地址与 API Key 是否正确（Key 无效或欠费也会报这类错）。' },
+  // [P0 错误体验扩展] 10 条新增规则，覆盖后端 _ERROR_KIND_RULES 推送的 kind
+  { kind:'path',    re:/no such file|找不到|系统找不到|file not found|errno 2/i,
+    head:'📁 文件 / 路径不存在', tip:'文件可能已被移动/删除，或输入的路径不对。请检查路径，或在「素材库 / 记录」选一个有效的文件。' },
+  { kind:'perm',    re:/permission denied|access is denied|errno 13|拒绝访问/i,
+    head:'🔒 权限不足', tip:'当前账号没有访问该文件 / 文件夹的权限。请用管理员身份运行，或把文件放到 OUTDIR（webui_output）下。' },
+  { kind:'oom',     re:/out of memory|cuda|cublas|显存/i,
+    head:'💥 显存不足', tip:'GPU 显存爆了。可以：1) 关掉其他吃显存的程序；2) 把模型换成更小的（qwen2.5:7b → qwen2.5:3b）；3) 改成纯 CPU 推理。' },
+  { kind:'segment', re:/seg ?idx|段索引|out of range/i,
+    head:'🔢 段落索引越界', tip:'填的段序号超过了实际段落数。点开任务卡，看当前共多少段。' },
+  { kind:'param',   re:/missing|缺少|required|invalid/i,
+    head:'📝 参数不全', tip:'请求里少填了几个必填字段。看下面 hint 行确认要补哪个。' },
+  { kind:'tts',     re:/tts|配音|edge-tts|sherpa|cosyvoice|chattts/i,
+    head:'🗣️ 配音失败', tip:'请检查：1) 是否已选配音声音？(2) edge-tts 是否熔断？(3) 本地模型（sherpa/CosyVoice/ChatTTS）是否已下载？4) API Key 是否有效？' },
+  { kind:'upload',  re:/upload|上传|分片|chunk/i,
+    head:'📤 上传失败', tip:'上传中断。可以：1) 看下网络是否稳定；2) 换个文件再试；3) 大文件分批上传。' },
+  { kind:'queue',   re:/queue|队列|busy|并行|并发/i,
+    head:'🛗 队列已满', tip:'同时最多跑 1 个任务（剧情驱动剪辑任务通常比较吃 GPU）。等当前任务完成再提交新的。' },
 ];
 function classifyError(msg, p){
   const raw = String(msg == null ? '' : msg);
@@ -1372,6 +1389,100 @@ function _legacyCopy(text){
     document.body.removeChild(ta);
     return !!ok;
   } catch(e){ return false; }
+}
+
+// ---- 非阻塞 toast：[P0 错误体验] 替代 alert() ----
+// 用法：
+//   toast('✅ 已复制');                                // 信息，3 秒自动消失
+//   toast('❌ 模型未下载', 'error', 8000);              // 错误带停留时长
+//   toast('⚠️ 缺字体会出方框', 'warning', null, [
+//     { label: '去设置', onClick: ({close}) => {...; close();} },
+//   ]);
+//   toastFromResponse(res, '切成 4 段')                // 把后端 ERR_RULES 响应自动渲染
+const _TOAST_MAX = 6;
+const _TOAST_KIND_DURATION = { info: 3200, success: 3200, warning: 6000, error: null /* 不自动关 */ };
+function _toastEnsureContainer(){
+  let c = document.getElementById('toastStack');
+  if (c) return c;
+  c = document.createElement('div');
+  c.id = 'toastStack';
+  c.setAttribute('aria-live', 'polite');
+  c.setAttribute('aria-atomic', 'false');
+  document.body.appendChild(c);
+  return c;
+}
+function toast(msg, kind, durationMs, actions){
+  const stack = _toastEnsureContainer();
+  // 防止堆太多遮住按钮
+  while (stack.children.length >= _TOAST_MAX){
+    const first = stack.firstElementChild;
+    if (!first) break;
+    first.remove();
+  }
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + (kind || 'info');
+  const txt = document.createElement('div');
+  txt.className = 'toast-msg';
+  txt.textContent = String(msg == null ? '' : msg);
+  t.appendChild(txt);
+  if (Array.isArray(actions) && actions.length){
+    const bar = document.createElement('div');
+    bar.className = 'toast-actions';
+    actions.slice(0, 3).forEach(a => {
+      if (!a || !a.label) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn mini ghost';
+      btn.textContent = a.label;
+      btn.addEventListener('click', () => {
+        try { a.onClick && a.onClick({ close: () => t.remove() }); } catch(e){ console.warn(e); }
+      });
+      bar.appendChild(btn);
+    });
+    t.appendChild(bar);
+  }
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'toast-x';
+  closeBtn.setAttribute('aria-label', '关闭');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => t.remove());
+  t.appendChild(closeBtn);
+  stack.appendChild(t);
+  const dur = durationMs == null ? _TOAST_KIND_DURATION[kind || 'info'] : durationMs;
+  if (typeof dur === 'number' && dur > 0){
+    setTimeout(() => {
+      if (t.parentNode){ t.classList.add('toast-out'); setTimeout(() => t.remove(), 220); }
+    }, dur);
+  }
+  return t;
+}
+// 把「后端 ERR_RULES / {error_kind, error_stage, error_detail, hint}」自动展示成 toast
+function toastFromResponse(res, actionLabel, extraActions){
+  if (!res) return;
+  const c = classifyError(res.error || '', res);
+  // 错误严重性映射 toast kind
+  const kind = (c.kind === 'other') ? 'error'
+             : (c.kind === 'busy' || c.kind === 'lost') ? 'warning'
+             : 'error';
+  const lines = [];
+  lines.push(c.head || '❌ 出错了');
+  if (actionLabel) lines.push('操作：' + actionLabel);
+  if (c.tip) lines.push(c.tip);
+  if (res.hint && res.hint !== c.tip) lines.push(res.hint);
+  const actions = [];
+  const detail = [res.error, res.error_stage ? '\n[阶段] ' + res.error_stage : '',
+                  res.error_detail ? '\n[细节] ' + res.error_detail : ''].join('').trim();
+  if (detail){
+    actions.push({ label: '📋 复制详情', onClick: ({close}) => {
+      copyString(detail).then(ok => {
+        if (!ok){ toast('复制失败，请手动选择', 'warning'); }
+        close();
+      });
+    }});
+  }
+  if (Array.isArray(extraActions)) extraActions.forEach(a => actions.push(a));
+  return toast(lines.join('\n'), kind, null, actions);
 }
 
 // ---- CC.BY 音乐署名（任务完成时展示；credits 为空则不渲染）----
@@ -1695,8 +1806,8 @@ function deleteStorageItem(rel, size){
     body: JSON.stringify({ path: rel })
   }).then(r => r.json()).then(d => {
     if (d.ok) loadStorage();
-    else alert('删除失败：' + (d.error || ''));
-  }).catch(e => alert('删除失败：' + e));
+    else toast('删除失败：' + (d.error || '未分类错误'), 'error');
+  }).catch(e => toast('删除失败：'+e.message, 'error'));
 }
 
 function cleanStorageAll(){
@@ -1706,7 +1817,7 @@ function cleanStorageAll(){
     const safe = (d.groups || []).filter(g => g.deletable && g.tier === 'safe');
     const rels = [];
     safe.forEach(g => (g.items || []).forEach(it => rels.push(it.rel)));
-    if (!rels.length){ alert('没有可清理项'); return; }
+    if (!rels.length){ toast('没有可清理项', 'warning'); return; }
     Promise.all(rels.map(rel => fetch('/api/storage/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: rel })
@@ -1715,7 +1826,7 @@ function cleanStorageAll(){
     ).then(results => {
       const fails = results.filter(r => !r.ok);
       loadStorage();
-      if (fails.length) alert('完成，但 ' + fails.length + ' 项删除失败：\n' + fails.map(f => f.rel + '：' + (f.err || '')).join('\n'));
+      if (fails.length) toast('完成，但 '+fails.length+' 项删除失败：'+fails.map(f => f.rel + '：'+f.err).join('\n'), 'error');
     });
   });
 }
@@ -1946,7 +2057,7 @@ function pollBeatCut(runid){
             const st=$('bcSyncStatus');
             if(st){
               st.style.display='block';
-              if(d.warning){ st.style.background='#fff2cc'; st.style.color='#92400e'; st.textContent='⚠️ '+d.warning; alert('⚠️ '+d.warning); }
+              if(d.warning){ st.style.background='#fff2cc'; st.style.color='#92400e'; st.textContent='⚠️ '+d.warning; toast(d.warning,'warning'); }
               else { st.style.background='#e8f4ff'; st.style.color='#1e3a8a'; st.textContent='🎵 节拍同步完成：无素材不足告警。'; }
             }
           } else {
@@ -2605,8 +2716,8 @@ function addPlanCut(){
   const inp=$('newCutT'); if(!inp) return;
   const t=parseFloat(inp.value);
   const vdur=_curPlan.vdur||0;
-  if(!(t>0.3 && t<vdur-0.3)){ alert('切点需在视频中部（0.3 ~ '+(vdur-0.3).toFixed(1)+' 秒）'); return; }
-  if(_cutTimes.some(x=>Math.abs(x-t)<0.5)){ alert('该位置附近已有切点'); return; }
+  if(!(t>0.3 && t<vdur-0.3)){ toast('切点需在视频中部（0.3 ~ '+(vdur-0.3).toFixed(1)+' 秒）','warning'); return; }
+  if(_cutTimes.some(x=>Math.abs(x-t)<0.5)){ toast('该位置附近已有切点','warning'); return; }
   _cutTimes.push(t);
   _cutTimes.sort((a,b)=>a-b);
   renderPlanModal();
@@ -2688,7 +2799,7 @@ async function alignNarrateShots(){
     const cap = row.querySelector('.cap');
     if(cap) lines.push((cap.value||'').trim());
   });
-  if(!lines.some(x=>x)){ alert('请至少填写一句解说词'); return; }
+  if(!lines.some(x=>x)){ toast('请至少填写一句解说词','warning'); return; }
   const btn = $('alignShotsBtn');
   const msg = $('alignMsg');
   if(btn){ btn.disabled = true; btn.textContent = '⏳ 匹配中…'; }
@@ -2832,7 +2943,7 @@ function biliDownload(bvid, row){
   const btn = row ? row.querySelector('button') : null;   // 行内第一个按钮即「⬇ 下载 MP4」
   if(btn){ btn.disabled=true; btn.textContent='⏳ 提交…'; }
   fetch('/api/bili/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({bvid})}).then(r=>r.json()).then(res=>{
-    if(!res.ok){ if(btn){ btn.disabled=false; btn.textContent='⬇ 下载 MP4'; } alert('❌ '+(res.error||'下载未启动')); return; }
+    if(!res.ok){ if(btn){ btn.disabled=false; btn.textContent='⬇ 下载 MP4'; } toast((res.error||'下载未启动'),'error'); return; }
     if(btn) btn.textContent='⏳ 下载中…';
     const bar = document.createElement('div'); bar.className='hint'; row.appendChild(bar);
     if(_biliTimer) clearInterval(_biliTimer);
@@ -2864,7 +2975,7 @@ function biliDownload(bvid, row){
         });
       }).catch(()=>{});
     }, 900);
-  }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='⬇ 下载 MP4'; } alert('❌ '+e.message); });
+  }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='⬇ 下载 MP4'; } toast(e.message,'error'); });
 }
 async function biliFetchFile(rel){
   const r = await fetch('/media/' + rel);
@@ -2877,7 +2988,7 @@ function biliToItems(rel, btn){
     ITEMS.push({ id:'it'+Date.now(), name:f.name, kind:'video', dur: parseInt(($('defDur')||{}).value)||3, url:URL.createObjectURL(f), file:f });
     render();
     if(btn) btn.textContent='✅ 已加入素材';
-  }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='➕ 加入素材'; } alert('❌ '+e.message); });
+  }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='➕ 加入素材'; } toast(e.message,'error'); });
 }
 function biliToSlot(rel, which, btn){
   if(btn){ btn.disabled=true; btn.textContent='⏳ 载入…'; }
@@ -2885,7 +2996,7 @@ function biliToSlot(rel, which, btn){
     if(which==='nar'){ setNarVideo(f); goStep('narCard'); }
     else { setBCVideo(f); goStep('beatcutCard'); }
     if(btn) btn.textContent='✅ 已设置';
-  }).catch(e=>{ if(btn){ btn.disabled=false; } alert('❌ '+e.message); });
+  }).catch(e=>{ if(btn){ btn.disabled=false; } toast(e.message,'error'); });
 }
 
 // ---- 🖼 封面生成：智能选帧 + 大字标题（后端 /api/cover，三种版式可换帧）----
@@ -2984,7 +3095,7 @@ async function mlibUploadFile(f){
 }
 async function mlibUpload(files){
   for(const f of files){
-    try { await mlibUploadFile(f); } catch(e){ alert('❌ '+f.name+'：'+e.message); }
+    try { await mlibUploadFile(f); } catch(e){ toast(f.name+'：'+e.message,'error'); }
   }
   mlibList();
 }
@@ -3156,7 +3267,7 @@ function saveNarrEdit(){
         body: JSON.stringify({run_id:_narrEditRunId, seg_idx:parseInt(ta.dataset.idx), text:newText})
       }).then(r=>r.json()).then(res=>{
         if(res.ok){ _narrEditList[parseInt(ta.dataset.idx)] = newText; ta.style.borderColor = '#4ade80'; }
-        else { ta.style.borderColor = '#f87171'; alert('第'+(parseInt(ta.dataset.idx)+1)+'段重生成失败: '+res.error); }
+        else { ta.style.borderColor = '#f87171'; toast('第'+(parseInt(ta.dataset.idx)+1)+'段重生成失败: '+res.error,'error'); }
         doRegen(idx+1);
       }).catch(e=>{ ta.style.borderColor='#f87171'; doRegen(idx+1); });
     } else {
@@ -3173,9 +3284,9 @@ function removeModel(tag){
     body: JSON.stringify({model: tag})}).then(r=>{
       return r.text().then(t=>{ try{ return JSON.parse(t); }catch(e){ return {ok:false, error:'服务器返回异常: '+t.slice(0,100)}; } });
     }).then(res=>{
-    if(res.ok){ alert('已卸载 ' + tag); if(typeof refreshModelCards==='function') refreshModelCards(); if(typeof loadVlmStatus==='function') loadVlmStatus(); }
-    else alert('卸载失败: ' + (res.error||res.msg||'未知错误'));
-  }).catch(e=>alert('卸载失败: '+e.message));
+    if(res.ok){ toast('已卸载 ' + tag,'success'); if(typeof refreshModelCards==='function') refreshModelCards(); if(typeof loadVlmStatus==='function') loadVlmStatus(); }
+    else toast('卸载失败: ' + (res.error||res.msg||'未知错误'),'error');
+  }).catch(e=>toast('卸载失败: '+e.message,'error'));
 }
 
 
@@ -3212,7 +3323,7 @@ function renderTtsConfirm(containerId, ttsList, runDir, mode){
 }
 
 async function confirmTtsAndCompose(runDir, mode, ttsList){
-  if(!runDir){ alert('缺少run_dir'); return; }
+  if(!runDir){ toast('缺少run_dir','error'); return; }
   const btn = document.getElementById(mode+'TtsConfirmBtn');
   if(btn){ btn.disabled = true; btn.textContent = '合成中…'; }
   try{
@@ -3226,7 +3337,7 @@ async function confirmTtsAndCompose(runDir, mode, ttsList){
     if(!out.ok) throw new Error(out.error || '失败');
     await pollMovieCompose(out.runid, mode);
   }catch(e){
-    alert('合成失败：' + e.message);
+    toast('合成失败：' + e.message, 'error');
     if(btn){ btn.disabled = false; btn.textContent = '✅ 确认配音，开始合成视频'; }
   }
 }
@@ -3238,7 +3349,7 @@ function pollMovieCompose(runid, mode){
       fetch('/api/progress?run=' + runid).then(r => r.json()).then(p => {
         if(p.done){
           clearInterval(iv);
-          if(p.error){ alert('合成失败：' + p.error); resolve(); return; }
+          if(p.error){ toast('合成失败：' + p.error,'error'); resolve(); return; }
           const box = document.getElementById(mode === 'movie' ? 'movieTtsConfirm' : 'narTtsConfirm');
           if(box) box.style.display = 'none';
           if(p.file){
@@ -4406,7 +4517,7 @@ function savePreset(){
   presets[name.trim()] = preset;
   savePresets(presets);
   loadPresetList();
-  alert('✅ 已保存预设：' + name);
+  toast('已保存预设：' + name, 'success');
 }
 function applyPreset(name){
   if(!name) return;
@@ -4417,7 +4528,7 @@ function applyPreset(name){
     const presets = getPresets();
     p = presets[name];
   }
-  if(!p){ alert('模板不存在'); return; }
+  if(!p){ toast('模板不存在','error'); return; }
   if(p.maxSeg && document.getElementById('movieMaxSeg')) document.getElementById('movieMaxSeg').value = p.maxSeg;
   if(document.getElementById('movieBgm')) document.getElementById('movieBgm').checked = !!p.bgm;
   if(document.getElementById('moviePlotRefine')) document.getElementById('moviePlotRefine').checked = p.plotRefine !== false;
@@ -4440,8 +4551,8 @@ function applyPreset(name){
 }
 function deletePreset(){
   const sel = document.getElementById('presetSelect');
-  if(!sel || !sel.value){ alert('请先选择要删除的预设'); return; }
-  if(isBuiltinTemplate(sel.value)){ alert('官方模板不能删除'); return; }
+  if(!sel || !sel.value){ toast('请先选择要删除的预设','warning'); return; }
+  if(isBuiltinTemplate(sel.value)){ toast('官方模板不能删除','warning'); return; }
   if(!confirm('确定删除预设「' + sel.value + '」？')) return;
   const presets = getPresets();
   delete presets[sel.value];
@@ -4462,7 +4573,7 @@ function getSubtitleStyle(){
 
 async function recommendSegments(idx){
   var text = document.getElementById('adjText'+idx).value.trim();
-  if(!text){ alert('解说词不能为空'); return; }
+  if(!text){ toast('解说词不能为空','warning'); return; }
   var box = document.getElementById('adjRecommend'+idx);
   if(!box) return;
   box.style.display = 'block';
@@ -4515,7 +4626,7 @@ function applyRecommend(idx, start, end){
 
 async function regenSingleTts(idx){
   const text = document.getElementById('adjText'+idx).value.trim();
-  if(!text){ alert('解说词不能为空'); return; }
+  if(!text){ toast('解说词不能为空','warning'); return; }
   const statusEl = document.getElementById('adjStatus'+idx);
   const btn = event.target;
   btn.disabled = true; btn.textContent = '生成中…';
@@ -4621,7 +4732,7 @@ async function confirmAdjustAndCompose(){
     });
   }
   if(finalItems.length === 0){
-    alert('⚠️ 所有段都被跳过了，至少保留一段才能合成');
+    toast('所有段都被跳过了，至少保留一段才能合成','warning');
     btn.disabled = false; btn.textContent = '✅ 确认调整，开始合成视频';
     return;
   }
@@ -4641,7 +4752,7 @@ async function confirmAdjustAndCompose(){
     if(!out.ok) throw new Error(out.error || '失败');
     await pollMovieCompose(out.runid, _adjustState.mode);
   }catch(e){
-    alert('合成失败：' + e.message);
+    toast('合成失败：' + e.message, 'error');
     btn.disabled = false; btn.textContent = '✅ 确认调整，开始合成视频';
   }
 }
@@ -4694,7 +4805,7 @@ function collectProjectData(){
 
 function saveProject(){
   var data = collectProjectData();
-  if(!data){ alert('没有可保存的项目数据，请先生成配音'); return; }
+  if(!data){ toast('没有可保存的项目数据，请先生成配音','warning'); return; }
   var blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
@@ -4716,7 +4827,7 @@ function loadProject(file){
     try{
       var data = JSON.parse(e.target.result);
       if(data.format !== 'framecut'){
-        alert('不是有效的项目文件');
+        toast('不是有效的项目文件','error');
         return;
       }
       var pn = document.getElementById('projectName');
@@ -4732,7 +4843,7 @@ function loadProject(file){
           skip: !!it.skip
         };
       });
-      if(items.length === 0){ alert('项目文件中没有片段数据'); return; }
+      if(items.length === 0){ toast('项目文件中没有片段数据','warning'); return; }
       if(data.settings){
         if(data.settings.subtitle){
           Object.keys(data.settings.subtitle).forEach(function(id){
@@ -4765,7 +4876,7 @@ function loadProject(file){
       var hint = document.getElementById('projectAutoSaveHint');
       if(hint) hint.textContent = '已加载 ' + new Date().toLocaleTimeString();
     }catch(err){
-      alert('项目文件解析失败：' + err.message);
+      toast('项目文件解析失败：' + err.message,'error');
     }
   };
   reader.readAsText(file);
@@ -4828,9 +4939,9 @@ function loadRecentProject(idx){
       fakeFile.name = (autoData.name || '项目') + '.framecut';
       loadProject(fakeFile);
     }else{
-      alert('请用打开项目选择 .framecut 文件');
+      toast('请用打开项目选择 .framecut 文件','warning');
     }
-  }catch(e){ alert('恢复失败：' + e.message); }
+  }catch(e){ toast('恢复失败：' + e.message,'error'); }
 }
 
 
@@ -5070,7 +5181,7 @@ function analyzeBroll(){
   var items = _adjustState.items;
   var runDir = _adjustState.runDir;
   if(!items || !items.length || !runDir){
-    alert('请先加载配音任务');
+    toast('请先加载配音任务','warning');
     return;
   }
   var resultsEl = document.getElementById('brollResults');
