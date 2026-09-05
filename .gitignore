@@ -37,3 +37,6 @@ _dl/
 # ---- 服务日志 ----
 srv_err.txt
 srv_out.txt
+
+server_err.log
+server_out.log
