@@ -259,6 +259,7 @@ class Handler(BaseHTTPRequestHandler):
             _evict_finished_progress(keep=100)
 
             def _runner():
+                nonlocal prog
                 _w._TLS.runid = runid
                 # 清掉上一次任务锁定的配音引擎：每个任务重新选，避免沿用旧音色
                 try:
