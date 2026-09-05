@@ -1673,7 +1673,8 @@ function scrollTop2(){ window.scrollTo({ top: 0, behavior: 'smooth' }); }
 // （_tasksTimer 已在顶部声明，showStep 中的轮询逻辑已直接写入 showStep 函数）
 function loadTasks(){
   fetch('/api/tasks').then(r=>r.json()).then(res=>{
-    const tasks = res.tasks || [];
+    // [P2 批量操作] 「清空已完成」只在本地隐藏，不删后端记录；刷新页面会恢复
+    const tasks = (res.tasks || []).filter(t=>!_dismissedRuns.has(t.runid));
     const running = tasks.filter(t=>!t.done && !t.error).length;
     const done = tasks.filter(t=>t.done && !t.error).length;
     const failed = tasks.filter(t=>t.error).length;
@@ -1746,6 +1747,71 @@ function cancelTask(runid){
     .then(r=>r.json()).then(()=>{ setTimeout(loadTasks, 500); })
     .catch(()=>{});
 }
+
+// ---- [P2 批量操作] 任务中心三件套：取消全部运行中 / 清空已完成 ----
+const _dismissedRuns = new Set();
+function cancelAllRunningTasks(){
+  const cards = document.querySelectorAll('.task-card.task-running, .task-card.task-queued');
+  if (!cards.length){ toast('当前没有运行中或排队中的任务', 'info'); return; }
+  if (!confirm('确定取消全部 ' + cards.length + ' 个任务（运行中 + 排队中）？')) return;
+  let done = 0, failed = 0;
+  cards.forEach(c => {
+    const rid = c.getAttribute('data-runid');
+    if (!rid) return;
+    fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({runid: rid})})
+      .then(()=>{ done++; })
+      .catch(()=>{ failed++; });
+  });
+  toast('正在取消 ' + cards.length + ' 个任务…', 'info');
+  setTimeout(loadTasks, 1200);
+}
+function clearFinishedTasks(){
+  const cards = document.querySelectorAll('.task-card.task-done, .task-card.task-failed');
+  if (!cards.length){ toast('没有可清空的已完成/失败任务', 'info'); return; }
+  cards.forEach(c => {
+    const rid = c.getAttribute('data-runid');
+    if (rid) _dismissedRuns.add(rid);
+  });
+  toast('已隐藏 ' + cards.length + ' 条记录（仅本地，刷新页面恢复）', 'success');
+  loadTasks();
+}
+
+// ---- [P1 任务保活] 切回标签页 / 网络恢复时立刻刷新，避免「以为卡死」 ----
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  try {
+    if (typeof loadTasks === 'function') loadTasks();
+    if (typeof loadAiStatus === 'function') loadAiStatus();
+  } catch(e){}
+});
+window.addEventListener('online', () => {
+  try { if (typeof loadTasks === 'function') loadTasks(); } catch(e){}
+  toast('网络已恢复，任务状态已刷新', 'success');
+});
+
+// ---- [P2] Ctrl+Enter 快速提交：textarea 绑定到对应生成按钮；input 回车直达 ----
+function bindQuickSubmit(inputId, btnId){
+  const el = $(inputId);
+  if (!el) return;
+  const isInput = (el.tagName === 'INPUT');
+  el.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    const combo = ev.ctrlKey || ev.metaKey;
+    // textarea 必须 Ctrl/Cmd+Enter；input 回车即提交
+    if (!isInput && !combo) return;
+    if (isInput && combo) return; // input 上 Ctrl+Enter 不触发（避免误提交）
+    const btn = $(btnId);
+    if (!btn || btn.disabled) return;
+    ev.preventDefault();
+    btn.click();
+  });
+}
+document.addEventListener('DOMContentLoaded', () => {
+  bindQuickSubmit('instructInput', 'instructGo');   // 指令成片：回车执行
+  bindQuickSubmit('narPlot', 'narGo');              // 剧情驱动剪辑：Ctrl+Enter 生成配音
+  bindQuickSubmit('moviePlot', 'movieGo');          // 联网解说：Ctrl+Enter 生成
+});
 // 顶部进度条点击跳任务中心
 document.addEventListener('DOMContentLoaded', () => {
   const gp = document.getElementById('gprog');

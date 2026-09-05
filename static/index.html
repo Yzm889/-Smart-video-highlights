@@ -276,7 +276,7 @@
         <button class="btn" id="instructGo" onclick="runInstruct()">🚀 执行</button>
         <button class="btn danger" id="instructCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
       </div>
-      <div class="hint" id="instructHint">支持：解说《片名》· 解说这段视频 · 强卡点/配乐 · 合成/成片（可带「竖屏/横屏」）。</div>
+      <div class="hint" id="instructHint">支持：解说《片名》· 解说这段视频 · 强卡点/配乐 · 合成/成片（可带「竖屏/横屏」）。回车直接执行。</div>
       <div class="bar" id="instructBar"><i></i></div>
       <div class="hint" id="instructStatus"></div>
       <div id="instructResult" style="display:none;">
@@ -509,7 +509,7 @@
       </div>
     </details>
     <div class="actions" style="margin-top:12px;">
-      <button class="btn" id="narGo" onclick="planNarrate()">🎙 生成配音并调整</button>
+      <button class="btn" id="narGo" onclick="planNarrate()" title="Ctrl+Enter 快速生成">🎙 生成配音并调整</button>
       <button class="btn danger" id="narCancel" onclick="stopRun('narStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
       <span class="status" id="narStatus"></span>
     </div>
@@ -564,7 +564,7 @@
     </div>
     <div id="presetHint" style="font-size:12px;color:#10b981;margin-top:6px;min-height:16px"></div>
     <div class="actions" style="margin-top:12px;">
-      <button class="btn" id="movieGo" onclick="buildMovieNarrate()">🎬 生成（联网）解说</button>
+      <button class="btn" id="movieGo" onclick="buildMovieNarrate()" title="Ctrl+Enter 快速生成">🎬 生成（联网）解说</button>
       <button class="btn danger" id="movieCancel" onclick="stopRun('movieStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
       <span class="status" id="movieStatus"></span>
     </div>
@@ -1102,10 +1102,13 @@
   <!-- 任务中心：多任务进度详情 -->
 <div class="card" id="tasksCard" data-step="tasks">
   <div class="card-title">📋 任务中心 <span class="hint" style="font-weight:400;font-size:12px;">所有运行中的任务实时进度，支持多任务并行查看</span></div>
-  <div id="tasksStats" style="display:flex;gap:16px;margin-bottom:12px;font-size:13px;">
+  <div id="tasksStats" style="display:flex;gap:16px;margin-bottom:12px;font-size:13px;align-items:center;flex-wrap:wrap;">
     <span>运行中：<b id="tasksRunning">0</b></span>
     <span>已完成：<b id="tasksDone">0</b></span>
     <span>失败：<b id="tasksFailed">0</b></span>
+    <span style="flex:1"></span>
+    <button class="btn mini danger" onclick="cancelAllRunningTasks()" title="取消所有运行中 + 排队中的任务">⏹ 取消全部</button>
+    <button class="btn mini ghost" onclick="clearFinishedTasks()" title="隐藏已完成/失败的卡片（仅本地，刷新恢复）">🧹 清空已完成</button>
   </div>
   <div id="tasksList" style="display:flex;flex-direction:column;gap:10px;">
     <div class="hint" style="text-align:center;padding:30px;">暂无任务，提交任务后这里会显示实时进度</div>
@@ -1149,7 +1152,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=20"></script>
+<script src="/static/app.js?v=21"></script>
 </body>
 </html>
 
