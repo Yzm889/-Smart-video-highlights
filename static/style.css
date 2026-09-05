@@ -1050,3 +1050,7 @@ header .htools { display: flex; align-items: center; gap: 14px; }
 .next-step-btn { padding:10px 24px; background:var(--accent); color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; }
 .next-step-btn:hover { opacity:0.9; }
 
+
+/* 时间轴色块删除按钮：悬停显示 */
+.tl-vseg:hover .tl-seg-del { display: block !important; }
+.tl-seg-del:hover { background: rgba(239,68,68,1) !important; transform: scale(1.15); }

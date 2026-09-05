@@ -118,7 +118,10 @@ class Handler(BaseHTTPRequestHandler):
             for k, v in extra.items():
                 self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.wfile.write(content)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass  # 客户端已断开（刷新页面/取消请求），正常情况，不报错
 
     def _send_err(self, code, kind, msg, *, stage=None, detail=None, jump=None, hint=None):
         """统一错误响应（前端 ERR_RULES 按 kind 命中并渲染「人话 + 修复建议」toast）。
@@ -170,7 +173,10 @@ class Handler(BaseHTTPRequestHandler):
                         chunk = f.read(min(1 << 20, remaining))
                         if not chunk:
                             break
-                        self.wfile.write(chunk)
+                        try:
+                            self.wfile.write(chunk)
+                        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                            break  # 客户端断开，停止发送
                         remaining -= len(chunk)
                 return
             except Exception:

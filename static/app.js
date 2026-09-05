@@ -2323,7 +2323,8 @@ async function buildNarrate(){
 }
 function pollNarrate(runid){
   return new Promise(resolve=>{
-    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
+    let _errs = 0;
+    const _narT0 = Date.now();   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     _stopFlag = false;
     _currentRunid = runid; const cb=$('narCancel'); if(cb){ cb.style.display=''; cb.disabled=false; cb.textContent='⏹ 停止生成'; }
     const iv=setInterval(()=>{
@@ -2360,7 +2361,7 @@ function pollNarrate(runid){
           resolve(); return;
         }
         // 已点「⏹ 停止」时不要再覆盖状态文案，否则用户看不到停止反馈
-        if(!_stopFlag) $('narStatus').textContent = (p.phase||'处理中')+'… '+(p.pct||0)+'%';
+        if(!_stopFlag) $('narStatus').textContent = (p.phase||'处理中')+'… '+(p.pct||0)+'%'+_formatETA(Math.round((Date.now()-_narT0)/1000), p.pct);
       }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); $('narBar').style.display='none'; _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('narStatus').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     },400);
     setTimeout(()=>{ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('narStatus').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
@@ -2416,7 +2417,7 @@ async function buildMovieNarrate(){
 }
 function pollMovie(runid){
   return new Promise(resolve => {
-    let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
+    let _errs = 0;   // \n    const _movieT0 = Date.now();连续失败计数：服务重启/断网时明确报错，不永久转圈
     _stopFlag = false;
     _currentRunid = runid; const cb=$('movieCancel'); if(cb){ cb.style.display=''; cb.disabled=false; cb.textContent='⏹ 停止生成'; }
     const iv = setInterval(() => {
@@ -2466,7 +2467,7 @@ function pollMovie(runid){
           }
           resolve(); return;
         }
-        if(!_stopFlag) $('movieStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%';
+        if(!_stopFlag) $('movieStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%'+_formatETA(Math.round((Date.now()-_movieT0)/1000), p.pct);
       }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('movieBar').style.display = 'none'; _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('movieStatus').textContent = '❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
     setTimeout(() => { clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('movieStatus').textContent = '⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
@@ -2615,12 +2616,22 @@ function pollRun(runid){
           renderCredits('result', p.credits);
           resolve(); return;
         }
-        $('status').textContent = (p.phase||'合成中') + '… ' + (p.pct||0) + '%（已 ' + sec + ' 秒）';
+        $('status').textContent = (p.phase||'合成中') + '… ' + (p.pct||0) + '%（已 ' + sec + ' 秒' + _formatETA(sec, p.pct) + '）';
       }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); stopBar(); $('status').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
     // safety: don't poll forever
     setTimeout(()=>{ clearInterval(iv); stopBar(); $('status').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
   });
+}
+
+// ---- ETA 预计剩余时间 ----
+function _formatETA(elapsedSec, pct){
+  if(!pct || pct <= 0 || pct >= 100) return '';
+  const total = elapsedSec / (pct / 100);
+  const remain = Math.max(0, Math.round(total - elapsedSec));
+  if(remain < 60) return ' · 约剩' + remain + '秒';
+  if(remain < 3600) return ' · 约剩' + Math.round(remain/60) + '分钟';
+  return ' · 约剩' + (remain/3600).toFixed(1) + '小时';
 }
 
 // ---- 模式选择动态提示（告诉用户当前模式需要什么配置，一键跳转） ----
@@ -3951,6 +3962,7 @@ function renderTimeline(){
     vHtml += '<span style="position:absolute;left:6px;top:0;line-height:32px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:6px">'+segLabel+' · 源'+vs.toFixed(0)+'-'+ve.toFixed(0)+'s · '+vdur.toFixed(1)+'s'+warn+'</span>';
     vHtml += '</div>';
     vHtml += '<div class="tl-handle tl-resize-r" data-idx="'+idx+'" data-side="r" title="调整源视频出点" style="position:absolute;right:0;top:0;width:8px;height:100%;cursor:e-resize;background:rgba(0,0,0,0.4);border-left:1px dashed rgba(255,255,255,0.5)"></div>';
+    vHtml += '<div class="tl-seg-del" data-idx="'+idx+'" title="删除此段（不进合成）" style="position:absolute;right:10px;top:2px;width:18px;height:18px;line-height:16px;text-align:center;font-size:12px;color:#fff;background:rgba(239,68,68,0.8);border-radius:50%;cursor:pointer;display:none;z-index:10">✕</div>';
     vHtml += '</div>';
     cumVideo += vdur;
   });
@@ -3977,6 +3989,15 @@ function renderTimeline(){
     cumVideoForAudio += vdur;
   });
   aTrack.innerHTML = aHtml;
+  // 绑定色块删除按钮
+  var delBtns = document.querySelectorAll('.tl-seg-del');
+  for(var di=0;di<delBtns.length;di++){
+    delBtns[di].addEventListener('click', function(e){
+      e.stopPropagation();
+      var idx = parseInt(this.getAttribute('data-idx'));
+      if(!isNaN(idx)) deleteAdjustItem(idx);
+    });
+  }
   // 绑定音频块拖动
   var aSegs = document.querySelectorAll('.tl-audio-drag');
   for(var ai=0;ai<aSegs.length;ai++){
