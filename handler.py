@@ -875,6 +875,7 @@ class Handler(BaseHTTPRequestHandler):
                                     }).encode('utf-8'), 'application/json')
 
     def _get_whisper_status(self):
+        _w.refresh_whisper_models()
         md = _w.whisper_models_dir()
         avail = sorted(d for d in os.listdir(md)) if os.path.isdir(md) else []
         self._send(200, json.dumps({
@@ -1362,6 +1363,25 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
 
+    def _post_material_meta(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=64 * 1024) or {}
+            name = data.get('name') or ''
+            tags = data.get('tags')
+            favorite = data.get('favorite')
+            ok, err = _w.material_set_meta(name, tags=tags, favorite=favorite)
+            self._send(200, json.dumps({'ok': ok, 'error': err}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _get_material_tags(self):
+        try:
+            tags = _w.material_all_tags()
+            self._send(200, json.dumps({'ok': True, 'tags': tags}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'tags': [], 'error': str(e)}).encode('utf-8'), 'application/json')
+
     def _post_bili_download(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -1687,6 +1707,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/local/status': '_get_local_status',
         '/api/local/test': '_get_local_test',
         '/api/material/list': '_get_material_list',
+        '/api/material/tags': '_get_material_tags',
         '/api/model/remove': '_get_model_remove',
         '/api/music/search': '_get_music_search',
         '/api/music/use': '_get_music_use',
@@ -1724,6 +1745,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/instruct': '_post_instruct',
         '/api/local/pull': '_post_local_pull',
         '/api/material/delete': '_post_material_delete',
+        '/api/material/meta': '_post_material_meta',
         '/api/material/from_upload': '_post_material_from_upload',
         '/api/material/save_from_media': '_post_material_save_from_media',
         '/api/material/upload': '_post_material_upload',

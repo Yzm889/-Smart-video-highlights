@@ -9,6 +9,45 @@ from ffmpeg_utils import AbortError, PROGRESS, _TLS, ffmpeg_run
 AI_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_config.json')
 _WHISPER_MODELS = {}
 
+_WHISPER_KNOWN = {
+    'tiny', 'base', 'small', 'medium',
+    'large-v3', 'large-v2', 'large',
+    'distil-large-v3', 'distil-large-v2', 'distil-medium',
+    'distil-small',
+}
+
+def refresh_whisper_models():
+    """扫描 models/whisper/ 目录，把已下载的模型名写入 _WHISPER_MODELS。
+    同时保留已知模型名（即使尚未下载，也允许用户选择后触发下载）。
+    前端 /api/whisper/status 的 valid_models 与本函数联动——用户下载新模型后点刷新即可热切换。"""
+    _WHISPER_MODELS.clear()
+    for name in _WHISPER_KNOWN:
+        _WHISPER_MODELS[name] = {'name': name, 'downloaded': False}
+    md = whisper_models_dir()
+    if not os.path.isdir(md):
+        return
+    for entry in os.listdir(md):
+        full = os.path.join(md, entry)
+        if not os.path.isdir(full):
+            continue
+        names = []
+        try:
+            names = os.listdir(full)
+        except Exception:
+            pass
+        if 'model.bin' in names or any(n.endswith('.safetensors') for n in names):
+            _WHISPER_MODELS.setdefault(entry, {'name': entry, 'downloaded': False})
+            _WHISPER_MODELS[entry]['downloaded'] = True
+    flat_names = []
+    try:
+        flat_names = os.listdir(md)
+    except Exception:
+        pass
+    if 'model.bin' in flat_names or any(n.endswith('.safetensors') for n in flat_names):
+        for name in _WHISPER_KNOWN:
+            _WHISPER_MODELS.setdefault(name, {'name': name, 'downloaded': True})
+            _WHISPER_MODELS[name]['downloaded'] = True
+
 
 def _whisper_env_setup():
     """统一设置 Whisper 加载/下载环境：走 HF 镜像 + 清理失效系统代理（避免 WinError 10061）。
@@ -215,6 +254,8 @@ def whisper_model_name():
 def whisper_models_dir():
     """faster-whisper 模型权重统一缓存到项目 models/whisper，方便引导用户管理/查看。"""
     return os.path.join(HERE, 'models', 'whisper')
+
+refresh_whisper_models()
 
 def _aborted():
     """协作式取消：检查当前任务线程是否被用户取消。

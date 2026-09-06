@@ -13,19 +13,6 @@ if os.path.isdir(repo_dir):
     sys.path.insert(0, repo_dir)
 
 
-def load_ref_audio(ref_wav, target_sr=16000):
-    """加载参考音频并重采样到16kHz。返回 torch.Tensor (1, T)。"""
-    import torchaudio
-    import torch
-    wav, sr = torchaudio.load(ref_wav)
-    if wav.shape[0] > 1:
-        wav = wav.mean(dim=0, keepdim=True)
-    if sr != target_sr:
-        resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=target_sr)
-        wav = resampler(wav)
-    return wav
-
-
 def main():
     if len(sys.argv) < 5:
         print('Usage: cosyvoice_worker.py <txt_file> <out_wav> <model_dir> <ref_wav>')
@@ -50,14 +37,11 @@ def main():
         import torchaudio
 
         model = CosyVoice2(model_dir, load_jit=False, load_trt=False, fp16=False)
-        print('[CosyVoice] model loaded, loading ref audio...', flush=True)
+        print('[CosyVoice] model loaded, synthesizing...', flush=True)
 
-        prompt_speech_16k = load_ref_audio(ref_wav, target_sr=16000)
-        print(f'[CosyVoice] ref audio loaded: {prompt_speech_16k.shape}, synthesizing...', flush=True)
-
-        # zero-shot 推理：用参考音频的音色合成文本
+        # zero-shot 推理：prompt_wav 必须是文件路径（CosyVoice内部load_wav）
         for i, j in enumerate(model.inference_zero_shot(
-                text, '', prompt_speech_16k, zero_shot_spk_id='', stream=False)):
+                text, '', ref_wav, zero_shot_spk_id='', stream=False)):
             torchaudio.save(out_path, j['tts_speech'], model.sample_rate)
             print(f'[CosyVoice] saved chunk {i}', flush=True)
             break

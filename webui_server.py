@@ -61,7 +61,7 @@ _EMOTION_MAP = tts_engines._EMOTION_MAP
 _EMOTION_VOICES = tts_engines._EMOTION_VOICES
 _CHATTS = tts_engines._CHATTS
 
-from ai_providers import AI_CONFIG_PATH, _aborted, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir  # [3.2] 引擎层 re-export
+from ai_providers import AI_CONFIG_PATH, _aborted, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # [3.2] 引擎层 re-export
 
 from text_utils import _clamp_line, _clean_caption, _strip_tts_markup
 from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \
@@ -71,6 +71,10 @@ from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \
 from ffmpeg_utils import AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS, \
     _has_audio_track, ffmpeg_exe, ffmpeg_run, probe_audio_len, \
     probe_duration
+from video_render import _NAR_CPS, _NAR_MIN_CHARS, _NAR_MAX_CHARS, _NAR_MAX_SPEED, _NAR_MIN_SPEED, \
+    _target_chars, _fit_voice, _render_narrate, \
+    _merge_spans, _cut_video_by_spans, \
+    _build_subtitle_style, _compose_narration_video
 # 兼容旧命名空间：拆分前下列符号定义在 webui 模块级，保持模块属性可见（长期建议调用方迁到归属模块）
 import cache_utils, ffmpeg_utils  # noqa: F401  (仅用于下方别名，保证 pyflakes 视为 used)
 ANALYSIS_CACHE_DIR = cache_utils.ANALYSIS_CACHE_DIR
@@ -99,6 +103,12 @@ import urllib.parse
 urlparse = urllib.parse.urlparse
 parse_qs = urllib.parse.parse_qs
 unquote = urllib.parse.unquote
+
+import logging
+_log = logging.getLogger('framecut')
+if not logging.getLogger('framecut').handlers:
+    logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(name)s %(levelname)s %(message)s',
+                        datefmt='%H:%M:%S')
 
 # ===========================================================================
 # 【模块级共享状态清单】（batch4-3.4 显式化；改动此处先读这段）
@@ -357,7 +367,7 @@ def _load_queue_from_disk():
     except OSError:
         pass
     if evicted:
-        print(f'[DIAG] 启动恢复: 把 {evicted} 个残留排队任务标记为取消')
+        _log.info(f'[DIAG] 启动恢复: 把 {evicted} 个残留排队任务标记为取消')
     return evicted
 
 
@@ -2423,6 +2433,55 @@ def _cover_render(video_path, ts, title, sub, style, out_path, w_cap=1920):
 # 删除；任务请求里 video/item 传 {name, mlib} 即可直接使用库内素材（copy 进 run_dir）。
 # ---------------------------------------------------------------------------
 MATERIAL_DIR = os.path.join(HERE, 'material_library')
+_MATERIAL_META_FILE = os.path.join(MATERIAL_DIR, '.metadata.json')
+
+
+def _material_meta_load():
+    """读取素材元数据（标签/收藏）。文件不存在或损坏返回空 dict。"""
+    try:
+        with open(_MATERIAL_META_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _material_meta_save(meta):
+    """持久化素材元数据到 sidecar JSON。"""
+    os.makedirs(MATERIAL_DIR, exist_ok=True)
+    with open(_MATERIAL_META_FILE, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False)
+
+
+def material_set_meta(name, tags=None, favorite=None):
+    """更新单个素材的标签和/或收藏状态。返回 (ok, error)。"""
+    fp = _material_path(name)
+    if not fp:
+        return False, '素材不存在'
+    meta = _material_meta_load()
+    entry = meta.get(name, {})
+    if tags is not None:
+        entry['tags'] = [t.strip() for t in tags if t and t.strip()][:10]
+    if favorite is not None:
+        entry['favorite'] = bool(favorite)
+    if entry:
+        meta[name] = entry
+    else:
+        meta.pop(name, None)
+    try:
+        _material_meta_save(meta)
+    except Exception as e:
+        return False, str(e)[:80]
+    return True, ''
+
+
+def material_all_tags():
+    """返回素材库中所有已使用的标签（去重、排序），供前端标签筛选器使用。"""
+    meta = _material_meta_load()
+    tags = set()
+    for entry in meta.values():
+        for t in entry.get('tags', []):
+            tags.add(t)
+    return sorted(tags)
 
 
 def _material_path(name):
@@ -2431,9 +2490,10 @@ def _material_path(name):
 
 
 def material_list():
-    """列出素材库中的视频/图片素材（按名称排序）。"""
+    """列出素材库中的视频/图片素材（按名称排序），含标签与收藏信息。"""
     if not os.path.isdir(MATERIAL_DIR):
         os.makedirs(MATERIAL_DIR, exist_ok=True)
+    meta = _material_meta_load()
     out = []
     for fn in sorted(os.listdir(MATERIAL_DIR)):
         p = os.path.join(MATERIAL_DIR, fn)
@@ -2447,8 +2507,11 @@ def material_list():
         else:
             continue
         try:
+            entry = meta.get(fn, {})
             out.append({'name': fn, 'kind': kind, 'size': os.path.getsize(p),
-                        'mtime': int(os.path.getmtime(p))})
+                        'mtime': int(os.path.getmtime(p)),
+                        'tags': entry.get('tags', []),
+                        'favorite': entry.get('favorite', False)})
         except OSError:
             pass
     return out
@@ -2499,6 +2562,13 @@ def material_delete(name):
         os.remove(fp)
     except OSError as e:
         return False, str(e)[:80]
+    meta = _material_meta_load()
+    if name in meta:
+        del meta[name]
+        try:
+            _material_meta_save(meta)
+        except Exception:
+            pass
     return True, ''
 
 
@@ -3465,13 +3535,20 @@ def make_video_clip(src, dur, out_path, w, h, fps, start=0.0):
     """Trim a source video from `start` to dur seconds and scale/pad to w x h; returns its real duration.
     start 为源视频内的起始时间（默认 0）。调用方按时间线切片时务必传入，否则每段都会从 0 秒截取，
     导致片头画面（如商标/Logo）被反复重复、后面内容完全缺失。"""
-    real = probe_duration(src) or dur
+    if not os.path.exists(src):
+        raise RuntimeError(f'源视频不存在: {src}')
+    real = probe_duration(src) or 0.0
+    if real <= 0:
+        raise RuntimeError(f'无法读取源视频时长: {src}')
     use = min(dur, max(0.0, real - start))
     if use < 0.5:
-        use = dur
+        use = min(dur, real)  # 降级为全取剩余
     rc, o, e = ffmpeg_run(['-y', '-ss', f'{start:.3f}', '-i', src, '-t', f'{use:.3f}',
                             '-vf', f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1',
                             '-r', str(fps)] + video_encode_args(20) + ['-threads', '0', '-an', out_path])
+    if rc != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 100:
+        err = (e.decode('utf-8', 'ignore') if isinstance(e, bytes) else str(e))[-300:]
+        raise RuntimeError(f'视频片段生成失败: {os.path.basename(out_path)} 源={os.path.basename(src)} dur={dur:.1f}s start={start:.1f}s 报错={err}')
     return out_path, use
 
 
@@ -4518,9 +4595,17 @@ def _render_beatcut(video_path, music_path, timeline, params, run_dir, progress=
         segs.append(seg)
         seg_dur = timeline[i + 1] - timeline[i]
         # 必须传 start=timeline[i]：否则每段都从源视频 0 秒截取，片头画面反复出现
-        make_video_clip(video_path, seg_dur, seg,
-                        w=int(params.get('w', W)), h=int(params.get('h', H)), fps=int(params.get('fps', 30)),
-                        start=timeline[i])
+        for attempt in range(2):
+            try:
+                make_video_clip(video_path, seg_dur, seg,
+                                w=int(params.get('w', W)), h=int(params.get('h', H)), fps=int(params.get('fps', 30)),
+                                start=timeline[i])
+                break
+            except RuntimeError:
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                raise
     # 拼接：有转场 → xfade 链（重编码）；否则 concat demuxer 免重编码（快），失败兜底 filter concat
     transition = params.get('transition') or 'none'
     fade_dur = min(0.6, max(0.1, float(params.get('transDur', 0.2))))
@@ -5926,180 +6011,6 @@ def _analyze_narrate(video_path, params, run_dir, progress=None):
     return segs, narr, asr, diag, mode, outline
 
 
-# ---------------------------------------------------------------------------
-# 配音时长自适应（解决「解说词念不完被腰斩 / 念完还剩一大段画面空窗」的时间轴错位）
-# ---------------------------------------------------------------------------
-_NAR_CPS = 4.6          # 中文口播经验语速：字/秒（SAPI 与云端 TTS 实测的折中值）
-_NAR_MIN_CHARS = 12     # 极短镜头也至少说满一句话，避免只剩半句
-_NAR_MAX_CHARS = 95     # 单段解说上限，避免长镜头堆字导致语速被迫过快
-_NAR_MAX_SPEED = 1.35   # atempo 最大加速倍率，超过会有明显失真
-_NAR_MIN_SPEED = 1.03   # 低于此倍率听不出差别，不必重编码
-
-
-def _target_chars(dur):
-    """把画面时长换算成解说词目标字数区间 (lo, hi)。
-
-    配音时长 ≈ 字数 / _NAR_CPS；让字数贴合时长，解说才不会溢出到下一个镜头
-    （溢出会被 atrim 腰斩）也不会念完还剩大片空窗。"""
-    try:
-        dur = float(dur)
-    except Exception:
-        dur = 5.0
-    if dur <= 0:
-        dur = 5.0
-    base = max(_NAR_MIN_CHARS * 1.0, min(float(_NAR_MAX_CHARS), dur * _NAR_CPS))
-    return (int(round(base * 0.80)), int(round(base * 1.05)))
-
-
-def _fit_voice(voice_len, span_len):
-    """给出让配音贴合画面时长的策略。
-
-    返回 {'speed': 建议 atempo 倍率, 'trim': 加速后是否仍需截断, 'over': 溢出秒数(负=空窗)}。
-    - 配音长于画面：适度加速（上限 _NAR_MAX_SPEED），仍超则标记 trim 交给下游裁剪。
-    - 配音短于画面：不加速（宁可留白也不拖慢口播），over 为负数表示空窗时长。"""
-    try:
-        voice_len = float(voice_len); span_len = float(span_len)
-    except Exception:
-        return {'speed': 1.0, 'trim': False, 'over': 0.0}
-    if span_len <= 0.3:
-        return {'speed': 1.0, 'trim': False, 'over': voice_len}
-    over = voice_len - span_len
-    if over <= 0:
-        return {'speed': 1.0, 'trim': False, 'over': over}
-    need = voice_len / span_len
-    if need <= _NAR_MAX_SPEED:
-        return {'speed': round(need, 3), 'trim': False, 'over': over}
-    return {'speed': _NAR_MAX_SPEED, 'trim': True, 'over': over}
-
-
-
-
-
-def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None,
-                    auto_cut=True, narr_map=None):
-    """解说渲染阶段：按分镜剪辑(可选)→逐段配音→混音→烧字幕→配乐。
-
-    auto_cut=True 时先按保留段真剪辑（剪掉未勾选/无解说的画面），字幕与配音自动对齐到
-    剪辑后的新时间轴。返回 (final, voice_clips, cut_info)。"""
-    def up(ph, pct):
-        if progress:
-            progress['phase'] = ph; progress['pct'] = pct
-
-    # ---- 第一步：真剪辑（此前缺失，导致成片恒等于原片时长，「剪辑解说」名不副实）----
-    src_video = video_path
-    cut_info = {'cut_sec': 0.0, 'src_dur': round(probe_audio_len(video_path) or 0.0, 2),
-                'out_dur': None, 'segs': len(segs)}
-    if auto_cut:
-        up('按分镜剪辑画面', 26)
-        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
-        cut_info['cut_sec'] = cut_sec
-        cut_info['segs'] = len(segs)
-    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
-    # 高密度剪辑：一节解说词对应多个子片段，按 narr_map 聚合
-    if narr_map and len(narr_map) == len(segs):
-        beat_ranges = []
-        for bi in range(len(narr)):
-            bsegs = [segs[k] for k in range(len(segs)) if narr_map[k] == bi]
-            if bsegs:
-                beat_ranges.append((bsegs[0][0], bsegs[-1][1]))
-            else:
-                beat_ranges.append((0.0, 0.0))
-        segs = beat_ranges
-        print(f'[DIAG] 高密度剪辑: {len(narr)}节 -> {len(narr_map)}个片段')
-    print(f'[DIAG] auto_cut后: segs={len(segs)} 总时长={sum(b-a for a,b in segs):.1f}s 视频时长={cut_info["out_dur"]}s narr={len(narr)}')
-
-    # 长度对齐保护：narr 与 segs 必须一一对应。模型偶尔多输出/少输出行，
-    # 不修正会导致越界（i >= len(segs) 时全部堆在 0-10s）或后面段无解说。
-    if len(narr) > len(segs):
-        narr = narr[:len(segs)]
-    elif len(narr) < len(segs):
-        narr = list(narr) + [''] * (len(segs) - len(narr))
-
-    up('逐段配音', 30)
-    tts_paths = []
-    voice_spans = {}   # seg_idx -> (start, end)：字幕窗口跟随配音（有声才显字、念完即收）
-    # 只在云端 TTS 真正配了 api_key+model 时才走云端；否则直接用本地免费引擎
-    # 旧写法 _tts_available() 会把本地引擎也算进去，导致每段先试云端（无key必失败）再回退本地，长视频严重拖慢甚至后面超时失声
-    _tcfg = load_ai_config().get('tts') or {}
-    use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
-    # [2.3] 开跑前对首选引擎做一次「首段试点」：成功按当前引擎顺序走；
-    #       失败立即在本 run 内降权切 sherpa/sapi（见 _ping_preferred_engine），
-    #       避免几十段每段都先试错一次 edge（既省时间又避免无谓累计失败触发降权）。
-    if not use_mimo and not getattr(_TLS, 'tts_engine', None):
-        _ping_preferred_engine(run_dir)
-    for i, txt in enumerate(narr):
-        if _aborted():
-            raise AbortError('用户取消了任务')
-        if not (txt and txt.strip()):
-            continue
-        if txt.strip() in ('（留白）', '(留白)'):
-            continue   # 留白段：不配音不出字幕，让原片声音飞（第五原则·留白意识）
-        seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
-        span_len = max(0.0, seg_span[1] - seg_span[0])
-        # 配音前先按画面时长做字数硬上限兜底：给足 _NAR_MAX_SPEED 的加速余量，
-        # 超出的部分宁可精简，也不要让配音被 atrim 在段末腰斩（听众只听到半句）
-        hard_cap = int(round(_target_chars(span_len)[1] * _NAR_MAX_SPEED))
-        spoken = _clamp_line(txt, hard_cap) or txt
-        clip = None
-        if use_mimo:
-            np_ = os.path.join(run_dir, f'narr{i}.mp3')
-            if ai_tts(spoken, np_):
-                clip = np_
-        if clip is None:
-            # 本地免费配音：edge-tts（免 Key）→ 离线模型（sherpa-onnx）→ 系统 SAPI 兜底
-            ok, _eng, lp = local_tts_speak(spoken, os.path.join(run_dir, f'narr{i}.mp3'))
-            if ok:
-                clip = lp
-            else:
-                # [2.2] 显式降级：local_tts_speak 全部引擎失败 → 用清洗后的文本
-                #       （复用 _strip_tts_markup，剥掉 {停顿:1.0} 等标记避免被念出来）
-                #       再走一次系统 SAPI，保证该段至少有声音而不是静默丢段。
-                print(f'[DIAG] TTS失败 seg={i} 字数={len(spoken)} 文本前20字={spoken[:20]}，改走 SAPI 兜底')
-                try:
-                    _sapi_out = os.path.join(run_dir, f'narr{i}_sapi.wav')
-                    _clean_spoken = _strip_tts_markup(spoken)
-                    if _clean_spoken and sapi_tts(_clean_spoken, _sapi_out):
-                        clip = _sapi_out
-                        _eng = 'sapi'   # 兜底成功：该段由 SAPI 替换
-                except Exception as _e:
-                    print(f'[DIAG] SAPI兜底异常 seg={i}: {_e}')
-                if clip is None:
-                    # [2.2] 仍失败：写结构化失败原因到 progress（前端可见），杜绝静默丢段。
-                    print(f'[DIAG] TTS彻底失败 seg={i}（该段将静音，失败原因已记录）')
-                    if progress:
-                        _fl = progress.get('tts_failures') or []
-                        _fl.append({'idx': i, 'engine': _eng or 'sapi',
-                                    'error': 'all_engines_failed'})
-                        progress['tts_failures'] = _fl
-        if clip is not None:
-            # 配音时长自适应：念不完就用 atempo 适度提速贴合镜头，避免跨段重叠/腰斩
-            v_len = probe_audio_len(clip) or max(0.5, span_len)
-            fit = _fit_voice(v_len, span_len)
-            if fit['speed'] > _NAR_MIN_SPEED:
-                fast = os.path.join(run_dir, f'narr{i}_fit.mp3')
-                rc, _o, _e = ffmpeg_run(['-y', '-i', clip, '-vn',
-                                         '-filter:a', 'atempo=%.3f' % fit['speed'],
-                                         '-c:a', 'libmp3lame', '-q:a', '4', fast])
-                if rc == 0 and os.path.exists(fast):
-                    clip = fast
-                    v_len = probe_audio_len(clip) or (v_len / fit['speed'])
-            tts_paths.append((clip, seg_span[0], seg_span[1]))
-            # 字幕只在「这句话正在被念」时显示：一行字挂满整个镜头段会让后段才发生的
-            # 画面内容提前出现在段首，观感像字幕与时间轴错位
-            voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
-    print(f'[DIAG] 配音完成: tts_paths={len(tts_paths)}/{len([t for t in narr if t and t.strip()])} voice_spans={len(voice_spans)}')
-    up('混音+烧字幕+配乐', 60)
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else strip_tts_markup(t) for t in narr]
-    final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
-                                     music_path=music_path, voice_spans=voice_spans)
-    if progress:
-        progress['done'] = True
-        progress['pct'] = 100
-        progress['file'] = os.path.relpath(final, OUTDIR).replace('\\', '/')
-        if mode:
-            progress['mode'] = mode
-    return final, len(tts_paths), cut_info
-
 
 def narrate_video(video_path, params, run_dir, progress=None, music_path=None):
     """电影解说主流程：分段→ASR→解说稿→SAPI/MiMo配音→混音→字幕→成片。
@@ -6115,294 +6026,6 @@ def narrate_video(video_path, params, run_dir, progress=None, music_path=None):
     diag = {'segments': len(segs), 'asr_lines': len(asr), 'voice_clips': vc,
             'narration': narr, 'cut': cut_info}
     return final, diag
-
-
-
-
-def _merge_spans(spans, eps=0.05):
-    """合并重叠/紧邻的区间并按时序排序，避免剪辑时同一段画面被重复拼接。"""
-    out = []
-    for s0, s1 in sorted((float(a), float(b)) for a, b in (spans or [])
-                         if float(b) - float(a) > 0.02):
-        if out and s0 <= out[-1][1] + eps:
-            out[-1] = (out[-1][0], max(out[-1][1], s1))
-        else:
-            out.append((s0, s1))
-    return out
-
-
-def _cut_video_by_spans(video_path, spans, run_dir, progress=None):
-    """按保留区间真剪辑：只留 spans 覆盖的画面，顺序拼成新片，并给出新时间轴。
-
-    这是「剧情驱动剪辑」名副其实的关键。历史实现里解说链路只做「烧字幕 + 混音」，
-    成片时长恒等于原片，用户在预览里取消勾选的段落画面照样留在成片里 —— 等于没剪。
-
-    返回 (cut_path, new_spans, cut_seconds)：
-    - new_spans[i] 是 spans[i] 在拼接后新片里的 (start, end)，字幕与配音必须按它对齐
-    - cut_seconds 为被剪掉的总时长（0 表示未发生剪辑）
-    剪辑失败时安全降级为 (video_path, spans, 0)：宁可不剪，也不因剪辑把出片搞崩。
-    """
-    def up(ph, pct):
-        if progress is not None:
-            progress['phase'] = ph
-            progress['pct'] = pct
-
-    vdur = probe_audio_len(video_path) or 0.0
-    # 夹到 [0, vdur]，避免分析阶段给出的切点越界导致 ffmpeg 报错
-    raw = [(max(0.0, min(vdur, float(a))), max(0.0, min(vdur, float(b))))
-           for a, b in (spans or [])]
-    raw = [(a, b) for a, b in raw if b - a > 0.02]
-    if not raw or vdur <= 0:
-        return video_path, raw, 0.0
-    # 修正重叠段：分析阶段/用户微调可能产生重叠（后段 start < 前段 end），
-    # 若不修正，_merge_spans 会合并重叠区，但 new_spans 仍按原始段长累计 →
-    # new_spans 总时长 > 剪辑后实际视频时长 → 后半段字幕/配音落在视频结束点之后，用户看不到听不到。
-    # 修正方式：后段 start 移到前段 end（重叠画面只出现一次，归属前段）。
-    _fixed = []
-    for a, b in raw:
-        if _fixed and a < _fixed[-1][1]:
-            a = _fixed[-1][1]
-        # 修正后过短的片段给最小 0.5 秒时长，绝不过滤——过滤会导致 narr 与 segs 长度不匹配，
-        # 后面的解说词无对应画面段，配音丢失、字幕错位。
-        if b - a <= 0.02:
-            b = min(vdur, a + 0.5)
-        if b - a > 0.02:
-            _fixed.append((a, b))
-    raw = _fixed
-    if not raw:
-        return video_path, raw, 0.0
-
-    # 剪切用的区间做合并（重叠/紧邻不重复切），但**返回的时间轴必须逐段等长**：
-    # 调用方 segs 与 narr 是一一对应的，这里少返回一段就会让字幕与配音整体错位。
-    spans = _merge_spans(raw)
-    if not spans:
-        return video_path, raw, 0.0
-
-    keep = sum(b - a for a, b in spans)
-    gap = vdur - keep
-    # 连续覆盖全片（中间没有实质空隙）→ 没有可剪的内容，直接跳过，省一次全片重编码
-    covered_gap = sum(max(0.0, spans[i + 1][0] - spans[i][1]) for i in range(len(spans) - 1))
-    if spans[0][0] <= 0.05 and vdur - spans[-1][1] <= 0.05 and covered_gap <= 0.25:
-        return video_path, raw, 0.0
-
-    cut_dir = os.path.join(run_dir, 'cuts')
-    os.makedirs(cut_dir, exist_ok=True)
-    has_audio = _has_audio_track(video_path)
-    pieces = []
-    try:
-        for i, (s0, s1) in enumerate(spans):
-            up('✂ 剪辑片段 %d/%d' % (i + 1, len(spans)), 34 + int(20 * i / max(1, len(spans))))
-            p = os.path.join(cut_dir, 'cut%03d.mp4' % i)
-            # -ss 放 -i 前走快 seek（重编码时仍精确到帧）；-t 用段长，避免 -to 语义混淆
-            cmd = ['-y', '-ss', '%.3f' % s0, '-i', video_path, '-t', '%.3f' % (s1 - s0)]
-            cmd += video_encode_args()
-            cmd += ['-threads', '0']
-            if has_audio:
-                cmd += ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
-            else:
-                cmd += ['-an']
-            cmd += [p]
-            rc, _o, e = ffmpeg_run(cmd)
-            if rc != 0 or not os.path.exists(p):
-                raise RuntimeError('片段 %d 剪切失败: %s' % (i, e.decode('utf-8', 'ignore')[-200:]))
-            pieces.append(p)
-
-        out = os.path.join(run_dir, 'cut.mp4')
-        concat_txt = os.path.join(cut_dir, 'concat.txt')
-        with open(concat_txt, 'w', encoding='utf-8') as f:
-            for p in pieces:
-                f.write("file '%s'\n" % p.replace('\\', '/').replace("'", "'\\''"))
-        up('拼接保留片段', 56)
-        rc, _o, e = ffmpeg_run(['-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
-                                '-c', 'copy', '-movflags', '+faststart', out])
-        if rc != 0 or not os.path.exists(out):
-            # 各段编码参数不一致时 copy 会失败 → 兜底 filter concat（重编码，慢但稳）
-            inputs = []
-            for p in pieces:
-                inputs += ['-i', p]
-            fc = ''.join('[%d:v]' % i for i in range(len(pieces)))
-            if has_audio:
-                fc += ''.join('[%d:a]' % i for i in range(len(pieces)))
-                fc += 'concat=n=%d:v=1:a=1[vout][aout]' % len(pieces)
-                cmd = ['-y'] + inputs + ['-filter_complex', fc, '-map', '[vout]', '-map', '[aout]']
-                cmd += video_encode_args() + ['-c:a', 'aac', '-b:a', '160k', '-threads', '0', out]
-            else:
-                fc += 'concat=n=%d:v=1:a=0[vout]' % len(pieces)
-                cmd = ['-y'] + inputs + ['-filter_complex', fc, '-map', '[vout]']
-                cmd += video_encode_args() + ['-threads', '0', out]
-            rc, _o, e = ffmpeg_run(cmd)
-        if rc != 0 or not os.path.exists(out):
-            raise RuntimeError('拼接失败: ' + e.decode('utf-8', 'ignore')[-300:])
-    except Exception:
-        # 剪辑属增强项：失败就退回原片，保证「能出片」优先于「剪得漂亮」
-        return video_path, raw, 0.0
-
-    # 拼接后的新时间轴：按原始段逐段累计（段数与输入严格一致，保证与解说词一一对应）
-    new_spans, cur = [], 0.0
-    for a, b in raw:
-        new_spans.append((round(cur, 3), round(cur + (b - a), 3)))
-        cur += (b - a)
-    # -c copy 拼接 VFR 视频时，各片段实际时长可能与 -t 指定的有偏差，
-    # 导致拼接后视频实际时长 != new_spans 总时长，后面的配音/字幕落在视频结束点之后。
-    # 修复：ffprobe 检查实际时长，偏差>0.5s 时按比例缩放 new_spans，保证与视频对齐。
-    actual_dur = probe_audio_len(out) or cur
-    expected_dur = cur
-    if actual_dur > 0 and abs(actual_dur - expected_dur) > 0.5:
-        scale = actual_dur / expected_dur
-        print(f'[DIAG] 拼接时长偏差: 预期={expected_dur:.1f}s 实际={actual_dur:.1f}s 缩放={scale:.3f}')
-        new_spans = [(round(s * scale, 3), round(min(actual_dur, e * scale), 3)) for s, e in new_spans]
-    # 被剪掉的总时长 = 原片时长 - 保留时长（gap 就是这个值，别再扣一次段间空隙）
-    return out, new_spans, round(max(0.0, gap), 3)
-
-
-def _build_subtitle_style(params):
-    """从params构建ffmpeg force_style字幕样式字符串。支持用户自定义。"""
-    sub = params.get('subtitle') or {}
-    font_size = int(sub.get('fontSize', 22))
-    # 颜色：用户给#RRGGBB，转成ASS的&HBBGGRR格式
-    def _hex_to_ass(h):
-        h = h.lstrip('#')
-        if len(h) == 6:
-            return '&H%s%s%s' % (h[4:6], h[2:4], h[0:2])
-        return '&H00FFFFFF'
-    primary = _hex_to_ass(sub.get('color', '#FFFFFF'))
-    outline_c = _hex_to_ass(sub.get('outlineColor', '#000000'))
-    outline_w = float(sub.get('outlineWidth', 2))
-    alignment = int(sub.get('alignment', 2))  # 1=左下 2=中下 3=右下 5=左上 8=中上
-    margin_v = int(sub.get('marginV', 50))
-    font_name = sub.get('fontName', 'Microsoft YaHei')
-    return (f'FontName={font_name},FontSize={font_size},'
-            f'PrimaryColour={primary},OutlineColour={outline_c},Outline={outline_w},'
-            f'Alignment={alignment},MarginV={margin_v}')
-
-
-def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None,
-                             voice_spans=None):
-    """把解说配音按时间轴混入原视频，烧录解说字幕，可选叠加背景音乐，输出 final.mp4。
-    - narr[i] 对应 segs[i]（镜头段时间轴），作为该段字幕与配音文案。
-    - tts_paths: [(audio_path, start_sec)]，按各自起始时间对齐到时间轴。
-    - voice_spans: 可选 {seg_idx: (start,end)}，字幕窗口跟随配音（有声才显字、念完即收）；
-      缺省整段显示（兼容旧行为）。
-    - music_path: 可选 BGM，循环铺底、低音量。"""
-    vdur = probe_audio_len(video_path) or 10.0
-    # 1) 烧字幕：解说词按段显示；有配音时间窗时字随声走
-    srt = os.path.join(run_dir, 'narr.srt')
-    with open(srt, 'w', encoding='utf-8') as f:
-        def ts(sec):
-            hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60); ms = int((sec % 1) * 1000)
-            return f'{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}'
-        seq = 0
-        for i, (s0, s1) in enumerate(segs):
-            cap = _clean_caption(narr[i] if i < len(narr) else '')
-            if not cap:
-                continue
-            w0, w1 = s0, s1
-            vs = (voice_spans or {}).get(i)
-            if vs:
-                w0 = max(s0, vs[0])
-                w1 = min(s1, max(vs[1], w0 + 0.8))   # 至少显示 0.8s，避免一闪而过
-            seq += 1
-            f.write(f'{seq}\n{ts(w0)} --> {ts(w1)}\n{cap}\n\n')
-    esc = srt.replace('\\', '/').replace(':', '\\:')
-    vsub = os.path.join(run_dir, 'vsub.mp4')
-    sub_style = _build_subtitle_style(params)
-    # 导出选项：分辨率缩放 + 码率
-    vf_parts = [f"subtitles='{esc}':force_style='{sub_style}'"]
-    scale_filter = build_video_filter(params)
-    if scale_filter:
-        vf_parts.append(scale_filter)
-    vf_str = ','.join(vf_parts)
-    bitrate = params.get('bitrate') or None
-    rc, o, e = ffmpeg_run(['-y', '-i', video_path,
-                           '-vf', vf_str,
-                           ] + video_encode_args(bitrate=bitrate) + ['-threads', '0', '-an', vsub])
-    base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
-
-    has_orig_audio = _has_audio_track(video_path)
-    use_music = bool(music_path) and os.path.exists(music_path or '')
-
-    # 没有任何音频需要混：直接保留画面（含字幕）
-    if not tts_paths and not has_orig_audio and not use_music:
-        final = os.path.join(run_dir, 'final.mp4')
-        cmd = ['-y', '-i', base_video, '-c:v', 'copy', '-an', '-movflags', '+faststart', final]
-        rc, o, e = ffmpeg_run(cmd)
-        if rc != 0:
-            raise RuntimeError('成片失败: ' + e.decode('utf-8', 'ignore')[-300:])
-        return final
-
-    # 构建音频滤镜图
-    # tts_paths 元素：2 元组 (audio, start) 或 3 元组 (audio, start, end)，后者用于把配音裁剪在本镜头段内，
-    # 避免配音时长超过镜头段导致的跨段语音重叠。
-    def _tt_span(item):
-        # item: (path, start, end, orig_volume_or_None)
-        if len(item) >= 4:
-            return item[0], item[1], item[2], item[3]
-        if len(item) >= 3:
-            return item[0], item[1], item[2], None
-        return item[0], item[1], None, None
-
-    inputs = ['-y', '-i', base_video]   # 0 = 字幕视频(画面)
-    fparts = []
-    mixin = ''
-    next_idx = 1                        # 下一个音频输入索引（显式记录，避免 count("-i") 脆弱）
-    if has_orig_audio:
-        inputs += ['-i', video_path]    # 1 = 原视频(音频)
-        if tts_paths:
-            # 解说配音存在时做 ducking：解说段内原声按用户设置音量，缝隙还原 0.5
-            expr = '0.5'
-            for item in tts_paths:
-                np_, od, _oe, _ovol = _tt_span(item)
-                dur = probe_audio_len(np_) or 3.0
-                # 用户设置了原片音量则用用户值（0-100 -> 0-1.0），否则默认0.08
-                vol = (_ovol / 100.0) if (_ovol is not None and _ovol > 0) else 0.08
-                expr = "if(between(t,%.2f,%.2f),%.3f,%s)" % (od, od + dur, vol, expr)
-            # 注意：表达式含逗号，必须用单引号包裹，否则 ffmpeg 会把逗号当作滤镜链分隔符导致解析失败
-            fparts.append("[1:a]volume='%s':eval=frame[orig]" % expr)
-        else:
-            fparts.append('[1:a]volume=0.5[orig]')
-        mixin = '[orig]'
-        next_idx += 1
-    for k2, item in enumerate(tts_paths):
-        np_, od, oe, _ov = _tt_span(item)
-        inputs += ['-i', np_]
-        if oe is not None and oe > od:
-            # 限制配音时长不超过本镜头段，杜绝「这段解说拖到下一段画面」的重叠
-            dmax = max(0.05, oe - od)
-            fparts.append(f'[{next_idx + k2}:a]aresample=44100,adelay={int(od * 1000)}|{int(od * 1000)},'
-                          f'atrim=0:{dmax:.2f},apad=whole_dur={vdur:.2f}[t{k2}]')
-        else:
-            fparts.append(f'[{next_idx + k2}:a]aresample=44100,adelay={int(od * 1000)}|{int(od * 1000)},'
-                          f'apad=whole_dur={vdur:.2f}[t{k2}]')
-        mixin += f'[t{k2}]'
-    if use_music:
-        # 背景乐：单次输入 + atrim 截到视频时长 + apad 补到视频时长。
-        # 不要用 `-stream_loop -1` 无限循环：apad(whole_dur) 需要读到输入 EOF 才会输出，
-        # 无限循环流没有 EOF，会导致 ffmpeg 永久挂起（实测解说+配乐必卡死）。
-        # 【任务4】配乐淡入淡出：默认 3 秒，视频短于 6 秒时长减半但不低于 0.5s，避免硬切。
-        _fade = 3.0 if vdur >= 6.0 else max(0.5, vdur / 4.0)
-        _fade_out_st = max(0.0, vdur - _fade)
-        inputs += ['-i', music_path]
-        fparts.append(f'[{next_idx + len(tts_paths)}:a]aresample=44100,volume=0.16,'
-                      f'atrim=0:{vdur:.2f},apad=whole_dur={vdur:.2f},'
-                      f'afade=t=in:st=0:d={_fade:.2f},'
-                      f'afade=t=out:st={_fade_out_st:.2f}:d={_fade:.2f}[bgm]')
-        mixin += '[bgm]'
-    n_mix = len(tts_paths) + (1 if has_orig_audio else 0) + (1 if use_music else 0)
-    # amix 前统一采样率/声道，避免不同来源（SAPI 22k mono / 云端 TTS 24-48k / 原声 44.1k stereo）混音异常或音量失衡
-    fparts.append(f'{mixin}amix=inputs={n_mix}:normalize=0,aresample=44100,aformat=channel_layouts=stereo,'
-                  f'aformat=fltp[aout]')
-    final = os.path.join(run_dir, 'final.mp4')
-    cmd = inputs + ['-filter_complex', ';'.join(fparts), '-map', '0:v:0', '-map', '[aout]',
-                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final]
-    rc, o, e = ffmpeg_run(cmd)
-    if rc != 0:
-        # 兜底：丢弃配音，仅保留原声/画面的简单封装
-        fb = os.path.join(run_dir, 'final.mp4')
-        rc2, o2, e2 = ffmpeg_run(['-y', '-i', base_video, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', fb])
-        if rc2 == 0 and os.path.exists(fb):
-            return fb
-        raise RuntimeError('混音失败: ' + e.decode('utf-8', 'ignore')[-300:])
-    return final
 
 
 # ---------------------------------------------------------------------------
@@ -6701,7 +6324,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     cache_key = _video_cache_key(video_path, f'vlm_sample_{vlm_model}_{int(interval)}')
     cached = _cache_load(cache_key)
     if cached:
-        print(f'[DIAG] VLM抽样命中缓存: {len(cached)}个时间点')
+        _log.info(f'[DIAG] VLM抽样命中缓存: {len(cached)}个时间点')
         if progress:
             progress['phase'] = '画面索引（缓存命中）'
             progress['pct'] = 46
@@ -6748,7 +6371,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         progress['pct'] = 40
     if _sample_frame_cache_ready(frame_dir, total_samples):
         # [P0-1 方案1.5] 抽帧产物缓存命中：直接复用帧文件，免 ffmpeg
-        print(f'[DIAG] 抽帧产物缓存命中: {total_samples}帧直接复用(免ffmpeg)')
+        _log.info(f'[DIAG] 抽帧产物缓存命中: {total_samples}帧直接复用(免ffmpeg)')
     else:
         # [P0-1 方案1.1] 原实现为每个有台词抽样点独立 ffmpeg -ss -frames:v 1（约60次子进程）；
         # 现改为一次 `fps=1/interval` 连续抽帧。从 interval/2 起按网格输出，
@@ -6863,9 +6486,9 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                     }
             _resumed = len(_analyzed)
             if _resumed:
-                print('[DIAG] VLM断点续跑: 恢复%d个已完成场景，不再重跑' % _resumed)
+                _log.info('[DIAG] VLM断点续跑: 恢复%d个已完成场景，不再重跑' % _resumed)
         else:
-            print('[DIAG] VLM断点续跑: 指纹不匹配（换了视频/模型/抽样间隔），忽略旧进度')
+            _log.info('[DIAG] VLM断点续跑: 指纹不匹配（换了视频/模型/抽样间隔），忽略旧进度')
 
     _pending_frames = [f for f in _key_frames if _key_of_idx.get(f[0]) not in _analyzed]
     total_key = len(_key_frames)
@@ -6875,7 +6498,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         # 协作式取消：用户点「停止」时立即退出，已分析的部分保留在进度文件里
         if _aborted():
             _all_done = False
-            print('[DIAG] VLM断点续跑: 收到取消信号，已保留%d个场景进度' % len(_analyzed))
+            _log.info('[DIAG] VLM断点续跑: 收到取消信号，已保留%d个场景进度' % len(_analyzed))
             break
         batch = _pending_frames[bi:bi + batch_size]
         t_start = batch[0][1]
@@ -6945,14 +6568,14 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         })
 
     results.sort(key=lambda x: x['start'])
-    print(f'[DIAG] VLM均匀抽样(批量+差分复用): {len(sample_times)}个点, VLM {vlm_count}次(原需{len(need_vlm)}次, 复用省{_vlm_saved}帧), 跳过{skip_count}个无台词')
+    _log.info(f'[DIAG] VLM均匀抽样(批量+差分复用): {len(sample_times)}个点, VLM {vlm_count}次(原需{len(need_vlm)}次, 复用省{_vlm_saved}帧), 跳过{skip_count}个无台词')
     _cache_save(cache_key, results)
     # 全部完成并已落缓存 → 清理断点进度文件（下次走缓存，不再需要续跑）
     # 中途取消 / 有失败批次时不删：取消留给下次续跑恢复，失败留给下次重试。
     if _all_done and not _failed and progress_file and os.path.exists(progress_file):
         try:
             os.remove(progress_file)
-            print('[DIAG] VLM断点续跑: 已全部完成，清理进度文件')
+            _log.info('[DIAG] VLM断点续跑: 已全部完成，清理进度文件')
         except OSError:
             pass
     return results
@@ -7157,7 +6780,7 @@ def _infer_scene_story(scenes, asr=None, movie_name='', progress=None, window=6)
             prev_summary = '\n'.join(
                 ('——%s %s' % (_fmt(scenes[i].get('start')), result[i]['story']))
                 for i in batch[-2:] if result.get(i) and result[i].get('story'))
-    print(f'[DIAG] 剧情理解层: 推断 {len(result)}/{total} 个场景窗含义, 共{n_call}批')
+    _log.info(f'[DIAG] 剧情理解层: 推断 {len(result)}/{total} 个场景窗含义, 共{n_call}批')
     return result
 
 
@@ -7191,7 +6814,7 @@ def _align_from_story_fill(beats, scenes, alignment, scene_story):
         if best is not None:
             out[bi] = [best]
     if len(out) != len(alignment):
-        print(f'[DIAG] 剧情语义兜底对齐: 补齐 {len(out) - len(alignment)} 节（基于剧情含义词面重叠）')
+        _log.info(f'[DIAG] 剧情语义兜底对齐: 补齐 {len(out) - len(alignment)} 节（基于剧情含义词面重叠）')
     return out
 
 
@@ -7340,10 +6963,10 @@ def _llm_refine_beats_with_scenes(beats, scenes, alignment, asr, movie_name=''):
                     refined_beats[bi]['text'] = lines[i]
                 else:
                     refined_beats[bi] = lines[i]
-        print(f'[DIAG] 剧情理解润色: {len([l for l in lines if l])}/{len(to_refine)}段已润色')
+        _log.info(f'[DIAG] 剧情理解润色: {len([l for l in lines if l])}/{len(to_refine)}段已润色')
         return refined_beats
     except Exception as e:
-        print(f'[DIAG] 剧情理解润色失败: {e}')
+        _log.info(f'[DIAG] 剧情理解润色失败: {e}')
         return beats
 
 
@@ -7824,7 +7447,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     asr_cache_key = _video_cache_key(video_path, f'asr_{whisper_model}')
     asr = _cache_load(asr_cache_key)
     if asr:
-        print(f'[DIAG] ASR命中缓存: {len(asr)}段台词')
+        _log.info(f'[DIAG] ASR命中缓存: {len(asr)}段台词')
         if progress:
             progress['phase'] = '台词识别（缓存命中）'
             progress['pct'] = 40
@@ -7844,7 +7467,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     vlm_cache_key = _video_cache_key(video_path, f'vlm_{vlm_model}')
     scene_descs = _cache_load(vlm_cache_key)
     if scene_descs:
-        print(f'[DIAG] VLM命中缓存: {len(scene_descs)}个时间点')
+        _log.info(f'[DIAG] VLM命中缓存: {len(scene_descs)}个时间点')
         if progress:
             progress['phase'] = '画面索引（缓存命中）'
             progress['pct'] = 46
@@ -7852,7 +7475,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=progress)
         if scene_descs:
             _cache_save(vlm_cache_key, scene_descs)
-            print(f'[DIAG] 画面索引: {len(scene_descs)}个时间点已建立并缓存')
+            _log.info(f'[DIAG] 画面索引: {len(scene_descs)}个时间点已建立并缓存')
     # 保存scene_descs到run_dir，供AI候选推荐和手动调整页使用
     if scene_descs and run_dir:
         try:
@@ -7894,7 +7517,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     # TTS 标记后处理：检查标记完整性，自动补全停顿/情绪（本地LLM可能忽略标记指导）
     texts = _enhance_tts_markup(texts)
     n_marked = sum(1 for t in texts if has_tts_markup(t))
-    print(f'[DIAG] TTS标记: {n_marked}/{len(texts)}节含标记')
+    _log.info(f'[DIAG] TTS标记: {n_marked}/{len(texts)}节含标记')
 
     if _aborted():
         raise AbortError('用户取消了任务')
@@ -7909,7 +7532,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         up('解说词-场景语义对齐', 48)
         scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name, scene_story=scene_story)
         if scene_alignment:
-            print(f'[DIAG] LLM语义对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
+            _log.info(f'[DIAG] LLM语义对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
     # 阶段2.5：剧情理解层 - 用画面描述+台词润色解说词（可选，默认开启）
     if params.get('plotRefine', params.get('plot_refine', True)) and scene_alignment and scene_descs:
         up('剧情理解润色（让解说贴合画面）', 50)
@@ -7996,13 +7619,13 @@ def _generate_all_tts(narr, run_dir, progress=None):
             progress['phase'] = '逐段配音 %d/%d' % (i + 1, len(narr)) + ('（断点续跑，已跳过%d段）' % skipped if skipped else '')
             progress['pct'] = 55 + int(25 * (i + 1) / max(1, len(narr)))
     if skipped:
-        print('[DIAG] TTS断点续跑: 跳过%d段已生成配音' % skipped)
-    print('[DIAG] TTS第一轮完成: %d/%d段' % (len(results), len(narr)))
+        _log.info('[DIAG] TTS断点续跑: 跳过%d段已生成配音' % skipped)
+    _log.info('[DIAG] TTS第一轮完成: %d/%d段' % (len(results), len(narr)))
     # 失败重试：第一轮没成功的段落再试一次（可能是瞬时网络抖动或熔断恢复）
     success_idx = set(i for i, _ in results)
     failed = [i for i in range(len(narr)) if i not in success_idx and narr[i].strip()]
     if failed:
-        print('[DIAG] TTS重试 %d 个失败段落' % len(failed))
+        _log.info('[DIAG] TTS重试 %d 个失败段落' % len(failed))
         _time.sleep(1.0)  # 等熔断恢复
         for i in failed:
             if _aborted(): break
@@ -8056,8 +7679,8 @@ def _generate_all_tts(narr, run_dir, progress=None):
             progress['tts_failures'] = [{'idx': e.get('idx'), 'engine': e.get('engine'),
                                          'error': e.get('error', '')} for e in _bad]
     except Exception as _e:
-        print(f'[DIAG] TTS日志写入失败: {_e}')
-    print('[DIAG] TTS最终完成: %d/%d段, 日志%s' % (len(results), len(narr), _log_path))
+        _log.info(f'[DIAG] TTS日志写入失败: {_e}')
+    _log.info('[DIAG] TTS最终完成: %d/%d段, 日志%s' % (len(results), len(narr), _log_path))
     return results
 
 
@@ -8189,22 +7812,22 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     # 应用用户手动调整的视频时间范围（必须在所有seg处理之后，用old_to_new映射覆盖）
     if adjusted_items and user_video_spans:
         video_dur = probe_audio_len(video_path) or 0
-        print('[DIAG] 用户手动调整了%d段画面时间，视频时长%.1f秒，共%d段画面' % (len(user_video_spans), video_dur, len(segs)))
+        _log.info('[DIAG] 用户手动调整了%d段画面时间，视频时长%.1f秒，共%d段画面' % (len(user_video_spans), video_dur, len(segs)))
         for old_i, (vs, ve) in user_video_spans.items():
             new_i = old_to_new.get(old_i, old_i) if 'old_to_new' in dir() else old_i
             if 0 <= new_i < len(segs):
                 if ve > vs and vs >= 0 and (video_dur == 0 or ve <= video_dur + 1):
                     segs[new_i] = (vs, min(ve, video_dur) if video_dur else ve)
-                    print('[DIAG] 第%d段(原%d)画面已覆盖为: %.1f-%.1f秒' % (new_i + 1, old_i + 1, vs, ve))
+                    _log.info('[DIAG] 第%d段(原%d)画面已覆盖为: %.1f-%.1f秒' % (new_i + 1, old_i + 1, vs, ve))
                 else:
-                    print('[DIAG] 第%d段(原%d)画面时间不合理(%.1f-%.1f)，保留自动范围%.1f-%.1f' % (new_i + 1, old_i + 1, vs, ve, segs[new_i][0], segs[new_i][1]))
+                    _log.info('[DIAG] 第%d段(原%d)画面时间不合理(%.1f-%.1f)，保留自动范围%.1f-%.1f' % (new_i + 1, old_i + 1, vs, ve, segs[new_i][0], segs[new_i][1]))
             else:
-                print('[DIAG] 第%d段(原%d)索引越界(共%d段)，跳过' % (new_i + 1, old_i + 1, len(segs)))
+                _log.info('[DIAG] 第%d段(原%d)索引越界(共%d段)，跳过' % (new_i + 1, old_i + 1, len(segs)))
     # === B-roll 支持：插入无配音的纯画面段 ===
     if adjusted_items:
         broll_items = [(i, it) for i, it in enumerate(adjusted_items) if it.get('isBroll')]
         if broll_items:
-            print('[DIAG] 检测到%d个B-roll段，插入到画面序列' % len(broll_items))
+            _log.info('[DIAG] 检测到%d个B-roll段，插入到画面序列' % len(broll_items))
             # 按顺序重建segs和narr，插入B-roll段
             new_segs = []
             new_narr = []
@@ -8224,7 +7847,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                     if ve > vs:
                         new_segs.append((vs, ve))
                         new_narr.append('')  # B-roll无解说词
-                        print('[DIAG] B-roll段插入: %.1f-%.1f秒' % (vs, ve))
+                        _log.info('[DIAG] B-roll段插入: %.1f-%.1f秒' % (vs, ve))
                 else:
                     if seg_idx < len(segs):
                         new_segs.append(segs[seg_idx])
@@ -8253,8 +7876,8 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                     if old_i in old_to_new_tts:
                         new_tts_results.append((old_to_new_tts[old_i], audio))
                 tts_results = new_tts_results
-                print('[DIAG] B-roll后重建配音索引: %d段配音' % len(tts_results))
-            print('[DIAG] B-roll插入后: %d个画面段, %d段解说词' % (len(segs), len(narr)))
+                _log.info('[DIAG] B-roll后重建配音索引: %d段配音' % len(tts_results))
+            _log.info('[DIAG] B-roll插入后: %d个画面段, %d段解说词' % (len(segs), len(narr)))
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 60)
@@ -8270,7 +7893,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             else:
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
-        print('[DIAG] 剪辑后聚合: %d节 -> %d个片段（已跳过空白）' % (len(narr), len(segs)))
+        _log.info('[DIAG] 剪辑后聚合: %d节 -> %d个片段（已跳过空白）' % (len(narr), len(segs)))
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
     # 计算voice_spans和tts_paths（segs[i]就是第i节解说词对应的画面范围）
     tts_paths = []
@@ -8292,13 +7915,13 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             _offset = user_audio_offsets.get(_rev_map[i], 0.0)
             _orig_vol = user_orig_volumes.get(_rev_map[i])
         if _offset != 0:
-            print('[DIAG] 第%d段配音偏移%.1f秒' % (i+1, _offset))
+            _log.info('[DIAG] 第%d段配音偏移%.1f秒' % (i+1, _offset))
         if _orig_vol is not None:
-            print('[DIAG] 第%d段原片音量%.0f%%' % (i+1, _orig_vol))
+            _log.info('[DIAG] 第%d段原片音量%.0f%%' % (i+1, _orig_vol))
         tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
         voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
-    print('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))
+    _log.info('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))
     up('混音+烧字幕+配乐', 80)
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
@@ -8423,7 +8046,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             _tts_error[0] = e
     _tts_thread = _th_tts.Thread(target=_tts_worker, daemon=True, name='tts-worker')
     _tts_thread.start()
-    print('[DIAG] TTS配音已启动（与裁剪并行）')
+    _log.info('[DIAG] TTS配音已启动（与裁剪并行）')
 
     up('逐段配音+裁剪（并行）', 58)
     # 先聚合：同属一个beat的多个seg合并成一个时间范围（用原始segs，不依赖裁剪后数量）
@@ -8436,7 +8059,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             else:
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
-        print(f'[DIAG] 高密度聚合: {len(narr)}节 -> {len(segs)}个片段')
+        _log.info(f'[DIAG] 高密度聚合: {len(narr)}节 -> {len(segs)}个片段')
     # 主线程继续做裁剪（TTS在后台跑，segs现在是每节一个范围）
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 54)
@@ -8456,7 +8079,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         tts_paths.append((clip, seg_span[0], seg_span[1]))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
         voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
-    print(f'[DIAG] TTS并行完成: {len(tts_paths)}/{len(narr)}段配音成功')
+    _log.info(f'[DIAG] TTS并行完成: {len(tts_paths)}/{len(narr)}段配音成功')
     up('混音+烧字幕+配乐', 70)
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
@@ -8481,9 +8104,9 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         # [P0-1] 增量状态原子写：长视频增量重生成路径若写到一半打断，下一次会从空状态重启
         import json as _json
         _atomic_json_dump(os.path.join(run_dir, 'state.json'), _state)
-        print(f'[DIAG] 增量状态已保存: {len(narr)}段')
+        _log.info(f'[DIAG] 增量状态已保存: {len(narr)}段')
     except Exception as _e:
-        print(f'[DIAG] 增量状态保存失败: {_e}')
+        _log.info(f'[DIAG] 增量状态保存失败: {_e}')
     # 剪辑质量自检：对比每段解说词和对应时间段的台词，标记可能不匹配的片段
     quality_report = []
     try:
@@ -8509,20 +8132,20 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             quality_report.append({'seg': i, 'score': round(overlap, 2), 'flag': flag,
                                    'narration': txt[:50], 'asr': seg_text[:50]})
         mismatch_count = sum(1 for q in quality_report if q['flag'] == 'mismatch')
-        print(f'[DIAG] 质量自检: {len(quality_report)}段, {mismatch_count}段可能不匹配')
+        _log.info(f'[DIAG] 质量自检: {len(quality_report)}段, {mismatch_count}段可能不匹配')
         # 保存质量报告
         import json as _jq
         _jq.dump(quality_report, open(os.path.join(run_dir, 'quality.json'), 'w', encoding='utf-8'),
                  ensure_ascii=False, indent=2)
     except Exception as _qe:
-        print(f'[DIAG] 质量自检失败: {_qe}')
+        _log.info(f'[DIAG] 质量自检失败: {_qe}')
     diag = {'events': len(events), 'segments': len(segs), 'asr_lines': len(asr),
             'aligned': sum(1 for x in narr if x.strip()), 'voice_clips': len(tts_paths),
             'narration': narr, 'cut': cut_info,
             'quality': {'mismatch': sum(1 for q in quality_report if q['flag'] == 'mismatch'),
                         'total': len(quality_report), 'report': quality_report}}
     if not final:
-        print(f'[DIAG] narrate_movie final为None! video_path={video_path}, tts_only={tts_only}, segs={len(segs)}, narr={len(narr)}, tts_paths={len(tts_paths)}')
+        _log.info(f'[DIAG] narrate_movie final为None! video_path={video_path}, tts_only={tts_only}, segs={len(segs)}, narr={len(narr)}, tts_paths={len(tts_paths)}')
     return final, diag
 
 

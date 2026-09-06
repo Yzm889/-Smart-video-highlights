@@ -8,6 +8,9 @@
 - 本层公共符号在文件末尾注入回宿主命名空间，`webui_server.dispatch_*` 等旧入口不变。
 """
 import base64, os, shutil, sys, threading, time
+import logging
+
+_log = logging.getLogger('framecut.workflows')
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _HOST_FILE = os.path.join(_HERE, 'webui_server.py')
@@ -800,12 +803,22 @@ def assemble(items, params, music=None, progress=None, run_dir=None):
         # pad each segment by `fade` so the xfade overlap keeps the total timeline
         seg_dur = disp + fade
         seg = os.path.join(run_dir, f'seg{idx}.mp4')
-        if it['kind'] == 'image':
-            _w.make_image_clip(it['src'], seg_dur, int(it.get('motion', idx % 4)), seg, w, h, fps)
-            real_durs.append(seg_dur)
-        else:
-            seg, real = _w.make_video_clip(it['src'], seg_dur, seg, w, h, fps)
-            real_durs.append(real)
+        last_err = None
+        for attempt in range(2):
+            try:
+                if it['kind'] == 'image':
+                    _w.make_image_clip(it['src'], seg_dur, int(it.get('motion', idx % 4)), seg, w, h, fps)
+                    real_durs.append(seg_dur)
+                else:
+                    seg, real = _w.make_video_clip(it['src'], seg_dur, seg, w, h, fps)
+                    real_durs.append(real)
+                break
+            except RuntimeError as e:
+                last_err = e
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                raise
         segments.append(seg)
     up('合并片段(转场)', 64)
 
@@ -989,7 +1002,7 @@ def _start_next_queued():
         return
     prog['queued'] = False
     prog['phase'] = '开始执行'
-    print(f'[DIAG] 排队任务启动: {runid}，剩余队列={len(_w._TASK_QUEUE)}')
+    _log.info('排队任务启动: %s，剩余队列=%d', runid, len(_w._TASK_QUEUE))
     def _queued_runner():
         _w._TLS.runid = runid
         try:

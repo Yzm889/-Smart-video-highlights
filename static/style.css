@@ -167,6 +167,16 @@ select option { background: var(--bg2); color: var(--ink); }
 .item input[type=number] { width: 74px; }
 .item .lbl { font-size: 11.5px; color: var(--muted); }
 
+/* ---------- Material library tags / favorites ---------- */
+.mlib-tags { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.mlib-star { cursor: pointer; font-size: 16px; color: #888; transition: color .15s; user-select: none; }
+.mlib-star.on { color: #f9a825; }
+.mlib-tag { display: inline-block; padding: 1px 6px; font-size: 10.5px; border-radius: 8px; background: var(--accent-bg, #e3f2fd); color: var(--accent, #1976d2); white-space: nowrap; }
+.mlib-tag-add { cursor: pointer; font-size: 10.5px; color: var(--muted); border: 1px dashed var(--muted); border-radius: 8px; padding: 1px 6px; white-space: nowrap; }
+.mlib-tag-add:hover { color: var(--accent); border-color: var(--accent); }
+.mlib-tag-btn { cursor: pointer; padding: 2px 8px; font-size: 11px; border-radius: 10px; background: var(--accent-bg, #e3f2fd); color: var(--accent, #1976d2); border: 1px solid transparent; white-space: nowrap; }
+.mlib-tag-btn.active { background: var(--accent, #1976d2); color: #fff; }
+
 /* ---------- Music results ---------- */
 #musResults { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
 .mres {

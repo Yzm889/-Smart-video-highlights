@@ -2181,6 +2181,7 @@ async function buildBeatCut(){
 function pollBeatCut(runid){
   return new Promise(resolve=>{
     let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
+    const _bcT0 = Date.now();
     _currentRunid = runid; const cb=$('bcCancel'); if(cb) cb.style.display='';
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
@@ -2219,7 +2220,7 @@ function pollBeatCut(runid){
           $('bcDiag').textContent = txt;
           resolve(); return;
         }
-        $('bcStatus').textContent = (p.phase||'分析中')+'… '+(p.pct||0)+'%';
+        if(!_stopFlag) $('bcStatus').textContent = (p.phase||'分析中')+'… '+(p.pct||0)+'%'+_formatETA(Math.round((Date.now()-_bcT0)/1000), p.pct);
       }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); $('bcBar').style.display='none'; _currentRunid=null; if(cb) cb.style.display='none'; $('bcStatus').textContent='❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     },400);
     setTimeout(()=>{ clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('bcStatus').textContent='⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
@@ -3212,40 +3213,118 @@ function coverUpdate(boxId){
 }
 
 
-// ---- 🗂 本地素材库：持久保存（material_library/，刷新/重启不丢）----
+// ---- 🗂 本地素材库：持久保存（material_library/，刷新/重启不丢）+ 标签/收藏 ----
+let _mlibItems = [];
+let _mlibFavOnly = false;
+let _mlibActiveTags = new Set();
+
 function mlibList(){
   const box = $('mlibList');
   if(!box) return;
   fetch('/api/material/list').then(r=>r.json()).then(res=>{
     if(!res.ok){ box.innerHTML='<div class="hint">❌ 加载失败</div>'; return; }
-    if(!(res.items||[]).length){ box.innerHTML='<div class="hint">素材库还是空的：上传文件，或把 B 站下载的视频「🗂 存入素材库」。</div>'; return; }
-    box.innerHTML='';
-    (res.items||[]).forEach(m=>{
-      const url = '/material_lib/' + encodeURIComponent(m.name);
-      const sz = (m.size/1048576).toFixed(1)+'MB';
-      const d = document.createElement('div'); d.className='item'; d.style.marginBottom='6px';
-      d.innerHTML = `${m.kind==='image' ? `<img class="thumb" src="${escapeHtml(url)}">` : `<video class="thumb" src="${escapeHtml(url)}#t=1" preload="metadata" muted></video>`}
-        <div class="meta"><div class="name">${escapeHtml(m.name)}</div><div class="kind">${m.kind==='video'?'🎬':'🖼️'} ${sz}</div></div>
-        <button class="btn mini">➕ 加入素材列表</button>
-        <button class="btn mini ghost">🎬 设为解说</button>
-        <button class="btn mini ghost">🎯 设为卡点</button>
-        <button class="btn mini danger" title="删除">🗑</button>`;
-      box.appendChild(d);
-      const [bAdd, bNar, bBc, bDel] = d.querySelectorAll('button');
-      bAdd.addEventListener('click', ()=>{
-        ITEMS.push({ id:'it'+Date.now()+Math.random().toString(36).slice(2,6), name:m.name, kind:m.kind, dur:parseInt(($('defDur')||{}).value)||3, mlib:m.name, url });
-        render();
-        bAdd.textContent='✅ 已加入'; setTimeout(()=>bAdd.textContent='➕ 加入素材列表', 1200);
-      });
-      bNar.addEventListener('click', ()=>mlibToSlot(m.name, 'nar', bNar));
-      bBc.addEventListener('click', ()=>mlibToSlot(m.name, 'bc', bBc));
-      bDel.addEventListener('click', ()=>{
-        if(!confirm('从素材库删除 '+m.name+' ？（已生成的成片不受影响）')) return;
-        fetch('/api/material/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:m.name})}).then(()=>mlibList()).catch(()=>{});
-      });
-    });
+    _mlibItems = res.items || [];
+    if(!_mlibItems.length){ box.innerHTML='<div class="hint">素材库还是空的：上传文件，或把 B 站下载的视频「🗂 存入素材库」。</div>'; $('mlibFilterBar').style.display='none'; return; }
+    _mlibRefreshTagFilter();
+    $('mlibFilterBar').style.display='flex';
+    mlibRenderFiltered();
   }).catch(()=>{ box.innerHTML='<div class="hint">❌ 请求失败</div>'; });
 }
+
+function mlibRenderFiltered(){
+  const box = $('mlibList');
+  if(!box) return;
+  const q = (($('mlibSearch')||{}).value||'').toLowerCase();
+  const filtered = _mlibItems.filter(m=>{
+    if(_mlibFavOnly && !m.favorite) return false;
+    if(_mlibActiveTags.size){
+      const mt = new Set(m.tags||[]);
+      for(const t of _mlibActiveTags){ if(!mt.has(t)) return false; }
+    }
+    if(q && !m.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  if(!filtered.length){ box.innerHTML='<div class="hint">没有匹配的素材</div>'; return; }
+  box.innerHTML='';
+  filtered.forEach(m=>{
+    const url = '/material_lib/' + encodeURIComponent(m.name);
+    const sz = (m.size/1048576).toFixed(1)+'MB';
+    const favCls = m.favorite ? 'mlib-star on' : 'mlib-star';
+    const tagsHtml = (m.tags||[]).map(t=>`<span class="mlib-tag">${escapeHtml(t)}</span>`).join('');
+    const d = document.createElement('div'); d.className='item'; d.style.marginBottom='6px';
+    d.innerHTML = `${m.kind==='image' ? `<img class="thumb" src="${escapeHtml(url)}">` : `<video class="thumb" src="${escapeHtml(url)}#t=1" preload="metadata" muted></video>`}
+      <div class="meta"><div class="name">${escapeHtml(m.name)}</div><div class="kind">${m.kind==='video'?'🎬':'🖼️'} ${sz}</div>
+      <div class="mlib-tags"><span class="${favCls}" title="收藏">★</span> ${tagsHtml}<span class="mlib-tag-add" title="编辑标签">+标签</span></div></div>
+      <button class="btn mini">➕ 加入素材列表</button>
+      <button class="btn mini ghost">🎬 设为解说</button>
+      <button class="btn mini ghost">🎯 设为卡点</button>
+      <button class="btn mini danger" title="删除">🗑</button>`;
+    box.appendChild(d);
+    const [bAdd, bNar, bBc, bDel] = d.querySelectorAll('button');
+    const star = d.querySelector('.mlib-star');
+    const tagAdd = d.querySelector('.mlib-tag-add');
+    star.addEventListener('click', ()=>{
+      m.favorite = !m.favorite;
+      mlibSetMeta(m);
+      star.className = m.favorite ? 'mlib-star on' : 'mlib-star';
+    });
+    tagAdd.addEventListener('click', ()=>mlibEditTags(m));
+    bAdd.addEventListener('click', ()=>{
+      ITEMS.push({ id:'it'+Date.now()+Math.random().toString(36).slice(2,6), name:m.name, kind:m.kind, dur:parseInt(($('defDur')||{}).value)||3, mlib:m.name, url });
+      render();
+      bAdd.textContent='✅ 已加入'; setTimeout(()=>bAdd.textContent='➕ 加入素材列表', 1200);
+    });
+    bNar.addEventListener('click', ()=>mlibToSlot(m.name, 'nar', bNar));
+    bBc.addEventListener('click', ()=>mlibToSlot(m.name, 'bc', bBc));
+    bDel.addEventListener('click', ()=>{
+      if(!confirm('从素材库删除 '+m.name+' ？（已生成的成片不受影响）')) return;
+      fetch('/api/material/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:m.name})}).then(()=>mlibList()).catch(()=>{});
+    });
+  });
+}
+
+function mlibSetMeta(m){
+  fetch('/api/material/meta', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name:m.name, tags:m.tags, favorite:m.favorite})}).catch(()=>{});
+}
+
+function mlibEditTags(m){
+  const cur = (m.tags||[]).join(', ');
+  const input = prompt('编辑标签（逗号分隔，最多10个）：', cur);
+  if(input === null) return;
+  m.tags = input.split(/[,，]/).map(t=>t.trim()).filter(Boolean).slice(0, 10);
+  mlibSetMeta(m);
+  _mlibRefreshTagFilter();
+  mlibRenderFiltered();
+}
+
+function _mlibRefreshTagFilter(){
+  const allTags = new Set();
+  _mlibItems.forEach(m=> (m.tags||[]).forEach(t=> allTags.add(t)));
+  const box = $('mlibTagFilters');
+  if(!box) return;
+  box.innerHTML='';
+  [...allTags].sort().forEach(t=>{
+    const s = document.createElement('span');
+    s.className = 'mlib-tag-btn' + (_mlibActiveTags.has(t) ? ' active' : '');
+    s.textContent = t;
+    s.addEventListener('click', ()=>{
+      if(_mlibActiveTags.has(t)) _mlibActiveTags.delete(t); else _mlibActiveTags.add(t);
+      _mlibRefreshTagFilter();
+      mlibRenderFiltered();
+    });
+    box.appendChild(s);
+  });
+}
+
+function mlibToggleFavFilter(){
+  _mlibFavOnly = !_mlibFavOnly;
+  const btn = $('mlibFavBtn');
+  if(btn) btn.style.background = _mlibFavOnly ? '#ffe082' : '';
+  mlibRenderFiltered();
+}
+
+function mlibApplyFilter(){ mlibRenderFiltered(); }
 async function mlibUploadFile(f){
   let r;
   if(f.size > INLINE_UPLOAD_MAX){
@@ -3757,7 +3836,7 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
     html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'ve\')">';
     html += '<span style="font-size:12px;color:var(--muted)">秒</span>'+spanHint;
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="seekAdjVideo('+idx+')">▶️ 预览</button>';
+    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoSegment('+idx+')">▶️ 预览</button>';
     html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignSegmentToAudio('+idx+')">⇔ 对齐配音</button>';
     html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 截图</button>';
     html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="recommendSegments('+idx+')">🤖 AI推荐</button>';
@@ -3780,6 +3859,12 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '<span id="adjOrigVolVal'+idx+'" style="min-width:32px;text-align:right;font-family:monospace">'+origVol+'%</span>';
     html += '</div>';
     html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:4px;display:none"></div>';
+    // 配音音量控制
+    html += '<div style="display:flex;gap:8px;margin-top:4px;align-items:center;font-size:11px;color:var(--muted)">';
+    html += '<span title="解说配音音量（0=静音，100=原始音量）">🎙️ 配音</span>';
+    html += '<input type="range" id="adjAudVol'+idx+'" min="0" max="100" value="100" style="flex:1;max-width:160px" oninput="setNarrationVolume('+idx+',this.value)">';
+    html += '<span id="adjAudVolVal'+idx+'" style="min-width:32px;text-align:right;font-family:monospace">100%</span>';
+    html += '</div>';
     html += '</div>';
     // 段间插入B-roll按钮
     if(idx < ttsList.length - 1){
@@ -4399,6 +4484,39 @@ function updatePlayhead(t){
   if(timeEl){
     timeEl.textContent = fmtTime(t) + ' / ' + fmtTime(totalDur);
   }
+}
+
+// 上一段 / 下一段（键盘快捷键调用）
+function prevAdjustSegment(){
+  if(!_adjustState || !_adjustState.items || !_adjustState.items.length) return;
+  var cur = (_selectedSeg === undefined || _selectedSeg < 0) ? 0 : _selectedSeg;
+  if(cur > 0){ _selectedSeg = cur - 1; }
+  seekAdjVideo(_selectedSeg);
+  var hint = document.getElementById('adjustVideoHint');
+  if(hint) hint.textContent = '🎬 第'+(_selectedSeg+1)+'/'+_adjustState.items.length+'段';
+}
+function nextAdjustSegment(){
+  if(!_adjustState || !_adjustState.items || !_adjustState.items.length) return;
+  var cur = (_selectedSeg === undefined || _selectedSeg < 0) ? 0 : _selectedSeg;
+  if(cur < _adjustState.items.length - 1){ _selectedSeg = cur + 1; }
+  seekAdjVideo(_selectedSeg);
+  var hint = document.getElementById('adjustVideoHint');
+  if(hint) hint.textContent = '🎬 第'+(_selectedSeg+1)+'/'+_adjustState.items.length+'段';
+}
+
+// 设置配音音量（预览时实时生效）
+function setNarrationVolume(idx, val){
+  var el = document.getElementById('adjAudVolVal'+idx);
+  if(el) el.textContent = val + '%';
+  var audio = document.getElementById('adjAudio'+idx);
+  if(audio) audio.volume = val / 100;
+}
+
+// 设置原片声音音量（预览时实时生效）
+function setOrigVolume(idx, val){
+  var el = document.getElementById('adjOrigVolVal'+idx);
+  if(el) el.textContent = val + '%';
+  _adjustState.items[idx].orig_volume = parseInt(val);
 }
 
 function fmtTime(s){
@@ -5069,7 +5187,7 @@ function _rerenderAdjustList(){
       html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
       html += '<input type="number" id="adjVEnd'+idx+'" value="'+(item.video_end||0)+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onchange="_onSegFieldChange('+idx+',\'ve\')">';
       html += '<span style="font-size:12px;color:var(--muted)">秒</span>';
-      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="seekAdjVideo('+idx+')">▶️ 预览</button>';
+      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoSegment('+idx+')">▶️ 预览</button>';
       html += '</div>';
       html += '</div>';
     } else {
@@ -5091,7 +5209,7 @@ function _rerenderAdjustList(){
       html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
       html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'ve\')">';
       html += '<span style="font-size:12px;color:var(--muted)">秒</span>';
-      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="seekAdjVideo('+idx+')">▶️ 预览</button>';
+      html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoSegment('+idx+')">▶️ 预览</button>';
       html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignSegmentToAudio('+idx+')">⇔ 对齐</button>';
       html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="recommendSegments('+idx+')">🤖 推荐</button>';
       html += '</div>';
@@ -5909,3 +6027,77 @@ document.addEventListener('click', function(e){
     menu.style.display = 'none';
   }
 });
+
+// === 键盘快捷键 ===
+(function(){
+  const _shortcuts = {
+    'Enter': '确认/生成（触发当前步骤主按钮）',
+    'Escape': '取消/关闭弹窗',
+    ' ': '播放/暂停预览视频',
+    'ArrowLeft': '上一段（手动调整页）',
+    'ArrowRight': '下一段（手动调整页）',
+    '?': '显示快捷键帮助',
+    's': '停止当前任务'
+  };
+  let _helpEl = null;
+  document.addEventListener('keydown', function(e){
+    // 输入框内不拦截
+    const tag = (e.target.tagName || '').toLowerCase();
+    if(tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+    // Ctrl+Enter 或 Cmd+Enter = 确认/生成
+    if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){
+      e.preventDefault();
+      const confirmBtn = document.getElementById('adjustConfirmBtn') || document.getElementById('bcStartBtn') ||
+        document.getElementById('narStartBtn') || document.getElementById('movieStartBtn') ||
+        document.getElementById('instructStartBtn') || document.getElementById('smartStartBtn');
+      if(confirmBtn && !confirmBtn.disabled) confirmBtn.click();
+      return;
+    }
+    switch(e.key){
+      case 'Escape':
+        // 关闭所有可见弹窗
+        document.querySelectorAll('.modal, .pvcard, #previewDock').forEach(el=>{
+          if(el.style.display !== 'none' && el.offsetParent !== null) el.style.display = 'none';
+        });
+        break;
+      case ' ':
+        e.preventDefault();
+        const vid = document.getElementById('adjGlobalVideo');
+        if(vid){
+          if(vid.paused) vid.play(); else vid.pause();
+        }
+        break;
+      case 'ArrowLeft':
+        if(typeof prevAdjustSegment === 'function') prevAdjustSegment();
+        break;
+      case 'ArrowRight':
+        if(typeof nextAdjustSegment === 'function') nextAdjustSegment();
+        break;
+      case 's':
+        if(e.ctrlKey || e.metaKey){ e.preventDefault(); stopActiveTask(); }
+        break;
+      case '?':
+        e.preventDefault();
+        toggleShortcutHelp(_shortcuts);
+        break;
+    }
+  });
+  function toggleShortcutHelp(map){
+    if(_helpEl){ _helpEl.remove(); _helpEl = null; return; }
+    _helpEl = document.createElement('div');
+    _helpEl.id = 'shortcutHelpDlg';
+    _helpEl.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e1e;color:#fff;padding:24px 32px;border-radius:12px;z-index:9999;min-width:320px;box-shadow:0 8px 32px rgba(0,0,0,0.5);font-size:14px;line-height:1.8;';
+    let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><b style="font-size:16px;">⌨️ 键盘快捷键</b><button onclick="document.getElementById(\'shortcutHelpDlg\').remove()" style="background:transparent;color:#fff;border:none;font-size:18px;cursor:pointer;">✕</button></div>';
+    html += '<table style="width:100%;border-collapse:collapse;">';
+    for(const [k,v] of Object.entries(map)){
+      html += `<tr><td style="padding:4px 8px;color:#7ec8e3;font-family:monospace;width:120px;">${k}</td><td style="padding:4px 8px;color:#ccc;">${v}</td></tr>`;
+    }
+    html += '</table>';
+    _helpEl.innerHTML = html;
+    document.body.appendChild(_helpEl);
+  }
+  function stopActiveTask(){
+    const cancelBtn = document.querySelector('[id$="Cancel"]');
+    if(cancelBtn && cancelBtn.offsetParent !== null) cancelBtn.click();
+  }
+})();

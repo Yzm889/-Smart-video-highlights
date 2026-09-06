@@ -305,7 +305,12 @@
         <button class="btn mini" onclick="document.getElementById('mlibInput').click()">⬆ 上传到素材库</button>
         <input type="file" id="mlibInput" multiple accept="image/*,video/*" style="display:none" onchange="mlibUpload(this.files); this.value='';">
         <button class="btn mini ghost" onclick="mlibList()">🔄 刷新</button>
-        <span class="hint">保存在项目目录 material_library/ 下，可反复使用；大文件自动分片上传。</span>
+        <span class="hint">保存在项目目录 material_library/ 下，可反复保存；大文件自动分片上传。</span>
+      </div>
+      <div id="mlibFilterBar" class="row" style="gap:6px; margin:4px 0 8px; align-items:center; flex-wrap:wrap; display:none;">
+        <button class="btn mini ghost" id="mlibFavBtn" onclick="mlibToggleFavFilter()" title="只看收藏">⭐</button>
+        <input type="text" id="mlibSearch" placeholder="搜索素材名…" style="width:120px; padding:2px 6px; font-size:12px; border:1px solid #ccc; border-radius:4px;" oninput="mlibApplyFilter()">
+        <div id="mlibTagFilters" class="row" style="gap:4px; flex-wrap:wrap;"></div>
       </div>
       <div id="mlibList" style="max-height:300px; overflow:auto;"></div>
     </details>
