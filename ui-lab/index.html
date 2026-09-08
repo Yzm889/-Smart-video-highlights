@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="4yy0RvGHPzyzL2CqkxYeFQ">
+<head data-page-node-id="A33f5cp1glE5fCTMJxOhhx">
+<meta charset="utf-8" data-page-node-id="VxdH8xUFSdRWrmvhHyGDVg">
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="VQ0yXpbUZnFHll8RkXCiMy">
+<title>一帧成片 · FrameCut — 本地 AI 剧情剪辑工作台</title>
+<meta name="description" content="FrameCut 一帧成片：把电影拖进来，写一段剧情，本地显卡完成镜头对齐、自动选镜、剪切与配音。" data-page-node-id="LnOASlgR0AGad6Qbu0cKvX">
+
+<!-- 字体：Bebas Neue（展示/仪表数字） + IBM Plex Mono（铭牌/读数） + Noto Sans SC（中文正文）
+     三者分工明确：展示字不与正文抢戏，数字全部等宽不跳动 -->
+<link rel="preconnect" href="https://fonts.googleapis.com" data-page-node-id="MHKTvcdivGA1mDBcu9B6fF">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin data-page-node-id="QguyyFUry5zloDAuBGeRrH">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet" data-page-node-id="GUBrgndupDllO3zx1V4pYh">
+
+<link rel="stylesheet" href="styles/tokens.css" data-page-node-id="RnUjGWxHZTzvNnl1REk3NE">
+<link rel="stylesheet" href="styles/base.css" data-page-node-id="7FE2WIPnNF22eX4ca9lAng">
+<link rel="stylesheet" href="styles/components.css" data-page-node-id="oQBq0sRL1s1bCclepyEv0O">
+<link rel="stylesheet" href="styles/pages.css" data-page-node-id="0OHjPlmczHjav8Z5aXu7yt">
+</head>
+<body data-page-node-id="sVqf1jgueRX1QZLbL00Smv">
+<div class="grain" aria-hidden="true" data-page-node-id="TzcNbykC4vE3qUnNEj8ZFL"></div>
+<a class="skip-link" href="#main" data-page-node-id="iNaLU8HEHeoSXYnaxh3jsW">跳到主要内容</a>
+
+<header class="topbar" data-page-node-id="WY1C0GuH4z3legX71FWGmr">
+  <div class="shell topbar__in" data-page-node-id="JHqBbmRj2XA0J0r1MY8Vyz">
+    <a class="brand" href="index.html" aria-label="一帧成片 FrameCut 首页" data-page-node-id="BxU2oOcqm4SeS0PTV5Y1F1">
+      <span class="brand__mark" data-page-node-id="swvgC6rnVxrbFpcm5ygoaQ">FRAME<b data-page-node-id="Zm4dMqJqgHlfoH9rBsEwlB">CUT</b></span>
+      <span class="brand__cn" data-page-node-id="CJec0464N15Bv1Lax4EVJL">一帧成片</span>
+    </a>
+
+    <nav class="topnav" aria-label="主导航" data-page-node-id="zsIekVu29qrDPP1W8OQ1k0">
+      <a href="index.html" aria-current="page" data-page-node-id="4EsrXW9DpVcKCsGerr5La4">产品</a>
+      <a href="workbench.html" data-page-node-id="5aTKKTv5RLSFZRPGx51hlc">工作台</a>
+      <a href="kit.html" data-page-node-id="aYchb1tlqzEhKLCCB7gF9E">组件套件</a>
+    </nav>
+
+    <div class="topbar__right" data-page-node-id="mu3GHQX47QwXgQwe0nf9Fq">
+      <div class="statusline" data-page-node-id="9ybHJ5KWA6XGFiSugFjD9E">
+        <span class="lamp lamp--ok" aria-hidden="true" data-page-node-id="RGojiQHGZnEsNWlN5PbQ87"></span>
+        <span data-page-node-id="eRqjj4SaHBy3qv0w42IjRj">GPU RTX 3060 · 12GB</span>
+      </div>
+      <button class="btn btn--sm" id="contrastBtn" type="button" aria-pressed="false" data-page-node-id="zz0ucsHy4yXbpm2X97spoo">高对比</button>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="page" data-page-node-id="FL63dABUD8ATJUPyek6hmY">
+
+  <!-- ============ 首屏：7/5 非对称，右栏下压，竖排铭牌破格 ============ -->
+  <div class="shell" data-page-node-id="tzAI47TobQoA30l734f4FD">
+    <section class="hero" aria-labelledby="heroTitle" data-page-node-id="eDZiGCbDtOKCfWcpD2hfbK">
+      <span class="hero__rail" aria-hidden="true" data-page-node-id="WxSalW1u1MdwRlMnr8UbqQ">LOCAL RENDER · NO UPLOAD · v2.0</span>
+
+      <div class="hero__left" data-page-node-id="0gSTOS5rgSXuNn45NIZEeq">
+        <p class="eyebrow reveal" data-step="1" data-page-node-id="fqktTA3PkDa3STO0E1Jjra">01 / 全流程不出本机</p>
+
+        <h1 class="hero__title reveal" id="heroTitle" data-step="2" data-page-node-id="sVMwDqzSsKlFDO3vUonyGM">
+          FRAME<b class="accent" data-page-node-id="1vAmYNmQ6KljkPh7BFNfED">CUT</b>
+        </h1>
+
+        <p class="hero__cn reveal" data-step="3" data-page-node-id="EwQS5MKERXMgp2tfF8jCuM">一帧成片 · 剧情驱动剪辑</p>
+
+        <p class="lede hero__lede reveal" data-step="4" data-page-node-id="ot1oFK2PPArjhuaecjhgMM">
+          把电影拖进来，写一段你想要的剧情。镜头对齐、自动选镜、真正剪切、本地配音——
+          全部在你自己的显卡上算完，不上传一帧画面。
+        </p>
+
+        <div class="hero__actions reveal" data-step="5" data-page-node-id="53BX5qC4acaqroLhYH36X0">
+          <a class="btn btn--primary btn--lg" href="workbench.html" data-page-node-id="urSJLcRYkDwrlURyFuZ394">打开工作台</a>
+          <a class="btn btn--lg" href="kit.html" data-page-node-id="uLfcVZOHQCDbE82mvFuUBY">看组件套件</a>
+        </div>
+
+        <dl class="hero__strip reveal" data-step="6" data-page-node-id="H7rsbeKy3ZGEYCGWQgrloF">
+          <div data-page-node-id="1kyG9ajdlBr4EEmc4z38Pg"><dt data-page-node-id="WwV1D23tZQl7ssLhMiJ5PK">推理位置</dt><dd data-page-node-id="XrgIKpx1irDmPdsMZNtN9N">本机</dd></div>
+          <div data-page-node-id="Aev5DhUOYU3l5hKeO0LZZN"><dt data-page-node-id="sxqQAjleV9qAlsYlyDBRD8">数据外传</dt><dd data-page-node-id="YDAF7ZTupAlXQuCQyICDQ9">0 KB</dd></div>
+          <div data-page-node-id="uORhOTxWvoAGwgzERg96HK"><dt data-page-node-id="eeisPojNTxyH15lcBPHMcI">10 分钟片</dt><dd data-page-node-id="7FuxYOuYzzbx08QHNZ6xff">≈ 6 min</dd></div>
+          <div data-page-node-id="7X5kR3qfADhMk8MOiiRBQ5"><dt data-page-node-id="zSdcc1rTXEMu4YBJL5AIRS">显存峰值</dt><dd data-page-node-id="vQuM6ZtABl0RiDqtE60Lkk">7.2 GB</dd></div>
+        </dl>
+      </div>
+
+      <!-- 右栏：仪表盘，整体下压制造错位，并让标题线压到它上方 -->
+      <aside class="hero__panel reveal" data-step="4" aria-label="运行时监控" data-page-node-id="cEDnMrRQWWbQOZ1mNZvzrv">
+        <div class="panel panel--bracket panel--raised" data-page-node-id="0XnIwAxBHgOBDpDeSkmDmG">
+          <div class="panel__head" data-page-node-id="7m2TdCx8TeBHrIR5dLubDx">
+            <span class="panel__title" data-page-node-id="V7FJpSumD4UEjRy3xZCBmW">Runtime Monitor</span>
+            <span class="badge badge--ok" data-page-node-id="IsQGEgqIVlKaMf5P2OsBWf"><span class="lamp lamp--ok" aria-hidden="true" data-page-node-id="v66y31MU7rDinmdDvOELTZ"></span>在线</span>
+          </div>
+          <div class="panel__body panel__body--flush" data-page-node-id="WF42WhCH1gqLkReX1t9OsM">
+            <div class="gauge" data-page-node-id="lsMhD8H2MiIb5ZDBbhcsVv">
+              <div class="gauge__cell gauge__cell--accent" data-page-node-id="2KbsAXgYU7cEJ9JSDtRTDt">
+                <div class="gauge__k" data-page-node-id="ATEtO1Y876BEGyzhi3gCNL">切点密度</div>
+                <div class="gauge__v num" data-count="128" data-page-node-id="EBoguJxVZWpw0dxu1bQfkc">0</div>
+              </div>
+              <div class="gauge__cell" data-page-node-id="708Sz91iK0kKoh8s5z21qk">
+                <div class="gauge__k" data-page-node-id="GWlmBGKg7QqFmA8Cr8fiBS">处理帧率</div>
+                <div class="gauge__v num" data-count="60" data-page-node-id="0f5SWL1rDNzdHXGVY6z5yb">0<span class="gauge__u" data-page-node-id="ji3z1TSIz2xksOgHDq6unm">FPS</span></div>
+              </div>
+              <div class="gauge__cell" data-page-node-id="3bIgtjDIrCfWxlKL5g9St6">
+                <div class="gauge__k" data-page-node-id="ihyOqffuO87BKVP7FtPHSI">显存占用</div>
+                <div class="gauge__v num" data-page-node-id="jKzFXZxr9Ggf1YZMi8YGJh">7.2<span class="gauge__u" data-page-node-id="tobHnqeGgezfeC3Dsl1SY3">/ 12 GB</span></div>
+              </div>
+              <div class="gauge__cell" data-page-node-id="RsAA9AwFRMJQKSU3H6KAd7">
+                <div class="gauge__k" data-page-node-id="Hd9xxxxSDu5LEv6mlDYVvY">渲染队列</div>
+                <div class="gauge__v num" data-count="3" data-page-node-id="3INvmJKSHR8TkwSXvzALG4">0<span class="gauge__u" data-page-node-id="UHvOE6mWn2Eo5uYIrAyXBo">任务</span></div>
+              </div>
+            </div>
+
+            <div style="padding: var(--s-4); display: grid; gap: var(--s-3);" data-page-node-id="X4msyqVIMpvzspj51Art0e">
+              <div data-page-node-id="MTbxUe3VZde4UM1IU5C5Op">
+                <div class="label" style="margin-bottom: 6px;" data-page-node-id="R5og0zy4u4vb2ZIGFVdVSC">节拍分析 · beat detect</div>
+                <div class="wave" aria-hidden="true" data-page-node-id="VNmLXadIQNJ9cubY65A6Ff">
+                  <span style="animation-delay:0ms" data-page-node-id="g2U9FaYvgDZ3UFQoZla0Gz"></span><span style="animation-delay:90ms" data-page-node-id="mDJuHUcQtpSUeDoFsi80Dn"></span>
+                  <span style="animation-delay:180ms" data-page-node-id="Lct3WzLRxWWa9HxI1DTbJu"></span><span style="animation-delay:270ms" data-page-node-id="RWoX1OWLABR7OqtrNGANd9"></span>
+                  <span style="animation-delay:360ms" data-page-node-id="AI4ZCFXdvVZrFPUnkIaAm7"></span><span style="animation-delay:450ms" data-page-node-id="CoAnlON2EWjDA0umNC5tmw"></span>
+                  <span style="animation-delay:540ms" data-page-node-id="1V4H1YFuV3wBq4fZDKlGmC"></span><span style="animation-delay:630ms" data-page-node-id="HRzVQ2Vu4ERlB1JEkvLbcz"></span>
+                  <span style="animation-delay:720ms" data-page-node-id="TP7Oq7Sm7zCBHgKodiUSuE"></span><span style="animation-delay:810ms" data-page-node-id="FPRJ4v1Q6Wvz3eC3GwxKHW"></span>
+                  <span style="animation-delay:900ms" data-page-node-id="CmjfSribdrBSVHcE0Dx7hd"></span><span style="animation-delay:990ms" data-page-node-id="jWH9RcUEB1KT9YJ2xiK6xK"></span>
+                </div>
+              </div>
+              <div data-page-node-id="om8EsIorAeFeFB8AQY7AGN">
+                <div class="label" style="margin-bottom: 6px;" data-page-node-id="3U8WUc4HjpyCvF3FrNrhNZ">当前任务 · 第 3 幕对齐</div>
+                <div class="progress" data-page-node-id="RFQiy7PdJxaydLMysLRjCS"><div class="progress__bar" style="width: 68%" data-page-node-id="D7uPogZzYHCL4Y1UqlaWAW"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </div>
+
+  <!-- 状态跑马灯：设备铭牌式信息条，悬停暂停 -->
+  <div class="marquee" aria-hidden="true" data-page-node-id="KT9VM2m7D5pR0OgFWTCyyN">
+    <div class="marquee__track" data-page-node-id="5YuarKaMa9bhEkcYfAuNDU">
+      <span class="marquee__item" data-page-node-id="aclL4RVsMZDNQM9Sbj5324">离线可用 <b data-page-node-id="a3TcxOwKRePDSJRRjR4cvK">100%</b></span>
+      <span class="marquee__item" data-page-node-id="U3yCASadSqA8wsgjusOUzP">镜头对齐 <b data-page-node-id="oD9ivyK9cj5EL2bOilDEhL">逐帧</b></span>
+      <span class="marquee__item" data-page-node-id="LsnRgZzTTlQs0pVeeSOfFi">配音 <b data-page-node-id="LBDbKrks6ShOG5vBzJpWHV">edge-tts / sherpa-onnx</b></span>
+      <span class="marquee__item" data-page-node-id="jXfE5vQmYg4ZPl8mIR7EpC">剧情检索 <b data-page-node-id="DykSxvvUDL9JX9CpQgZLse">DeepSeek</b></span>
+      <span class="marquee__item" data-page-node-id="YBQ9mOOu4fi2le7T3H0gRy">导出 <b data-page-node-id="2O2sshFKeqkPH1tp7gRVjK">MP4 / H.264</b></span>
+      <span class="marquee__item" data-page-node-id="sVbh0TyNwidMrA59qcHAMl">原始素材 <b data-page-node-id="gDRtxGeZwDIchMw6SgJTkS">不出本机</b></span>
+      <span class="marquee__item" data-page-node-id="CWLmpIgDXukgOJ5cjMh4kD">离线可用 <b data-page-node-id="maAudVcRDR0orZRt5PllFU">100%</b></span>
+      <span class="marquee__item" data-page-node-id="4GiFdqSd6hBzMQWkHCzS6m">镜头对齐 <b data-page-node-id="QVt860HcF10huehpGuoDjN">逐帧</b></span>
+      <span class="marquee__item" data-page-node-id="mJoh4w4jVJrLU2QBH20gdq">配音 <b data-page-node-id="xEyiq0ZsG5F2kkcDMKqCqN">edge-tts / sherpa-onnx</b></span>
+      <span class="marquee__item" data-page-node-id="qELxFP13xYuU2UEvNnwG0c">剧情检索 <b data-page-node-id="pWi0diIPdfG9ZwsYV13ry6">DeepSeek</b></span>
+      <span class="marquee__item" data-page-node-id="f6anPLnnNnylqHCxEZOEg9">导出 <b data-page-node-id="YmuLJEfilOp3KIq1pKQXzu">MP4 / H.264</b></span>
+      <span class="marquee__item" data-page-node-id="8PRKnBNN7yfuiNNcDPTkez">原始素材 <b data-page-node-id="kG7QfEuaF5AdhCKuqJ460O">不出本机</b></span>
+    </div>
+  </div>
+
+  <!-- ============ 流程：一条带刻度的导轨 ============ -->
+  <div class="shell" data-page-node-id="kFnlQxpprKuqNbmKsuMYeF">
+    <section class="section" aria-labelledby="flowTitle" data-page-node-id="r1SS0fRLxwgDAGD3RLaCSc">
+      <div class="section__head reveal" data-page-node-id="aH4NGNJvWkvz87RFCjLIEx">
+        <h2 class="section__title" id="flowTitle" data-page-node-id="ya5y342Lh2BexRE4zc9AkC">
+          五步出片
+          <small data-page-node-id="1v7Chvku5iX6C3lDACWmSg">WORKFLOW · 点任意一步看细节</small>
+        </h2>
+        <p class="label" data-page-node-id="EOXSBztbZ6cSXLWGLqH3Vj">全流程 5 步 / 平均 6 分钟</p>
+      </div>
+
+      <div class="stepper" role="tablist" aria-label="剪辑流程" data-page-node-id="cV5AdgvVjVCkKnULZbAN22">
+        <button class="step" role="tab" id="tab-1" aria-controls="panel-1" aria-selected="true" aria-current="step" data-flow="1" data-page-node-id="rj8MVKhAdkQfy45B9SdrDu">
+          <span class="step__n" data-page-node-id="onPE2I9yEYFXelxHAoPYoF">STEP 01</span><span class="step__t" data-page-node-id="S8cFpZX1kMJm9N5g7jE456">导入素材</span>
+        </button>
+        <button class="step" role="tab" id="tab-2" aria-controls="panel-2" aria-selected="false" data-flow="2" data-page-node-id="mrUWKURA9ZUxWWEXHDDJoD">
+          <span class="step__n" data-page-node-id="URmTDBXZBSBXu77oWgbSA3">STEP 02</span><span class="step__t" data-page-node-id="F7vzfflUd2IKKDRFYXmbMi">写剧情</span>
+        </button>
+        <button class="step" role="tab" id="tab-3" aria-controls="panel-3" aria-selected="false" data-flow="3" data-page-node-id="btxbgjeBnCTnyatPrxSFU5">
+          <span class="step__n" data-page-node-id="nRnFrGLDN6YnHoGDBLZJdm">STEP 03</span><span class="step__t" data-page-node-id="p8Zqb4O5iE9YKeZ532Afrz">镜头对齐</span>
+        </button>
+        <button class="step" role="tab" id="tab-4" aria-controls="panel-4" aria-selected="false" data-flow="4" data-page-node-id="wngmaGV4JFZQNe2QDr10QM">
+          <span class="step__n" data-page-node-id="KyHAcFkACZoLtqRU3as5Qo">STEP 04</span><span class="step__t" data-page-node-id="ypWYO0bAd8ENU13swUBLnn">配音风格</span>
+        </button>
+        <button class="step" role="tab" id="tab-5" aria-controls="panel-5" aria-selected="false" data-flow="5" data-page-node-id="xFNAuVnFeDBpbU25e98wem">
+          <span class="step__n" data-page-node-id="IlWK7Ujm5NLD3GbwnN8pXB">STEP 05</span><span class="step__t" data-page-node-id="rCpZCqd5S9nx1HyMlCJEBJ">导出成片</span>
+        </button>
+      </div>
+
+      <div class="flow reveal" data-page-node-id="86OdlOpqG6B0i6FTjfoit3">
+        <div class="flow__detail panel panel--bracket" data-page-node-id="GOJN40xrl5dXedFotaq5Rq">
+          <div class="panel__body" style="padding: var(--s-5);" data-page-node-id="kLZEpvPXiBaZjC2ALkizYD">
+            <!-- 每个面板内容由 main.js 切换，此处为默认可见的第 1 步 -->
+            <div class="flow-pane" id="panel-1" role="tabpanel" aria-labelledby="tab-1" tabindex="0" data-page-node-id="twiVtyQDWLtVCnedFXLbKD">
+              <p class="eyebrow" data-page-node-id="73AN6RhVFdGCEIUMs6Gy92">STEP 01</p>
+              <h3 style="margin: var(--s-3) 0;" data-page-node-id="ZaaGLM9lwfPjRyYPPYYhgF">把整部电影扔进来就行</h3>
+              <p style="color: var(--c-muted);" data-page-node-id="vbGifwHI9hGVpOst26onDh">
+                支持 MP4 / MKV / MOV / AVI，也支持直接粘贴 B 站链接下载。
+                导入后自动做镜头边界检测，几秒内给你一条可预览的镜头列表，不用手工打点。
+              </p>
+              <ul style="margin-top: var(--s-4); display: grid; gap: var(--s-2);" data-page-node-id="rpALnJxsUW6EzMUqL0rYg4">
+                <li class="label" data-page-node-id="mfUddwvd0GFIGmxDNNtVsY">— 镜头边界自动检测，误差 &lt; 3 帧</li>
+                <li class="label" data-page-node-id="2QWgwvQNlFhBLJgikF6qYK">— 音频波形与画面同步生成</li>
+                <li class="label" data-page-node-id="GQEIFGiAGoPjvCmxtLRUNA">— 素材库按片名自动归档</li>
+              </ul>
+            </div>
+
+            <div class="flow-pane" id="panel-2" role="tabpanel" aria-labelledby="tab-2" tabindex="0" hidden data-page-node-id="cP1UyT2u7EZDQpWGjYyR6D">
+              <p class="eyebrow" data-page-node-id="pv0q3dYjrZFC0LtbhgSOxp">STEP 02</p>
+              <h3 style="margin: var(--s-3) 0;" data-page-node-id="jEEIEHvNlvfPSs8VvoBbhF">写你要讲的故事，不是写提示词</h3>
+              <p style="color: var(--c-muted);" data-page-node-id="jim9zKWKNbjhukEg29IHkA">
+                用大白话描述剧情走向即可。想不起来剧情时，点输入框旁的「查剧情」，
+                由 DeepSeek 拉一份分幕摘要，你只管改。
+              </p>
+              <ul style="margin-top: var(--s-4); display: grid; gap: var(--s-2);" data-page-node-id="51hKUxu9iTUBEj94z8UH93">
+                <li class="label" data-page-node-id="cRVba5CQCkaeb36aIO8rfl">— 一键拉剧情摘要，直接回填输入框</li>
+                <li class="label" data-page-node-id="zEn2A6TwIWgIGMM9bCBJro">— 支持分幕 / 分镜两种粒度</li>
+                <li class="label" data-page-node-id="273zgQnGcT0ByUhrC49iV9">— 常用风格可存为预设，下次一键复用</li>
+              </ul>
+            </div>
+
+            <div class="flow-pane" id="panel-3" role="tabpanel" aria-labelledby="tab-3" tabindex="0" hidden data-page-node-id="MX5yjL1qOiHeFV2Gb7kviw">
+              <p class="eyebrow" data-page-node-id="BuYWqEXFX942wcEFQO1xxv">STEP 03</p>
+              <h3 style="margin: var(--s-3) 0;" data-page-node-id="d3lJFOfHxDIWMfdi3VdOxA">剧情和画面对上，才叫剪辑</h3>
+              <p style="color: var(--c-muted);" data-page-node-id="716islC86jc0WzHdWiJTG7">
+                按剧情句子去影片里找真正匹配的镜头，命中后是真的裁掉多余部分，
+                不是只在上面盖一层字幕。没把握的地方会标黄，让你自己拍板。
+              </p>
+              <ul style="margin-top: var(--s-4); display: grid; gap: var(--s-2);" data-page-node-id="Sv8LzCUFMi0AiVJ3h3a9GF">
+                <li class="label" data-page-node-id="sRhgrT2165Q0YmO4Nej2zu">— 句级对齐，可逐句微调入出点</li>
+                <li class="label" data-page-node-id="7K0cxF6Z7MR7wXKxDQyGys">— 低置信度片段自动标黄待确认</li>
+                <li class="label" data-page-node-id="9nKsl7dNL7Ut8yC4YZXoRk">— 撤销栈可回退到任意一步</li>
+              </ul>
+            </div>
+
+            <div class="flow-pane" id="panel-4" role="tabpanel" aria-labelledby="tab-4" tabindex="0" hidden data-page-node-id="2Pd0nHQYCKMZ57pCGhCBUE">
+              <p class="eyebrow" data-page-node-id="H0eKj0482FW3RzyV68KXRE">STEP 04</p>
+              <h3 style="margin: var(--s-3) 0;" data-page-node-id="l6oLmGYam3MTxuDqsnd4a8">本地配音，两条线路随你切</h3>
+              <p style="color: var(--c-muted);" data-page-node-id="Svj6domE1TMgkYpZnOlSXC">
+                edge-tts 出手快，sherpa-onnx 断网也能跑，两条都在本机。
+                音色、语速、情绪强度拖滑块调，一遍不满意就再生成一遍。
+              </p>
+              <ul style="margin-top: var(--s-4); display: grid; gap: var(--s-2);" data-page-node-id="cA5OW1QeZhhNsI0LmxcMx6">
+                <li class="label" data-page-node-id="Od907SEqO81WFzm3wvxnRg">— 中文音色：晓晓 / 云希 / 云扬 / 华研女声</li>
+                <li class="label" data-page-node-id="m0NgCJR3z0GAHEPkdBrrT1">— 语速 0.6× – 2.0×，情绪强度 5 档</li>
+                <li class="label" data-page-node-id="drgU3YDSeL5C9VSS8CA3Ci">— 失败自动重试并写进日志</li>
+              </ul>
+            </div>
+
+            <div class="flow-pane" id="panel-5" role="tabpanel" aria-labelledby="tab-5" tabindex="0" hidden data-page-node-id="X35BcCzSkjmqpA8xCb54Y9">
+              <p class="eyebrow" data-page-node-id="6Ks4qBjrEN800JI3wR5Jyy">STEP 05</p>
+              <h3 style="margin: var(--s-3) 0;" data-page-node-id="lKtnVSeHXqMHftI3wAoGKy">字幕烧不烧，你说了算</h3>
+              <p style="color: var(--c-muted);" data-page-node-id="bJjUfeuHmRoZVkCoI6mp0R">
+                硬字幕烧进画面，或另存一份 SRT 自己压。分辨率、码率、帧率逐个可调，
+                导出队列能排着走，出完自动弹提醒。
+              </p>
+              <ul style="margin-top: var(--s-4); display: grid; gap: var(--s-2);" data-page-node-id="DPHMVviHGktxbWMe5CzpKf">
+                <li class="label" data-page-node-id="ocIlflpT7hR1U8Fie6NVK3">— 720P / 1080P / 2K / 4K</li>
+                <li class="label" data-page-node-id="BDw2uE8l5DFqDEA7zNHFKZ">— 独立 SRT 轨道导出</li>
+                <li class="label" data-page-node-id="vCz85Fkye9iJL4u4G7bmDw">— 队列串行渲染，不抢显存</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="panel__body panel__body--flush" style="border-top: var(--hair) solid var(--c-border-soft); padding: var(--s-4) var(--s-5);" data-page-node-id="pDtQnZRXqfKCdcOhkK2XEY">
+            <div class="console" id="flowConsole" aria-live="polite" aria-label="流程日志" data-page-node-id="Q2Gdm2DabIr559akLTknjm"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="rule" data-page-node-id="l7z901wIRR2CQqwfybPQQg">
+
+    <!-- ============ 能力：铭牌式规格表，不是三张卡 ============ -->
+    <section class="section specs" aria-labelledby="specTitle" data-page-node-id="GyFvDweFxTsG73x5Tjmg3k">
+      <div class="specs__note reveal" data-page-node-id="EF2cUHEXkFGRSDGZyTV93q">
+        <p class="eyebrow" data-page-node-id="HaiNPVp7wDkbr867N4tFAd">02 / 能力清单</p>
+        <h2 class="section__title" id="specTitle" style="margin-top: var(--s-3);" data-page-node-id="WItB50r7sR97KCmizSAfJ4">
+          装了什么
+          <small data-page-node-id="MCctbRjIU1iQAM3Q7OscKy">SPECIFICATION</small>
+        </h2>
+        <p style="color: var(--c-muted); margin-top: var(--s-4); font-size: var(--fs-sm);" data-page-node-id="9wL9zHuELfTD7KEk22Meua">
+          每一项后面都标了实测口径。跑不动的功能不会写进来，
+          也不打算把「未来支持」当成现在的能力。
+        </p>
+        <a class="btn btn--ghost" href="kit.html" style="margin-top: var(--s-5); padding-left: 0;" data-page-node-id="bSJMqz01qWYNyxICar3bh6">查看全部组件 →</a>
+      </div>
+
+      <div class="specs__list reveal" data-step="2" data-page-node-id="HHlTnA88dm1esU5TLybAxh">
+        <div class="specs__row" data-page-node-id="P8lIfsGujMnMHaR55Po1gn">
+          <span class="n" data-page-node-id="vQxvM4k0rH8OWyu1hG7znq">A-01</span>
+          <div data-page-node-id="nFlen4GtQH42af3kscB9xR"><div class="t" data-page-node-id="1Jt6EffNEWFELcqV8WZyF7">镜头边界检测</div><div class="d" data-page-node-id="dEODUGYBht5Dseg5l7C6gB">整片导入后自动切镜头，误差小于 3 帧，可手动补刀</div></div>
+          <span class="v" data-page-node-id="4iUEK5Sg1IFcVnUOUoGS8J">误差 &lt; 3 帧</span>
+        </div>
+        <div class="specs__row" data-page-node-id="0z4rqo2r08NJOkQqY286IS">
+          <span class="n" data-page-node-id="6RQV8lr6UK5jFUdFREeoFT">A-02</span>
+          <div data-page-node-id="QcjGqCH64BaoZnMyrKHwxn"><div class="t" data-page-node-id="WmDzs1hHHD5Pt2RmWfBfO6">剧情句级对齐</div><div class="d" data-page-node-id="2ybejwWtalJm53FQTfGT4B">按剧情句子在影片中匹配镜头，命中即真剪，非字幕覆盖</div></div>
+          <span class="v" data-page-node-id="8HhGznXwXRea8wXSdBNZX4">句级</span>
+        </div>
+        <div class="specs__row" data-page-node-id="8objtrBcNurOizYFNIAjOd">
+          <span class="n" data-page-node-id="GyKH2HvdZgR0qRtUGgqzCl">A-03</span>
+          <div data-page-node-id="4VyWXmuV1AmGZEnJnuxkzE"><div class="t" data-page-node-id="kl3pMp9dkBiZLlxeKa869W">节拍踩点</div><div class="d" data-page-node-id="OiFyHbU0yEjSAX14KPq7bc">音频节拍检测，切点自动吸附到鼓点</div></div>
+          <span class="v" data-page-node-id="XxXKhpl6MErM4yl7vtE9o1">±40 ms</span>
+        </div>
+        <div class="specs__row" data-page-node-id="PB5eXdrfDuf8DZw6S9uOmJ">
+          <span class="n" data-page-node-id="SnrXV0fD0gTvN2w499TMhR">A-04</span>
+          <div data-page-node-id="vChSJG42cgrCP5mQnxJjck"><div class="t" data-page-node-id="4y2Jh8sAiSAt7Pe89U7Sep">本地解说生成</div><div class="d" data-page-node-id="tPyVNzVNbwA59h0bP6W2jC">本地 qwen 出稿，DeepSeek 补剧情检索，断网可用基础模式</div></div>
+          <span class="v" data-page-node-id="tOqfsD6kRnXotWM9tnsJIE">本地 + 联网</span>
+        </div>
+        <div class="specs__row" data-page-node-id="ESzrFivZiBn1g3nTMVlgzM">
+          <span class="n" data-page-node-id="y2Wt5M3Ua11ynTOZf0HCei">A-05</span>
+          <div data-page-node-id="bf3KRdWj7NyNB0rqtALRgF"><div class="t" data-page-node-id="CMXv2YSjdcC3zYi62LNC8r">本地配音</div><div class="d" data-page-node-id="dqo7FXWCqoSTzuG6pmbNLW">edge-tts 与 sherpa-onnx 双引擎，中文音色 4 款</div></div>
+          <span class="v" data-page-node-id="5gbZ9TNEVqPOgJIG3rsWwp">2 引擎</span>
+        </div>
+        <div class="specs__row" data-page-node-id="3qZh50wTTd6Sur0YUu6xFs">
+          <span class="n" data-page-node-id="EVoeBm9IzEFpG39hyuwQVS">A-06</span>
+          <div data-page-node-id="N9oCPzY2ddCQKiuganXArv"><div class="t" data-page-node-id="QAjfjBZf8OF0wyK078KFAA">撤销栈</div><div class="d" data-page-node-id="TUHYIU2rrZa5bkuAHeTKOF">任意一步可回退，回退不重算已完成片段</div></div>
+          <span class="v" data-page-node-id="ZIRi1xnEB5t3FXBdMvhwz1">无上限</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ 实测读数：数字压住分隔线 ============ -->
+  <div class="shell" data-page-node-id="RsrdvxkPbDEkpHnXgXTUl4">
+    <section class="section" aria-labelledby="numTitle" data-page-node-id="W0DYvYtShUPFBklolIaZID">
+      <div class="section__head reveal" data-page-node-id="81mklG51vcJTSYuZYNmj6S">
+        <h2 class="section__title" id="numTitle" data-page-node-id="3sKJWCiAevmpq6ey8NgRpA">
+          实测数字
+          <small data-page-node-id="9DxVQTCMAkvrFsRX3c8JNf">RTX 3060 12GB · 1080P 源片</small>
+        </h2>
+        <p class="label" data-page-node-id="8rS9MQE3oaLQ6HqPlTAZoR">数据为本机实测，非理论值</p>
+      </div>
+      <div class="metrics reveal" data-step="2" data-page-node-id="FTlSkCoPAmsS7UZQqWD0am">
+        <div class="metric metric--hot" data-page-node-id="igrtJkYkQBzD6es3eJibAO">
+          <div class="metric__v num" data-count="6" data-page-node-id="BomhDpTUrUQuXephvuMP95">0<sup data-page-node-id="SOETeoLL8Wz4Pc4BoKDpvi">min</sup></div>
+          <div class="metric__k" data-page-node-id="8Wf1HRDXHmz2WN5EM0uHtl">10 分钟成片总耗时</div>
+        </div>
+        <div class="metric" data-page-node-id="ZrSw9O9R65OdIjXfkCFuDS">
+          <div class="metric__v num" data-count="7" data-page-node-id="rBwpRTGG9U3YubExnY4bfw">0<sup data-page-node-id="7ed1xynpfAW1LfvHkEq8Eh">.2 GB</sup></div>
+          <div class="metric__k" data-page-node-id="wJPNepBbDM6X6LZefO93Ey">显存峰值占用</div>
+        </div>
+        <div class="metric" data-page-node-id="0dQT02Azy5tmUlCh2w75wk">
+          <div class="metric__v num" data-count="0" data-page-node-id="3211s8eDqI7TmbIa3lkTL5">0<sup data-page-node-id="UnQpfCkdECOSa4YiTqEO21">KB</sup></div>
+          <div class="metric__k" data-page-node-id="kBcDiqZ2Ugc2Nym5gZVc3A">上传流量</div>
+        </div>
+        <div class="metric" data-page-node-id="ByWBMMzyx36IS9trTopETj">
+          <div class="metric__v num" data-count="4" data-page-node-id="C3R02r0I1U5lCW9eusmaaq">0<sup data-page-node-id="AUthN29Kyz66obYWUbakMf">款</sup></div>
+          <div class="metric__k" data-page-node-id="lslk5bxXjN4fBfgLjVDF5g">可选中文音色</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ CTA：危险条纹包夹 ============ -->
+  <section class="section cta" aria-labelledby="ctaTitle" style="padding-block: 0;" data-page-node-id="RojcN4lrLw5EdsngEbM8d2">
+    <div class="hazard" aria-hidden="true" data-page-node-id="N8ko5AuvNOuYuLYKu6Z7V9"></div>
+    <div class="cta__in shell" style="padding-inline: 0;" data-page-node-id="KLNQ3AyHeBOWrRnD1E8E5x">
+      <div data-page-node-id="OiECKRdNBF00zFWxMMrAtg">
+        <h2 class="cta__t" id="ctaTitle" data-page-node-id="KyHRi4hFeTigmlEAQ7AMiB">把想法<br data-page-node-id="jkpowWhQreruDS3n6Dn1VD">剪出来</h2>
+        <p class="cta__s" data-page-node-id="3UWV4q5nRW1OHkCNJjQFNU">
+          不用等云服务排队，也不必把素材传给任何人的服务器。装上就能跑，跑完就出片。
+        </p>
+      </div>
+      <div style="display: grid; gap: var(--s-3); min-width: 260px;" data-page-node-id="BAlEZzX4Y2N65C0lvfPUFG">
+        <a class="btn btn--primary btn--lg" href="workbench.html" data-page-node-id="wcJH690gVY6vNjx9fyQghW">进入工作台</a>
+        <button class="btn btn--lg" type="button" data-copy="python webui_server.py" data-page-node-id="3OCCMIQA6xWZE41uuI6aDY">复制启动命令</button>
+        <p class="label" style="text-align: center;" data-page-node-id="Z3MNsLzq2ShWSHPoj8CsCj">或按 <kbd data-page-node-id="TQLuPetaLETqAv9mI1DmoJ">W</kbd> 直接跳转</p>
+      </div>
+    </div>
+    <div class="hazard" aria-hidden="true" data-page-node-id="SYLy0YFE9WTPg4x7LDzm23"></div>
+  </section>
+</main>
+
+<footer class="footer page" data-page-node-id="9ElMcxawDLol6t4lBBPcop">
+  <div class="shell footer__in" data-page-node-id="yWMOAn74BqAj2D4YCFnf0z">
+    <span class="footer__c" data-page-node-id="X7XN8t3IDBDrK4QYrJ5mUo">一帧成片 FrameCut · 本地运行 · 数据不出本机</span>
+    <span class="footer__c" data-page-node-id="cNjFbvMXlpNIYRExRnegxX">DESIGN DIRECTION — INDUSTRIAL INSTRUMENT PANEL</span>
+  </div>
+</footer>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false" data-page-node-id="Gjijg0jCWuuoSdj8on1mrA"></div>
+
+<script src="scripts/main.js"></script>
+</body>
+</html>

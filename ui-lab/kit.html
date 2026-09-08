@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="P3x4x480we0rB5GEYgdjNH">
+<head data-page-node-id="3un6dajPrsYAOm2ZAiiAnX">
+<meta charset="utf-8" data-page-node-id="HkPaYbjn1Z8LsLPIyU58yN">
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="k3BNzSHO1We4LLCjCyQJTF">
+<title>组件套件 · 一帧成片 FrameCut 设计系统</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" data-page-node-id="BuUXmQ4pC85b7IrYVz2k8H">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin data-page-node-id="u1yigsdnQ3g28REw5pLoIR">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet" data-page-node-id="5wFqFZWtGTjoWl3uHv3SFv">
+<link rel="stylesheet" href="styles/tokens.css" data-page-node-id="HWAgOpisLJ4Diff15mkLTJ">
+<link rel="stylesheet" href="styles/base.css" data-page-node-id="TkAAGMG5PiTHlg6s4iYOu6">
+<link rel="stylesheet" href="styles/components.css" data-page-node-id="qPcSjKD6tW0NPk36KxDdmL">
+<link rel="stylesheet" href="styles/pages.css" data-page-node-id="NqiV4VWQ2bJIqhwm60xLZ1">
+</head>
+<body data-page-node-id="tpMZqFTw2RhZgtsQGCuYNp">
+<div class="grain" aria-hidden="true" data-page-node-id="FxXkCOL8KVl8S7NHO23A2A"></div>
+<a class="skip-link" href="#main" data-page-node-id="vsbbfEbW7FmYdhmJmvfZkI">跳到主要内容</a>
+
+<header class="topbar" data-page-node-id="awtWMSJpJfvOpDkaAo6yZt">
+  <div class="shell topbar__in" data-page-node-id="fPmByd2aY1DfEbYFQhI5Uc">
+    <a class="brand" href="index.html" data-page-node-id="BNVTcOrBrIcTHLC3yPBI5Z">
+      <span class="brand__mark" data-page-node-id="VVZlOv3N4HvmVkUgDRiHnu">FRAME<b data-page-node-id="co9fZIjD8mfVeFW6eWO0SF">CUT</b></span>
+      <span class="brand__cn" data-page-node-id="49Ok2EJEKWPfaR5pfC77pf">一帧成片</span>
+    </a>
+    <nav class="topnav" aria-label="主导航" data-page-node-id="r5puTmmfSf7HWYS2Et5xVK">
+      <a href="index.html" data-page-node-id="VRGP9tv3yaxp6t3CU8J0r2">产品</a>
+      <a href="workbench.html" data-page-node-id="Phz4lVuDSS2lpI2kWFZIF4">工作台</a>
+      <a href="kit.html" aria-current="page" data-page-node-id="7fRHUTP6KAifzcebGXIOEi">组件套件</a>
+    </nav>
+    <div class="topbar__right" data-page-node-id="MuiTOhN1WgXS89QnvsqYxT">
+      <div class="statusline" data-page-node-id="nuwOlFuGV6pPzNSUgFZ3zR"><span class="lamp lamp--live" aria-hidden="true" data-page-node-id="4Gk9Vlhq0yNOvhoGvKEelm"></span><span data-page-node-id="ctTXWkThUdoHL0wPbRdhWf">组件库 v2.0</span></div>
+      <button class="btn btn--sm" id="contrastBtn" type="button" aria-pressed="false" data-page-node-id="18Pe1WyH7g1SDiFH0ejymz">高对比</button>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="page" data-page-node-id="2v4tWBqHYcfaAcOLZjgLtj">
+  <div class="shell" style="padding-block: var(--s-7) var(--s-8);" data-page-node-id="dZBR8x9LIRv4BMaWSpJiaH">
+    <p class="eyebrow reveal" data-step="1" data-page-node-id="xDh1UlsYTi0ZsAzoPFFwj9">DESIGN SYSTEM / UI KIT</p>
+    <h1 class="reveal" data-step="2" style="font-family: var(--font-display); font-size: var(--fs-4xl); text-transform: uppercase; letter-spacing: .02em; margin-top: var(--s-3);" data-page-node-id="zZSO3wR9fcXTm3OoAXHuoc">
+      组件套件
+    </h1>
+    <p class="lede reveal" data-step="3" style="margin-top: var(--s-4);" data-page-node-id="tHeHaf8Jt1GozLCKuvbtxf">
+      这一页是可以直接抄进项目的样板。每个组件都覆盖八种状态，
+      每个色块都标了实测对比度，改一个变量就能整体换肤。
+    </p>
+  </div>
+
+  <div class="shell kit" data-page-node-id="mnWRrcXmrL2p1c0STHC8Fc">
+    <!-- 侧边导航：滚动高亮由 main.js 负责 -->
+    <nav class="kit__nav" aria-label="组件目录" data-page-node-id="XpFAFMFBSzYh7luHtDjOcm">
+      <a href="#color" data-page-node-id="J5RBbIY4YeefFlCTy2Rmz1">色彩 <span data-page-node-id="CWx1V6BdCAmLcyz88l1oiJ">01</span></a>
+      <a href="#type" data-page-node-id="CFFnmDhb2XBd0vQeYPi0wJ">字体 <span data-page-node-id="VAL6vkKsFS0nQnv1ZTbUtF">02</span></a>
+      <a href="#button" data-page-node-id="C2M8Ugt2Vewb2vsY99ar0c">按钮 <span data-page-node-id="7fIc2JVeswY6Nhp5UKRvbC">03</span></a>
+      <a href="#input" data-page-node-id="EUbNsDFsP5bNfQvVFGY9sO">输入 <span data-page-node-id="P083tJdH9pY5bG4GR0BQPb">04</span></a>
+      <a href="#choice" data-page-node-id="QhgVEFwgEsz0aDqbqOf5vN">选择与滑杆 <span data-page-node-id="xy5uYglCpu4GTGvIWEBfqu">05</span></a>
+      <a href="#status" data-page-node-id="qY93yClZkwfw30ot7ACZCB">状态与徽章 <span data-page-node-id="6cy1ly74yVS4Nsw9byZMDS">06</span></a>
+      <a href="#data" data-page-node-id="4mzJsW8tXHac7KSDwSg7O5">数据展示 <span data-page-node-id="9S3v3f8x0sfNPpMibBd3YO">07</span></a>
+      <a href="#feedback" data-page-node-id="OFIIxs78qialvjOUArwsCn">反馈 <span data-page-node-id="wWfhdkX3JQU3DorEuEiAz9">08</span></a>
+    </nav>
+
+    <div data-page-node-id="qxYkES5EJMJfigxcgmcTwP">
+      <!-- ============ 01 色彩 ============ -->
+      <section class="kit__sec" id="color" aria-labelledby="h-color" data-page-node-id="gM6S2XV1RZMejxEntYUDfO">
+        <h2 id="h-color" data-page-node-id="H3O86kVTsn5U3MeJx1xqXZ"><span data-page-node-id="LF3PqZsWKctnIzREpGvuM7">01</span>色彩体系<span class="label" style="margin-left:auto;" data-page-node-id="tTaLSUG9poUlVHCvjQqHKg">点击色块复制变量</span></h2>
+        <div class="demo" data-page-node-id="xzG3CJTEZfvBCD3QkAEyC0">
+          <div class="demo__grid" data-page-node-id="PJBO6Ab1BfV9cXV8zZiHJW">
+            <button class="swatch" type="button" data-copy="var(--c-bg)" style="text-align:left;" data-page-node-id="UaSs9KIM3sHYXGlAsl8uJ0">
+              <div class="swatch__chip" style="background: var(--c-bg); border-bottom: var(--hair) solid var(--c-border);" data-page-node-id="GEBobwc0CvdLOvOAag4m7Q"></div>
+              <div class="swatch__meta" data-page-node-id="0cnm6jJAv4FMfY3DBslvUl"><div class="swatch__name" data-page-node-id="swQUpKdynuucJSBdForgSr">机身底色</div><div class="swatch__hex" data-page-node-id="WROAHqbMus7LXEXbm4H36v">--c-bg · #0c0e11</div><div class="swatch__cr" data-page-node-id="BEIv5xlMgqI5gt1CRH2oT3">承载全部内容</div></div>
+            </button>
+            <button class="swatch" type="button" data-copy="var(--c-surface)" style="text-align:left;" data-page-node-id="H5250sT81P25GiUIgrkzi2">
+              <div class="swatch__chip" style="background: var(--c-surface); border-bottom: var(--hair) solid var(--c-border);" data-page-node-id="tNiMEpALtAfNzHaqejyjlp"></div>
+              <div class="swatch__meta" data-page-node-id="UJDzLZnowRaM8JSuRSVWOe"><div class="swatch__name" data-page-node-id="w8A79CiV67npIEsiZxIH1l">面板</div><div class="swatch__hex" data-page-node-id="PwSJjtSHJmGih5BsBxrBNl">--c-surface · #151a21</div><div class="swatch__cr" data-page-node-id="Rxot4uq9sMpDCZZKa5iqxi">卡片与弹层</div></div>
+            </button>
+            <button class="swatch" type="button" data-copy="var(--c-surface-2)" style="text-align:left;" data-page-node-id="N0llLD0BcmVMokMiOARsP8">
+              <div class="swatch__chip" style="background: var(--c-surface-2); border-bottom: var(--hair) solid var(--c-border);" data-page-node-id="wgQXPummUWIq2hqEitDEOM"></div>
+              <div class="swatch__meta" data-page-node-id="XBqR8IjBz8ZjGfN71xFTW6"><div class="swatch__name" data-page-node-id="mJrswrgvk9QC5pVdUAJDjo">内嵌屏</div><div class="swatch__hex" data-page-node-id="o53JcuGSJoEqO3NaESHoB9">--c-surface-2 · #1c222b</div><div class="swatch__cr" data-page-node-id="nbbHCmOryUtf4zvcSDczY1">输入框与凹槽</div></div>
+            </button>
+            <button class="swatch" type="button" data-copy="var(--c-accent)" style="text-align:left;" data-page-node-id="sWnKr11meDnox0PS5bXimK">
+              <div class="swatch__chip" style="background: var(--c-accent);" data-page-node-id="vGUfqWEALHv4R0GAZiSUWt"></div>
+              <div class="swatch__meta" data-page-node-id="Z4wK2dFvr4Q3yt5hBgWJKo"><div class="swatch__name" data-page-node-id="R2c8VFs7GVHX77DzhTXBAC">琥珀警示（唯一强调色）</div><div class="swatch__hex" data-page-node-id="HevwWplSRFaD0oKaEOcBEx">--c-accent · #ff8a1f</div><div class="swatch__cr" data-page-node-id="e7TiIGTA2NWD1vdtDHZAG4">对比度 8.2:1 · 仅用于关键动作</div></div>
+            </button>
+            <button class="swatch" type="button" data-copy="var(--c-text)" style="text-align:left;" data-page-node-id="ypbJ9GtHq8JG7kxKQ6RAGI">
+              <div class="swatch__chip" style="background: var(--c-text);" data-page-node-id="k2R6KmGuY14T3TGW0NG5zL"></div>
+              <div class="swatch__meta" data-page-node-id="Gz8AT1V9hMpY0njjR0Jis9"><div class="swatch__name" data-page-node-id="r1FuDFlNKcSgy3WZLCIFWz">主文字</div><div class="swatch__hex" data-page-node-id="D54L3yDeS14rTrdbtguekg">--c-text · #e9eef4</div><div class="swatch__cr" data-page-node-id="CaQ3rUtNtrjC5mTjTlBtAc">对比度 15.6:1 · AAA</div></div>
+            </button>
+            <button class="swatch" type="button" data-copy="var(--c-muted)" style="text-align:left;" data-page-node-id="AnfbdHQJl630SuCeIheyhJ">
+              <div class="swatch__chip" style="background: var(--c-muted);" data-page-node-id="YC18XQFThoURdpt3qfM21M"></div>
+              <div class="swatch__meta" data-page-node-id="D9qikTxEthc4o7pMvj5dHG"><div class="swatch__name" data-page-node-id="hMvut1va4Qigdv5EUiduQO">次要文字</div><div class="swatch__hex" data-page-node-id="3NtbmpP1XPdLO8HeAcmPdK">--c-muted · #93a1b1</div><div class="swatch__cr" data-page-node-id="LYDu2qsa2ZGxsAJNWyZkfs">对比度 7.5:1 · AAA</div></div>
+            </button>
+            <button class="swatch" type="button" data-copy="var(--c-dim)" style="text-align:left;" data-page-node-id="LiDXv4bLt4QOWsHAbAQbQ8">
+              <div class="swatch__chip" style="background: var(--c-dim);" data-page-node-id="wJi8AsWuopyiiEkGrGHGMt"></div>
+              <div class="swatch__meta" data-page-node-id="wgLF0YmBpIkYCFuOFbpvAx"><div class="swatch__name" data-page-node-id="uPogsjzRQ4sLeiJ6p5vgTa">铭牌标签</div><div class="swatch__hex" data-page-node-id="Gt38FI9PUSjMASHTe36VnA">--c-dim · #7b8896</div><div class="swatch__cr" data-page-node-id="kzJDtqAXW5BZY27HfMVlsd">对比度 5.3:1 · AA</div></div>
+            </button>
+            <button class="swatch" type="button" data-copy="var(--c-ok)" style="text-align:left;" data-page-node-id="hZbhR6HEyyd7j666CM9CF1">
+              <div class="swatch__chip" style="background: var(--c-ok);" data-page-node-id="m2s4pfTXiJtmVB5GKvRl5I"></div>
+              <div class="swatch__meta" data-page-node-id="yCYGBnGEsGkOnWccJLOJJq"><div class="swatch__name" data-page-node-id="OzgOWwRn62UUbF8G7oPDn3">正常 / 完成</div><div class="swatch__hex" data-page-node-id="Knv1wpMwdYyNGng6lHgHgh">--c-ok · #57d9a3</div><div class="swatch__cr" data-page-node-id="x3YXpYTMS2mHUpYmR8Fcz4">状态色，不承担动作</div></div>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 02 字体 ============ -->
+      <section class="kit__sec" id="type" aria-labelledby="h-type" data-page-node-id="cBYQ0ssa6EaVVEcYYKHCdd">
+        <h2 id="h-type" data-page-node-id="AcxA1xKlePozEFDDaZARDH"><span data-page-node-id="VF3V9LGhBvLAXvCxn1uSvi">02</span>字体与字阶</h2>
+        <div class="demo" style="display:grid; gap: var(--s-3);" data-page-node-id="9GrMHaITO140agoN18ZTuz">
+          <div class="type-row" data-page-node-id="FNQpnsqkiHu0xqq3Yt7c4Z">
+            <span class="meta" data-page-node-id="1vPCUTF4jSQvVgSyPlsg8I">DISPLAY</span>
+            <span style="font-family: var(--font-display); font-size: var(--fs-3xl); line-height: 1; letter-spacing: .02em;" data-page-node-id="wzc7iyp2xr07bWmUJdLLEV">FRAMECUT 2026</span>
+          </div>
+          <div class="type-row" data-page-node-id="NvZmiorUncqmLRBlP7GJ7d">
+            <span class="meta" data-page-node-id="hgnINm1zksq2fGISxiTwJm">--fs-display</span>
+            <span style="font-family: var(--font-display); font-size: var(--fs-display); line-height: .9;" data-page-node-id="crKmVATjJh0I1kHWGkcrqL">128 CUTS</span>
+          </div>
+          <div class="type-row" data-page-node-id="wrneFEqOSHFwDjKc0bmZvc">
+            <span class="meta" data-page-node-id="BfZ81m39bxPFEwwDKdbjDm">H2 / 33px</span>
+            <span style="font-size: var(--fs-2xl); font-weight: 700;" data-page-node-id="W4Rm7MgZQ7PlSHr1IuirvC">剧情驱动的剪辑</span>
+          </div>
+          <div class="type-row" data-page-node-id="AY7LiPt06BvazIl3RI35Vk">
+            <span class="meta" data-page-node-id="qBHASRIDEc4OBT9eQayPlR">BODY / 15px</span>
+            <span style="color: var(--c-muted); max-width: 52ch;" data-page-node-id="s7dNxFHjBJBlRmUSuAlCXB">
+              中文正文行高 1.75、字距 0.02em，长段落读起来不累。正文用思源黑体，
+              数字与铭牌用 IBM Plex Mono，展示字用 Bebas Neue——三者分工不重叠。
+            </span>
+          </div>
+          <div class="type-row" data-page-node-id="89mXbXbcaY8LNv6imcjaV6">
+            <span class="meta" data-page-node-id="JqTG0Z69t6ccHfmPo1HAyN">MONO / 11px</span>
+            <span class="label" data-page-node-id="oIabqYACFU15kDCDK1OIfx">RUNTIME MONITOR · TABULAR NUMS 0123456789</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 03 按钮 ============ -->
+      <section class="kit__sec" id="button" aria-labelledby="h-button" data-page-node-id="R4OedrJhYSC2G0yhp8Pdbm">
+        <h2 id="h-button" data-page-node-id="OoLlD6CSvmuiNiAaxvd5YS"><span data-page-node-id="8213yLYPTFH9W7VlXdGVQ5">03</span>按钮 · 八种状态</h2>
+
+        <div class="demo" data-page-node-id="CzqunTzyqqMPs1JLO84Eio">
+          <span class="demo__cap" data-page-node-id="vNb1wWsiPFe67hQGJa4Gqc">变体 / 默认态</span>
+          <button class="btn btn--primary" type="button" data-page-node-id="0yglKOidu7NObWndVuFLbv">开始渲染</button>
+          <button class="btn" type="button" data-page-node-id="IY8QjGGLwQjImi8CTOcxW6">加入队列</button>
+          <button class="btn btn--ghost" type="button" data-page-node-id="TKqaEC6YTLhM3RuKdDxEF2">取消</button>
+          <button class="btn btn--sm" type="button" data-page-node-id="0O8ZCC0GwPkAXmvKDnIWWV">小号</button>
+          <button class="btn btn--lg" type="button" data-page-node-id="oOr09nMFUyrNaFzObZ5ys5">大号按钮</button>
+        </div>
+
+        <div class="demo" data-page-node-id="SkYSvUwhVf5B2Iil2wZHIb">
+          <span class="demo__cap" data-page-node-id="kuwOV27R40EGkZi6RY61Ie">悬停：琥珀光带从左扫过（不是简单变亮）</span>
+          <button class="btn" type="button" data-page-node-id="89D34I8S25UbIUTog7u7gt">把鼠标移上来</button>
+          <span class="demo__cap" style="margin-top: var(--s-2);" data-page-node-id="glap9ePABhH0P6VJIZg8Zn">按下：下沉 1px；聚焦：2px 琥珀描边 + 2px 偏移，键盘 Tab 即可验证</span>
+          <button class="btn btn--primary" type="button" data-page-node-id="Mc0JYLNMEwfmi7xBHnmpig">Tab 键聚焦我</button>
+        </div>
+
+        <div class="demo" data-page-node-id="2g56U1HyeZc4PdusU9FDhi">
+          <span class="demo__cap" data-page-node-id="9lY21XodH1R5WMIBEVpl4V">禁用 / 加载 / 危险操作</span>
+          <button class="btn" type="button" disabled data-page-node-id="XH0ivdLFXZAMKJp9iUDOQV">显存不足</button>
+          <button class="btn btn--primary is-loading" type="button" aria-busy="true" data-page-node-id="RHmIiY2yGN2haZfFTVLXGX">渲染中…</button>
+          <button class="btn" type="button" id="loadDemo" data-page-node-id="FIeoJItBkraND6HThANbqQ">点我演示加载 2 秒</button>
+        </div>
+      </section>
+
+      <!-- ============ 04 输入 ============ -->
+      <section class="kit__sec" id="input" aria-labelledby="h-input" data-page-node-id="tF5izMzjC1FWorvoBOzWVH">
+        <h2 id="h-input" data-page-node-id="xBkmL34xofBd1NYB0KaCPN"><span data-page-node-id="dHu1sxT82VV6XNUpBYPH9A">04</span>输入控件</h2>
+
+        <div class="demo" data-page-node-id="o3e0JTkey54lcZjZjNkAns">
+          <div class="demo__grid" data-page-node-id="su2jeVrWNRPJsCGVujmmNf">
+            <div class="field" data-page-node-id="tbFDPYQ8Muj8MmYkTGsIYu">
+              <label class="label" for="i1" data-page-node-id="oiEaiBIRNNJ4iXKDby6NHB">片名</label>
+              <input class="input" id="i1" type="text" placeholder="例如：让子弹飞" data-page-node-id="pwbWGC3CnglwnsjgB60u3i">
+              <span class="field__msg" data-page-node-id="gOccJe6Zsu3SPMAbb0Nmrz">默认态</span>
+            </div>
+            <div class="field" data-page-node-id="5u8YBL03Rsz8bUubE5ifrE">
+              <label class="label" for="i2" data-page-node-id="YLAbVBnfmzRkyiOU9AWaBT">剧情描述（聚焦态）</label>
+              <input class="input" id="i2" type="text" value="开头用三句铺垫，结尾留悬念" data-page-node-id="pyNI5hZHDbywmtsonaoE3z">
+              <span class="field__msg" data-page-node-id="VRSPB4ZGpNUHZX7tFowdOI">点击输入框查看聚焦描边</span>
+            </div>
+            <div class="field is-error" data-page-node-id="QG2aZp7YRFlCWlXBEQMdan">
+              <label class="label" for="i3" data-page-node-id="DIDClz90hTLCPWhnH793A0">输出路径</label>
+              <input class="input" id="i3" type="text" value="D:\不存在\的目录" aria-invalid="true" aria-describedby="e3" data-page-node-id="IHoGrW7xJlFNCBkCKL1F0E">
+              <span class="field__msg" id="e3" data-page-node-id="z3nqsV7ycdcafnxJRJ4P8j">错误态：路径不可写，同时给出图标与文字，不只靠颜色</span>
+            </div>
+            <div class="field" data-page-node-id="bpLiH1HRG3rwT71LfGq5CN">
+              <label class="label" for="i4" data-page-node-id="CWB6e0AsQcOdGbrrG3N38B">导出预设（禁用）</label>
+              <input class="input" id="i4" type="text" value="4K / H.264" disabled data-page-node-id="ZPW693uGqgV55ohIvjA2zO">
+              <span class="field__msg" data-page-node-id="xa9KP3V7OqPLxc79M20oXU">禁用态：正在渲染时不可改</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="demo" data-page-node-id="H0iWYzBSt2KUXTVfQpruJX">
+          <div style="width: 100%;" data-page-node-id="QYBX8dEnFO0MTg9ZAftjeX">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: var(--s-2);" data-page-node-id="TaFrGDAxd3dhAfz2tEIshn">
+              <label class="label" for="t1" data-page-node-id="qbBG8ZQtcEyxPsgToMWamA">剧情正文</label>
+              <button class="inline-btn" type="button" id="fillDemo" data-page-node-id="iiogdnxxRD9G7EeMzgPToa">⚡ 一键查剧情</button>
+            </div>
+            <textarea class="textarea" id="t1" placeholder="写一段你想讲的故事…"></textarea>
+            <span class="field__msg" data-page-node-id="SoycJ2IW2bQIgs7u2Bplvn">输入框旁的快捷按钮：一键拉取剧情摘要并回填</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 05 选择与滑杆 ============ -->
+      <section class="kit__sec" id="choice" aria-labelledby="h-choice" data-page-node-id="IHpvTAAbNGrGrNgRQALG3f">
+        <h2 id="h-choice" data-page-node-id="v788yJVjNHNkdAkMEkK9hm"><span data-page-node-id="tYCErWILBnoCS5atYBYQa0">05</span>选择与滑杆</h2>
+
+        <div class="demo" data-page-node-id="fD32qSD7erGW0iqsyB3ekZ">
+          <div class="demo__grid" data-page-node-id="9XAT1vn8eiGxVb8EZmpfK1">
+            <div class="field" data-page-node-id="cTGunIZTDshT4rrwZeGjJd">
+              <label class="label" for="s1" data-page-node-id="CUNKBrLbwOSouOG4JgE9l7">配音引擎</label>
+              <select class="select" id="s1" data-page-node-id="Vl75BnwG96LRGu0HjXnuhG">
+                <option data-page-node-id="UbsypUhUffW3gDWpADy4WZ">edge-tts · 晓晓（女声）</option>
+                <option data-page-node-id="MAvLROXbx0fk3PIzpwAh8i">edge-tts · 云希（男声）</option>
+                <option data-page-node-id="nTeoI5J05x6qBCM4XMEiD7">sherpa-onnx · 华研女声</option>
+              </select>
+              <span class="field__msg" data-page-node-id="PzBfUens3wGVgGZcmFue9x">原生 select，仅换皮，键盘可用</span>
+            </div>
+
+            <div style="display:grid; gap: var(--s-3); align-content:start;" data-page-node-id="K2nJBJ1KUBuPQP3gLr0bXl">
+              <label class="switch" data-page-node-id="JCtHjH4xes2VxbvDiros3I">
+                <input type="checkbox" checked data-page-node-id="iD5oxbHcC8CaJrFqWa98C6">
+                <span class="switch__track" data-page-node-id="eNs6At6GSWTQFYr8DyhqR8"><span class="switch__knob" data-page-node-id="4NEgDK5WFbvtN96ySthVFy"></span></span>
+                <span style="font-size: var(--fs-sm);" data-page-node-id="3N2N3hXl2rIIB0YMea6iZG">踩点吸附</span>
+              </label>
+              <label class="switch" data-page-node-id="7fXAsLn281voSzrEY1HiQM">
+                <input type="checkbox" data-page-node-id="67nGhFvmANTtFBuIG3HYLq">
+                <span class="switch__track" data-page-node-id="LdHYSivlkGcFA4JDvXZeU9"><span class="switch__knob" data-page-node-id="mmArpv7bTzQERKZgIO1bOs"></span></span>
+                <span style="font-size: var(--fs-sm);" data-page-node-id="sosLSAUNTDBoz0GKsBRWJk">硬字幕烧录</span>
+              </label>
+              <label class="switch" data-page-node-id="HhuT0HqYT1Br6NIU7pQtWS">
+                <input type="checkbox" disabled data-page-node-id="Nhje0Q3HjGAEE3mk5GgmhC">
+                <span class="switch__track" data-page-node-id="qWrWQmNrwyb0dRHPPlfdBC"><span class="switch__knob" data-page-node-id="dIK8DHC4zCJd5mUOAijy1L"></span></span>
+                <span style="font-size: var(--fs-sm); color: var(--c-dim);" data-page-node-id="rfiBdyKzjwQrAsufcEEFoy">云端增强（未连接）</span>
+              </label>
+            </div>
+
+            <div class="param" style="border:0; padding:0;" data-page-node-id="ZEAIA9rmov8FZYLOZXAace">
+              <div class="param__top" data-page-node-id="BKHtARkpXqcjO14oLeXTl7">
+                <span class="param__k" data-page-node-id="u6GzKfkbkLxp0jWNnySe0Z">语速</span>
+                <span class="param__v" id="v-speed" data-page-node-id="ycwDhKWZexf8japon7AGDm">1.0×</span>
+              </div>
+              <input class="slider" id="s-speed" type="range" min="60" max="200" value="100" aria-label="语速" data-page-node-id="XQSEdAxch6i1iEgcTSwpuO">
+              <span class="param__h" data-page-node-id="hZ0YEJUo1fljTOLTWr1F7W">0.6× – 2.0×，轨道带刻度</span>
+            </div>
+
+            <div class="param" style="border:0; padding:0;" data-page-node-id="k9jxFWESmH3HY10viAylKi">
+              <div class="param__top" data-page-node-id="xAv1PKG4wDaU6TnkFn7iAN">
+                <span class="param__k" data-page-node-id="DrdXrkxKXsBV6mcAIN3wxg">情绪强度</span>
+                <span class="param__v" id="v-emo" data-page-node-id="vkBER2MRePINKzjVXXxauZ">3 档</span>
+              </div>
+              <input class="slider" id="s-emo" type="range" min="1" max="5" value="3" aria-label="情绪强度" data-page-node-id="VMcwolEwa0P3wSCTEVO8HN">
+              <span class="param__h" data-page-node-id="rFfEKBPBQt2WGJjVwiDwzR">1 = 平铺直叙，5 = 强戏剧化</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 06 状态与徽章 ============ -->
+      <section class="kit__sec" id="status" aria-labelledby="h-status" data-page-node-id="FeeeHy7c5LYgfGDTk1gzE2">
+        <h2 id="h-status" data-page-node-id="Zkkr7982KqncDCP0ZDBm4d"><span data-page-node-id="L9wS0ldj53HYHo5qwpuvJ2">06</span>状态与徽章</h2>
+        <div class="demo" data-page-node-id="j6Rd4qFviaDGKP1FH43Uno">
+          <span class="badge badge--accent" data-page-node-id="CrFPjDFjRR4lpPascTQI6O">渲染中</span>
+          <span class="badge badge--ok" data-page-node-id="RWSivysuagOvpBVc56iyOE">已完成</span>
+          <span class="badge badge--warn" data-page-node-id="UZmWxeV2T5k31cVETYVyCj">低置信度</span>
+          <span class="badge badge--err" data-page-node-id="VMaZNrFwzwBXOllmqnAmIp">显存溢出</span>
+          <span class="badge" data-page-node-id="kfd540P2BHtxs9RlaIGFvv">队列等待</span>
+          <span class="demo__cap" style="margin-top: var(--s-3);" data-page-node-id="qrWTvh1aVFkWIribDn0IhD">状态灯：常亮 / 呼吸 / 警告 / 错误，均带光晕而非纯色点</span>
+          <span style="display:flex; gap: var(--s-5); align-items:center; margin-top: var(--s-2);" data-page-node-id="YbjdnUNNbLwq2VeDPYOsm0">
+            <span class="lamp lamp--ok" data-page-node-id="TyfCgz4W2PPg4Hz376LnWX"></span>
+            <span class="lamp lamp--live" data-page-node-id="PCVCegi95MRnGzfuh4R5MJ"></span>
+            <span class="lamp lamp--warn" data-page-node-id="OvA7SplgcCPo5MUoK5slLy"></span>
+            <span class="lamp lamp--err" data-page-node-id="GCyRp7uBbs6avsEx1lrtll"></span>
+            <span class="lamp" data-page-node-id="2NXtG8N1zuRafqk38vDHL0"></span>
+          </span>
+        </div>
+      </section>
+
+      <!-- ============ 07 数据展示 ============ -->
+      <section class="kit__sec" id="data" aria-labelledby="h-data" data-page-node-id="5PVpW5UM26XG7RQtjzoLEL">
+        <h2 id="h-data" data-page-node-id="0ah1jiQx88tsgcDkA6c5NK"><span data-page-node-id="EMAEtKnQBSLkNlblTK72d0">07</span>数据展示</h2>
+
+        <div class="demo" data-page-node-id="nuhTYwWtHGKCAJqLVE2bvy">
+          <div class="demo__grid" style="gap: var(--s-5);" data-page-node-id="vnFZ11KoRjUD8FTCXOcWXC">
+            <div class="panel panel--bracket" data-page-node-id="TzXsMVuYIs7PrV1r00fshg">
+              <div class="panel__head" data-page-node-id="6VlozXYDGy8BRgKd9hmfar"><span class="panel__title" data-page-node-id="k2pzl70T8esgVuej2eFD0a">渲染任务</span><span class="badge" data-page-node-id="zylOOpTswWWwpktbOrdQKR">3 / 8</span></div>
+              <div class="panel__body" data-page-node-id="KnBhOoCgq4S14qjcKQnQ0c">
+                <div class="progress" data-page-node-id="YJQZ0n3xLBbQUJPcWO4BjT"><div class="progress__bar" id="pbar" style="width: 62%" data-page-node-id="2fwLJRqebB94aLKc2dRCyG"></div></div>
+                <div style="display:flex; justify-content:space-between; margin-top: var(--s-2);" data-page-node-id="mLOFEynIi9wPJ9vD1GvS7l">
+                  <span class="label" data-page-node-id="phjmwpexi82QOoarRyIxBl">第 3 幕对齐</span><span class="label" id="pnum" data-page-node-id="ZyDsWl1sW7i31sOmCEZfHo">62%</span>
+                </div>
+                <button class="btn btn--sm" type="button" id="pbtn" style="margin-top: var(--s-3);" data-page-node-id="LFlLWFW3zUpgAtYFpBniE1">推进进度</button>
+              </div>
+            </div>
+
+            <div class="panel" data-page-node-id="xLCBYh6IfNPT0IHlowiJzE">
+              <div class="panel__head" data-page-node-id="1iwuYIUp3RDcdzA2hBdn1B"><span class="panel__title" data-page-node-id="0BrJuqBnihEPXdVdiGbGgr">规格表</span><span class="label" data-page-node-id="jf3x3zxbT7WUikcM4Jl5gu">SPEC</span></div>
+              <div class="panel__body panel__body--flush" data-page-node-id="LwmFbdtwC79HHLfnTFj5s6">
+                <table class="spec" data-page-node-id="kE3GAKBlSHmbwLoGJQATTq">
+                  <thead data-page-node-id="ARQQw7zbIaPocRoijvc2I6"><tr data-page-node-id="9IILutZT2rHkFMq5RlDkuA"><th data-page-node-id="nG6Encp1q1yfoZsyYnli02">No.</th><th data-page-node-id="5O321OweRIDopv24LMFGbL">项目</th><th data-page-node-id="btPhGg7lMOOOzXGpVJ6Jqj">实测</th></tr></thead>
+                  <tbody data-page-node-id="rx45rgCox6hJFSh9F1E4zc">
+                    <tr data-page-node-id="KcjvIs24e3VbBFFO4WanMk"><td data-page-node-id="LqG5I1vHHDaaUp6dIRJIHu">B-01</td><td data-page-node-id="byTHaOMttFC6AmgEEnBGkv">镜头检测误差</td><td class="v" data-page-node-id="2X3461EDFRljpvmbr007dL">&lt; 3 帧</td></tr>
+                    <tr data-page-node-id="JaJhEdlrL6oEYFE6Ki5PEf"><td data-page-node-id="7mHPDMQepyGk293KCpzgKM">B-02</td><td data-page-node-id="iuezWlJdGbc8jsqUiFjLFM">对齐粒度</td><td class="v" data-page-node-id="q8Dzh88Jlp3jnQMcBYwUxR">句级</td></tr>
+                    <tr data-page-node-id="0bb8F9wy4SwsOzjfzDwAgp"><td data-page-node-id="jNahr7YSoKSSHl3zdJZKt5">B-03</td><td data-page-node-id="7pNHElgiXYd6OUu1Hb6pgP">显存峰值</td><td class="v" data-page-node-id="8olCSXCCN5riyfBLatCoTo">7.2 GB</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="demo" data-page-node-id="sArefFIOtSq5BsrCEDRTY2">
+          <span class="demo__cap" data-page-node-id="jRCcArWSvvJGQbtGhit0zq">日志控制台 · 等宽 + 分级色 + 时间戳</span>
+          <div class="console" style="width:100%;" aria-live="polite" data-page-node-id="9iXgmmI5FVkWwnUGLA2VZb">
+            <div class="console__line" data-page-node-id="46KIsGKmavKBtA4u2xAlCf"><span class="console__t" data-page-node-id="OCYhOKkAND9QAOeYFyBi2h">00:01.2</span><span class="console__lv console__lv--info" data-page-node-id="fEddtbTpIA2iDSPTBQWB1a">INFO</span><span class="console__msg" data-page-node-id="F0KRnVhj7jZkKPUKFnMb7R">载入影片 让子弹飞.mp4</span></div>
+            <div class="console__line" data-page-node-id="OTrTes95qtN3PjuNhDGMjO"><span class="console__t" data-page-node-id="Ur6I3zKfOzOx6fKkfVgRym">00:03.8</span><span class="console__lv console__lv--ok" data-page-node-id="khLObzJhAksqCD8ic8mgXF">OK</span><span class="console__msg" data-page-node-id="oqQyxlmnkmY7kLTERGbhsx">镜头边界检测完成，共 128 段</span></div>
+            <div class="console__line" data-page-node-id="xTy3JdTM9xEB6OQrBKoRms"><span class="console__t" data-page-node-id="IX0vO5SjfvzHFuPhqbpfoz">00:04.1</span><span class="console__lv console__lv--warn" data-page-node-id="e2PT2IQPgMQ2hJqY4iaeCi">WARN</span><span class="console__msg" data-page-node-id="DSDv79EqU68P6ZOmEZojQd">第 42 段置信度 0.61，已标黄待确认</span></div>
+            <div class="console__line" data-page-node-id="XcZSgxDIaJ6XUqJSJnuZag"><span class="console__t" data-page-node-id="xo082yTREDR3v9WWMFwPds">00:06.7</span><span class="console__lv console__lv--err" data-page-node-id="8EHx62HFfwXv1BsdrC8Guh">ERR</span><span class="console__msg" data-page-node-id="bvWlCMd74mdKE6ZlDGBhbE">edge-tts 调用超时，已自动重试 1/3</span></div>
+            <div class="console__line" data-page-node-id="iGmjAVN6Hw4FEIov7wZAW1"><span class="console__t" data-page-node-id="CmqAcygybi1fjuAmPISWGV">00:07.0</span><span class="console__lv console__lv--ok" data-page-node-id="PFynxvnxCJgbyggi1LrBvH">OK</span><span class="console__msg" data-page-node-id="YKF0jj0w0cXFAnkBFWoIBR">重试成功，使用音色 晓晓</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 08 反馈 ============ -->
+      <section class="kit__sec" id="feedback" aria-labelledby="h-feedback" data-page-node-id="KEeeWfR1AqqlAqb4op54vR">
+        <h2 id="h-feedback" data-page-node-id="DOTQd3CpqnrULVAWMlQ8eF"><span data-page-node-id="xbNPpC2e2iE8tXx8ukFtoC">08</span>反馈与空态</h2>
+
+        <div class="demo" data-page-node-id="xiYwZvTcFC6AGceK1ft02D">
+          <span class="demo__cap" data-page-node-id="gYE7F8vP30pIJ0SEFW4iEQ">Toast：左下角滑入，3 秒自动消失，错误态常驻直到手动关</span>
+          <button class="btn btn--sm" type="button" data-toast="已加入渲染队列" data-kind="ok" data-page-node-id="LGPopVLaJvT3WDfQ79YwPF">成功提示</button>
+          <button class="btn btn--sm" type="button" data-toast="第 42 段置信度偏低，建议人工确认" data-kind="warn" data-page-node-id="n8KWbz2xRgHVWB1jceADLE">警告提示</button>
+          <button class="btn btn--sm" type="button" data-toast="显存不足，无法继续渲染" data-kind="err" data-page-node-id="UGLH99SxAwWm4FwAycobiz">错误提示</button>
+        </div>
+
+        <div class="demo" data-page-node-id="YCaVvrIyuK4deG747iWmtj">
+          <span class="demo__cap" data-page-node-id="lD1LihB9nhqHCimqh3AaLO">空态：斜纹底 + 图标 + 一句能动手的提示（不是「暂无数据」）</span>
+          <div class="empty" style="width: 100%;" data-page-node-id="n7LMspJF77kkb3mwScn2Dx">
+            <span class="empty__icon" aria-hidden="true" data-page-node-id="NKa1B5S2N9vUNYfqn1T0bD">＋</span>
+            <span class="empty__title" data-page-node-id="YyyUWW7iwrRVAISQy8OUaa">素材库还是空的</span>
+            <span class="empty__hint" data-page-node-id="Tor0DFmTjkHhyNAaBuF0lw">拖一个视频文件进来，或粘贴 B 站链接，几秒后就能看到镜头列表。</span>
+            <button class="btn btn--primary btn--sm" type="button" data-page-node-id="DyKOQ3pZBYfpfk3XIN7zCK">选择视频文件</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<footer class="footer page" data-page-node-id="NIdU8VZHRM169kWmvu7CxL">
+  <div class="shell footer__in" data-page-node-id="30mWOllnw7P6aNtpPh8z3H">
+    <span class="footer__c" data-page-node-id="ya6Swdx94G3npC3y7nDr1b">组件套件 · 8 类组件 / 全部状态可交互验证</span>
+    <span class="footer__c" data-page-node-id="JTMPRa2reEDpBxxIIM7Gn6"><a href="index.html" data-page-node-id="3CxeQGWXpU61sMQi9OzDpS">← 回到产品页</a></span>
+  </div>
+</footer>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false" data-page-node-id="pNrkc9CRdyouBWTHA6rAw1"></div>
+<script src="scripts/main.js"></script>
+</body>
+</html>

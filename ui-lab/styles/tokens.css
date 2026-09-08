@@ -1,0 +1,113 @@
+/* ============================================================
+   tokens.css — 设计令牌层
+   方向：工业 / 仪表盘感（Industrial & Instrument Panel）
+   基调：冷调近黑钢制机柜 + 单一琥珀警示色 + 发丝描边 + 等宽数字
+   所有颜色必须经由此处变量引用，组件内禁止硬编码色值。
+   ============================================================ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- 表面：三层级，模拟机柜 / 面板 / 内嵌屏 ---- */
+  --c-bg:            #0c0e11;   /* 机身底色，冷调近黑（非纯黑） */
+  --c-bg-raise:      #10141a;   /* 抬升一级的底板 */
+  --c-surface:       #151a21;   /* 面板 */
+  --c-surface-2:     #1c222b;   /* 面板内嵌区 / 输入框底 */
+  --c-surface-3:     #232a34;   /* 悬停态 */
+
+  /* ---- 文字：正文对比度全部实测 ≥ 4.5:1 ---- */
+  --c-text:          #e9eef4;   /* 主文字  15.8:1 */
+  --c-muted:         #93a1b1;   /* 次要文字  7.5:1 */
+  --c-dim:           #7b8896;   /* 标签 / 单位  5.3:1 */
+
+  /* ---- 强调色：全站唯一，只留给关键动作与警示 ---- */
+  --c-accent:        #ff8a1f;   /* 琥珀警示橙  8.2:1 */
+  --c-accent-soft:   #ff8a1f1f; /* 8% 底 */
+  --c-accent-line:   #ff8a1f59; /* 35% 描边 */
+  --c-on-accent:     #0c0e11;   /* 强调色之上的文字 */
+
+  /* ---- 语义状态：仅用于仪表读数，不承担动作 ---- */
+  --c-ok:            #57d9a3;
+  --c-warn:          #ffc247;
+  --c-err:           #ff6b5a;
+  --c-info:          #6cc4ff;
+
+  /* ---- 描边：发丝线是工业感的核心，绝不加粗 ---- */
+  --c-border:        #263039;
+  --c-border-soft:   #1b2129;
+  --c-border-strong: #38424e;
+
+  /* ---- 字体 ---- */
+  --font-display: "Bebas Neue", "Oswald", "Noto Sans SC", sans-serif; /* 窄体展示字，仅用于拉丁标题与巨型数字 */
+  --font-body:    "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-mono:    "IBM Plex Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+
+  /* ---- 字阶（1.25 模块化比例） ---- */
+  --fs-2xs: 10px;
+  --fs-xs:  11px;
+  --fs-sm:  13px;
+  --fs-base:15px;
+  --fs-md:  17px;
+  --fs-lg:  21px;
+  --fs-xl:  26px;
+  --fs-2xl: 33px;
+  --fs-3xl: 41px;
+  --fs-4xl: 52px;
+  /* 展示级：随视口缩放，桌面最大 116px */
+  --fs-display: clamp(56px, 11vw, 116px);
+  --fs-metric:  clamp(34px, 4.4vw, 52px);
+
+  /* ---- 字距与行高 ---- */
+  --ls-display: -0.01em;   /* Bebas 本身极窄，不再收紧，避免糊成一团 */
+  --ls-cjk:      0.02em;   /* 中文正文略微放开 */
+  --ls-label:    0.16em;   /* 等宽小标签，工业铭牌感 */
+  --lh-tight:    1.02;
+  --lh-heading:  1.16;
+  --lh-body:     1.75;      /* 中文正文行高 ≥ 1.7 */
+
+  /* ---- 间距梯度 ---- */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px; --s-9: 96px;
+
+  /* ---- 圆角：工业设备几乎不做圆角，只留 2px 倒角 ---- */
+  --r-sm: 2px;
+  --r-md: 3px;
+  --r-lg: 4px;
+
+  /* ---- 阴影：三级高度，带冷环境色而非纯黑 ---- */
+  --sh-1: 0 1px 2px rgba(0, 0, 0, .40);
+  --sh-2: 0 8px 24px rgba(0, 0, 0, .46);
+  --sh-3: 0 24px 64px rgba(0, 0, 0, .54);
+  /* 内嵌屏的凹陷感 */
+  --sh-inset: inset 0 1px 0 rgba(255, 255, 255, .04), inset 0 0 24px rgba(0, 0, 0, .45);
+
+  /* ---- 动效 ---- */
+  --ease-out:  cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 160ms;
+  --dur-base: 320ms;
+  --dur-slow: 640ms;
+  --dur-scene: 780ms;
+
+  /* ---- 布局 ---- */
+  --shell: 1320px;
+  --rail: 56px;              /* 左侧竖排铭牌宽度 */
+  --hair: 1px;               /* 发丝线统一口径 */
+
+  /* ---- 层级 ---- */
+  --z-grain: 60;
+  --z-nav: 40;
+  --z-toast: 80;
+}
+
+/* 高对比模式：给需要更强读数的场景（投影 / 强光环境）留出开关 */
+[data-contrast="high"] {
+  --c-bg: #000000;
+  --c-surface: #0a0d10;
+  --c-surface-2: #12181e;
+  --c-text: #ffffff;
+  --c-muted: #c8d2dc;
+  --c-dim: #a4b1bf;
+  --c-border: #4a5663;
+  --c-accent: #ffa347;
+}

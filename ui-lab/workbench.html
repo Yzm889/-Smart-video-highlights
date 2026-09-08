@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="fN1fy5HIs5sWE9eV2Wz1Vo">
+<head data-page-node-id="Ufa4ELWlBEiht9RJFPkvcQ">
+<meta charset="utf-8" data-page-node-id="K4x0UVwv9AVXZh4pH1RfYj">
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="JKXqsFFBw6kgKga15CLOEX">
+<title>工作台 · 一帧成片 FrameCut</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" data-page-node-id="jcfU6qeebf1Lt2Sxv7yzI5">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin data-page-node-id="FIBSdR6lx66RKnV7Z5sqGj">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet" data-page-node-id="GeZ1XS47Ve7r3d0v2sei7G">
+<link rel="stylesheet" href="styles/tokens.css" data-page-node-id="MPSVrtaDAZTuVLlQyVRa4S">
+<link rel="stylesheet" href="styles/base.css" data-page-node-id="74oL1AHi34s3jTTLCN6ZKM">
+<link rel="stylesheet" href="styles/components.css" data-page-node-id="WOiGBPEHOE4oXRCz2Sg3Dr">
+<link rel="stylesheet" href="styles/pages.css" data-page-node-id="IHgTUwBGGq7bqStVCG37FW">
+</head>
+<body data-wb="1" data-page-node-id="18uGx8dcsuwabOzNyWcrvy">
+<div class="grain" aria-hidden="true" data-page-node-id="BZUEksOiO2Dlv7Z9k1B6kO"></div>
+<a class="skip-link" href="#stage" data-page-node-id="wgPfBpRVfbcueRwO9JUJvd">跳到预览区</a>
+
+<header class="topbar" data-page-node-id="wNY8YGcHTTKv4dFMYN48I7">
+  <div class="shell topbar__in" data-page-node-id="jClgcBtOT5VwUcIgWQ3LpT">
+    <a class="brand" href="index.html" data-page-node-id="GkAzp2a5q7gcJVO07UnmyU">
+      <span class="brand__mark" data-page-node-id="rs8hNnAyXAHAZFyyYotG1A">FRAME<b data-page-node-id="TxWMRkqyvsZgTnDbmdYlf2">CUT</b></span>
+      <span class="brand__cn" data-page-node-id="HmGp4m5AhUvEbYXFMb7gYH">一帧成片</span>
+    </a>
+    <nav class="topnav" aria-label="主导航" data-page-node-id="LqQzj4glfEPalyA7KYzwrA">
+      <a href="index.html" data-page-node-id="8PqsUC0AFWDES2A0KDiPqw">产品</a>
+      <a href="workbench.html" aria-current="page" data-page-node-id="Qt7fjEQBWkEGJZlwOLlkof">工作台</a>
+      <a href="kit.html" data-page-node-id="ySqweGfLAP6ClvlA2slzd0">组件套件</a>
+    </nav>
+    <div class="topbar__right" data-page-node-id="rQ6eLhp9NiVVj8FB7jreCG">
+      <div class="statusline" id="gpuStat" data-page-node-id="mOCKN8yK6mOEjeJyvxCtBz"><span class="lamp lamp--ok" aria-hidden="true" data-page-node-id="EGyBVoG5JIBIpAL1bzrdbW"></span><span data-page-node-id="D5H1pLxraVEtOuDmHv9HJr">显存 3.1 / 12 GB</span></div>
+      <button class="btn btn--sm" type="button" id="emptyDemo" data-page-node-id="dRc3IaVrEJBbQMrBEe6wbL">模拟空态</button>
+      <button class="btn btn--sm" id="contrastBtn" type="button" aria-pressed="false" data-page-node-id="RUDXB8UwmoOk3lACGit0s8">高对比</button>
+    </div>
+  </div>
+</header>
+
+<!-- 三步引导条：新用户第一次进来就知道先干什么，可一键关掉 -->
+<div class="marquee" style="border-top:0;" id="onboard" data-page-node-id="Eel41KJd1I1CmyjQA4b7fy">
+  <div class="shell" style="display:flex; align-items:center; gap: var(--s-5); padding-block: var(--s-3); flex-wrap: wrap;" data-page-node-id="exL9nRzAsS4LvQbEGgLCdL">
+    <span class="eyebrow" style="flex:none;" data-page-node-id="9Us3NA4QuWflRBCb9V7cDW">先做这三件事</span>
+    <ol style="display:flex; gap: var(--s-5); flex-wrap: wrap; margin:0; padding:0; list-style:none; counter-reset: s;" data-page-node-id="fqWAnD5QM5vD6EdBXRELWw">
+      <li class="label" style="counter-increment: s;" data-page-node-id="7DPtnJ4kufyrPSekrU10km"><span style="color: var(--c-accent);" data-page-node-id="CMUOVu2KJzBDeCTXz5MeNw">01</span> 拖入视频</li>
+      <li class="label" style="counter-increment: s;" data-page-node-id="ev5U9V0v9SHt8zX2AlmZHA"><span style="color: var(--c-accent);" data-page-node-id="32HwVu7juGGC09M1zKDcS3">02</span> 写剧情或点「查剧情」</li>
+      <li class="label" style="counter-increment: s;" data-page-node-id="GMqAikCz9dlWGUFG3Z0nfK"><span style="color: var(--c-accent);" data-page-node-id="9mAlxDROwKV8okz9Xe05cP">03</span> 点开始生成</li>
+    </ol>
+    <button class="btn btn--ghost btn--sm" type="button" id="onboardClose" style="margin-left:auto;" data-page-node-id="Ghzsut22OkHdaoYLinhkfv">知道了</button>
+  </div>
+</div>
+
+<!-- 流程导轨：五个步骤，点任意一步跳到对应面板 -->
+<div class="shell" style="padding-top: var(--s-5);" data-page-node-id="8zL79W9V16Fue8qXkVlL4Z">
+  <!-- 工作台的步骤条是导航，不是标签页：五块面板始终可见，点步骤只负责把对应区域滚动到眼前并高亮 -->
+  <nav class="stepper" aria-label="工作台流程导航" data-page-node-id="f0YRbDfZN87YaRLsKkCu3n">
+    <button class="step" type="button" data-target="sec-import" aria-current="step" data-page-node-id="PueGVSDPE5CndGlc88FL0E">
+      <span class="step__n" data-page-node-id="cGzkfynAeV0xqqZ9QG1r4k">STEP 01</span><span class="step__t" data-page-node-id="exnsJ6Zm6aliVf4wsEpQLO">导入素材</span>
+    </button>
+    <button class="step" type="button" data-target="sec-plot" data-page-node-id="uMdiTXkj6tosAw4nDMb80W">
+      <span class="step__n" data-page-node-id="GBWbTNNbCtq64mh8ecoXto">STEP 02</span><span class="step__t" data-page-node-id="JyVFEISd9VAxCf2e5lB2NF">写剧情</span>
+    </button>
+    <button class="step" type="button" data-target="sec-align" data-page-node-id="prRfX1t6xw4EMicAbBgh4o">
+      <span class="step__n" data-page-node-id="9pRbcmfQ4Qz5pXY5tfmUvd">STEP 03</span><span class="step__t" data-page-node-id="ma4qcHbOPdq8dMOoJO75Ci">镜头对齐</span>
+    </button>
+    <button class="step" type="button" data-target="sec-voice" data-page-node-id="n4LsRCYBt3ANw32smmXehn">
+      <span class="step__n" data-page-node-id="2J0iAJJSQirABdYeNyqTzB">STEP 04</span><span class="step__t" data-page-node-id="Lb9Uo6MZrAcigiEHB3XxEA">配音风格</span>
+    </button>
+    <button class="step" type="button" data-target="sec-output" data-page-node-id="LZuTOhGYKMK5ya7jiwHnM5">
+      <span class="step__n" data-page-node-id="NHmDSZECS4z2sVoacDqL2C">STEP 05</span><span class="step__t" data-page-node-id="SwsnmXCCf3dB4xnRAMcpdz">导出成片</span>
+    </button>
+  </nav>
+</div>
+
+<main class="wb" style="margin-top: var(--s-5);" data-page-node-id="SgCFcpFOWuYns4Q9fRd8pt">
+
+  <!-- ============ 左：素材库 ============ -->
+  <div class="wb__col" data-page-node-id="jl5Eb9Qt0tXfZBWdWeEeaw">
+    <div class="wb__col-in" data-page-node-id="tDAxqd7eMZZfjNkgGRVGB4">
+      <div class="panel" data-page-node-id="VKA79J4XhTlw7lohAvusVG">
+        <div class="panel__head" data-page-node-id="37a0mwOLgndCm5RfpLUO6g">
+          <span class="panel__title" data-page-node-id="aiOiwcK6KIbqCSb8H0wHqf">素材库</span>
+          <span class="badge" data-page-node-id="vIoGs0YzBUj0OQ56ZsDjcD">4 个</span>
+        </div>
+        <div class="panel__body" style="display:grid; gap: var(--s-3);" data-page-node-id="cCrA171ClS2d5DUbCHnXw1">
+          <button class="btn btn--block btn--sm" type="button" id="importBtn" data-page-node-id="OHvjMAcIoybdyxTPhcHPaG">＋ 导入视频 / 粘贴链接</button>
+
+          <div id="clipList" style="display:grid; gap:2px;" data-page-node-id="h6pNO344chlvnYDnDEHrln">
+            <button class="clipitem is-sel" type="button" data-page-node-id="7UViKEIfw03NMe00UU3C9b">
+              <span class="clipitem__thumb" data-page-node-id="26gKUS7330YFU6y8gECb0r">MP4</span>
+              <span data-page-node-id="vtTCuttS1f2iqs4wWf0cXT"><span class="clipitem__t" data-page-node-id="38rWozgvypXVY2WgL0NQbH">让子弹飞.mp4</span><span class="clipitem__m" style="display:block;" data-page-node-id="0nQLZqqGyOODymyU6REE4b">02:12:04 · 1080P</span></span>
+              <span class="clipitem__m" data-page-node-id="leE8GxPO0i3r02fEGa3GPi">128 段</span>
+            </button>
+            <button class="clipitem" type="button" data-page-node-id="IjirOV6ZK5ZzTiryBL9o0u">
+              <span class="clipitem__thumb" data-page-node-id="AyXsVCZXBMd4FwvXgtUW1s">MKV</span>
+              <span data-page-node-id="WfuCEXBAAawP72bFrYoXRB"><span class="clipitem__t" data-page-node-id="CHbf5GsbJXymHpb0x5RdBw">阳光灿烂的日子.mkv</span><span class="clipitem__m" style="display:block;" data-page-node-id="9hkBnRM3SJ15fCfjoOvVdW">02:14:33 · 1080P</span></span>
+              <span class="clipitem__m" data-page-node-id="S0EQnU7BmlpCLe3IaG3VJa">96 段</span>
+            </button>
+            <button class="clipitem" type="button" data-page-node-id="dboaRLGbHsDhma4ZwNGoE6">
+              <span class="clipitem__thumb" data-page-node-id="YXhMJxfRuu6RlbmPfu2KFy">MOV</span>
+              <span data-page-node-id="K8Q2O206HY2A5XwHjhUitk"><span class="clipitem__t" data-page-node-id="1WfbvMvpHKYx8GR5EwvXTq">疯狂的石头.mov</span><span class="clipitem__m" style="display:block;" data-page-node-id="ibCMfhnfQvWbWp9IN0sipH">01:38:12 · 720P</span></span>
+              <span class="clipitem__m" data-page-node-id="sFzHTVIVfN7tovZgxuXZ59">74 段</span>
+            </button>
+          </div>
+
+          <!-- 空态：未导入任何素材时的样子 -->
+          <div class="empty" id="clipEmpty" hidden data-page-node-id="DeWiGDjZSYbBTAv1Bmayg4">
+            <span class="empty__icon" aria-hidden="true" data-page-node-id="yB1p9QKamSBonfkDyaVp23">＋</span>
+            <span class="empty__title" data-page-node-id="9w4xPXdWA95twrapbzh5bV">还没有素材</span>
+            <span class="empty__hint" data-page-node-id="q8R57KnA8vinGPDn0BHJyX">拖一个视频文件进来，或粘贴 B 站链接，几秒后自动列出镜头。</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" data-page-node-id="yfPH05izlxk8UpIeHYaR55">
+        <div class="panel__head" data-page-node-id="EXELwwH7vMhhaLHPLX9gIj">
+          <span class="panel__title" data-page-node-id="sb92wxEvNwKDOuktHZDKKX">对齐结果</span>
+          <span class="badge badge--warn" id="pendingBadge" data-page-node-id="kVLXA1vmO2G0QNtCjAiYxM">3 待确认</span>
+        </div>
+        <div class="panel__body" style="display:grid; gap: var(--s-2);" data-page-node-id="zd8zVAseGZe3KLqrvRfoAj">
+          <div class="param" style="padding-block: var(--s-2);" data-page-node-id="YkWDbdcOlMXGHxmBQMlPTt">
+            <div class="param__top" data-page-node-id="uSJCTKVXqlZj7VEDcVCJp2"><span class="param__k" data-page-node-id="PzWjNf0w0wpYKBpeAKFz2g">已对齐</span><span class="param__v" data-page-node-id="9lbD3gCPYTS7zkPfB0dRPE">125 / 128</span></div>
+            <div class="progress" style="height:6px;" data-page-node-id="qmi1Hb6zIcTbQWCG83Bwll"><div class="progress__bar" style="width: 97.6%" data-page-node-id="GElhB9znppPL3WNULqFUVq"></div></div>
+          </div>
+          <p class="param__h" id="pendingHint" data-page-node-id="MugxrrXMtLUEWghdoqhTnO">低置信度片段已标黄，点时间线上的黄条可单独确认。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 中：预览 + 时间线 + 日志 ============ -->
+  <div class="wb__col wb__col--mid" data-page-node-id="xvvABykEoIjD9Bk1ydyuVE">
+    <div class="wb__col-in" data-page-node-id="bKusDnkRa1QN8K4wHBhbpq">
+      <div class="stage panel--bracket" id="stage" tabindex="0" aria-label="预览画面" data-page-node-id="M05M6VQONxm6QuYgHRsL1C">
+        <div class="stage__grid" aria-hidden="true" data-page-node-id="fCJbBX3Shbu5Rn2CzuzIea"></div>
+        <div class="stage__safe" aria-hidden="true" data-page-node-id="bNzdacEDRFZonpWP0fimPA"></div>
+        <span class="stage__tc" data-page-node-id="Sh4LnzIDJpDKA8FMjRoYC7">00:01:23:12</span>
+        <span class="badge badge--ok stage__tag" data-page-node-id="FEJre5E90UBidJThRtzI6D"><span class="lamp lamp--ok" aria-hidden="true" data-page-node-id="VA8js6X0B1KYEdyCEoC4sY"></span>已对齐</span>
+        <div class="stage__center" data-page-node-id="frhFO2x6BZagsNhTudxwKP">
+          <button class="stage__play" type="button" id="playBtn" aria-label="播放预览" data-page-node-id="UAxSdCpSBOZcbNtGtW5qz8">
+            <svg width="22" height="24" viewBox="0 0 22 24" aria-hidden="true" data-page-node-id="UFj7qem6wqMf95gvnmHJME"><path d="M0 0 L22 12 L0 24 Z" fill="currentColor" data-page-node-id="9UHt1WQzudnGBGyoDFTq9P"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="transport" data-page-node-id="VhMBwL0fH4Lew7nlaU0WZ2">
+        <button class="btn btn--sm" type="button" data-page-node-id="yUlBPIlmr6fFnOKOb5LzCY">⏮ 上一刀</button>
+        <button class="btn btn--sm" type="button" data-page-node-id="axGoc0l9zIqKRCLOi7Kivw">⏭ 下一刀</button>
+        <span class="spacer" data-page-node-id="n43FFFaD0LxX9TCkGQg6hU"></span>
+        <label class="switch" data-page-node-id="mct6lTYQrBGHmRwwP20yol">
+          <input type="checkbox" checked data-page-node-id="9TEklnFgU6xHGkIxvc9P8N">
+          <span class="switch__track" data-page-node-id="IqHRIeDVsxfevZAHqf4AW3"><span class="switch__knob" data-page-node-id="anfP2N5KKhePyPzExiDUZE"></span></span>
+          <span style="font-size: var(--fs-xs); color: var(--c-muted);" data-page-node-id="PlWYsxM1ekdqXg6rYhRVkW">踩点吸附</span>
+        </label>
+        <span class="label" data-page-node-id="KTXq2eHhmOGuZO93RBqB9m">切点 128 · 时长 08:42</span>
+      </div>
+
+      <div class="timeline" id="sec-align" data-page-node-id="MiBrHFPvd2RYDZIsBE0Bit">
+        <div class="timeline__ruler" aria-hidden="true" data-page-node-id="XPT9d8mSoStDiCksSsTQkQ"></div>
+        <div class="track" data-page-node-id="KgGLRfhqmqc2g0cq6ELDuD">
+          <span class="track__name" data-page-node-id="oZ2h5OHO61381vsvbHt1Vi">V1 画面</span>
+          <div class="track__clips" role="list" aria-label="画面轨道片段" data-page-node-id="98GDnTofpUn6asCtQAhnpH">
+            <div class="clip clip--beat is-sel" role="listitem" tabindex="0" style="flex: 2 1 0;" data-page-node-id="2Bo3sf2imN5KO1NrnG49cT">开场 · 00:00–00:14</div>
+            <div class="clip clip--beat" role="listitem" tabindex="0" style="flex: 3 1 0;" data-page-node-id="yYw0CEyjgQC1wPGYqK7Yyw">追车 · 00:14–00:38</div>
+            <div class="clip" role="listitem" tabindex="0" style="flex: 2 1 0; border-left-color: var(--c-warn); color: var(--c-warn);" data-page-node-id="EunCHU3ZmOZMBPlAvPnKEV">待确认 · 00:38–00:52</div>
+            <div class="clip clip--beat" role="listitem" tabindex="0" style="flex: 4 1 0;" data-page-node-id="foL3rtw08ugAtu21PUNaY6">对峙 · 00:52–01:26</div>
+          </div>
+        </div>
+        <div class="track" data-page-node-id="RTEoUTdySEwVaBcD086TpD">
+          <span class="track__name" data-page-node-id="LFeITELyQPtNUn1Z4B6428">VO 解说</span>
+          <div class="track__clips" role="list" aria-label="解说轨道片段" data-page-node-id="pMsqxsfcHUqX6kEsiVePPe">
+            <div class="clip clip--vo" role="listitem" tabindex="0" style="flex: 3 1 0;" data-page-node-id="E0C50PytqIJCd5JxspivD6">旁白 01</div>
+            <div class="clip clip--vo" role="listitem" tabindex="0" style="flex: 4 1 0;" data-page-node-id="ZRBdzD9wa6CR7UwtR1nmMP">旁白 02</div>
+            <div class="clip clip--vo" role="listitem" tabindex="0" style="flex: 2 1 0;" data-page-node-id="1vzVCGyxykadW9WEceYKne">旁白 03</div>
+          </div>
+        </div>
+        <div class="track" data-page-node-id="HaxU4pGFkVGGFiAImwHFrR">
+          <span class="track__name" data-page-node-id="M4l6PdaroDFJQBAjLaMBcs">BGM</span>
+          <div class="track__clips" role="list" aria-label="背景音乐轨道" data-page-node-id="tAyAm0N3jb6DTH6YnPGlmK">
+            <div class="clip clip--bgm" role="listitem" tabindex="0" style="flex: 8 1 0;" data-page-node-id="cBrQ9CnInNp4WNqbc98dCw">悬疑钢琴 · 已踩点</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" data-page-node-id="VekGowDrEPAzf7yMALrbSB">
+        <div class="panel__head" data-page-node-id="LpXmW13eYZceBj8SelO38I">
+          <span class="panel__title" data-page-node-id="TdZnnD57VslWBuiB1LkV5I">运行日志</span>
+          <button class="btn btn--ghost btn--sm" type="button" id="logClear" data-page-node-id="HFlAdUx4SlAdWYMEZWhm1D">清空</button>
+        </div>
+        <div class="panel__body panel__body--flush" data-page-node-id="UZUry0e5uGZraDvSHONATG">
+          <div class="console" id="wbConsole" aria-live="polite" aria-label="运行日志" data-page-node-id="ZychvNM5EaYl2Utk40PFJo"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 右：参数面板 ============ -->
+  <div class="wb__col wb__col--right" data-page-node-id="IldkooPQMnM8nFnBgsxdpu">
+    <div class="wb__col-in" data-page-node-id="QM0UNmBCYpqw1iARPLQxHB">
+      <div class="panel panel--bracket" data-page-node-id="Jrg24chrko18YaHk0vFDAu">
+        <div class="panel__head" data-page-node-id="XEhzDd5AAfDT2pdGJSLj9r">
+          <span class="panel__title" data-page-node-id="JXvWlt81iULOGpZOmZee6R">剧情</span>
+          <button class="inline-btn" type="button" id="fetchPlot" data-page-node-id="LwxRQspgpydxtWETTpuFiq">⚡ 查剧情</button>
+        </div>
+        <div class="panel__body" data-page-node-id="NT3lC2A88EIgOUBbQpV80R">
+          <div class="field" data-page-node-id="A6FXhgW9KW9XW2LPP7GbwB">
+            <textarea class="textarea" id="plotInput" placeholder="写一段你想讲的故事…例如：开头三句铺垫人物关系，中段反转，结尾留悬念。" aria-label="剧情描述"></textarea>
+            <span class="field__msg" id="plotMsg" data-page-node-id="wczACdafCdCppARUL1HMiQ">想不起来就点右上角「查剧情」，会自动回填分幕摘要</span>
+          </div>
+          <div class="param" style="padding-bottom: 0;" data-page-node-id="wKf20oInX8neQ1EnMqsC5y">
+            <div class="param__top" data-page-node-id="EJGTO7JFaTv7MQsSwnoLMg"><span class="param__k" data-page-node-id="WMLHOBBc51OARITZDfcgGp">粒度</span></div>
+            <select class="select" aria-label="剧情粒度" data-page-node-id="e8TCGRWRFt4JaiUm63MgGo">
+              <option data-page-node-id="wNtyXIU05VFyQx0AMMmMpE">分幕（推荐，5–7 幕）</option>
+              <option data-page-node-id="fWreo1GE9d6QIhsMEkdnkk">分镜（更细，耗时更长）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" data-page-node-id="ulIHnlUb3RWF0Dqq9VZdtX">
+        <div class="panel__head" data-page-node-id="JfDoRfZdLE12y3SpiNxNbC"><span class="panel__title" data-page-node-id="VE9pjIsC6LIEPQ16xKIsDy">配音</span><span class="badge" data-page-node-id="I0wT1vn7a0z0abfbyHQH3c">本地</span></div>
+        <div class="panel__body" style="display:grid; gap: var(--s-4);" data-page-node-id="2KHYSFUHK97XL6a3VZPHFS">
+          <div class="field" data-page-node-id="vIuUCd2qwO3Zg4S49W5nOA">
+            <label class="label" for="wEngine" data-page-node-id="nnTFjvDnCyeuyXCxM7WAFe">引擎</label>
+            <select class="select" id="wEngine" data-page-node-id="yRoKlIObxJw2D5gXF2l65P">
+              <option data-page-node-id="44QhBXBGrIdraYGBDZntGJ">edge-tts（快）</option>
+              <option data-page-node-id="1aEC7QBlcNCZWTVrvuovfN">sherpa-onnx（断网可用）</option>
+            </select>
+          </div>
+          <div class="field" data-page-node-id="uJfyVVSfocKTZedEfAoaLB">
+            <label class="label" for="wVoice" data-page-node-id="rvbWzILJ4CQbilc2LA18hV">音色</label>
+            <select class="select" id="wVoice" data-page-node-id="awOAFGFr8EKoDNz7fsbWcU">
+              <option data-page-node-id="dvVKV0ADIBcMWPoeGxz7DG">晓晓 · 女声</option>
+              <option data-page-node-id="zXJFYjsvwpUngRzt8paK24">云希 · 男声</option>
+              <option data-page-node-id="O66LICAfRz8qssyYcEUN2A">云扬 · 男声（低沉）</option>
+              <option data-page-node-id="GQaYgWn9HIEkgvnKQxOw5X">华研 · 女声（sherpa）</option>
+            </select>
+          </div>
+          <div class="param" style="border:0; padding:0;" data-page-node-id="8ODTdC7XASi8FOKwiMcp0D">
+            <div class="param__top" data-page-node-id="0gkfiQw5RL4f04ZpaGiZ0F"><span class="param__k" data-page-node-id="2GPh1GH1DlLQahXd44EN4R">语速</span><span class="param__v" id="v-wspeed" data-page-node-id="v7he6PBpoolVLwyCHf4xkX">1.0×</span></div>
+            <input class="slider" id="s-wspeed" type="range" min="60" max="200" value="100" aria-label="语速" data-page-node-id="f7jSlstELoxr1IwtvLd2iY">
+          </div>
+          <div class="param" style="border:0; padding:0;" data-page-node-id="iQ38dwPXpZDkol8mOAG0Gj">
+            <div class="param__top" data-page-node-id="rL3NIUIQ7T9pcoWQWzrLkZ"><span class="param__k" data-page-node-id="AdZRDBTRFEo7lUCC5TfPm1">情绪强度</span><span class="param__v" id="v-wemo" data-page-node-id="wYOPHzbutjNb7A38DmiTHm">3 档</span></div>
+            <input class="slider" id="s-wemo" type="range" min="1" max="5" value="3" aria-label="情绪强度" data-page-node-id="r4IXf1tGGutCRuZMKkmAK1">
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" data-page-node-id="MGHVeFw32oo9KQLfE1wQIv">
+        <div class="panel__head" data-page-node-id="vHM6jmsHH38Ig1j0sTBxOS"><span class="panel__title" data-page-node-id="xbWteEl6bK1VvVULXqJ7jK">输出</span></div>
+        <div class="panel__body" style="display:grid; gap: var(--s-4);" data-page-node-id="NJft9hW7830cHz8eW6A4j3">
+          <label class="switch" data-page-node-id="qonIcoeb1pIZ6JEDVvhc7i">
+            <input type="checkbox" checked data-page-node-id="R2TLk4IcYKdywlvvDFFUV4">
+            <span class="switch__track" data-page-node-id="qz9UviL2qm1zAElwtzQhTN"><span class="switch__knob" data-page-node-id="RRZxRp0iGiAPZ1jZYe6g3S"></span></span>
+            <span style="font-size: var(--fs-sm);" data-page-node-id="69EU92MhL2C1vSgddtcJ5I">硬字幕烧录</span>
+          </label>
+          <div class="field" data-page-node-id="7swT20v4m9gZAScZTMGiyp">
+            <label class="label" for="wRes" data-page-node-id="FDmuaf1KkKUOYgX6YY4zrL">分辨率</label>
+            <select class="select" id="wRes" data-page-node-id="1ADLyJ9h4KfY3LT70Gs221">
+              <option data-page-node-id="FGh4fhPsYuhtEV6EQbPAna">1080P（推荐）</option>
+              <option data-page-node-id="cmLGdVvgZBKjgm3j5G6aRv">720P（最快）</option>
+              <option data-page-node-id="JmAdkEZNfYT22IQqFXt1pP">2K</option>
+              <option data-page-node-id="bxChuU8IuaYOn3aM7jEr2D">4K（显存占用高）</option>
+            </select>
+          </div>
+
+          <div data-page-node-id="2184JV8WzlHrC0aiTAUl3j">
+            <div class="param__top" style="margin-bottom: 6px;" data-page-node-id="bSoVZtWbSoBmhG4cgqbqeX">
+              <span class="param__k" data-page-node-id="cA9l2c7LJIpTUw8Ttfdcq1">渲染进度</span><span class="param__v" id="wProgNum" data-page-node-id="c4prhJBrSjZH4lzJ3X5qgF">待机</span>
+            </div>
+            <div class="progress" data-page-node-id="CA6kY51Ga32fN7Oeo2ydiG"><div class="progress__bar" id="wProg" style="width: 0%" data-page-node-id="PKr4ObCGzq7MnGGuwjH7eP"></div></div>
+          </div>
+
+          <button class="btn btn--primary btn--block btn--lg" type="button" id="renderBtn" data-page-node-id="pxE8m0t22YGU4QLjC9F1Ja">开始生成</button>
+          <p class="param__h" style="text-align:center;" data-page-node-id="0dU1hPAw7XW3COjEAACaY9">全程本机计算 · 不上传任何素材</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false" data-page-node-id="foVNCKC7rRr9kUdmAEBurp"></div>
+<script src="scripts/main.js"></script>
+</body>
+</html>
