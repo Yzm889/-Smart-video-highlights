@@ -1064,3 +1064,718 @@ header .htools { display: flex; align-items: center; gap: 14px; }
 /* 时间轴色块删除按钮：悬停显示 */
 .tl-vseg:hover .tl-seg-del { display: block !important; }
 .tl-seg-del:hover { background: rgba(239,68,68,1) !important; transform: scale(1.15); }
+
+/* ============================================================================
+   工业 / 仪表盘感 皮肤层（Industrial Instrument Panel Overlay）
+   ----------------------------------------------------------------------------
+   实现原则：**只覆盖，不删除**。上面 1000+ 行原有规则与选择器全部保留，
+   本层通过三种手段换肤，因此不存在"改坏功能"的风险：
+     1) 变量重赋值 —— 原规则里大量引用 var(--accent)/var(--radius)，换值即换肤
+     2) 硬编码接管 —— 只对写死色值的选择器补写同特异性规则（位置在后者胜）
+     3) 属性选择器 + !important —— 接管 HTML/JS 里的 inline style（CSS 层唯一能压过它的手段）
+   配色：冷调近黑机身 + 发丝描边 + 等宽数字 + 唯一强调色琥珀 #ff8a1f
+   ============================================================================ */
+
+/* ---------- 0. 补齐从未定义却被引用变量（原文件遗留隐患，顺手修掉） ----------
+   原 CSS 中 --bg / --border / --text / --accent-bg 四处变量从未在 :root 声明，
+   导致 .flow-nav / .flow-step / .tts-confirm-panel 等规则的边框颜色取不到值。 */
+:root {
+  --bg:           #0c0e11;
+  --border:       #263039;
+  --text:         #e9eef4;
+  --accent-bg:    rgba(255, 138, 31, .12);
+
+  /* 工业扩展令牌：新写的规则一律引用这些，避免再散落硬编码 */
+  --fc-bg:        #0c0e11;
+  --fc-bg-raise:  #10141a;
+  --fc-surface:   #151a21;
+  --fc-surface-2: #1c222b;
+  --fc-text:      #e9eef4;
+  --fc-muted:     #93a1b1;
+  --fc-dim:       #7b8896;
+  --fc-accent:    #ff8a1f;
+  --fc-accent2:   #6cc4ff;   /* 冷调信息蓝，用于「排队中 / 次要状态」 */
+  --fc-accent3:   #57d9a3;   /* 完成态薄荷绿 */
+  --fc-warn:      #ffc247;
+  --fc-err:       #ff6b5a;
+  --fc-line:      #263039;
+  --fc-line-soft: #1b2129;
+  --fc-mono: "IBM Plex Mono", "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --fc-display: "Bebas Neue", "Oswald", "Noto Sans SC", sans-serif;
+  --fc-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --fc-inset: inset 0 1px 0 rgba(255,255,255,.03), inset 0 0 20px rgba(0,0,0,.4);
+}
+
+/* ---------- 1. 令牌重赋值：一次替换，全站跟着变 ----------
+   --radius 从 16px → 3px 是全站工业感的最大杠杆：所有 .card/.item/.mres/#drop
+   引用的都是这个变量，改完立刻从"圆润玻璃卡"变成"方角设备面板"。 */
+:root {
+  --bg1: #0c0e11;
+  --bg2: #12161c;
+  --bg3: #0a0d10;
+  --ink: #e9eef4;
+  --muted: #93a1b1;
+  --accent: #ff8a1f;
+  --accent2: #6cc4ff;
+  --accent3: #57d9a3;
+  --card: #151a21;
+  --card-border: #263039;
+  --shadow: 0 24px 64px rgba(0, 0, 0, .54);
+  --shadow-sm: 0 8px 24px rgba(0, 0, 0, .46);
+  --ring: 0 0 0 2px #ff8a1f;
+  --line: rgba(255, 138, 31, .18);
+  --radius: 3px;
+  --radius-sm: 2px;
+  --gold-glow: 0 0 24px rgba(255, 138, 31, .28);
+}
+
+/* ---------- 2. 机身：网格 + 冷光，替代原来的紫色渐变星空 ---------- */
+body {
+  font-family: var(--fc-body);
+  letter-spacing: .01em;
+  background:
+    radial-gradient(58rem 38rem at 8% -8%, rgba(255, 138, 31, .13), transparent 60%),
+    radial-gradient(48rem 40rem at 100% 2%, rgba(108, 196, 255, .08), transparent 56%),
+    linear-gradient(180deg, var(--bg1), var(--bg2) 46%, var(--bg3));
+}
+/* 40px 工程网格：极低对比，只提供 machined 质感，不抢内容 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, .022) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, .022) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(120rem 80rem at 50% 0%, #000 18%, transparent 76%);
+  -webkit-mask-image: radial-gradient(120rem 80rem at 50% 0%, #000 18%, transparent 76%);
+}
+/* 噪点：胶片颗粒感，压住大面积纯色的塑料感 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: .032;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------- 3. Header：去掉金色渐变字，改成设备铭牌 ---------- */
+header {
+  background: rgba(12, 14, 17, .88);
+  border-bottom: 1px solid var(--fc-line);
+  position: relative;
+}
+/* 危险条纹：整站记忆点，只在这一处出现，不做泛滥使用 */
+header::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -3px;
+  height: 3px;
+  pointer-events: none;
+  background: repeating-linear-gradient(-45deg, var(--fc-accent) 0 9px, #0c0e11 9px 18px);
+  opacity: .8;
+}
+header h1 {
+  background: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  color: var(--fc-text);
+  font-size: 19px;
+  font-weight: 900;
+  letter-spacing: .16em;
+}
+/* 品牌名右侧的琥珀发丝线，替代原来的渐变描边 */
+header .brand::after {
+  content: "";
+  width: 34px;
+  height: 2px;
+  margin-left: 2px;
+  background: var(--fc-accent);
+  align-self: center;
+}
+header .sub, #srv {
+  font-family: var(--fc-mono);
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--fc-dim);
+}
+.theme-toggle {
+  border: 1px solid var(--fc-line);
+  background: var(--fc-surface-2);
+  color: var(--fc-muted);
+  border-radius: 2px;
+  padding: 6px 13px;
+  font-family: var(--fc-mono);
+  font-size: 11px;
+  letter-spacing: .1em;
+}
+.theme-toggle:hover { background: var(--fc-surface-3, #232a34); color: var(--fc-accent); }
+
+/* ---------- 4. 卡片 / 面板：玻璃拟态 → 不透明设备面板 + 发丝描边 ---------- */
+.card {
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.card:hover { box-shadow: var(--shadow-sm); border-color: #38424e; }
+.card h2 {
+  font-family: var(--fc-body);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: var(--fc-text);
+}
+.card h2::after { background: linear-gradient(90deg, rgba(255,138,31,.45), transparent); }
+
+.sidenav {
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-line);
+  border-radius: var(--radius);
+}
+.sidenav .navtitle {
+  font-family: var(--fc-mono);
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--fc-dim);
+}
+.navlink {
+  border-radius: 2px;
+  color: var(--fc-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.navlink:hover { background: rgba(255, 138, 31, .08); color: var(--fc-text); transform: none; }
+.navlink.active {
+  background: rgba(255, 138, 31, .1);
+  color: var(--fc-accent);
+  box-shadow: inset 0 0 0 1px rgba(255, 138, 31, .28), inset 3px 0 0 var(--fc-accent);
+}
+.navtop {
+  border: 1px solid var(--fc-line);
+  background: var(--fc-surface-2);
+  color: var(--fc-dim);
+  border-radius: 2px;
+  font-family: var(--fc-mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+.navtop:hover { background: rgba(255, 138, 31, .08); color: var(--fc-accent); }
+.navtoggle {
+  border: 1px solid var(--fc-line);
+  background: var(--fc-surface-2);
+  color: var(--fc-muted);
+  border-radius: 2px;
+}
+.navtoggle:hover { background: var(--fc-surface-2); color: var(--fc-accent); border-color: var(--fc-accent); }
+
+/* ---------- 5. 拖拽区：虚线保留，但改用发丝 + 斜纹底 ---------- */
+#drop, .musdrop {
+  border: 1px dashed #38424e;
+  border-radius: var(--radius);
+  color: var(--fc-muted);
+  background:
+    repeating-linear-gradient(45deg, transparent 0 12px, rgba(255, 255, 255, .012) 12px 24px),
+    var(--fc-bg-raise);
+  padding: 34px 24px;
+}
+#drop:hover, .musdrop:hover { border-color: var(--fc-accent); background: rgba(255, 138, 31, .05); color: var(--fc-text); }
+#drop.dragover, .musdrop.over {
+  border-color: var(--fc-accent);
+  border-style: solid;
+  background: rgba(255, 138, 31, .09);
+  box-shadow: inset 0 0 0 1px rgba(255, 138, 31, .35);
+  transform: none;
+}
+#drop b { color: var(--fc-text); }
+
+/* ---------- 6. 输入控件：内嵌屏凹陷感 ---------- */
+select, input[type=number], input[type=text], input[type=password], input[type=search], textarea {
+  border: 1px solid var(--fc-line);
+  border-radius: 2px;
+  background: var(--fc-surface-2);
+  color: var(--fc-text);
+  box-shadow: var(--fc-inset);
+}
+select:focus, input:focus {
+  border-color: var(--fc-accent);
+  box-shadow: 0 0 0 1px var(--fc-accent);
+  background: var(--fc-surface);
+}
+select option { background: var(--fc-surface-2); color: var(--fc-text); }
+.field label {
+  font-family: var(--fc-mono);
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--fc-dim);
+  font-weight: 500;
+}
+.hint { color: var(--fc-dim); font-size: 12px; }
+
+/* ---------- 7. 按钮：去掉圆润渐变，改为带刻痕的实心块 ---------- */
+.btn {
+  border: 1px solid var(--fc-accent);
+  border-radius: 2px;
+  padding: 10px 16px;
+  color: #0c0e11;
+  background: var(--fc-accent);
+  box-shadow: none;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.btn:hover { transform: none; background: #ffa03d; border-color: #ffa03d; box-shadow: 0 6px 18px -10px rgba(255, 138, 31, .7); }
+.btn:active { transform: translateY(1px); }
+.btn.mini { padding: 6px 11px; border-radius: 2px; }
+.btn.ghost {
+  background: var(--fc-surface-2);
+  color: var(--fc-muted);
+  border: 1px solid var(--fc-line);
+  box-shadow: none;
+}
+.btn.ghost:hover { background: #232a34; border-color: var(--fc-accent); color: var(--fc-accent); }
+.btn.danger { background: rgba(255, 107, 90, .1); color: #ff8c7d; border: 1px solid rgba(255, 107, 90, .3); }
+.btn.danger:hover { background: rgba(255, 107, 90, .18); border-color: rgba(255, 107, 90, .5); }
+.btn-secondary { border-radius: 2px; }
+
+/* 主 CTA：保留大尺寸，改成带 STRIPE 扫光的实心琥珀 */
+#go {
+  background: var(--fc-accent);
+  border: 1px solid var(--fc-accent);
+  border-radius: 2px;
+  color: #0c0e11;
+  font-weight: 800;
+  letter-spacing: .04em;
+  box-shadow: 0 12px 30px -14px rgba(255, 138, 31, .8);
+}
+#go:hover { background: #ffa03d; background-position: 0 0; transform: none; box-shadow: 0 16px 34px -14px rgba(255, 138, 31, .9); }
+
+/* ---------- 8. 步骤条 / 流程导轨：胶囊 → 带节点的导轨 ---------- */
+.topnav {
+  background: rgba(12, 14, 17, .9);
+  border-bottom: 1px solid var(--fc-line);
+  padding: 7px 22px;
+}
+.stepbtn {
+  border-radius: 2px;
+  border: 1px solid var(--fc-line);
+  background: var(--fc-surface);
+  color: var(--fc-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 14px;
+}
+.stepbtn:hover { color: var(--fc-accent); border-color: var(--fc-accent); }
+.stepbtn.active {
+  background: var(--fc-accent);
+  border-color: var(--fc-accent);
+  color: #0c0e11;
+  box-shadow: none;
+  font-weight: 800;
+}
+
+/* 自上而下的流程条（flow-nav）：节点做成方形刻度块 */
+.flow-nav { background: var(--fc-bg-raise); border-bottom: 1px solid var(--fc-line); }
+.flow-step .flow-num {
+  border-radius: 2px;
+  background: var(--fc-surface-2);
+  border: 1px solid var(--fc-line);
+  color: var(--fc-dim);
+  font-family: var(--fc-mono);
+  font-size: 12px;
+}
+.flow-step .flow-label { font-size: 11.5px; color: var(--fc-dim); }
+.flow-step.active .flow-num { background: var(--fc-accent); border-color: var(--fc-accent); color: #0c0e11; }
+.flow-step.active .flow-label { color: var(--fc-accent); }
+.flow-step.done .flow-num { background: var(--fc-accent3); border-color: var(--fc-accent3); color: #0c0e11; }
+.flow-step.done .flow-label { color: var(--fc-accent3); }
+.flow-line { background: var(--fc-line); height: 1px; }
+.flow-line.done { background: var(--fc-accent3); }
+.flow-more-btn { background: var(--fc-surface); border: 1px solid var(--fc-line); color: var(--fc-text); border-radius: 2px; }
+.flow-more-btn:hover { border-color: var(--fc-accent); color: var(--fc-accent); }
+.flow-more-menu { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; box-shadow: var(--shadow-sm); }
+.flow-more-menu button { color: var(--fc-text); border-radius: 2px; }
+.flow-more-menu button:hover { background: var(--fc-surface-2); color: var(--fc-accent); }
+.next-step-btn { background: var(--fc-accent); color: #0c0e11; border-radius: 2px; font-weight: 700; }
+
+/* ---------- 9. 列表项 / 结果卡：方角 + 左侧色条 ---------- */
+.item, .mres {
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-line-soft);
+  border-radius: 2px;
+  box-shadow: none;
+}
+.item .thumb { border-radius: 2px; background: var(--fc-surface-2); }
+.item .kind, .mres.done { color: var(--fc-accent); }
+.mres:hover { transform: none; border-color: var(--fc-accent); box-shadow: none; background: var(--fc-surface-2); }
+.mres.done { border-color: rgba(255, 138, 31, .35); background: rgba(255, 138, 31, .06); }
+.item .name, .mres .t { color: var(--fc-text); }
+.item .lbl, .mres .m { font-family: var(--fc-mono); font-size: 11px; color: var(--fc-dim); }
+
+/* ---------- 10. 进度条：改成带刻度的分段条 ---------- */
+.bar { background: var(--fc-surface-2); border-radius: 0; border: 1px solid var(--fc-line); height: 10px; box-shadow: var(--fc-inset); }
+.bar > i {
+  border-radius: 0;
+  background: repeating-linear-gradient(90deg, var(--fc-accent) 0 8px, #e0760f 8px 12px);
+}
+.gprog {
+  background: rgba(21, 26, 33, .96);
+  border: 1px solid var(--fc-line);
+  border-radius: 2px;
+  box-shadow: var(--shadow);
+}
+.gprog-pct { color: var(--fc-accent); font-family: var(--fc-mono); }
+.gprog-meta { font-family: var(--fc-mono); color: var(--fc-dim); }
+.gprog-bar { background: var(--fc-surface-2); border-radius: 0; border: 1px solid var(--fc-line); }
+.gprog-bar > i {
+  border-radius: 0;
+  background: repeating-linear-gradient(90deg, var(--fc-accent) 0 8px, #e0760f 8px 12px);
+  box-shadow: 0 0 12px rgba(255, 138, 31, .35);
+}
+.gprog-bar > i::after { border-radius: 0; }
+.tts-installing { color: var(--fc-accent) !important; }
+
+/* ---------- 11. 浮动预览与回到顶部 ---------- */
+.pvcard { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; box-shadow: var(--shadow); }
+.pvhead { background: var(--fc-accent); color: #0c0e11; font-family: var(--fc-mono); font-size: 12px; letter-spacing: .08em; }
+.pvclose { background: rgba(0, 0, 0, .22); color: #0c0e11; border-radius: 2px; }
+.scrollTopBtn {
+  background: var(--fc-accent);
+  color: #0c0e11;
+  border-radius: 2px;
+  box-shadow: 0 10px 26px -10px rgba(255, 138, 31, .7);
+}
+.scrollTopBtn:hover { transform: none; background: #ffa03d; }
+
+/* ---------- 12. Toast：改方角 + 左侧色条（语义色保留，工业设备也需要警示色） ---------- */
+.toast {
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-line);
+  border-radius: 2px;
+  color: var(--fc-text);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+}
+.toast-info { border-left: 3px solid #6cc4ff; }
+.toast-success { border-left: 3px solid #57d9a3; }
+.toast-warning { border-left: 3px solid #ffc247; background: rgba(255, 194, 71, .07); }
+.toast-error { border-left: 3px solid #ff6b5a; background: rgba(255, 107, 90, .09); }
+.toast-x { color: var(--fc-dim); border-radius: 2px; }
+.toast-x:hover { color: var(--fc-text); background: var(--fc-surface-2); }
+
+/* ---------- 13. AI 状态条 / 徽章：胶囊 → 方标牌 ---------- */
+.aibar { background: rgba(12, 14, 17, .9); border-bottom: 1px solid var(--fc-line); }
+.aibar .ailabel { font-family: var(--fc-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--fc-dim); }
+.aichip { border-radius: 2px; font-family: var(--fc-mono); font-size: 11px; letter-spacing: .06em; }
+.aichip:hover { transform: none; box-shadow: none; }
+.aichip.ok { background: rgba(87, 217, 163, .12); color: #57d9a3; border-color: rgba(87, 217, 163, .32); }
+.aichip.no { background: rgba(255, 107, 90, .1); color: #ff8c7d; border-color: rgba(255, 107, 90, .28); }
+.aibar .ailink { color: var(--fc-accent); }
+
+.modebadge { border-radius: 2px; font-family: var(--fc-mono); font-size: 11px; letter-spacing: .06em; }
+.modebadge.free { background: rgba(255, 138, 31, .12); color: var(--fc-accent); border: 1px solid rgba(255, 138, 31, .3); }
+.modebadge.local { background: rgba(108, 196, 255, .1); color: #8cd4ff; border: 1px solid rgba(108, 196, 255, .28); }
+.modebadge.ai { background: rgba(87, 217, 163, .1); color: #57d9a3; border: 1px solid rgba(87, 217, 163, .28); }
+.modebadge.vlm { background: rgba(192, 132, 252, .1); color: #c9a2ff; border: 1px solid rgba(192, 132, 252, .28); }
+
+.cmdbox { background: #0a0d10; color: #57d9a3; border: 1px solid var(--fc-line); border-radius: 2px; font-family: var(--fc-mono); }
+
+/* ---------- 14. 弹窗 ---------- */
+.modal { background: rgba(6, 8, 10, .78); backdrop-filter: blur(6px); }
+.modal-box { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; box-shadow: var(--shadow); }
+.modal-title { color: #ff8c7d; letter-spacing: .04em; }
+.modal-msg b { color: var(--fc-accent); }
+
+/* ---------- 15. 引导卡 / 告警块 / 气泡 ---------- */
+.guide { background: var(--fc-bg-raise); border-color: var(--fc-line); }
+.guide h2, .guide-path .gp-title { color: var(--fc-accent); }
+.guide-path { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; }
+.guide details.step, .guide .guide-collapse { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; }
+.guide details.step > summary, .guide .guide-collapse > summary { color: var(--fc-text); }
+.guide details.step > summary .num { background: var(--fc-accent); color: #0c0e11; border-radius: 2px; width: 20px; height: 20px; }
+.guide .codebox, .guide .mirroritem { background: #0a0d10; border: 1px solid var(--fc-line); border-radius: 2px; color: #e2e8f0; }
+.guide .codebox .cp { background: var(--fc-accent); color: #0c0e11; }
+.guide .ok { color: #57d9a3; }
+.guide .mirroritem.recommend { box-shadow: inset 0 0 0 2px var(--fc-accent); background: rgba(255, 138, 31, .07); }
+.guide .mirroritem .badge.ok { background: #57d9a3; color: #0c0e11; }
+.guide .mirroritem .badge.no { background: #ff6b5a; color: #0c0e11; }
+.guide .mirroritem a.open { color: #57d9a3; border: 1px solid #57d9a3; border-radius: 2px; }
+.guide .hint a, .guide .hint a.open { color: var(--fc-accent); border-radius: 2px; }
+.guide .jump-link { color: #8cd4ff; }
+
+.guide-alert { border: 1px solid rgba(255, 107, 90, .35); border-left: 4px solid #ff6b5a; border-radius: 2px; background: rgba(255, 107, 90, .05); }
+.guide-alert .ga-title { color: #ff8c7d; background: rgba(255, 107, 90, .1); font-family: var(--fc-mono); font-size: 12.5px; letter-spacing: .04em; }
+.guide-alert .ga-prob { color: #ffa79b; }
+.guide-alert .ga-fix { color: #57d9a3; }
+.guide-alert .ga-note { color: #ffc247; }
+.guide-alert .ga-no { color: #ff8c7d; background: rgba(255, 107, 90, .1); border-radius: 2px; }
+.guide-alert .ga-more { color: var(--fc-accent); }
+.guide-alert code { background: #0a0d10; border: 1px solid var(--fc-line); border-radius: 2px; }
+
+.bubble { border: 1px dashed rgba(108, 196, 255, .35); background: rgba(108, 196, 255, .05); border-radius: 2px; }
+.bubble > summary { color: #8cd4ff; }
+.bubble.warn { border-color: rgba(255, 194, 71, .4); background: rgba(255, 194, 71, .06); }
+.bubble.warn > summary { color: #ffc247; }
+.bubble code, .guide-alert code { background: #0a0d10; border: 1px solid var(--fc-line); }
+
+.mode-hint { background: rgba(108, 196, 255, .06); border: 1px solid rgba(108, 196, 255, .22); border-radius: 2px; color: #8cd4ff; }
+.mode-hint .jump-link { color: #8cd4ff; }
+.quick-nav { background: var(--fc-surface); border: 1px dashed var(--fc-line); border-radius: 2px; }
+.quick-nav .qn-label { color: var(--fc-dim); font-family: var(--fc-mono); font-size: 11px; letter-spacing: .1em; }
+
+.partial { background: rgba(255, 138, 31, .05); border: 1px solid rgba(255, 138, 31, .22); border-radius: 2px; }
+.partial .ph { color: var(--fc-accent); font-family: var(--fc-mono); font-size: 12.5px; letter-spacing: .08em; }
+.partial .ptext pre { background: #0a0d10; border: 1px solid var(--fc-line); border-radius: 2px; }
+.partial .pitem { background: var(--fc-surface); border: 1px solid var(--fc-line-soft); border-radius: 2px; }
+.partial .pitem a { color: var(--fc-accent); }
+
+/* ---------- 16. 人机协同 / 时间轴 / 片段列表 ---------- */
+.plot-edit > textarea {
+  border: 1px solid var(--fc-line);
+  border-radius: 2px;
+  background: var(--fc-surface-2);
+  color: var(--fc-text);
+  box-shadow: var(--fc-inset);
+  line-height: 1.75;
+}
+.plot-edit > textarea:focus { box-shadow: 0 0 0 1px var(--fc-accent); }
+.plan-box { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; box-shadow: var(--shadow); }
+.plan-title { color: var(--fc-text); letter-spacing: .04em; }
+.plan-desc, .plan-row .time, .st-size { color: var(--fc-dim); }
+.plan-list { background: #0a0d10; border: 1px solid var(--fc-line); border-radius: 2px; }
+.plan-row { border-bottom: 1px solid var(--fc-line-soft); }
+.plan-row img { border-radius: 2px; background: var(--fc-surface-2); }
+.plan-row input[type=text] { border: 1px solid var(--fc-line); border-radius: 2px; background: var(--fc-surface-2); color: var(--fc-text); }
+.plan-sum { color: var(--fc-accent); font-family: var(--fc-mono); font-size: 11.5px; }
+.plan-timeline { background: var(--fc-surface-2); border: 1px solid var(--fc-line); border-radius: 2px; }
+.tl-bar { background: var(--fc-line); }
+.tl-marker span { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; color: var(--fc-text); font-family: var(--fc-mono); font-size: 10px; }
+.tl-marker b { background: var(--fc-accent); color: #0c0e11; border-radius: 2px; box-shadow: 0 2px 6px rgba(255, 138, 31, .45); }
+.tl-marker.tl-edge span { background: var(--fc-surface-2); color: var(--fc-dim); }
+.plan-addcut input[type=number] { border: 1px solid var(--fc-line); border-radius: 2px; background: var(--fc-surface-2); color: var(--fc-text); }
+.mini-btn { border: 1px solid var(--fc-line); background: var(--fc-surface-2); border-radius: 2px; color: var(--fc-muted); }
+.mini-btn:hover { background: rgba(255, 138, 31, .1); color: var(--fc-accent); border-color: rgba(255, 138, 31, .35); }
+.mini-btn.locked { background: rgba(255, 138, 31, .12); border-color: rgba(255, 138, 31, .4); color: var(--fc-accent); }
+
+.narr-guide { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; }
+.narr-guide code { background: rgba(108, 196, 255, .1); color: #8cd4ff; border-radius: 2px; }
+.narr-guide.ok { border-color: rgba(87, 217, 163, .3); background: rgba(87, 217, 163, .06); color: #57d9a3; }
+.narr-guide.warn { border-color: rgba(255, 194, 71, .3); background: rgba(255, 194, 71, .06); color: #ffc247; }
+.btn2 { background: rgba(108, 196, 255, .1); color: #8cd4ff; border-radius: 2px; }
+
+.st-summary { background: var(--fc-surface); border: 1px solid var(--fc-line); border-radius: 2px; }
+.st-group { border: 1px solid var(--fc-line); border-radius: 2px; }
+.st-group-head { background: var(--fc-surface-2); border-bottom: 1px solid var(--fc-line-soft); }
+.st-group-head b { color: var(--fc-text); }
+.st-badge { border-radius: 2px; font-family: var(--fc-mono); font-size: 11px; }
+.st-keep { background: rgba(108, 196, 255, .1); color: #8cd4ff; }
+.st-safe { background: rgba(87, 217, 163, .1); color: #57d9a3; }
+.st-review { background: rgba(255, 138, 31, .1); color: var(--fc-accent); }
+.st-item { border-bottom: 1px solid var(--fc-line-soft); }
+.st-name { font-family: var(--fc-mono); color: var(--fc-dim); }
+
+.seg-tag { border-radius: 2px; font-family: var(--fc-mono); font-size: 10.5px; letter-spacing: .04em; }
+.tag-main { background: rgba(108, 196, 255, .1); color: #8cd4ff; }
+.tag-key { background: rgba(255, 107, 90, .1); color: #ff8c7d; }
+.tag-fill { background: rgba(255, 255, 255, .04); color: var(--fc-dim); }
+.tag-cut { background: rgba(255, 138, 31, .1); color: var(--fc-accent); }
+
+.taskerr { background: rgba(255, 107, 90, .07); border: 1px solid rgba(255, 107, 90, .25); border-radius: 2px; color: #ffa79b; }
+.taskerr.cancel { background: rgba(255, 194, 71, .06); border-color: rgba(255, 194, 71, .25); color: #ffc247; }
+.taskerr .te-head { color: #ff8c7d; }
+.taskerr.cancel .te-head, .taskerr.cancel .te-tip { color: #ffc247; }
+.taskerr .te-tip { color: #ffa79b; }
+.taskerr .te-stage { color: #ffc247; }
+.taskerr .te-detail > summary { color: #ff8c7d; }
+.taskerr .te-pre { background: #0a0d10; border: 1px solid rgba(255, 107, 90, .2); border-radius: 2px; color: #ffa79b; font-family: var(--fc-mono); }
+
+.credits { background: rgba(87, 217, 163, .05); border: 1px solid rgba(87, 217, 163, .22); border-radius: 2px; }
+.credits .cr-title { color: #57d9a3; }
+.credits .cr-text { background: #0a0d10; border: 1px solid var(--fc-line); border-radius: 2px; font-family: var(--fc-mono); }
+.credits .cr-copy { background: var(--fc-surface-2); }
+
+/* 状态 OK/OK.RUNNING 系列：绿色统一为薄荷，不再是 Material 绿 */
+.task-card { border: 1px solid var(--fc-line); border-radius: 2px; background: var(--fc-surface); }
+.task-card:hover { border-color: var(--fc-accent); }
+.task-card.task-running { border-left: 3px solid var(--fc-accent); }
+.task-card.task-done { border-left: 3px solid #57d9a3; }
+.task-card.task-failed { border-left: 3px solid #ff6b5a; }
+.task-card.task-queued { border-left: 3px solid #6cc4ff; background: rgba(108, 196, 255, .05); }
+.task-id, .task-pct { font-family: var(--fc-mono); color: var(--fc-dim); }
+.task-running .task-status { color: var(--fc-accent); }
+.task-queued .task-status { color: #6cc4ff; }
+.task-done .task-status { color: #57d9a3; }
+.task-failed .task-status { color: #ff6b5a; }
+.task-bar { background: var(--fc-surface-2); border-radius: 0; }
+.task-fill { background: repeating-linear-gradient(90deg, var(--fc-accent) 0 6px, #e0760f 6px 10px); border-radius: 0; }
+.task-queued .task-fill { background: repeating-linear-gradient(90deg, #6cc4ff 0 6px, #4aa8e0 6px 10px); }
+.task-done .task-fill { background: #57d9a3; }
+.task-failed .task-fill { background: #ff6b5a; }
+
+/* ---------- 17. 智能模式卡 ---------- */
+#smartCard { border: 1px solid rgba(255, 138, 31, .3); background: linear-gradient(135deg, rgba(255, 138, 31, .07), var(--fc-surface)); }
+#smartCard h2 { color: var(--fc-accent); }
+#smartDrop { border: 1px dashed rgba(255, 138, 31, .4); background: var(--fc-bg-raise); color: var(--fc-accent); }
+#smartDrop:hover { border-color: var(--fc-accent); background: rgba(255, 138, 31, .07); }
+#smartMovieName { border: 1px solid rgba(255, 138, 31, .28); background: var(--fc-surface-2); color: var(--fc-text); }
+#smartAutoConfig { background: var(--fc-surface-2); border: 1px solid var(--fc-line); color: var(--fc-muted); }
+#smartGo { background: var(--fc-accent); color: #0c0e11; border: 1px solid var(--fc-accent); box-shadow: 0 8px 24px -12px rgba(255, 138, 31, .8); }
+#smartGo:hover { transform: none; background: #ffa03d; box-shadow: 0 12px 30px -12px rgba(255, 138, 31, .9); }
+
+/* ---------- 18. 素材库标签 / 收藏星 ---------- */
+.mlib-tag, .mlib-tag-btn { border-radius: 2px; font-family: var(--fc-mono); font-size: 10.5px; }
+.mlib-tag-add { border-radius: 2px; color: var(--fc-dim); border-color: var(--fc-line); }
+.mlib-tag-add:hover { color: var(--fc-accent); border-color: var(--fc-accent); }
+.mlib-star.on { color: var(--fc-accent); }
+.mlib-star { color: #4a5663; }
+
+/* ---------- 19. 滚动条：方角 + 琥珀滑块 ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--fc-bg); }
+::-webkit-scrollbar-thumb { background: #38424e; border: 3px solid var(--fc-bg); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--fc-accent); }
+
+/* ---------- 20. 接管 HTML/JS 里的 inline 颜色 ----------
+   原 HTML 有 60 处 `border:1px solid #ddd` 之类的行内浅灰边框，CSS 层优先级压不过，
+   只能用「属性选择器 + !important」精准接管：只改颜色，保留原边框的粗细与样式。 */
+[style*="1px solid #ddd"] { border-color: var(--fc-line) !important; }
+[style*="1px dashed #ddd"] { border-color: #2b333d !important; }
+[style*="border:1px solid #ddd"] { border-color: var(--fc-line) !important; }
+[style*="background:#e3f2fd"] { background: rgba(108, 196, 255, .07) !important; border-color: rgba(108, 196, 255, .3) !important; }
+[style*="background:#e8f0fe"] { background: rgba(108, 196, 255, .07) !important; }
+[style*="border-radius:12px"] { border-radius: 2px !important; }
+[style*="border-radius:10px"] { border-radius: 2px !important; }
+[style*="border-radius:8px"] { border-radius: 2px !important; }
+
+/* ---------- 21. 焦点可见 + 降级动效 ---------- */
+:focus-visible { outline: 2px solid var(--fc-accent); outline-offset: 2px; }
+::selection { background: var(--fc-accent); color: #0c0e11; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card, .toast, .pvcard, .adjust-tab-content { animation: none !important; }
+  .bar > i, .gprog-bar > i { animation: none !important; }
+  .stepbtn, .btn, .card, .gprog { transition-duration: .001ms !important; }
+}
+
+/* ---------- 21.5 补齐原本缺样式的关键类 ----------
+   审计发现 .btn-primary（"确认调整，开始合成视频"主 CTA）在原 CSS 中从未定义，
+   导致它一直以浏览器默认按钮外观出现。此处补齐，并按工业主按钮规格设计。
+   .card-title / .card-h 同理，原本是裸容器，补铭牌式标题排版。 */
+.btn-primary {
+  border: 1px solid var(--fc-accent);
+  border-radius: 2px;
+  padding: 12px 22px;
+  color: #0c0e11;
+  background: var(--fc-accent);
+  font-family: var(--fc-body);
+  font-size: 14.5px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  cursor: pointer;
+  transition: background var(--dur-fast, 160ms) ease-out;
+}
+.btn-primary:hover { background: #ffa03d; }
+.btn-primary:active { transform: translateY(1px); }
+.btn-primary:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+
+.card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  color: var(--fc-text);
+}
+.card-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- 22. 日间模式：改为「工业图纸」白，不再是米黄浅色 ---------- */
+[data-theme="light"] {
+  --bg1: #eceef1;
+  --bg2: #e2e6ea;
+  --bg3: #f4f6f8;
+  --ink: #16202b;
+  --muted: #55636f;
+  --accent: #c25e00;
+  --accent2: #1f6fb2;
+  --accent3: #0f8a63;
+  --card: #ffffff;
+  --card-border: #c3cbd3;
+  --shadow: 0 18px 45px -18px rgba(16, 24, 34, .22);
+  --shadow-sm: 0 6px 16px -10px rgba(16, 24, 34, .18);
+  --ring: 0 0 0 2px #c25e00;
+  --line: rgba(194, 94, 0, .22);
+  /* 同步补齐 dark 侧新增的工业令牌，日间模式必须跟着走 */
+  --bg: #eceef1;
+  --border: #c3cbd3;
+  --text: #16202b;
+  --accent-bg: rgba(194, 94, 0, .08);
+  --fc-bg: #eceef1;
+  --fc-bg-raise: #e2e6ea;
+  --fc-surface: #ffffff;
+  --fc-surface-2: #f2f5f7;
+  --fc-text: #16202b;
+  --fc-muted: #55636f;
+  --fc-dim: #6b7986;
+  --fc-accent: #c25e00;
+  --fc-accent2: #1f6fb2;
+  --fc-accent3: #0f8a63;
+  --fc-warn: #a35c00;
+  --fc-err: #b91a0c;
+  --fc-line: #c3cbd3;
+  --fc-line-soft: #d8dee4;
+  --fc-inset: inset 0 1px 2px rgba(16, 24, 34, .06);
+}
+[data-theme="light"] body::before { opacity: .6; }
+[data-theme="light"] body::after { opacity: .02; mix-blend-mode: multiply; }
+[data-theme="light"] body { background: linear-gradient(180deg, var(--bg1), var(--bg2) 46%, var(--bg3)); }
+[data-theme="light"] header { background: rgba(255, 255, 255, .92); border-bottom: 1px solid #c3cbd3; }
+[data-theme="light"] header h1 { color: #16202b; background: none; }
+[data-theme="light"] header .sub, [data-theme="light"] #srv { color: #6b7986; }
+[data-theme="light"] .btn, [data-theme="light"] #go, [data-theme="light"] #smartGo,
+[data-theme="light"] .stepbtn.active, [data-theme="light"] .next-step-btn {
+  color: #fff !important;
+  background: var(--fc-accent) !important;
+  border-color: var(--fc-accent) !important;
+}
+[data-theme="light"] .btn { color: #fff !important; }
+[data-theme="light"] .btn.ghost { background: var(--fc-surface-2) !important; color: var(--fc-muted) !important; border-color: var(--fc-line) !important; }
+[data-theme="light"] .btn.ghost:hover { color: var(--fc-accent) !important; border-color: var(--fc-accent) !important; background: rgba(194, 94, 0, .05) !important; }
+[data-theme="light"] .btn.danger { background: rgba(193, 26, 12, .06) !important; color: #b91a0c !important; border-color: rgba(193, 26, 12, .25) !important; }
+[data-theme="light"] .card, [data-theme="light"] .sidenav { background: #fff; border-color: #c3cbd3; }
+[data-theme="light"] .item, [data-theme="light"] .mres { background: var(--fc-surface-2); border-color: var(--fc-line-soft); }
+[data-theme="light"] select, [data-theme="light"] input[type=number], [data-theme="light"] input[type=text],
+[data-theme="light"] input[type=password], [data-theme="light"] input[type=search], [data-theme="light"] .plot-edit > textarea {
+  background: #fff; border-color: var(--fc-line); color: var(--fc-text); box-shadow: none;
+}
+[data-theme="light"] select option { background: #fff; color: var(--fc-text); }
+[data-theme="light"] #drop, [data-theme="light"] .musdrop { border: 1px dashed #9aa5b0; background: var(--fc-surface-2); color: var(--fc-muted); }
+[data-theme="light"] .navlink, [data-theme="light"] .stepbtn, [data-theme="light"] .flow-more-btn { color: var(--fc-muted); background: var(--fc-surface-2); border-color: var(--fc-line); }
+[data-theme="light"] .navlink.active, [data-theme="light"] .stepbtn.active { color: #fff !important; }
+[data-theme="light"] .aibar, [data-theme="light"] .topnav, [data-theme="light"] .flow-nav { background: rgba(255, 255, 255, .92); border-bottom-color: var(--fc-line); }
+[data-theme="light"] .aichip.ok { background: rgba(15, 138, 99, .1); color: #0f8a63; border-color: rgba(15, 138, 99, .28); }
+[data-theme="light"] .aichip.no { background: rgba(193, 26, 12, .06); color: #b91a0c; border-color: rgba(193, 26, 12, .22); }
+[data-theme="light"] .cmdbox, [data-theme="light"] .credits .cr-text, [data-theme="light"] .taskerr .te-pre,
+[data-theme="light"] .partial .ptext pre, [data-theme="light"] .guide .codebox, [data-theme="light"] .guide .mirroritem {
+  background: #16202b; color: #d5dde5; border-color: #2b3947;
+}
+[data-theme="light"] .modal-box, [data-theme="light"] .plan-box { background: #fff; border-color: var(--fc-line); }
+[data-theme="light"] .pvhead { color: #fff !important; }
+[data-theme="light"] .pvclose { color: #fff !important; background: rgba(0, 0, 0, .18) !important; }
+[data-theme="light"] .scrollTopBtn { color: #fff !important; }
+[data-theme="light"] ::-webkit-scrollbar-track { background: #eceff2; }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: #a8b2bb; border-color: #eceff2; }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: var(--fc-accent); }
+[data-theme="light"] .theme-toggle { background: var(--fc-surface-2); color: var(--fc-muted); border-color: var(--fc-line); }
+[data-theme="light"] .btn-primary { color: #fff !important; background: var(--fc-accent) !important; border-color: var(--fc-accent) !important; }
+[data-theme="light"] .card-title { color: var(--fc-text); }
+[data-theme="light"] [style*="1px solid #ddd"] { border-color: var(--fc-line) !important; }
+[data-theme="light"] [style*="1px dashed #ddd"] { border-color: var(--fc-line-soft) !important; }

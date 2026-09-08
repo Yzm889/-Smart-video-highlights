@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>一帧成片 · FrameCut</title>
-<link rel="stylesheet" href="/static/style.css?v=13">
+<!-- 字体：Bebas Neue（铭牌展示字）+ IBM Plex Mono（读数与标签，等宽不跳动）+ Noto Sans SC（中文正文）
+     display=swap 保证离线或加载慢时不阻塞渲染，回退到 PingFang / 微软雅黑 -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
 <header>
@@ -634,7 +639,14 @@
       <span id="adjustVideoTime" style="font-size:12px;color:var(--muted);font-family:monospace">00:00 / 00:00</span>
     </div>
     <video id="adjGlobalVideo" style="width:100%;max-height:360px;border-radius:8px;background:#000" playsinline></video>
-    <audio id="adjGlobalAudio" preload="auto" style="width:100%;margin-top:6px;height:28px" controls></audio>
+    <div style="display:flex;gap:12px;margin-top:8px;align-items:center;flex-wrap:wrap">
+      <audio id="adjGlobalAudio" preload="auto" style="flex:1;min-width:200px;height:28px" controls></audio>
+      <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)" title="解说配音音量">
+        <span>🎙️</span>
+        <input type="range" id="adjGlobalAudVol" min="0" max="100" value="100" style="width:80px" oninput="setGlobalAudVol(this.value)">
+        <span id="adjGlobalAudVolVal" style="min-width:30px;font-family:monospace">100%</span>
+      </div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
       <button class="btn-secondary" id="adjPlayBtn" style="padding:6px 16px;font-size:13px">▶️ 播放</button>
       <span id="adjustVideoHint" style="font-size:12px;color:var(--muted)">点击时间轴任意位置跳转，拖拽片段边缘调整画面范围</span>
@@ -1161,7 +1173,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=32"></script>
+<script src="/static/app.js?v=33"></script>
 </body>
 </html>
 

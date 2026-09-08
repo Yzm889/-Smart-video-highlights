@@ -2506,6 +2506,7 @@ async function runInstruct(){
 }
 function pollInstruct(runid){
   return new Promise(resolve => {
+    const _instT0 = Date.now();
     let _errs = 0;   // 连续失败计数：服务重启/断网时明确报错，不永久转圈
     _currentRunid = runid; const cb=$('instructCancel'); if(cb) cb.style.display='';
     const iv = setInterval(() => {
@@ -2536,7 +2537,7 @@ function pollInstruct(runid){
           $('instructDiag').textContent = txt;
           resolve(); return;
         }
-        $('instructStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%';
+        if(!_stopFlag) $('instructStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%'+_formatETA(Math.round((Date.now()-_instT0)/1000), p.pct);
       }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('instructBar').style.display = 'none'; _currentRunid=null; if(cb) cb.style.display='none'; $('instructStatus').textContent = '❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
     setTimeout(() => { clearInterval(iv); _currentRunid=null; if(cb) cb.style.display='none'; $('instructStatus').textContent = '⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);
@@ -2722,7 +2723,7 @@ function _pollPlan(runid, type){
         }
         if(p.error){ showTaskError(st, p.error, p); clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; done(); resolve(); return; }
         if(p.done){ showTaskError(st, p.error||'分析失败', p); clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; done(); resolve(); return; }
-        if(!_stopFlag) st.textContent=(p.phase||'分析中')+'… '+(p.pct||0)+'%';
+        if(!_stopFlag) st.textContent=(p.phase||'分析中')+'… '+(p.pct||0)+'%'+_formatETA(Math.round((Date.now()-_planT0)/1000), p.pct);
       }).catch(()=>{ if(++_errs>=8){ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; st.textContent='❌ 与服务失去连接（服务可能已重启），请重新分析'; done(); resolve(); } });
     },400);
     setTimeout(()=>{ clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; st.textContent='⚠️ 分析超时未返回（长视频解说分析可能需要 30 分钟以上），请稍后在⑨记录查看或重试'; done(); resolve(); }, 3600000);
@@ -3360,9 +3361,10 @@ let SMART_VIDEO = null;
   if(!drop || !fi) return;
   drop.addEventListener('click', () => fi.click());
   fi.addEventListener('change', e => { if(fi.files[0]) handleSmartVideo(fi.files[0]); fi.value=''; });
-  drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background='#e8f5e9'; });
-  drop.addEventListener('dragleave', () => drop.style.background='#fff');
-  drop.addEventListener('drop', e => { e.preventDefault(); drop.style.background='#fff'; if(e.dataTransfer.files[0]) handleSmartVideo(e.dataTransfer.files[0]); });
+  // 拖拽结束必须清空 inline 背景，交还给 CSS；原先写死 '#fff' 会在深色主题下留下永久白块
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background='rgba(255,138,31,0.09)'; });
+  drop.addEventListener('dragleave', () => drop.style.background='');
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.style.background=''; if(e.dataTransfer.files[0]) handleSmartVideo(e.dataTransfer.files[0]); });
 })();
 
 function handleSmartVideo(file){
@@ -3441,6 +3443,7 @@ async function smartGenerate(){
 
 function pollSmart(runid){
   return new Promise(resolve => {
+    const _smartT0 = Date.now();
     let _errs = 0;
     _stopFlag = false;
     _currentRunid = runid;
@@ -3463,10 +3466,10 @@ function pollSmart(runid){
           }
           resolve(); return;
         }
-        if(!_stopFlag) $('smartStatus').textContent = (p.phase||'处理中') + '… ' + (p.pct||0) + '%';
-      }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('smartBar').style.display='none'; $('smartStatus').textContent='❌ 与服务失去连接'; resolve(); } });
+        if(!_stopFlag) $('smartStatus').textContent = (p.phase||'处理中') + '… ' + (p.pct||0) + '%'+_formatETA(Math.round((Date.now()-_smartT0)/1000), p.pct);
+      }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('smartBar').style.display='none'; _currentRunid=null; _stopFlag=false; $('smartStatus').textContent='❌ 与服务失去连接'; resolve(); } });
     }, 400);
-    setTimeout(() => { clearInterval(iv); $('smartStatus').textContent='⚠️ 超时'; resolve(); }, 1800000);
+    setTimeout(() => { clearInterval(iv); _currentRunid=null; _stopFlag=false; $('smartStatus').textContent='⚠️ 超时'; resolve(); }, 1800000);
   });
 }
 
@@ -3849,7 +3852,7 @@ function renderAdjustPanel(ttsList, runDir, mode, script){
     html += '</div>';
     html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
     html += '<audio controls preload="auto" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
-    html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
+    html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+',this)">🔄 重生成</button>';
     html += '</div>';
     // 原视频音量控制
     var origVol = (item.orig_volume !== undefined) ? item.orig_volume : 0;
@@ -4504,19 +4507,20 @@ function nextAdjustSegment(){
   if(hint) hint.textContent = '🎬 第'+(_selectedSeg+1)+'/'+_adjustState.items.length+'段';
 }
 
+// 设置全局预览音频音量
+function setGlobalAudVol(val){
+  var el = document.getElementById('adjGlobalAudVolVal');
+  if(el) el.textContent = val + '%';
+  var audio = document.getElementById('adjGlobalAudio');
+  if(audio) audio.volume = val / 100;
+}
+
 // 设置配音音量（预览时实时生效）
 function setNarrationVolume(idx, val){
   var el = document.getElementById('adjAudVolVal'+idx);
   if(el) el.textContent = val + '%';
   var audio = document.getElementById('adjAudio'+idx);
   if(audio) audio.volume = val / 100;
-}
-
-// 设置原片声音音量（预览时实时生效）
-function setOrigVolume(idx, val){
-  var el = document.getElementById('adjOrigVolVal'+idx);
-  if(el) el.textContent = val + '%';
-  _adjustState.items[idx].orig_volume = parseInt(val);
 }
 
 function fmtTime(s){
@@ -5057,11 +5061,11 @@ function setOrigVolume(idx, val){
   if(typeof scheduleAutoSave === 'function') scheduleAutoSave();
 }
 
-async function regenSingleTts(idx){
+async function regenSingleTts(idx, btnEl){
   const text = document.getElementById('adjText'+idx).value.trim();
   if(!text){ toast('解说词不能为空','warning'); return; }
   const statusEl = document.getElementById('adjStatus'+idx);
-  const btn = event.target;
+  const btn = btnEl || event?.target || document.querySelector('button[onclick*="regenSingleTts('+idx+')"]');
   btn.disabled = true; btn.textContent = '生成中…';
   statusEl.style.display = 'block'; statusEl.style.color = 'var(--muted)'; statusEl.textContent = '正在生成…';
   try{
@@ -5216,7 +5220,7 @@ function _rerenderAdjustList(){
       html += '<div id="adjRecommend'+idx+'" style="margin-top:6px;display:none"></div>';
       html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
       html += '<audio controls preload="auto" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
-      html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+')">🔄 重生成</button>';
+      html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+',this)">🔄 重生成</button>';
       html += '</div>';
       // 原视频音量控制
       var origVol2 = (item.orig_volume !== undefined) ? item.orig_volume : 0;
@@ -5819,7 +5823,7 @@ function renderBrollResults(results){
       html += '<span style="color:var(--muted)">'+c.start+'s-'+c.end+'s</span>';
       html += '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+c.dialogue+'">'+c.dialogue+'</span>';
       html += '<span style="color:#f59e0b">匹配:'+(c.matched||[]).join(',')+'</span>';
-      html += '<button class="btn-secondary" style="padding:2px 8px;font-size:10px" onclick="insertBroll('+r.idx+','+c.start+','+c.end+')">插入B-roll</button>';
+      html += '<button class="btn-secondary" style="padding:2px 8px;font-size:10px" onclick="insertBrollDirect('+r.idx+','+c.start+','+c.end+')">插入B-roll</button>';
       html += '</div>';
     });
     html += '</div>';
@@ -5827,7 +5831,7 @@ function renderBrollResults(results){
   el.innerHTML = html;
 }
 
-function insertBroll(afterIdx, start, end){
+function insertBrollDirect(afterIdx, start, end){
   var items = _adjustState.items;
   if(!items) return;
   _pushUndo();
@@ -5872,27 +5876,6 @@ function switchAdjustTab(tabName){
   if(tabName === 'advanced'){
     renderSfxLibrary();
   }
-}
-
-
-// === 开始页子标签切换 ===
-function switchStartTab(tabName){
-  var tabs = document.querySelectorAll('.start-subtab');
-  var contents = document.querySelectorAll('.start-tab-content');
-  tabs.forEach(function(t){
-    if(t.getAttribute('data-subtab') === tabName){
-      t.classList.add('active');
-      t.style.color = 'var(--accent)';
-      t.style.borderBottomColor = 'var(--accent)';
-    } else {
-      t.classList.remove('active');
-      t.style.color = 'var(--muted)';
-      t.style.borderBottomColor = 'transparent';
-    }
-  });
-  contents.forEach(function(c){
-    c.style.display = (c.getAttribute('data-subtab') === tabName) ? '' : 'none';
-  });
 }
 
 
