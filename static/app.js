@@ -5377,7 +5377,7 @@ function collectProjectData(){
     if(el) subStyle[id] = el.value;
   });
   var exportSet = {};
-  ['exportResolution','exportBitrate'].forEach(function(id){
+  ['exportResolution','exportBitrate','exportQualityTier'].forEach(function(id){
     var el = document.getElementById(id);
     if(el) exportSet[id] = el.value;
   });

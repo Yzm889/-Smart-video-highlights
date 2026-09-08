@@ -497,7 +497,7 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
             cmd += ['-c:a', 'copy']
         else:
             cmd += ['-an']
-        cmd += _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-movflags', '+faststart', out]
+        cmd += _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-movflags', '+faststart', out]
         rc, o, e = ffmpeg_run(cmd)
         if rc != 0 or not os.path.exists(out):
             raise RuntimeError('单遍合并(无裁剪)编码失败: ' + e.decode('utf-8', 'ignore')[-300:])
@@ -613,9 +613,10 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             vf_parts.append(scale_filter)
         vf_str = ','.join(vf_parts)
         bitrate = params.get('bitrate') or None
+        tier = params.get('qualityTier') or None
         rc, o, e = ffmpeg_run(['-y', '-i', video_path,
                                '-vf', vf_str,
-                               ] + _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-an', vsub])
+                               ] + _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-an', vsub])
         base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
 
     has_orig_audio = _has_audio_track(video_path)

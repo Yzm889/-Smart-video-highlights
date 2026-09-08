@@ -2739,10 +2739,33 @@ def reset_encoder_probe():
     _ENC_CACHE['probe'] = None
 
 
-def video_encode_args(quality=23, bitrate=None):
+# 质量档位（P2-4）：速度优先 / 均衡(默认) / 画质优先
+# 档位同时接管 preset / cq(crf) / 码率上限；语义与 video_encode_args 的 quality 对齐：
+#   cq/crf 越小越清晰；nvenc preset 数字越大越清晰，x264 preset 越慢越清晰。
+# 速度优先：最快 preset + 略高 cq + 较低码率上限 → 编码快、体积省。
+# 画质优先：最慢 preset + 更低 cq + 更高码率上限 → 画质最高，单遍管线(默认)下只编码一次。
+_QUALITY_TIERS = {
+    'speed': {
+        'nvenc': dict(preset='p1', cq=22, bv='6M',  maxrate='8M',  bufsize='12M', lookahead=0),
+        'x264':  dict(preset='veryfast', crf=21),
+    },
+    'balanced': {
+        'nvenc': dict(preset='p5', cq=20, bv='10M', maxrate='14M', bufsize='16M', lookahead=32),
+        'x264':  dict(preset='medium', crf=19),
+    },
+    'quality': {
+        'nvenc': dict(preset='p7', cq=18, bv='14M', maxrate='20M', bufsize='24M', lookahead=32),
+        'x264':  dict(preset='slow',  crf=17),
+    },
+}
+
+
+def video_encode_args(quality=23, bitrate=None, tier=None):
     """返回**最终成片**的视频编码参数片段（list）。GPU 硬编可用且用户未禁用时用 h264_nvenc，否则回退 libx264。
     quality：质量档，越小越清晰（libx264 的 crf / nvenc 的 cq，语义对齐）。
     bitrate：指定码率（如 '4M'）时用码率控制替代CRF/CQ。
+    tier：质量档位 'speed'/'balanced'/'quality'，优先级高于 quality —— 完整接管 preset/cq/crf/码率上限。
+          未指定时退回原 behavior（quality 控制 crf/cq），保持完全兼容。
 
     2026-09-08 质量升级（本机 RTX 3060 实测，同一 3s 片段对比无损参考）：
       · nvenc: p4/constqp → **p5 + tune hq + vbr + rc-lookahead 32**，PSNR 48.60 → 54.40 dB。
@@ -2753,16 +2776,36 @@ def video_encode_args(quality=23, bitrate=None):
         - tune film 是真人实拍/影视素材专用参数组（保护颗粒感、抑制 banding），本项目素材 100% 适用。
     """
     mode = video_encoder_cfg()
+    use_nvenc = mode in ('auto', 'gpu') and _nvenc_usable()
+    t = _QUALITY_TIERS.get(tier) if tier else None
+
     if bitrate:
-        # 指定码率时用 -b:v 控制（保持原有行为，仅升级 preset/tune）
-        if mode in ('auto', 'gpu') and _nvenc_usable():
-            return ['-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p',
-                    '-preset', 'p5', '-tune', 'hq',
+        # 指定码率时用 -b:v 控制（保持原有行为，preset/tune 优先取档位）
+        if use_nvenc:
+            preset = (t['nvenc']['preset'] if t else 'p5')
+            return ['-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p', '-preset', preset, '-tune', 'hq',
                     '-b:v', str(bitrate), '-maxrate', str(bitrate)]
-        return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-tune', 'film',
+        preset = (t['x264']['preset'] if t else 'medium')
+        return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', preset, '-tune', 'film',
                 '-b:v', str(bitrate), '-maxrate', str(bitrate)]
-    if mode in ('auto', 'gpu') and _nvenc_usable():
-        # 码率上限给宽松值：vbr+cq 模式下实际码率由 cq 决定，上限只在极端复杂场景生效
+
+    if t:
+        # 档位优先：完整接管 preset / cq / crf / 码率上限
+        if use_nvenc:
+            spec = t['nvenc']
+            args = ['-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p',
+                    '-preset', spec['preset'], '-tune', 'hq',
+                    '-rc', 'vbr', '-cq', str(spec['cq']),
+                    '-b:v', spec['bv'], '-maxrate', spec['maxrate'], '-bufsize', spec['bufsize']]
+            if spec.get('lookahead'):
+                args += ['-rc-lookahead', str(spec['lookahead'])]
+            return args
+        spec = t['x264']
+        return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', spec['preset'], '-tune', 'film',
+                '-crf', str(spec['crf'])]
+
+    # 无档位（兼容旧调用）：quality 控制 crf/cq
+    if use_nvenc:
         return ['-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p',
                 '-preset', 'p5', '-tune', 'hq',
                 '-rc', 'vbr', '-cq', str(int(quality)),
