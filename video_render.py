@@ -79,27 +79,50 @@ def _fit_voice(voice_len, span_len):
     return {'speed': _NAR_MAX_SPEED, 'trim': True, 'over': over}
 
 
+def _display_factor(seg_len, v_len):
+    """画面微变速因子 f（供 setpts=f*PTS 使用）。P1-2 核心。
+
+    让每段画面时长 D 贴合该段真实配音时长，从而「画面随声音走」，彻底消除
+    「话说完画面还杵着」与「话没说完被腰斩」两类尴尬。
+
+    D = clamp(v_len + 0.35, 0.85*seg_len, 1.15*seg_len)
+      · v_len+0.35：画面比配音多 0.35s 收尾定格（念完即收，不突兀）。
+      · ±15% 夹紧：超出此范围的变速观众可察觉（快进/慢动作感），故画面只在此带内微调，
+        更极端的偏差交给配音 atempo（见 _render_narrate），二者配合覆盖全范围且不破音。
+    返回 f = D / seg_len；seg_len 非法或无声段返回 1.0（原样保留）。"""
+    try:
+        seg_len = float(seg_len); v_len = float(v_len)
+    except Exception:
+        return 1.0
+    if seg_len <= 0.02 or v_len is None or v_len <= 0:
+        return 1.0
+    D = v_len + 0.35
+    D = max(0.85 * seg_len, min(1.15 * seg_len, D))
+    if D <= 0:
+        return 1.0
+    return D / seg_len
+
+
 def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None,
                     auto_cut=True, narr_map=None):
     """解说渲染阶段：按分镜剪辑(可选)→逐段配音→混音→烧字幕→配乐。
 
     auto_cut=True 时先按保留段真剪辑（剪掉未勾选/无解说的画面），字幕与配音自动对齐到
-    剪辑后的新时间轴。返回 (final, voice_clips, cut_info)。"""
+    剪辑后的新时间轴。返回 (final, voice_clips, cut_info)。
+
+    P1-2 画面微变速：配音必须先于剪辑生成——只有拿到每段真实配音时长，才能在剪辑阶段用
+    setpts 把画面时长「掰」成贴合配音的值（±15% 内观众无感），从而彻底消除
+    「话说完画面还杵着」与「话没说完被腰斩」两类尴尬。"""
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
 
-    # ---- 第一步：真剪辑（此前缺失，导致成片恒等于原片时长，「剪辑解说」名不副实）----
     src_video = video_path
     cut_info = {'cut_sec': 0.0, 'src_dur': round(probe_audio_len(video_path) or 0.0, 2),
                 'out_dur': None, 'segs': len(segs)}
-    if auto_cut:
-        up('按分镜剪辑画面', 26)
-        src_video, segs, cut_sec = _w._cut_video_by_spans(video_path, segs, run_dir, progress)
-        cut_info['cut_sec'] = cut_sec
-        cut_info['segs'] = len(segs)
-    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
-    # 高密度剪辑：一节解说词对应多个子片段，按 narr_map 聚合
+
+    # [P1-2] 高密度剪辑聚合必须放在剪辑之前：聚合后的段才是「一节解说词」对应的真实画面区间，
+    #         剪辑与画面微变速都基于它计算；放剪辑后会因 new_spans 替换 segs 而错位。
     if narr_map and len(narr_map) == len(segs):
         groups = {}
         for k, bi in enumerate(narr_map):
@@ -110,25 +133,20 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
         beat_ranges = [groups.get(bi, (0.0, 0.0)) for bi in range(len(narr))]
         segs = beat_ranges
         _log.info(f'[DIAG] 高密度剪辑: {len(narr)}节 -> {len(narr_map)}个片段')
-    _log.info(f'[DIAG] auto_cut后: segs={len(segs)} 总时长={sum(b-a for a,b in segs):.1f}s 视频时长={cut_info["out_dur"]}s narr={len(narr)}')
 
-    # 长度对齐保护：narr 与 segs 必须一一对应。模型偶尔多输出/少输出行，
-    # 不修正会导致越界（i >= len(segs) 时全部堆在 0-10s）或后面段无解说。
+    # 长度对齐保护：narr 与 segs 必须一一对应。
     if len(narr) > len(segs):
         narr = narr[:len(segs)]
     elif len(narr) < len(segs):
         narr = list(narr) + [''] * (len(segs) - len(narr))
 
-    up('逐段配音', 30)
-    tts_paths = []
-    voice_spans = {}   # seg_idx -> (start, end)：字幕窗口跟随配音（有声才显字、念完即收）
+    # ---- 第一阶段：先逐段配音，拿到每段真实时长（P1-2 画面适配声音的前提）----
+    up('逐段配音', 22)
+    tts_clips = {}     # seg_idx -> 配音文件路径
+    voice_durs = {}    # seg_idx -> 真实配音时长（秒）
     # 只在云端 TTS 真正配了 api_key+model 时才走云端；否则直接用本地免费引擎
-    # 旧写法 _tts_available() 会把本地引擎也算进去，导致每段先试云端（无key必失败）再回退本地，长视频严重拖慢甚至后面超时失声
     _tcfg = load_ai_config().get('tts') or {}
     use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
-    # [2.3] 开跑前对首选引擎做一次「首段试点」：成功按当前引擎顺序走；
-    #       失败立即在本 run 内降权切 sherpa/sapi（见 _ping_preferred_engine），
-    #       避免几十段每段都先试错一次 edge（既省时间又避免无谓累计失败触发降权）。
     if not use_mimo and not getattr(_TLS, 'tts_engine', None):
         _ping_preferred_engine(run_dir)
     for i, txt in enumerate(narr):
@@ -175,26 +193,51 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
                         _fl.append({'idx': i, 'engine': _eng or 'sapi',
                                     'error': 'all_engines_failed'})
                         progress['tts_failures'] = _fl
-        if clip is not None:
-            # 配音时长自适应：念不完就用 atempo 适度提速贴合镜头，避免跨段重叠/腰斩
-            v_len = probe_audio_len(clip) or max(0.5, span_len)
-            fit = _fit_voice(v_len, span_len)
-            if fit['speed'] > _NAR_MIN_SPEED:
-                # 中间态改用 PCM WAV：TTS 源多为 mp3，再用 libmp3lame 重编码等于二次有损，
-                # 人声会变闷。中间态无损，最终由成片统一编码一次即可。
-                fast = os.path.join(run_dir, f'narr{i}_fit.wav')
-                rc, _o, _e = ffmpeg_run(['-y', '-i', clip, '-vn',
-                                         '-filter:a', 'atempo=%.3f' % fit['speed'],
-                                         '-c:a', 'pcm_s16le', fast])
-                if rc == 0 and os.path.exists(fast):
-                    clip = fast
-                    v_len = probe_audio_len(clip) or (v_len / fit['speed'])
-            tts_paths.append((clip, seg_span[0], seg_span[1]))
-            # 字幕只在「这句话正在被念」时显示：一行字挂满整个镜头段会让后段才发生的
-            # 画面内容提前出现在段首，观感像字幕与时间轴错位
-            voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
-    _log.info(f'[DIAG] 配音完成: tts_paths={len(tts_paths)}/{len([t for t in narr if t and t.strip()])} voice_spans={len(voice_spans)}')
+        if clip is None:
+            continue
+        v_len = probe_audio_len(clip) or max(0.5, span_len)
+        # [P1-2] 画面微变速策略：
+        #   · auto_cut 时优先「画面去适配声音」——只有配音明显偏长(>1.15×段长)才用 atempo 压缩配音；
+        #     其余交给剪辑阶段的 setpts 把画面掰到贴合配音，人声零失真。
+        #   · 非 auto_cut（不剪辑）时维持旧行为：配音超长即 atempo 提速。
+        fit = _fit_voice(v_len, span_len)
+        _need_atempo = fit['speed'] > _NAR_MIN_SPEED and (not auto_cut or (v_len / span_len) > 1.15)
+        if _need_atempo:
+            # 中间态改用 PCM WAV：TTS 源多为 mp3，再用 libmp3lame 重编码等于二次有损，人声会变闷。
+            fast = os.path.join(run_dir, f'narr{i}_fit.wav')
+            rc, _o, _e = ffmpeg_run(['-y', '-i', clip, '-vn',
+                                     '-filter:a', 'atempo=%.3f' % fit['speed'],
+                                     '-c:a', 'pcm_s16le', fast])
+            if rc == 0 and os.path.exists(fast):
+                clip = fast
+                v_len = probe_audio_len(clip) or (v_len / fit['speed'])
+        tts_clips[i] = clip
+        voice_durs[i] = v_len
+
+    # ---- 第二阶段：按分镜真剪辑，并应用 P1-2 画面微变速（setpts）----
+    if auto_cut:
+        up('按分镜剪辑画面', 30)
+        src_video, segs, cut_sec = _w._cut_video_by_spans(video_path, segs, run_dir, progress, voice_durs=voice_durs)
+        cut_info['cut_sec'] = cut_sec
+        cut_info['segs'] = len(segs)
+    cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
+    _log.info(f'[DIAG] 剪辑后: segs={len(segs)} 总时长={sum(b-a for a,b in segs):.1f}s 视频时长={cut_info["out_dur"]}s narr={len(narr)}')
+
+    # ---- 第三阶段：按（剪辑后的）新时间轴定位配音 + 字幕窗口 ----
     up('混音+烧字幕+配乐', 60)
+    tts_paths = []
+    voice_spans = {}
+    for i in sorted(tts_clips.keys()):
+        if i >= len(segs):
+            continue
+        clip = tts_clips[i]
+        v_len = voice_durs.get(i, 1.0)
+        sp = segs[i]
+        od = sp[0]
+        # 字幕窗口跟随配音：念完即收，并给 0.35s「念完即收」的收尾定格
+        voice_spans[i] = (od, min(sp[1], od + v_len + 0.35))
+        tts_paths.append((clip, od, sp[1]))
+    _log.info(f'[DIAG] 配音完成: tts_paths={len(tts_paths)}/{len([t for t in narr if t and t.strip()])} voice_spans={len(voice_spans)}')
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else strip_tts_markup(t) for t in narr]
     final = _w._compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
@@ -219,7 +262,7 @@ def _merge_spans(spans, eps=0.05):
     return out
 
 
-def _cut_video_by_spans(video_path, spans, run_dir, progress=None):
+def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=None):
     """按保留区间真剪辑：只留 spans 覆盖的画面，顺序拼成新片，并给出新时间轴。
 
     这是「剧情驱动剪辑」名副其实的关键。历史实现里解说链路只做「烧字幕 + 混音」，
@@ -260,31 +303,31 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None):
     if not raw:
         return video_path, raw, 0.0
 
-    # 剪切用的区间做合并（重叠/紧邻不重复切），但**返回的时间轴必须逐段等长**：
-    # 调用方 segs 与 narr 是一一对应的，这里少返回一段就会让字幕与配音整体错位。
-    spans = _w._merge_spans(raw)
-    if not spans:
-        return video_path, raw, 0.0
-
-    keep = sum(b - a for a, b in spans)
+    keep = sum(b - a for a, b in raw)
     gap = vdur - keep
     # 连续覆盖全片（中间没有实质空隙）→ 没有可剪的内容，直接跳过，省一次全片重编码
-    covered_gap = sum(max(0.0, spans[i + 1][0] - spans[i][1]) for i in range(len(spans) - 1))
-    if spans[0][0] <= 0.05 and vdur - spans[-1][1] <= 0.05 and covered_gap <= 0.25:
+    covered_gap = sum(max(0.0, raw[i + 1][0] - raw[i][1]) for i in range(len(raw) - 1))
+    if raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.25:
         return video_path, raw, 0.0
 
     cut_dir = os.path.join(run_dir, 'cuts')
     os.makedirs(cut_dir, exist_ok=True)
     has_audio = _has_audio_track(video_path)
     pieces = []
+    piece_durs = []   # 每段剪辑后的实际时长（含 P1-2 画面微变速），用于新时间轴累计
     try:
-        for i, (s0, s1) in enumerate(spans):
-            up('✂ 剪辑片段 %d/%d' % (i + 1, len(spans)), 34 + int(20 * i / max(1, len(spans))))
+        for i, (s0, s1) in enumerate(raw):
+            up('✂ 剪辑片段 %d/%d' % (i + 1, len(raw)), 34 + int(20 * i / max(1, len(raw))))
             p = os.path.join(cut_dir, 'cut%03d.mp4' % i)
-            # -ss 放 -i 前走快 seek（重编码时仍精确到帧）；-t 用段长，避免 -to 语义混淆
-            # 编码档用 interim（ultrafast+crf16）：这段还会被成片再编码一次，
-            # 此处若用有损档会造成二次质量累积（详见 webui_server.video_encode_args_interim）
-            cmd = ['-y', '-ss', '%.3f' % s0, '-i', video_path, '-t', '%.3f' % (s1 - s0)]
+            seg_len = s1 - s0
+            # [P1-2] 画面微变速：setpts 把画面时长掰到贴合配音（D=clamp(v_len+0.35, 0.85~1.15×段长)），
+            #         同一段的场景原声同步 atempo=1/f，保证画面与原声不脱节。无声段(factor≈1)原样保留。
+            f = _display_factor(seg_len, (voice_durs or {}).get(i)) if voice_durs else 1.0
+            cmd = ['-y', '-ss', '%.3f' % s0, '-i', video_path, '-t', '%.3f' % seg_len]
+            if abs(f - 1.0) > 0.005:
+                cmd += ['-vf', 'setpts=%.6f*PTS' % f]
+                if has_audio:
+                    cmd += ['-af', 'atempo=%.6f' % (1.0 / f)]
             cmd += _w.video_encode_args_interim()
             cmd += ['-threads', '0']
             if has_audio:
@@ -296,6 +339,7 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None):
             if rc != 0 or not os.path.exists(p):
                 raise RuntimeError('片段 %d 剪切失败: %s' % (i, e.decode('utf-8', 'ignore')[-200:]))
             pieces.append(p)
+            piece_durs.append(seg_len * f if abs(f - 1.0) > 0.005 else seg_len)
 
         out = os.path.join(run_dir, 'cut.mp4')
         concat_txt = os.path.join(cut_dir, 'concat.txt')
@@ -327,11 +371,13 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None):
         # 剪辑属增强项：失败就退回原片，保证「能出片」优先于「剪得漂亮」
         return video_path, raw, 0.0
 
-    # 拼接后的新时间轴：按原始段逐段累计（段数与输入严格一致，保证与解说词一一对应）
+    # 拼接后的新时间轴：按每段实际时长（含 P1-2 画面微变速）逐段累计，
+    # 段数与输入严格一致，保证与解说词一一对应。
     new_spans, cur = [], 0.0
     for a, b in raw:
-        new_spans.append((round(cur, 3), round(cur + (b - a), 3)))
-        cur += (b - a)
+        _d = piece_durs[len(new_spans)] if len(new_spans) < len(piece_durs) else (b - a)
+        new_spans.append((round(cur, 3), round(cur + _d, 3)))
+        cur += _d
     # -c copy 拼接 VFR 视频时，各片段实际时长可能与 -t 指定的有偏差，
     # 导致拼接后视频实际时长 != new_spans 总时长，后面的配音/字幕落在视频结束点之后。
     # 修复：ffprobe 检查实际时长，偏差>0.5s 时按比例缩放 new_spans，保证与视频对齐。
@@ -466,17 +512,34 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
                           f'apad=whole_dur={vdur:.2f}[t{k2}]')
         mixin += f'[t{k2}]'
     if use_music:
-        # 背景乐：单次输入 + atrim 截到视频时长 + apad 补到视频时长。
-        # 不要用 `-stream_loop -1` 无限循环：apad(whole_dur) 需要读到输入 EOF 才会输出，
-        # 无限循环流没有 EOF，会导致 ffmpeg 永久挂起（实测解说+配乐必卡死）。
         # 【任务4】配乐淡入淡出：默认 3 秒，视频短于 6 秒时长减半但不低于 0.5s，避免硬切。
         _fade = 3.0 if vdur >= 6.0 else max(0.5, vdur / 4.0)
         _fade_out_st = max(0.0, vdur - _fade)
-        inputs += ['-i', music_path]
-        fparts.append(f'[{next_idx + len(tts_paths)}:a]aresample=44100,volume=0.16,'
-                      f'atrim=0:{vdur:.2f},apad=whole_dur={vdur:.2f},'
+        # [P1-4] 有限次循环：用 -stream_loop N（N 算好，N≥ceil(vdur/音乐时长)+1），既有 EOF 又不会像
+        #        -stream_loop -1 那样让 apad 永久挂起（实测解说+配乐必卡死），保证长视频全程有音乐。
+        mdur = probe_audio_len(music_path) or 0.0
+        _bgm_in = ['-i', music_path]
+        if mdur > 0 and mdur < vdur:
+            _loop_n = int(vdur / mdur) + 2   # 多 +1 防浮点误差，atrim 精确截断
+            _bgm_in = ['-stream_loop', str(_loop_n)] + _bgm_in
+        inputs += _bgm_in
+        _bgm_idx = next_idx + len(tts_paths)
+        # 基线音量略抬高到 0.18，给侧链闪避留出「压低到更轻」的余量（详见下方 sidechaincompress）
+        fparts.append(f'[{_bgm_idx}:a]aresample=44100,volume=0.18,'
+                      f'atrim=0:{vdur:.2f},'
                       f'afade=t=in:st=0:d={_fade:.2f},'
-                      f'afade=t=out:st={_fade_out_st:.2f}:d={_fade:.2f}[bgm]')
+                      f'afade=t=out:st={_fade_out_st:.2f}:d={_fade:.2f}[bgmraw]')
+        if tts_paths:
+            # [P1-3] 侧链闪避（sidechain ducking）：用「全部解说配音混成的人声总线」驱动 BGM 增益，
+            #         人声一开口 BGM 自动压低，人声停缓升。这是解说视频人声清晰度质的飞跃。
+            _vbus = ''.join(f'[t{k2}]' for k2 in range(len(tts_paths)))
+            fparts.append(f'{_vbus}amix=inputs={len(tts_paths)}:normalize=0,'
+                          f'aformat=sample_fmts=fltp:channel_layouts=stereo[vbus]')
+            fparts.append(f'[bgmraw][vbus]sidechaincompress='
+                          f'threshold=0.04:ratio=6:attack=15:release=250:detection=peak[bgm]')
+        else:
+            # 无人声（纯配乐片段）：无需闪避，直通
+            fparts.append('[bgmraw]anull[bgm]')
         mixin += '[bgm]'
     n_mix = len(tts_paths) + (1 if has_orig_audio else 0) + (1 if use_music else 0)
     # amix 前统一采样率/声道，避免不同来源（SAPI 22k mono / 云端 TTS 24-48k / 原声 44.1k stereo）混音异常或音量失衡

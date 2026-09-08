@@ -16,6 +16,7 @@ import os
 import pytest
 
 import webui_server as S
+import video_render
 
 
 def _ff(monkeypatch, fail=False):
@@ -34,6 +35,7 @@ def _ff(monkeypatch, fail=False):
         return 0, b'', b'Stream #0:1: Audio: aac'
 
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
+    monkeypatch.setattr(video_render, 'ffmpeg_run', fake_ffmpeg)
     return calls
 
 
@@ -48,6 +50,7 @@ def test_no_cut_when_spans_cover_whole_video(monkeypatch, tmp_path):
     """全片连续覆盖 → 跳过剪辑，避免无谓的全片重编码。"""
     _ff(monkeypatch)
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 30.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 30.0)
     out, spans, cut = S._cut_video_by_spans('v.mp4', [(0, 10), (10, 20), (20, 30)], str(tmp_path))
     assert out == 'v.mp4', '整片保留时不应重编码'
     assert cut == 0.0
@@ -61,9 +64,11 @@ def test_cut_removes_gaps_and_remaps_timeline(monkeypatch, tmp_path):
     calls = _ff(monkeypatch)
     # mock 探测需区分原片(30s)与剪辑后成片(20s)：无差别返回 30s 会误触发
     # 「拼接时长偏差按比例缩放」逻辑，把正确的时间轴拉回 30s
-    monkeypatch.setattr(S, 'probe_audio_len',
-                        lambda p: 20.0 if 'cut' in str(p) else 30.0)
+    _probe = lambda p: 20.0 if 'cut' in str(p) else 30.0
+    monkeypatch.setattr(S, 'probe_audio_len', _probe)
+    monkeypatch.setattr(video_render, 'probe_audio_len', _probe)
     monkeypatch.setattr(S, '_has_audio_track', lambda p: True)
+    monkeypatch.setattr(video_render, '_has_audio_track', lambda p: True)
     out, spans, cut = S._cut_video_by_spans('v.mp4', [(0, 10), (20, 30)], str(tmp_path))
     assert out.endswith('cut.mp4'), '应输出剪辑后的视频：%s' % out
     assert os.path.exists(out)
@@ -79,29 +84,34 @@ def test_cut_degrades_gracefully_on_ffmpeg_failure(monkeypatch, tmp_path):
     """剪辑属增强项：ffmpeg 失败应退回原片，不得让任务失败。"""
     _ff(monkeypatch, fail=True)
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 30.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 30.0)
     monkeypatch.setattr(S, '_has_audio_track', lambda p: True)
+    monkeypatch.setattr(video_render, '_has_audio_track', lambda p: True)
     out, spans, cut = S._cut_video_by_spans('v.mp4', [(0, 10), (20, 30)], str(tmp_path))
     assert out == 'v.mp4', '失败应安全降级'
     assert cut == 0.0
 
 
-def test_render_narrate_cuts_before_voicing(monkeypatch, tmp_path):
-    """_render_narrate 必须先剪辑再配音：配音/字幕按剪辑后的新时间轴对齐。"""
+def test_render_narrate_aligns_to_cut_timeline(monkeypatch, tmp_path):
+    """_render_narrate 不论「先配音还是先剪辑」，compositing 都必须用剪辑后的视频与新时间轴。
+
+    P1-2 改为先配音（拿到真实配音时长）再剪辑（用 setpts 把画面掰到贴合配音），
+    但契约不变：最终合成必须用剪辑后的视频、字幕/配音必须对齐到剪辑后的新时间轴。"""
     run_dir = str(tmp_path)
     seen = {}
 
-    def fake_cut(video_path, spans, rd, progress=None):
+    def fake_cut(video_path, spans, rd, progress=None, voice_durs=None):
         seen['spans'] = list(spans)
         return 'cut.mp4', [(0.0, 3.0), (3.0, 6.0)], 4.0
 
     monkeypatch.setattr(S, '_cut_video_by_spans', fake_cut)
-    monkeypatch.setattr(S, '_tts_available', lambda: False)
-    # 配音引擎全部打桩为不可用：本用例只验证「先剪辑、再按新时间轴配音」的顺序，不依赖真实网络
-    monkeypatch.setattr(S, 'edge_tts_available', lambda: False)
-    monkeypatch.setattr(S, 'sherpa_tts_available', lambda: False)
-    monkeypatch.setattr(S, 'sapi_tts', lambda t, p: False)
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 6.0)
-    monkeypatch.setattr(S, '_has_audio_track', lambda p: False)
+    # _render_narrate 已拆到 video_render，TTS/探测等符号需在其命名空间打桩
+    monkeypatch.setattr(video_render, 'load_ai_config', lambda: {})
+    monkeypatch.setattr(video_render, 'local_tts_speak', lambda *a, **k: (False, 'none', ''))
+    monkeypatch.setattr(video_render, 'sapi_tts', lambda t, p: False)
+    monkeypatch.setattr(video_render, '_ping_preferred_engine', lambda *a, **k: None)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 6.0)
+    monkeypatch.setattr(video_render, '_has_audio_track', lambda p: False)
 
     def fake_compose(video_path, segs, narr, tts_paths, rd, params, music_path=None, voice_spans=None):
         seen['compose_video'] = video_path
@@ -123,17 +133,17 @@ def test_render_narrate_respects_auto_cut(monkeypatch, tmp_path, auto_cut, expec
     """autoCut 关闭时不剪辑（保留旧行为，供用户对照）。"""
     called = {'cut': False}
 
-    def fake_cut(video_path, spans, rd, progress=None):
+    def fake_cut(video_path, spans, rd, progress=None, voice_durs=None):
         called['cut'] = True
         return video_path, spans, 0.0
 
     monkeypatch.setattr(S, '_cut_video_by_spans', fake_cut)
-    monkeypatch.setattr(S, '_tts_available', lambda: False)
-    monkeypatch.setattr(S, 'edge_tts_available', lambda: False)
-    monkeypatch.setattr(S, 'sherpa_tts_available', lambda: False)
-    monkeypatch.setattr(S, 'sapi_tts', lambda t, p: False)
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 10.0)
-    monkeypatch.setattr(S, '_has_audio_track', lambda p: False)
+    monkeypatch.setattr(video_render, 'load_ai_config', lambda: {})
+    monkeypatch.setattr(video_render, 'local_tts_speak', lambda *a, **k: (False, 'none', ''))
+    monkeypatch.setattr(video_render, 'sapi_tts', lambda t, p: False)
+    monkeypatch.setattr(video_render, '_ping_preferred_engine', lambda *a, **k: None)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 10.0)
+    monkeypatch.setattr(video_render, '_has_audio_track', lambda p: False)
     monkeypatch.setattr(S, '_compose_narration_video',
                         lambda *a, **k: os.path.join(str(tmp_path), 'final.mp4'))
 
