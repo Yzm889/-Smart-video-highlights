@@ -1813,7 +1813,7 @@ window.addEventListener('online', () => {
 // ---- [P2] Ctrl+Enter 快速提交：textarea 绑定到对应生成按钮；input 回车直达 ----
 // ---- [P2] 复用上次参数：成功发起生成时快照表单，「📋 上次参数」一键回填 ----
 const PARAM_FIELDS = {
-  narrate:  ['narMaxSeg','narTheme','narReq','narrStyle','detailLevel','narPlot','narAutoCut','narTargetSec','exportResolution','exportBitrate','narBgm'],
+  narrate:  ['narMaxSeg','narTheme','narReq','narrStyle','detailLevel','narPlot','narAutoCut','narTargetSec','exportResolution','exportBitrate','exportQualityTier','exportTransition','narBgm'],
   movie:    ['movieName','moviePlot','movieMaxSeg','moviePlotRefine','movieBgm'],
   instruct: ['instructInput'],
 };
@@ -2305,7 +2305,9 @@ async function buildNarrate(){
                          targetSec: parseFloat(($('narTargetSec')||{}).value) || 0,
                          subtitle: getSubtitleStyle(),
                          resolution: ($('exportResolution')||{}).value || 'original',
-                         bitrate: ($('exportBitrate')||{}).value || ''} };
+                         bitrate: ($('exportBitrate')||{}).value || '',
+                         qualityTier: ($('exportQualityTier')||{}).value || 'balanced',
+                         transition: ($('exportTransition')||{}).value || 'hard'} };
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
@@ -5325,7 +5327,7 @@ async function confirmAdjustAndCompose(){
     return;
   }
   try{
-    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip, params: { subtitle: getSubtitleStyle(), resolution: ($('exportResolution')||{}).value || 'original', bitrate: ($('exportBitrate')||{}).value || '' } };
+    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip, params: { subtitle: getSubtitleStyle(), resolution: ($('exportResolution')||{}).value || 'original', bitrate: ($('exportBitrate')||{}).value || '', qualityTier: ($('exportQualityTier')||{}).value || 'balanced', transition: ($('exportTransition')||{}).value || 'hard' } };
     // 带上配乐
     if(_adjustState.mode === 'movie' && document.getElementById('movieBgm') && document.getElementById('movieBgm').checked && MUSIC){
       if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
@@ -5377,7 +5379,7 @@ function collectProjectData(){
     if(el) subStyle[id] = el.value;
   });
   var exportSet = {};
-  ['exportResolution','exportBitrate','exportQualityTier'].forEach(function(id){
+  ['exportResolution','exportBitrate','exportQualityTier','exportTransition'].forEach(function(id){
     var el = document.getElementById(id);
     if(el) exportSet[id] = el.value;
   });

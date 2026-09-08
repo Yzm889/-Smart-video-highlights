@@ -449,7 +449,11 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     但视频只编码 1 次（直接以最终画质编码，省掉中间的 interim 重编码），画质更好、出片更快。
     新时间轴 new_spans 在编码前按 P1-2 公式解析算出（与两遍管线 piece_durs 完全一致），字幕 SRT
     据此定位；编码后再用 ffprobe 校验实际时长做 ≤0.5s 的缩放补偿（同两遍管线）。
-    任何失败都抛异常，由 _render_narrate 自动回退两遍管线。"""
+    任何失败都抛异常，由 _render_narrate 自动回退两遍管线。
+
+    段落边界转场(P2-2)：params['transition']=='crossfade' 时，各段之间用 200ms xfade/acrossfade 交叉淡化
+    （硬切保留于过短片）。交叉淡化会让时间轴整体压缩 (n-1)*0.2s，new_spans 同步压缩，配音/字幕自动跟随
+    （_render_narrate 会把 segs 接管为压缩后的 new_spans）。默认 'hard' 走原 concat 硬切，零影响。"""
     def up(ph, pct):
         if progress is not None:
             progress['phase'] = ph; progress['pct'] = pct
@@ -483,6 +487,9 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     sub_style = _build_subtitle_style(params)
     scale_filter = _w.build_video_filter(params)
     bitrate = params.get('bitrate') or None
+    tier = params.get('qualityTier') or None
+    transition = params.get('transition') or 'hard'   # 'hard' 硬切(默认) / 'crossfade' 段落边界 200ms 交叉淡化
+    _FADE = 0.2                                      # 交叉淡化时长(s)
 
     if _no_cut:
         # 全片覆盖：直接在原片上烧字幕+缩放，时长、画面与两遍管线返回原片后烧字幕完全一致
@@ -510,10 +517,26 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         f = _display_factor(seg_len, (voice_durs or {}).get(_i)) if voice_durs else 1.0
         d = seg_len * f if abs(f - 1.0) > 0.005 else seg_len
         piece_durs.append(d)
-    for a, b in raw:
-        _d = piece_durs[len(new_spans)]
-        new_spans.append((round(cur, 3), round(cur + _d, 3)))
-        cur += _d
+    n = len(raw)
+    # 交叉淡化：仅当显式开启且每段都足够长（≥0.6s，避免极短片叠加淡入淡出产生闪烁/错位）才启用
+    use_xfade = (transition == 'crossfade' and n >= 2 and all(d >= 0.6 for d in piece_durs))
+    if use_xfade:
+        # 每段（除末段）尾随 _FADE 与下段首 _FADE 重叠混合，时间轴整体压缩 (n-1)*_FADE。
+        # 字幕/配音 SRT 必须按压缩后的时间轴定位，否则整体偏移 —— 这里压缩 new_spans，
+        # 后续 _render_narrate 会把 segs 接管为 new_spans，配音与字幕窗口自动跟随。
+        _starts = [0.0]
+        for i in range(1, n):
+            _starts.append(round(_starts[-1] + piece_durs[i - 1] - _FADE, 3))
+        for i in range(n):
+            _eff = piece_durs[i] - _FADE if i < n - 1 else piece_durs[i]
+            new_spans.append((_starts[i], round(_starts[i] + _eff, 3)))
+        cur = round(_starts[-1] + piece_durs[-1], 3)
+        _log.info(f'[DIAG] 启用交叉淡化: 段数={n} FADE={_FADE}s 压缩后时长={cur:.2f}s')
+    else:
+        for a, b in raw:
+            _d = piece_durs[len(new_spans)]
+            new_spans.append((round(cur, 3), round(cur + _d, 3)))
+            cur += _d
     cut_sec = round(max(0.0, gap), 3)
 
     # 字幕 SRT 基于新时间轴 new_spans 定位（与两遍管线 _compose_narration_video 内一致）
@@ -521,8 +544,8 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     esc = srt.replace('\\', '/').replace(':', '\\:')
 
     # ---- 构造单遍滤镜图 ----
-    # 视频链：每段 [0:v]trim → setpts 复位并施加微变速(f) → concat → 烧字幕 → 缩放
-    # 音频链：每段 [0:a]atrim → asetpts 复位 → atempo(1/f 与画面同步) → concat
+    # 视频链：每段 [0:v]trim → setpts 复位并施加微变速(f) → (xfade 交叉淡化 | concat 硬切) → 烧字幕 → 缩放
+    # 音频链：每段 [0:a]atrim → asetpts 复位 → atempo(1/f 与画面同步) → (acrossfade | concat)
     vparts, aparts = [], []
     for i, (a, b) in enumerate(raw):
         seg_len = b - a
@@ -533,23 +556,42 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
             af = (1.0 / f) if abs(f - 1.0) > 0.005 else 1.0
             # 微变速因子在 ±15% 内，1/f 落在 atempo 安全区间 [0.5,2]，无需链式
             aparts.append(f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS,atempo={af:.6f}[sa{i}]")
-    n = len(raw)
-    vlabels = ''.join(f'[sv{i}]' for i in range(n))
-    vparts.append(f"{vlabels}concat=n={n}:v=1:a=0[vmid]")
-    vparts.append(f"[vmid]subtitles='{esc}':force_style='{sub_style}'[vsub]")
+    # 视频拼接：交叉淡化用 xfade 链，硬切用 concat
+    if use_xfade:
+        # 第 k 次融合（累积段 X 与 seg_k）offset = 累积前 k 段时长 - k*_FADE，恰好落在 X 末尾前 _FADE 处
+        _vlabel = 'sv0'
+        for k in range(1, n):
+            _cum = sum(piece_durs[:k])
+            _off = round(_cum - k * _FADE, 3)
+            _nxt = 'vxf' if k == n - 1 else f'x{k}'
+            vparts.append(f"[{_vlabel}][sv{k}]xfade=transition=fade:duration={_FADE}:offset={_off:.3f}[{_nxt}]")
+            _vlabel = _nxt
+        vparts.append(f"[{_vlabel}]subtitles='{esc}':force_style='{sub_style}'[vsub]")
+    else:
+        vlabels = ''.join(f'[sv{i}]' for i in range(n))
+        vparts.append(f"{vlabels}concat=n={n}:v=1:a=0[vmid]")
+        vparts.append(f"[vmid]subtitles='{esc}':force_style='{sub_style}'[vsub]")
     if scale_filter:
         vparts.append(f"[vsub]{scale_filter}[vout]")
     else:
         vparts.append("[vsub]copy[vout]")
     parts = list(vparts)
     if has_audio:
-        alabels = ''.join(f'[sa{i}]' for i in range(n))
-        aparts.append(f"{alabels}concat=n={n}:v=0:a=1[amid]")
+        if use_xfade:
+            _alabel = 'sa0'
+            for k in range(1, n):
+                _nxt = 'xfa' if k == n - 1 else f'xa{k}'
+                aparts.append(f"[{_alabel}][sa{k}]acrossfade=d={_FADE:.3f}[{_nxt}]")
+                _alabel = _nxt
+        else:
+            alabels = ''.join(f'[sa{i}]' for i in range(n))
+            aparts.append(f"{alabels}concat=n={n}:v=0:a=1[amid]")
         parts += aparts
 
+    _audio_map = '[xfa]' if (use_xfade and has_audio) else '[amid]'
     cmd = ['-y', '-i', video_path, '-filter_complex', ';'.join(parts), '-map', '[vout]']
     if has_audio:
-        cmd += ['-map', '[amid]', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
+        cmd += ['-map', _audio_map, '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
     else:
         cmd += ['-an']
     cmd += _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-movflags', '+faststart', out]
