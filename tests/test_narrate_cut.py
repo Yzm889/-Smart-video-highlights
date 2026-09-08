@@ -105,6 +105,12 @@ def test_render_narrate_aligns_to_cut_timeline(monkeypatch, tmp_path):
         return 'cut.mp4', [(0.0, 3.0), (3.0, 6.0)], 4.0
 
     monkeypatch.setattr(S, '_cut_video_by_spans', fake_cut)
+    # P1-1 单遍合并路径也需打桩：用同一套「剪辑后视频+新时间轴」契约，保证确定性（不触发真实 ffmpeg）
+    def fake_single_cut(video_path, segs, voice_durs, rd, params, narr, tts_clips, progress=None):
+        seen['spans'] = list(segs)
+        return 'cut.mp4', [(0.0, 3.0), (3.0, 6.0)], 4.0
+
+    monkeypatch.setattr(video_render, '_cut_and_burn_video', fake_single_cut)
     # _render_narrate 已拆到 video_render，TTS/探测等符号需在其命名空间打桩
     monkeypatch.setattr(video_render, 'load_ai_config', lambda: {})
     monkeypatch.setattr(video_render, 'local_tts_speak', lambda *a, **k: (False, 'none', ''))
@@ -113,9 +119,10 @@ def test_render_narrate_aligns_to_cut_timeline(monkeypatch, tmp_path):
     monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 6.0)
     monkeypatch.setattr(video_render, '_has_audio_track', lambda p: False)
 
-    def fake_compose(video_path, segs, narr, tts_paths, rd, params, music_path=None, voice_spans=None):
+    def fake_compose(video_path, segs, narr, tts_paths, rd, params, music_path=None, voice_spans=None, burned=False):
         seen['compose_video'] = video_path
         seen['compose_segs'] = list(segs)
+        seen['compose_burned'] = burned
         return os.path.join(rd, 'final.mp4')
 
     monkeypatch.setattr(S, '_compose_narration_video', fake_compose)
@@ -138,6 +145,8 @@ def test_render_narrate_respects_auto_cut(monkeypatch, tmp_path, auto_cut, expec
         return video_path, spans, 0.0
 
     monkeypatch.setattr(S, '_cut_video_by_spans', fake_cut)
+    # 该用例验证 auto_cut 开关语义，固定走两遍管线（单遍合并的内部契约另有集成测试覆盖）
+    monkeypatch.setattr(video_render, '_SINGLE_PASS_CUT', False)
     monkeypatch.setattr(video_render, 'load_ai_config', lambda: {})
     monkeypatch.setattr(video_render, 'local_tts_speak', lambda *a, **k: (False, 'none', ''))
     monkeypatch.setattr(video_render, 'sapi_tts', lambda t, p: False)

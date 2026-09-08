@@ -42,6 +42,10 @@ _NAR_MAX_CHARS = 95     # 单段解说上限，避免长镜头堆字导致语速
 _NAR_MAX_SPEED = 1.35   # atempo 最大加速倍率，超过会有明显失真
 _NAR_MIN_SPEED = 1.03   # 低于此倍率听不出差别，不必重编码
 
+# P1-1 单遍合并开关：默认开启（视频只编码 1 次）；单遍失败时自动回退两遍管线。
+# 设环境变量 FRAMECUT_SINGLE_PASS=0 可强制走旧两遍管线。
+_SINGLE_PASS_CUT = os.environ.get('FRAMECUT_SINGLE_PASS', '1') != '0'
+
 
 def _target_chars(dur):
     """把画面时长换算成解说词目标字数区间 (lo, hi)。
@@ -214,10 +218,26 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
         tts_clips[i] = clip
         voice_durs[i] = v_len
 
+    # ---- 字幕文案：剥 TTS 标记、留白置空（P1-1 单遍合并需在剪辑前烧字幕，两遍管线共用）----
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else strip_tts_markup(t) for t in narr]
+
     # ---- 第二阶段：按分镜真剪辑，并应用 P1-2 画面微变速（setpts）----
+    _single_pass = False
     if auto_cut:
         up('按分镜剪辑画面', 30)
-        src_video, segs, cut_sec = _w._cut_video_by_spans(video_path, segs, run_dir, progress, voice_durs=voice_durs)
+        if _SINGLE_PASS_CUT:
+            try:
+                src_video, segs, cut_sec = _cut_and_burn_video(
+                    video_path, segs, voice_durs, run_dir, params, narr_srt, tts_clips, progress)
+                _single_pass = True
+                _log.info('[DIAG] P1-1 单遍合并成功：视频仅编码 1 次')
+            except Exception as _ce:
+                _log.warning('[DIAG] P1-1 单遍合并失败，回退两遍管线: %s' % _ce)
+                src_video, segs, cut_sec = _w._cut_video_by_spans(
+                    video_path, segs, run_dir, progress, voice_durs=voice_durs)
+        else:
+            src_video, segs, cut_sec = _w._cut_video_by_spans(
+                video_path, segs, run_dir, progress, voice_durs=voice_durs)
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
@@ -226,21 +246,17 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
     # ---- 第三阶段：按（剪辑后的）新时间轴定位配音 + 字幕窗口 ----
     up('混音+烧字幕+配乐', 60)
     tts_paths = []
-    voice_spans = {}
+    voice_spans = _build_voice_spans(segs, voice_durs, tts_clips)
     for i in sorted(tts_clips.keys()):
         if i >= len(segs):
             continue
         clip = tts_clips[i]
-        v_len = voice_durs.get(i, 1.0)
         sp = segs[i]
         od = sp[0]
-        # 字幕窗口跟随配音：念完即收，并给 0.35s「念完即收」的收尾定格
-        voice_spans[i] = (od, min(sp[1], od + v_len + 0.35))
         tts_paths.append((clip, od, sp[1]))
     _log.info(f'[DIAG] 配音完成: tts_paths={len(tts_paths)}/{len([t for t in narr if t and t.strip()])} voice_spans={len(voice_spans)}')
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else strip_tts_markup(t) for t in narr]
     final = _w._compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
-                                     music_path=music_path, voice_spans=voice_spans)
+                                     music_path=music_path, voice_spans=voice_spans, burned=_single_pass)
     if progress:
         progress['done'] = True
         progress['pct'] = 100
@@ -391,6 +407,165 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
     return out, new_spans, round(max(0.0, gap), 3)
 
 
+def _build_narr_srt(segs, narr, run_dir, voice_spans=None):
+    """把解说词按新时间轴写成 narr.srt 供字幕烧录。抽出以便单遍/两遍管线共用。"""
+    srt = os.path.join(run_dir, 'narr.srt')
+    with open(srt, 'w', encoding='utf-8') as f:
+        def ts(sec):
+            hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60); ms = int((sec % 1) * 1000)
+            return f'{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}'
+        seq = 0
+        for i, (s0, s1) in enumerate(segs):
+            cap = _clean_caption(narr[i] if i < len(narr) else '')
+            if not cap:
+                continue
+            w0, w1 = s0, s1
+            vs = (voice_spans or {}).get(i)
+            if vs:
+                w0 = max(s0, vs[0])
+                w1 = min(s1, max(vs[1], w0 + 0.8))   # 至少显示 0.8s，避免一闪而过
+            seq += 1
+            f.write(f'{seq}\n{ts(w0)} --> {ts(w1)}\n{cap}\n\n')
+    return srt
+
+
+def _build_voice_spans(segs, voice_durs, tts_clips):
+    """按（剪辑后的）新时间轴计算字幕窗口：字随声走、念完即收（+0.35s 收尾定格）。"""
+    vs = {}
+    for i in sorted(tts_clips.keys()):
+        if i >= len(segs):
+            continue
+        v_len = voice_durs.get(i, 1.0)
+        sp = segs[i]
+        od = sp[0]
+        vs[i] = (od, min(sp[1], od + v_len + 0.35))
+    return vs
+
+
+def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts_clips, progress=None):
+    """P1-1 单遍合并：剪切 + 画面微变速(setpts) + 烧字幕 + 缩放，全部在【一次】视频编码里完成。
+
+    与两遍管线(_cut_video_by_spans 出 cut.mp4 + _compose_narration_video 内烧字幕步)输出等价，
+    但视频只编码 1 次（直接以最终画质编码，省掉中间的 interim 重编码），画质更好、出片更快。
+    新时间轴 new_spans 在编码前按 P1-2 公式解析算出（与两遍管线 piece_durs 完全一致），字幕 SRT
+    据此定位；编码后再用 ffprobe 校验实际时长做 ≤0.5s 的缩放补偿（同两遍管线）。
+    任何失败都抛异常，由 _render_narrate 自动回退两遍管线。"""
+    def up(ph, pct):
+        if progress is not None:
+            progress['phase'] = ph; progress['pct'] = pct
+
+    vdur = probe_audio_len(video_path) or 0.0
+    raw = [(max(0.0, min(vdur, float(a))), max(0.0, min(vdur, float(b)))) for a, b in (segs or [])]
+    raw = [(a, b) for a, b in raw if b - a > 0.02]
+    if not raw or vdur <= 0:
+        return video_path, raw, 0.0
+    # 修正重叠段：与两遍管线一致，避免 new_spans 总时长 > 实际视频时长导致字幕/配音错位
+    _fixed = []
+    for a, b in raw:
+        if _fixed and a < _fixed[-1][1]:
+            a = _fixed[-1][1]
+        if b - a <= 0.02:
+            b = min(vdur, a + 0.5)
+        if b - a > 0.02:
+            _fixed.append((a, b))
+    raw = _fixed
+    if not raw:
+        return video_path, raw, 0.0
+
+    keep = sum(b - a for a, b in raw)
+    gap = vdur - keep
+    covered_gap = sum(max(0.0, raw[i + 1][0] - raw[i][1]) for i in range(len(raw) - 1))
+    # 无实质剪辑（全片连续覆盖）→ 不裁剪，仅烧字幕+缩放（两遍管线在此直接返回原片，不改时长）
+    _no_cut = (raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.25)
+
+    has_audio = _has_audio_track(video_path)
+    out = os.path.join(run_dir, 'vburn.mp4')
+    sub_style = _build_subtitle_style(params)
+    scale_filter = _w.build_video_filter(params)
+    bitrate = params.get('bitrate') or None
+
+    if _no_cut:
+        # 全片覆盖：直接在原片上烧字幕+缩放，时长、画面与两遍管线返回原片后烧字幕完全一致
+        new_spans = raw
+        srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips))
+        esc = srt.replace('\\', '/').replace(':', '\\:')
+        vf = [f"subtitles='{esc}':force_style='{sub_style}'"]
+        if scale_filter:
+            vf.append(scale_filter)
+        cmd = ['-y', '-i', video_path, '-vf', ','.join(vf)]
+        if has_audio:
+            cmd += ['-c:a', 'copy']
+        else:
+            cmd += ['-an']
+        cmd += _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-movflags', '+faststart', out]
+        rc, o, e = ffmpeg_run(cmd)
+        if rc != 0 or not os.path.exists(out):
+            raise RuntimeError('单遍合并(无裁剪)编码失败: ' + e.decode('utf-8', 'ignore')[-300:])
+        return out, new_spans, 0.0
+
+    # ---- 有实质剪辑：解析计算新时间轴（与两遍管线 piece_durs 一致）----
+    new_spans, cur, piece_durs = [], 0.0, []
+    for _i, (a, b) in enumerate(raw):
+        seg_len = b - a
+        f = _display_factor(seg_len, (voice_durs or {}).get(_i)) if voice_durs else 1.0
+        d = seg_len * f if abs(f - 1.0) > 0.005 else seg_len
+        piece_durs.append(d)
+    for a, b in raw:
+        _d = piece_durs[len(new_spans)]
+        new_spans.append((round(cur, 3), round(cur + _d, 3)))
+        cur += _d
+    cut_sec = round(max(0.0, gap), 3)
+
+    # 字幕 SRT 基于新时间轴 new_spans 定位（与两遍管线 _compose_narration_video 内一致）
+    srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips))
+    esc = srt.replace('\\', '/').replace(':', '\\:')
+
+    # ---- 构造单遍滤镜图 ----
+    # 视频链：每段 [0:v]trim → setpts 复位并施加微变速(f) → concat → 烧字幕 → 缩放
+    # 音频链：每段 [0:a]atrim → asetpts 复位 → atempo(1/f 与画面同步) → concat
+    vparts, aparts = [], []
+    for i, (a, b) in enumerate(raw):
+        seg_len = b - a
+        f = _display_factor(seg_len, (voice_durs or {}).get(i)) if voice_durs else 1.0
+        # 复位+微变速一步到位；f≈1 时仍是「复位到 0」以满足 concat 拼接要求
+        vparts.append(f"[0:v]trim=start={a:.3f}:end={b:.3f},setpts={f:.6f}*(PTS-STARTPTS)[sv{i}]")
+        if has_audio:
+            af = (1.0 / f) if abs(f - 1.0) > 0.005 else 1.0
+            # 微变速因子在 ±15% 内，1/f 落在 atempo 安全区间 [0.5,2]，无需链式
+            aparts.append(f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS,atempo={af:.6f}[sa{i}]")
+    n = len(raw)
+    vlabels = ''.join(f'[sv{i}]' for i in range(n))
+    vparts.append(f"{vlabels}concat=n={n}:v=1:a=0[vmid]")
+    vparts.append(f"[vmid]subtitles='{esc}':force_style='{sub_style}'[vsub]")
+    if scale_filter:
+        vparts.append(f"[vsub]{scale_filter}[vout]")
+    else:
+        vparts.append("[vsub]copy[vout]")
+    parts = list(vparts)
+    if has_audio:
+        alabels = ''.join(f'[sa{i}]' for i in range(n))
+        aparts.append(f"{alabels}concat=n={n}:v=0:a=1[amid]")
+        parts += aparts
+
+    cmd = ['-y', '-i', video_path, '-filter_complex', ';'.join(parts), '-map', '[vout]']
+    if has_audio:
+        cmd += ['-map', '[amid]', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
+    else:
+        cmd += ['-an']
+    cmd += _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-movflags', '+faststart', out]
+    rc, o, e = ffmpeg_run(cmd)
+    if rc != 0 or not os.path.exists(out):
+        raise RuntimeError('单遍合并编码失败: ' + e.decode('utf-8', 'ignore')[-300:])
+
+    # 拼接时长校验（与两遍管线一致）：实际 vs 预期，偏差>0.5s 按比例缩放 new_spans
+    actual_dur = probe_audio_len(out) or cur
+    if actual_dur > 0 and abs(actual_dur - cur) > 0.5:
+        _scale = actual_dur / cur
+        _log.info(f'[DIAG] 单遍合并时长偏差: 预期={cur:.1f}s 实际={actual_dur:.1f}s 缩放={_scale:.3f}')
+        new_spans = [(round(s * _scale, 3), round(min(actual_dur, ed * _scale), 3)) for s, ed in new_spans]
+    return out, new_spans, cut_sec
+
+
 def _build_subtitle_style(params):
     """从params构建ffmpeg force_style字幕样式字符串。支持用户自定义。"""
     sub = params.get('subtitle') or {}
@@ -414,7 +589,7 @@ def _build_subtitle_style(params):
 
 
 def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None,
-                             voice_spans=None):
+                             voice_spans=None, burned=False):
     """把解说配音按时间轴混入原视频，烧录解说字幕，可选叠加背景音乐，输出 final.mp4。
     - narr[i] 对应 segs[i]（镜头段时间轴），作为该段字幕与配音文案。
     - tts_paths: [(audio_path, start_sec)]，按各自起始时间对齐到时间轴。
@@ -422,38 +597,26 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
       缺省整段显示（兼容旧行为）。
     - music_path: 可选 BGM，循环铺底、低音量。"""
     vdur = probe_audio_len(video_path) or 10.0
-    # 1) 烧字幕：解说词按段显示；有配音时间窗时字随声走
-    srt = os.path.join(run_dir, 'narr.srt')
-    with open(srt, 'w', encoding='utf-8') as f:
-        def ts(sec):
-            hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60); ms = int((sec % 1) * 1000)
-            return f'{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}'
-        seq = 0
-        for i, (s0, s1) in enumerate(segs):
-            cap = _clean_caption(narr[i] if i < len(narr) else '')
-            if not cap:
-                continue
-            w0, w1 = s0, s1
-            vs = (voice_spans or {}).get(i)
-            if vs:
-                w0 = max(s0, vs[0])
-                w1 = min(s1, max(vs[1], w0 + 0.8))   # 至少显示 0.8s，避免一闪而过
-            seq += 1
-            f.write(f'{seq}\n{ts(w0)} --> {ts(w1)}\n{cap}\n\n')
-    esc = srt.replace('\\', '/').replace(':', '\\:')
-    vsub = os.path.join(run_dir, 'vsub.mp4')
-    sub_style = _build_subtitle_style(params)
-    # 导出选项：分辨率缩放 + 码率
-    vf_parts = [f"subtitles='{esc}':force_style='{sub_style}'"]
-    scale_filter = _w.build_video_filter(params)
-    if scale_filter:
-        vf_parts.append(scale_filter)
-    vf_str = ','.join(vf_parts)
-    bitrate = params.get('bitrate') or None
-    rc, o, e = ffmpeg_run(['-y', '-i', video_path,
-                           '-vf', vf_str,
-                           ] + _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-an', vsub])
-    base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
+    if burned:
+        # P1-1 单遍合并已把字幕+缩放在上一步烧进画面，这里直接复用，不再二次编码
+        base_video = video_path
+    else:
+        # 1) 烧字幕：解说词按段显示；有配音时间窗时字随声走
+        srt = _build_narr_srt(segs, narr, run_dir, voice_spans)
+        esc = srt.replace('\\', '/').replace(':', '\\:')
+        vsub = os.path.join(run_dir, 'vsub.mp4')
+        sub_style = _build_subtitle_style(params)
+        # 导出选项：分辨率缩放 + 码率
+        vf_parts = [f"subtitles='{esc}':force_style='{sub_style}'"]
+        scale_filter = _w.build_video_filter(params)
+        if scale_filter:
+            vf_parts.append(scale_filter)
+        vf_str = ','.join(vf_parts)
+        bitrate = params.get('bitrate') or None
+        rc, o, e = ffmpeg_run(['-y', '-i', video_path,
+                               '-vf', vf_str,
+                               ] + _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-an', vsub])
+        base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
 
     has_orig_audio = _has_audio_track(video_path)
     use_music = bool(music_path) and os.path.exists(music_path or '')
@@ -573,5 +736,6 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
 for _sym in ('_NAR_CPS', '_NAR_MIN_CHARS', '_NAR_MAX_CHARS', '_NAR_MAX_SPEED', '_NAR_MIN_SPEED',
              '_target_chars', '_fit_voice', '_render_narrate',
              '_merge_spans', '_cut_video_by_spans',
+             '_build_narr_srt', '_build_voice_spans', '_cut_and_burn_video',
              '_build_subtitle_style', '_compose_narration_video'):
     setattr(_w, _sym, globals()[_sym])
