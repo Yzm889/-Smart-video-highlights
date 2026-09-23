@@ -1042,6 +1042,7 @@ def _warmup_start(video_path):
 def _warmup_worker(video_path, fp):
     """预热执行体：ASR（写 asr_* 缓存）→ VLM（_vlm_sample_timeline 写 vlm_sample_* 缓存）。
     与正式任务共用缓存键，完成后正式任务直接命中。"""
+    run_dir = None
     try:
         vdur = probe_audio_len(video_path) or 0.0
         if vdur <= 0:
@@ -1071,6 +1072,13 @@ def _warmup_worker(video_path, fp):
     except Exception as e:
         _log.info('[WARMUP] 预热失败（静默，不影响主流程）: %s' % e)
     finally:
+        # S8: 预热产品（ASR/VLM 缓存）已写入 analysis_cache，_warmup_* 仅临时工作区，收尾即删
+        if run_dir and os.path.isdir(run_dir):
+            try:
+                shutil.rmtree(run_dir, ignore_errors=True)
+                _log.info('[WARMUP] 预热临时目录已清理: %s' % os.path.basename(run_dir))
+            except Exception:
+                pass
         with _WARMUP_LOCK:
             _WARMUP_STATE['running'] = False
             _WARMUP_STATE['event'].set()  # 通知等待者（完成/失败都通知）

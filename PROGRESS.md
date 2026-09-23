@@ -362,3 +362,11 @@
 
 **待办**（后续批次）：
 - S8 磁盘清理策略
+
+
+| **S8** | 磁盘清理策略：把 S1 引入的 `_warmup_*` 预热目录纳入清理体系——① `_warmup_worker` 收尾即删自己的 `_warmup_<fp>` run_dir（预热产品已写入 analysis_cache，run_dir 仅临时工作区；成功/失败/取消/无台词均异常安全清理）；② `sweep_run_artifacts` 兜底把 `_warmup_` 前缀孤儿目录纳入 6h 周期回收（防服务崩溃残留）；③ 存储面板 `_storage_scan` 把 `_warmup_*` 从 outputs（keep）改归 run_residual（safe 可删）；④ 面板删除白名单放行 `webui_output/_warmup_<32hex>`，非法形态拒绝 | 修复 S1 遗留：预热目录（含 vlm_progress.json）不再永久滞留磁盘；预热生命周期与缓存生命周期一致（产品入缓存、工作区即删）；面板可见可删 | ✅ |
+| 测试 | 新增 `tests/test_s8_cleanup.py`（9 用例：预热成功/ASR失败/取消/无台词四路径清理、sweep 删孤儿/留近期/前缀即判定、面板分类归 run_residual、白名单放行与拒绝） | 回归 +9 | ✅ |
+
+**S8 后回归**：全量 `280 passed / 24 failed / 2 skipped`（S4 后 271/24/2）——失败 24 项仍为环境敏感基线，**未新增失败**；pyflakes 门禁通过。
+
+**管线升级全部完成**：S5（参数微调）+ S6（TTS 并发）+ S2（ASR GPU）+ S7（推理互斥）+ S1（上传后预热）+ S3（合并 LLM 轮次）+ S4（辅助任务降级）+ S8（磁盘清理策略）。累计新增测试 53 个（232 → 280 passed）。

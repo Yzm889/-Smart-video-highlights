@@ -1918,6 +1918,7 @@ def _storage_dir_size(p):
 # 可被存储面板安全删除的路径白名单（相对项目根，正则匹配；禁止任何穿越/越界子路径）
 _STORAGE_ALLOW = [
     r'^webui_output/run-[^/]+$',
+    r'^webui_output/_warmup_[0-9a-f]{32}$',
     r'^webui_workspace/uploads/up-[0-9A-Za-z-]+$',
     r'^webui_workspace/asr_[0-9]+\.wav$',
     r'^webui_workspace/music_[0-9]+\.(mp3|wav)$',
@@ -1963,7 +1964,7 @@ def _storage_scan():
             continue
         s = _storage_dir_size(p)
         mtime = int(os.path.getmtime(p))
-        if name.startswith('run-'):
+        if name.startswith(('run-', '_warmup_')):
             run_total += s
             run_items.append({'name': name, 'rel': 'webui_output/' + name,
                               'size': s, 'mtime': mtime})
@@ -1973,7 +1974,7 @@ def _storage_scan():
                               'size': s, 'mtime': mtime})
     groups.append({'key': 'outputs', 'label': '成片（webui_output 下日期目录）',
                    'tier': 'keep', 'deletable': False, 'total': out_total, 'items': out_items})
-    groups.append({'key': 'run_residual', 'label': '任务残留（run-* 临时帧/缩略图）',
+    groups.append({'key': 'run_residual', 'label': '任务残留（run-* / _warmup_* 临时产物）',
                    'tier': 'safe', 'deletable': True, 'total': run_total, 'items': run_items})
 
     up_items, up_total = [], 0
@@ -2416,7 +2417,7 @@ def sweep_run_artifacts():
         return 0
     for e in entries:
         try:
-            if not e.is_dir() or not e.name.startswith('run-'):
+            if not e.is_dir() or not e.name.startswith(('run-', '_warmup_')):
                 continue
             dp = e.path
             if os.path.getmtime(dp) > cutoff:
