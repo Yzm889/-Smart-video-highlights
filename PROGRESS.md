@@ -321,6 +321,11 @@
 **回归结果**：全量 `232 passed / 24 failed / 2 skipped`（基线 227/24/2）——失败 24 项与基线一致（沙箱环境敏感：ffmpeg 滤镜能力、无本地模型、无 Ollama 时 VLM mock 对象与实际调用函数不一致），**未新增失败**。
 
 **待办**（后续批次）：
+| **S7** | 本地推理全局互斥（`_gpu_slot` RLock）：`asr_segments`(cuda) / `local_llm_chat`(本地) / `vlm_chat_multi` / `vlm_chat` / `vlm_text`（ollama 本地）进入互斥槽；远端 API、远程 Ollama、CPU 转写不加锁可并行 | 两个任务并发不再互抢 Ollama 反复换模型；GPU 阶段全局串行、CPU/网络阶段可并行 | ✅ |
+| 测试 | 新增 `tests/test_resource_isolation.py`（10 用例：互斥/重入/URL 判定/LLM·VLM·ASR 加锁与免锁路径） | 回归 +10 | ✅ |
+
+**S7 后回归**：全量 `242 passed / 24 failed / 2 skipped`（S5/S6 后 232/24/2）——失败 24 项仍为环境敏感项，**未新增失败**。
+
 - S1 上传后后台预热 ASR+VLM（依赖资源隔离调度先行）
 - S3 合并 LLM 轮次（写稿+对齐 / 剧情理解+对齐 一体化）
 - S4 辅助任务降级 8B 模型、S7 任务按资源隔离调度、S8 磁盘清理策略

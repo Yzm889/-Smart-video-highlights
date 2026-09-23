@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """引擎/工具模块（由 webui_server.py 第4批拆分生成，符号与拆分前等价）。"""
-import os, json, time
+import os, json, threading, time
 # ---- 跨模块依赖（拆分后显式导入） ----
 from cache_utils import HERE, WORKDIR
 from ffmpeg_utils import AbortError, PROGRESS, _TLS, ffmpeg_run
@@ -106,32 +106,42 @@ def asr_segments(video_path, progress=None, pct_range=None):
             return []
         device, ctype = whisper_device()
         _whisper_env_setup()
-        model = WhisperModel(_whisper_load_path(whisper_model_name()), device=device, compute_type=ctype,
-                             download_root=whisper_models_dir())
-        segments, info = model.transcribe(wav, language='zh', vad_filter=True,
-                                          initial_prompt='以下是普通话的句子。')
-        total = 0.0
-        try:
-            total = float(getattr(info, 'duration', 0) or 0)
-        except Exception:
+        _use_gpu = (device == 'cuda')
+
+        def _transcribe():
+            # 模型加载 + 转写 + 消费生成器：整段处于推理态
+            model = WhisperModel(_whisper_load_path(whisper_model_name()), device=device, compute_type=ctype,
+                                 download_root=whisper_models_dir())
+            segments, info = model.transcribe(wav, language='zh', vad_filter=True,
+                                              initial_prompt='以下是普通话的句子。')
             total = 0.0
-        lo, hi = (pct_range or (0, 0))
-        segs = []
-        n = 0
-        for s in segments:
-            n += 1
-            # 段间检查取消：transcribe 一旦启动无法从外部中断，只能在消费间隙响应
-            if _aborted():
-                raise AbortError('用户取消了任务')
-            if s.text and s.text.strip():
-                segs.append({'start': float(s.start), 'end': float(s.end),
-                             'text': (s.text or '').strip()})
-            if progress is not None and (n % 3 == 0):
-                frac = min(1.0, (float(s.end) / total)) if total > 0 else 0.5
-                progress['pct'] = int(lo + (hi - lo) * frac)
-                progress['phase'] = ('识别台词 %s / %s' % (_fmt_hms(s.end), _fmt_hms(total))
-                                     if total > 0 else '识别台词…')
-        return segs
+            try:
+                total = float(getattr(info, 'duration', 0) or 0)
+            except Exception:
+                total = 0.0
+            lo, hi = (pct_range or (0, 0))
+            segs = []
+            n = 0
+            for s in segments:
+                n += 1
+                # 段间检查取消：transcribe 一旦启动无法从外部中断，只能在消费间隙响应
+                if _aborted():
+                    raise AbortError('用户取消了任务')
+                if s.text and s.text.strip():
+                    segs.append({'start': float(s.start), 'end': float(s.end),
+                                 'text': (s.text or '').strip()})
+                if progress is not None and (n % 3 == 0):
+                    frac = min(1.0, (float(s.end) / total)) if total > 0 else 0.5
+                    progress['pct'] = int(lo + (hi - lo) * frac)
+                    progress['phase'] = ('识别台词 %s / %s' % (_fmt_hms(s.end), _fmt_hms(total))
+                                         if total > 0 else '识别台词…')
+            return segs
+
+        # S7: GPU 转写独占推理槽；CPU 转写不占显存，可与其他推理并行
+        if _use_gpu:
+            with _gpu_slot():
+                return _transcribe()
+        return _transcribe()
     except Exception:
         try:
             if os.path.exists(wav):
@@ -181,9 +191,17 @@ def local_llm_chat(prompt, system=None, timeout=180):
         headers['Authorization'] = 'Bearer ' + cfg['api_key']
     req = urllib.request.Request(cfg['base_url'] + '/chat/completions',
                                  data=_json.dumps(payload).encode('utf-8'), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = _json.loads(resp.read().decode('utf-8'))
-    return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+
+    def _call():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+
+    # S7: 本地推理独占 GPU 槽；远端（云端/远程 Ollama）不加锁
+    if _is_local_url(cfg['base_url']):
+        with _gpu_slot():
+            return _call()
+    return _call()
 
 def mirror_cfg():
     """国内下载镜像配置：让 whisper(来自 HuggingFace) 与 ollama 模型拉取走镜像/代理，免科学上网。"""
@@ -238,11 +256,19 @@ def vlm_chat_multi(image_paths, text, system=None, timeout=240):
         payload = {'model': c['model'], 'messages': messages, 'max_tokens': 1500, 'temperature': 0.7}
         url = c['base_url'] + '/v1/chat/completions'
     req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = _json.loads(resp.read().decode('utf-8'))
-    if c['mode'] == 'ollama':
-        return (data.get('message') or {}).get('content', '')
-    return (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
+
+    def _call():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        if c['mode'] == 'ollama':
+            return (data.get('message') or {}).get('content', '')
+        return (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
+
+    # S7: 本地 ollama 推理独占 GPU 槽；openai 模式（可能云端）与远程不加锁
+    if c['mode'] == 'ollama' and _is_local_url(c['base_url']):
+        with _gpu_slot():
+            return _call()
+    return _call()
 
 def whisper_device():
     """返回 (device, compute_type)：检测到 NVIDIA CUDA 就用 GPU 加速（float16），否则回退 CPU(int8)。
@@ -315,3 +341,29 @@ def _strip_think(text):
     out = _re.sub(r'<think>.*?</think>', '', text, flags=_re.S)
     out = _re.sub(r'<think>.*$', '', out, flags=_re.S)   # 未闭合残段：丢弃其后全部内容
     return out.strip()
+
+# ---------------------------------------------------------------------------
+# S7 · GPU 资源隔离（本地推理全局互斥）
+# ---------------------------------------------------------------------------
+# 背景：12GB 显存无法同时驻留 VLM(约6.5G) 与 14B LLM(约9G)；两个任务并发时
+# Ollama 会反复换模型（比串行更慢）。方案：所有「本地推理」入口共用一把进程级
+# 互斥锁 —— 同一时刻只有一个任务在推理；网络远端（云端 API / 远程 Ollama）与
+# CPU 转写（Whisper device=cpu）不占用本地显存，不加锁、可并行。
+_GPU_LOCK = threading.RLock()   # RLock：防同一线程内重入死锁
+
+
+def _is_local_url(url):
+    """判断 base_url 是否指向本机（localhost/127.0.0.1/::1）。远程 Ollama/云端不加 GPU 锁。"""
+    host = (url or '').split('://', 1)[-1].split('/', 1)[0].split(':', 1)[0].lower()
+    return host in ('localhost', '127.0.0.1', '::1', '0.0.0.0', '')
+
+
+def _gpu_slot():
+    """本地推理互斥槽：with _gpu_slot(): ... 期间独占本地推理资源。
+    仅用于「本地」模型调用（见各调用点注释）；远端请求不应进入。"""
+    import contextlib
+    @contextlib.contextmanager
+    def _inner():
+        with _GPU_LOCK:
+            yield
+    return _inner()

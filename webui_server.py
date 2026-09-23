@@ -61,7 +61,7 @@ _EMOTION_MAP = tts_engines._EMOTION_MAP
 _EMOTION_VOICES = tts_engines._EMOTION_VOICES
 _CHATTS = tts_engines._CHATTS
 
-from ai_providers import AI_CONFIG_PATH, _aborted, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # [3.2] 引擎层 re-export
+from ai_providers import AI_CONFIG_PATH, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # [3.2] 引擎层 re-export
 
 from text_utils import _clamp_line, _clean_caption, _strip_tts_markup
 from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \
@@ -866,11 +866,19 @@ def vlm_chat(image_path, text, system=None, timeout=180):
         payload = {'model': c['model'], 'messages': messages, 'max_tokens': 600, 'temperature': 0.7}
         url = c['base_url'] + '/v1/chat/completions'
     req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = _json.loads(resp.read().decode('utf-8'))
-    if c['mode'] == 'ollama':
-        return (data.get('message') or {}).get('content', '')
-    return (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
+
+    def _call():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        if c['mode'] == 'ollama':
+            return (data.get('message') or {}).get('content', '')
+        return (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
+
+    # S7: 本地 ollama 推理独占 GPU 槽；openai 模式（可能云端）与远程不加锁
+    if c['mode'] == 'ollama' and _is_local_url(c['base_url']):
+        with _gpu_slot():
+            return _call()
+    return _call()
 
 
 
@@ -893,11 +901,19 @@ def vlm_text(text, system=None, timeout=180):
         payload = {'model': c['model'], 'messages': messages, 'max_tokens': 1200, 'temperature': 0.8}
         url = c['base_url'] + '/v1/chat/completions'
     req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = _json.loads(resp.read().decode('utf-8'))
-    if c['mode'] == 'ollama':
-        return _strip_think((data.get('message') or {}).get('content', ''))
-    return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+
+    def _call():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        if c['mode'] == 'ollama':
+            return _strip_think((data.get('message') or {}).get('content', ''))
+        return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+
+    # S7: 本地 ollama 推理独占 GPU 槽；openai 模式（可能云端）与远程不加锁
+    if c['mode'] == 'ollama' and _is_local_url(c['base_url']):
+        with _gpu_slot():
+            return _call()
+    return _call()
 
 
 VLM_PULL = {'model': None, 'running': False, 'ok': None, 'msg': '', 'pct': 0}
