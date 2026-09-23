@@ -235,10 +235,12 @@ def test_generate_narration_economy_local_rewrite(monkeypatch):
 def test_ai_status_includes_local(monkeypatch):
     import webui_server as S
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
+    monkeypatch.setattr(S, '_ai_status_cache', {'data': None, 'time': 0})  # ai_status 有 5 秒缓存，先清再断言
     st = S.ai_status()
     assert 'local' in st
     assert st['local'] is True
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: False)
+    monkeypatch.setattr(S, '_ai_status_cache', {'data': None, 'time': 0})
     assert S.ai_status()['local'] is False
 
 
@@ -370,6 +372,12 @@ def test_compose_applies_ducking(monkeypatch, tmp_path):
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
+        if args and isinstance(args[-1], str) and args[-1].lower().endswith(('.mp4', '.wav')) \
+                and not args[-1].startswith('-'):
+            try:
+                open(args[-1], 'wb').write(b'0')  # 实现校验 os.path.exists(输出)，fake 须落盘
+            except OSError:
+                pass
         return 0, b'', b'Stream #0:1: Audio: aac'  # 任何调用都成功，且含音轨
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(ffmpeg_utils, 'ffmpeg_run', fake_ffmpeg)  # b4拆分: 模块内部(_has_audio_track等)调用同走 fake
@@ -478,6 +486,12 @@ def test_compose_ducking_expression_quoted(monkeypatch, tmp_path):
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
+        if args and isinstance(args[-1], str) and args[-1].lower().endswith(('.mp4', '.wav')) \
+                and not args[-1].startswith('-'):
+            try:
+                open(args[-1], 'wb').write(b'0')  # 实现校验 os.path.exists(输出)，fake 须落盘
+            except OSError:
+                pass
         return 0, b'', b'Stream #0:1: Audio: aac'
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(ffmpeg_utils, 'ffmpeg_run', fake_ffmpeg)  # b4拆分: 模块内部调用同走 fake
@@ -498,6 +512,12 @@ def test_compose_clips_tts_to_segment(monkeypatch, tmp_path):
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
+        if args and isinstance(args[-1], str) and args[-1].lower().endswith(('.mp4', '.wav')) \
+                and not args[-1].startswith('-'):
+            try:
+                open(args[-1], 'wb').write(b'0')  # 实现校验 os.path.exists(输出)，fake 须落盘
+            except OSError:
+                pass
         return 0, b'', b'Stream #0:1: Audio: aac'
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(video_render, 'ffmpeg_run', fake_ffmpeg)
@@ -516,6 +536,12 @@ def test_compose_supports_two_tuple_tts(monkeypatch, tmp_path):
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
+        if args and isinstance(args[-1], str) and args[-1].lower().endswith(('.mp4', '.wav')) \
+                and not args[-1].startswith('-'):
+            try:
+                open(args[-1], 'wb').write(b'0')  # 实现校验 os.path.exists(输出)，fake 须落盘
+            except OSError:
+                pass
         return 0, b'', b'Stream #0:1: Audio: aac'
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(video_render, 'ffmpeg_run', fake_ffmpeg)
@@ -985,8 +1011,16 @@ def test_compose_srt_follows_voice(monkeypatch, tmp_path):
     """字幕窗口应跟随配音（有声才显字、念完即收），而不是挂满整个镜头段。"""
     import webui_server as S
     import video_render
-    monkeypatch.setattr(S, 'ffmpeg_run', lambda args, input_data=None: (0, b'', b''))
-    monkeypatch.setattr(video_render, 'ffmpeg_run', lambda args, input_data=None: (0, b'', b''))
+    def _fake_ffmpeg(args, input_data=None):
+        if args and isinstance(args[-1], str) and args[-1].lower().endswith('.mp4') \
+                and not args[-1].startswith('-'):
+            try:
+                open(args[-1], 'wb').write(b'0')  # 实现校验 os.path.exists(输出)，fake 须落盘
+            except OSError:
+                pass
+        return 0, b'', b''
+    monkeypatch.setattr(S, 'ffmpeg_run', _fake_ffmpeg)
+    monkeypatch.setattr(video_render, 'ffmpeg_run', _fake_ffmpeg)
     monkeypatch.setattr(S, '_has_audio_track', lambda p: False)
     monkeypatch.setattr(video_render, '_has_audio_track', lambda p: False)
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 3.0 if str(p).endswith('.wav') else 20.0)
@@ -1162,8 +1196,9 @@ def test_segment_timeline_clamps_max_seg(monkeypatch):
     """maxSeg 服务端钳制 4~600s：API/指令路径可绕过前端 min=8，极端值会切出海量碎段。"""
     import webui_server as S
     import beat_analysis as B
+    import movie_narrator as M
     monkeypatch.setattr(B, 'detect_scene_cuts', lambda v, threshold=0.3: [])
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 40.0)
+    monkeypatch.setattr(M, 'probe_audio_len', lambda p: 40.0)  # _segment_timeline 绑定 M.probe_audio_len
     segs = S._segment_timeline('fake.mp4', max_seg=0.5)
     assert len(segs) <= 10, '极端 max_seg 必须被钳制（40s/4s=10 段）：%d' % len(segs)
     segs2 = S._segment_timeline('fake.mp4', max_seg=None)
@@ -1608,7 +1643,9 @@ def test_video_encode_args_cpu_mode_uses_libx264():
     _write_video_cfg(S, 'cpu')
     args = S.video_encode_args(20)
     assert args[0:2] == ['-c:v', 'libx264']
-    assert 'veryfast' in args
+    # 2026-09-08 质量升级：veryfast/no-tune → medium + tune film（影视素材专用，PSNR 52.29dB）
+    assert 'medium' in args
+    assert 'film' in args
     assert args[args.index('-crf') + 1] == '20'
 
 
@@ -1618,7 +1655,8 @@ def test_video_encode_args_gpu_when_usable(monkeypatch):
     monkeypatch.setattr(S, '_nvenc_usable', lambda: True)
     args = S.video_encode_args(20)
     assert args[0:2] == ['-c:v', 'h264_nvenc']
-    assert args[args.index('-qp') + 1] == '20'
+    # 2026-09-08 质量升级：constqp(-qp) → vbr + -cq（码率受控，PSNR 48.60→54.40dB）
+    assert args[args.index('-cq') + 1] == '20'
 
 
 def test_video_encode_args_falls_back_when_gpu_unusable(monkeypatch):
@@ -1730,7 +1768,8 @@ def test_expand_shots_only_when_needed():
 
 def test_model_align_parses_valid_json(monkeypatch):
     import webui_server as S
-    monkeypatch.setattr(S, '_llm_text', lambda *a, **k: '[3, 6, 9, 12]')
+    import movie_narrator as M
+    monkeypatch.setattr(M, '_llm_text', lambda *a, **k: '[3, 6, 9, 12]')  # _model_align_shots 绑定 M._llm_text
     assert S._model_align_shots(_shots(12), ['甲。', '乙。', '丙。', '丁。']) == [3, 6, 9, 12]
 
 
@@ -1833,11 +1872,12 @@ def test_condense_offline_fallback_uses_merge_and_cap(monkeypatch):
 def test_fill_missing_lines_continues_in_voice(monkeypatch):
     """行数不足时按上文口吻续写，不回填模板（风格一致）。"""
     import webui_server as S
+    import movie_narrator as M
     captured = {}
     def fake_llm(prompt, system=None, timeout=180):
         captured['prompt'] = prompt
         return '瑞克在医院醒来，发现世界已变。\n他开枪打死第一个行尸。'
-    monkeypatch.setattr(S, '_llm_text', fake_llm)
+    monkeypatch.setattr(M, '_llm_text', fake_llm)  # _fill_missing_lines 绑定 M._llm_text
     existing = ['副警长瑞克在巡逻车里和肖恩聊天。']
     remaining = [(10.0, 15.0, ''), (15.0, 20.0, '')]
     filled = S._fill_missing_lines(existing, remaining, {})
@@ -1850,13 +1890,14 @@ def test_fill_missing_lines_continues_in_voice(monkeypatch):
 def test_generate_narration_no_template_padding(monkeypatch):
     """本地文本路径行数不足时改用续写而非模板回填（风格一致、内容匹配）。"""
     import webui_server as S
+    import movie_narrator as M
     monkeypatch.setattr(S, 'vlm_enabled', lambda: False)
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
-    # 主生成只回 1 行（模型偶尔偷懒）→ 触发续写补齐
-    monkeypatch.setattr(S, 'local_llm_chat',
+    # 主生成只回 1 行（模型偶尔偷懒）→ 触发续写补齐（_local_narrate 绑定 M.local_llm_chat）
+    monkeypatch.setattr(M, 'local_llm_chat',
                         lambda prompt, system=None, timeout=180: '春天来了樱花盛开')
-    # 续写补齐剩余 2 行
-    monkeypatch.setattr(S, '_llm_text',
+    # 续写补齐剩余 2 行（_fill_missing_lines 绑定 M._llm_text）
+    monkeypatch.setattr(M, '_llm_text',
                         lambda prompt, system=None, timeout=180: '他转身迎战群敌\n微风拂过落英缤纷')
     segs = [(0.0, 5.0), (5.0, 10.0), (10.0, 15.0)]
     asr = []
@@ -2137,7 +2178,8 @@ def test_pull_allowed_when_idle(monkeypatch):
 def test_seg_visual_captions_parse(monkeypatch):
     """逐段画面描述：VLM 按「第k段: 内容」输出后正确解析为段下标映射。"""
     import webui_server as S
-    monkeypatch.setattr(S, 'vlm_chat_multi',
+    import movie_narrator as M
+    monkeypatch.setattr(M, 'vlm_chat_multi',  # _seg_visual_captions 绑定 M.vlm_chat_multi
                         lambda imgs, text, system=None, timeout=240: chr(10).join(['第1段: 樱花树下', '第2段: 男子奔跑', '第3段: 城市夜景']))
     frames = {0: 'f0.jpg', 1: 'f1.jpg', 2: 'f2.jpg'}
     caps = S._seg_visual_captions(frames, [(0, 5, ''), (5, 10, ''), (10, 15, '')], {})
@@ -2147,18 +2189,20 @@ def test_seg_visual_captions_parse(monkeypatch):
 def test_narration_prompt_includes_seg_visuals(monkeypatch):
     """回归：写稿 prompt 必须包含每段「画面：」描述与不漂移规则（解说贴合画面的地基）。"""
     import webui_server as S
+    import movie_narrator as M
     prompts = []
 
     def fake_chat(prompt, system=None, timeout=180):
         prompts.append(prompt)
         return chr(10).join(['第一句', '第二句'])
 
-    monkeypatch.setattr(S, 'local_llm_chat', fake_chat)
-    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
-    monkeypatch.setattr(S, '_local_model_available', lambda: True)
-    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params, progress=None: {0: '画面A', 1: '画面B'})
-    monkeypatch.setattr(S, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
-    monkeypatch.setattr(S, '_beat_plan', lambda per_seg, plot, params: {
+    # local_vlm_narrate 内部符号均绑定在 movie_narrator 模块（非 webui_server re-export）
+    monkeypatch.setattr(M, 'local_llm_chat', fake_chat)
+    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)  # _w.local_llm_enabled 晚绑定
+    monkeypatch.setattr(M, '_local_model_available', lambda: True)
+    monkeypatch.setattr(M, '_seg_visual_captions', lambda frames, per_seg, params, progress=None: {0: '画面A', 1: '画面B'})
+    monkeypatch.setattr(M, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
+    monkeypatch.setattr(M, '_beat_plan', lambda per_seg, plot, params: {
         'summary': '', 'beats': [{'i': i + 1, 'importance': 'advance', 'role': ''} for i in range(2)]})
     lines, used = S.local_vlm_narrate([(0.0, 5.0, ''), (5.0, 10.0, '')], {0: 'f0.jpg', 1: 'f1.jpg'}, {})
     assert used is True
@@ -2182,29 +2226,32 @@ def test_genre_template_block():
 def test_detect_genre(monkeypatch):
     """自动判型：LLM 回答类型名 → 映射 key；无模型/胡答 → 空串。"""
     import webui_server as S
+    import movie_narrator as M
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
-    monkeypatch.setattr(S, 'local_llm_chat', lambda prompt, system=None, timeout=60: '悬疑/烧脑/反转')
+    # S4 后 _detect_genre 走 _llm_light（轻量→主模型路由），mock 打在 M 上
+    monkeypatch.setattr(M, '_llm_light', lambda prompt, system='', timeout=180: '悬疑/烧脑/反转')
     assert S._detect_genre('一段关于密室逃生的故事') == 'suspense'
-    monkeypatch.setattr(S, 'local_llm_chat', lambda prompt, system=None, timeout=60: '我不知道')
+    monkeypatch.setattr(M, '_llm_light', lambda prompt, system='', timeout=180: '我不知道')
     assert S._detect_genre('乱七八糟的内容') == ''
 
 
 def test_narration_prompt_includes_genre(monkeypatch):
     """回归：选择题材后，写稿 prompt 必须注入对应题材模板。"""
     import webui_server as S
+    import movie_narrator as M
     prompts = []
 
     def fake_chat(prompt, system=None, timeout=180):
         prompts.append(prompt)
         return chr(10).join(['第一句', '第二句'])
 
-    monkeypatch.setattr(S, 'local_llm_chat', fake_chat)
-    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
-    monkeypatch.setattr(S, '_local_model_available', lambda: True)
-    monkeypatch.setattr(S, '_detect_genre', lambda plot: 'suspense')
-    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params, progress=None: {0: '画面A', 1: '画面B'})
-    monkeypatch.setattr(S, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
-    monkeypatch.setattr(S, '_beat_plan', lambda per_seg, plot, params: {
+    monkeypatch.setattr(M, 'local_llm_chat', fake_chat)
+    monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)  # _w.local_llm_enabled 晚绑定
+    monkeypatch.setattr(M, '_local_model_available', lambda: True)
+    monkeypatch.setattr(M, '_detect_genre', lambda plot: 'suspense')
+    monkeypatch.setattr(M, '_seg_visual_captions', lambda frames, per_seg, params, progress=None: {0: '画面A', 1: '画面B'})
+    monkeypatch.setattr(M, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
+    monkeypatch.setattr(M, '_beat_plan', lambda per_seg, plot, params: {
         'summary': '', 'beats': [{'i': i + 1, 'importance': 'advance', 'role': ''} for i in range(2)]})
     lines, used = S.local_vlm_narrate([(0.0, 5.0, ''), (5.0, 10.0, '')], {0: 'f0.jpg', 1: 'f1.jpg'},
                                       {'genre': 'suspense'})

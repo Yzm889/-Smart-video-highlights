@@ -126,9 +126,10 @@ def test_full_script_uses_model_json(monkeypatch):
     model_json = ('{"title":"行尸走肉","hook":"开场钩子内容","beats":'
                   '[{"text":"第一节解说词内容够长","keywords":["瑞克"],"importance":"key"}],'
                   '"outro":"结尾升华"}')
+    import movie_narrator as M
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
     monkeypatch.setattr(S, 'local_llm_ping', lambda: (True, 'ok'))
-    monkeypatch.setattr(S, 'local_llm_chat', lambda *a, **k: model_json)
+    monkeypatch.setattr(M, 'local_llm_chat', lambda *a, **k: model_json)  # llm_movie_full_script 绑定 M.local_llm_chat
     sc = S.llm_movie_full_script('行尸走肉', '一段剧情')
     assert sc['hook'] == '开场钩子内容'
     assert sc['beats'][0]['text'] == '第一节解说词内容够长'
@@ -169,9 +170,10 @@ def test_target_sec_controls_beat_count(monkeypatch, target, lo, hi):
         seen['prompt'] = prompt
         return '{"beats":[{"text":"一" * 50}]}'
 
+    import movie_narrator as M
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
     monkeypatch.setattr(S, 'local_llm_ping', lambda: (True, 'ok'))
-    monkeypatch.setattr(S, 'local_llm_chat', fake_chat)
+    monkeypatch.setattr(M, 'local_llm_chat', fake_chat)  # 绑定 movie_narrator.local_llm_chat
     S.llm_movie_full_script('X', '剧情', target_sec=target)
     if target is None:
         assert '这一版请写成约' not in seen.get('prompt', '')

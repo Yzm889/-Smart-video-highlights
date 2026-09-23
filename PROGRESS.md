@@ -370,3 +370,23 @@
 **S8 后回归**：全量 `280 passed / 24 failed / 2 skipped`（S4 后 271/24/2）——失败 24 项仍为环境敏感基线，**未新增失败**；pyflakes 门禁通过。
 
 **管线升级全部完成**：S5（参数微调）+ S6（TTS 并发）+ S2（ASR GPU）+ S7（推理互斥）+ S1（上传后预热）+ S3（合并 LLM 轮次）+ S4（辅助任务降级）+ S8（磁盘清理策略）。累计新增测试 53 个（232 → 280 passed）。
+
+---
+
+## 🐞 24 项失败基线修复（2026-09-23）
+
+S1–S8 全量回归恒定的 `24 failed` 逐项根因排查并清零，**生产实现零改动**（唯一「修复」是实现契约核实后测试断言同步）：
+
+| 类 | 项数 | 根因 | 修复 |
+|---|---|---|---|
+| **A** | 16 | `movie_narrator` 内部函数直接绑定 `cache_utils`/`ai_providers` 符号（文件顶部 `from X import ...`，调用处用裸名），测试 `monkeypatch.setattr(S, ...)` 打在 `webui_server` 的 re-export 属性上——**从未生效**（如 `_segment_timeline`/`_model_align_shots`/`_fill_missing_lines`/`_seg_visual_captions`/`local_vlm_narrate` 写稿链/`llm_movie_full_script`/`_detect_genre`） | 测试 mock 目标全部改到 `movie_narrator` 模块（晚绑定 `_w.xxx` 仍打 W） |
+| **B** | 2 | `video_encode_args` 2026-09-08 质量升级后契约变化：x264 `veryfast`→`medium + tune film`、nvenc `constqp -qp`→`vbr -cq`，测试仍期望旧值 | 测试断言更新为新契约（实现不动） |
+| **C** | 1 | `ai_status` 有 5 秒结果缓存（`_ai_status_cache`），连续两次断言命中旧缓存 | 断言前重置缓存 |
+| **D** | 5 | compose 系列测试的 fake_ffmpeg 只返回成功码**不落盘输出文件**，而 `_compose_narration_video` 有 `os.path.exists(输出)` 校验 → 走降级链最终 `混音失败` | fake 在输出路径（`args[-1]` 为 .mp4/.wav 且非 `-` 开头）创建空文件 |
+| **E** | 5 | `test_vlm_resume` 两重根因：① `_aborted` 在 movie_narrator 直接绑定 `ai_providers._aborted`（读 ai_providers 侧 PROGRESS，与 `webui_server.PROGRESS` 非同源），mock W.PROGRESS 从未生效；② 缓存/抽帧符号绑定在 movie_narrator 且只 mock W 层，真实 `_cache_save` 把空结果写入**持久 analysis_cache**（同 key 永久命中短路，且污染可泄漏到同机其他会话） | fixture 分层 mock（W 晚绑定层：`vlm_enabled/vlm_ping/vlm_cfg/vlm_chat`；M 直接绑定层：`vlm_cfg/缓存/抽帧/vlm_chat_multi/_aborted`）；取消改用 `Env.abort_now` 开关 mock 假体 `M._aborted` |
+
+**结论**：24 项中 21 项为测试 mock 与实现绑定错位 / 契约过时 / 缓存污染，**非生产实现 bug**；3 项为测试契约错误（`target_sec` 批量 mock 未生效、批数用整除未算余数）。修复后全量回归：
+
+> **`304 passed / 0 failed / 2 skipped`**（S8 后 280/24/2 → 修复 24 项）；`python -m pyflakes webui_server.py tests/` 退出码 0。
+
+**遗留**：沙箱环境 2 项 skipped 为环境敏感（无本地模型等），与实现无关。

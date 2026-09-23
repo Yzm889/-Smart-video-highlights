@@ -47,6 +47,7 @@ class Env:
         self.abort_at = None
         self.fail_at = None
         self.saved = []
+        self.abort_now = False
         self.asr = [{'start': 0.0, 'end': VDUR, 'text': '全片都有台词'}]
 
     def reset(self):
@@ -56,10 +57,12 @@ class Env:
         self.abort_at = None
         self.fail_at = None
         self.saved = []
-        self.set_abort(False)
+        self.abort_now = False
 
     def set_abort(self, on):
-        W.PROGRESS['vlm-resume-test']['abort'] = bool(on)
+        # _aborted 在 movie_narrator 直接绑定 ai_providers._aborted（读 ai_providers.PROGRESS，
+        # 与 webui_server.PROGRESS 非同源）；测试用可开关假体 mock M._aborted 控制取消。
+        self.abort_now = bool(on)
 
     # --- 假 VLM ---
     def _chat_multi(self, frames, prompt, system=None, timeout=30):
@@ -89,6 +92,7 @@ class Env:
 
 
 import webui_server as W  # noqa: E402  (需在 ROOT 入 sys.path 之后)
+import movie_narrator as M  # noqa: E402  (测试同时 mock W 晚绑定层与 M 直接绑定层)
 
 
 @pytest.fixture(scope='module')
@@ -96,29 +100,36 @@ def env():
     work = tempfile.mkdtemp(prefix='vlm_resume_')
     e = Env(work)
     # 保存原实现，测试结束后恢复，避免污染同进程其他测试
-    orig = {n: getattr(W, n) for n in (
-        'vlm_enabled', 'vlm_ping', 'vlm_cfg', '_video_cache_key', '_cache_load',
-        '_cache_save', '_sample_frame_cache_dir', '_sample_frame_cache_ready',
-        '_sample_frame_cache_mark', '_sample_frame_cache_trim', 'vlm_chat_multi', 'vlm_chat')}
+    # 关键：_vlm_sample_timeline 内部混合两类绑定——
+    #   ① 直接绑定 movie_narrator 的符号（cache_utils / ai_providers）：mock 必须打在 M 上；
+    #   ② 经 _w. 晚绑定宿主（webui_server）：mock 打在 W 上。
+    # 此前只 mock W 时，真实 cache_utils._cache_save 会把空结果写入持久 analysis_cache，
+    # 同 key 永久命中短路，全部断言失效（污染还可能影响同机其他会话）。
+    w_orig = {n: getattr(W, n) for n in ('vlm_enabled', 'vlm_ping', 'vlm_cfg', 'vlm_chat')}
+    m_orig = {n: getattr(M, n) for n in (
+        'vlm_cfg', '_video_cache_key', '_cache_load', '_cache_save',
+        '_sample_frame_cache_dir', '_sample_frame_cache_ready',
+        '_sample_frame_cache_mark', '_sample_frame_cache_trim',
+        'vlm_chat_multi', '_aborted')}
     W.vlm_enabled = lambda: True
     W.vlm_ping = lambda: (True, '')
     W.vlm_cfg = lambda: {'model': 'test-model'}
-    W._video_cache_key = lambda vp, suffix='': 'FINGERPRINT-A'
-    W._cache_load = lambda key: None
-    W._cache_save = lambda key, value: e.saved.append((key, value))
-    W._sample_frame_cache_dir = lambda vp, itv: e.frame_dir
-    W._sample_frame_cache_ready = lambda d, n: True
-    W._sample_frame_cache_mark = lambda *a, **k: None
-    W._sample_frame_cache_trim = lambda: None
-    W.vlm_chat_multi = e._chat_multi
-    W.vlm_chat = e._chat_one
-    # _aborted() 依赖线程局部 runid + PROGRESS，这里手工挂上
-    W._TLS.runid = 'vlm-resume-test'
-    W.PROGRESS['vlm-resume-test'] = {'abort': False}
+    W.vlm_chat = e._chat_one  # _w.vlm_chat 晚绑定（单帧路径）
+    M.vlm_cfg = lambda: {'model': 'test-model'}
+    M._video_cache_key = lambda vp, suffix='': 'FINGERPRINT-A'
+    M._cache_load = lambda key: None
+    M._cache_save = lambda key, value: e.saved.append((key, value))
+    M._sample_frame_cache_dir = lambda vp, itv: e.frame_dir
+    M._sample_frame_cache_ready = lambda d, n: True
+    M._sample_frame_cache_mark = lambda *a, **k: None
+    M._sample_frame_cache_trim = lambda: None
+    M.vlm_chat_multi = e._chat_multi  # 直接名（批量路径）
+    M._aborted = lambda: e.abort_now  # 取消用测试开关控制（不依赖 PROGRESS/_TLS 对象同一性）
     yield e
-    for n, fn in orig.items():
+    for n, fn in w_orig.items():
         setattr(W, n, fn)
-    W.PROGRESS.pop('vlm-resume-test', None)
+    for n, fn in m_orig.items():
+        setattr(M, n, fn)
     _cleanup_dir(work)
 
 
@@ -194,8 +205,9 @@ def test_stale_progress_ignored(env):
                                         'completed': [], 'results': {}})
     env.run()
     assert not os.path.exists(env.prog_file), '旧进度未被忽略重建'
-    assert env.calls == N_SAMPLES // BATCH, '指纹不匹配时应重跑全部 %d 批，实际 %d 次' % (
-        N_SAMPLES // BATCH, env.calls)
+    # 60 点按 8 帧一批：range(0,60,8) 实际 8 批（余数 4 帧也发起一次调用），整除 7 是错误契约
+    assert env.calls == (N_SAMPLES + BATCH - 1) // BATCH, '指纹不匹配时应重跑全部 %d 批，实际 %d 次' % (
+        (N_SAMPLES + BATCH - 1) // BATCH, env.calls)
 
 
 def test_failed_batch_retried(env):
