@@ -8,7 +8,8 @@
 import logging, os, sys, json, math, random, re, shutil, subprocess, threading, time, base64, itertools, tempfile
 
 from ai_providers import (load_ai_config, _aborted, asr_segments,
-    local_llm_cfg, local_llm_chat, vlm_cfg, vlm_chat_multi, whisper_model_name)
+    local_llm_cfg, local_llm_chat, local_llm_light_chat, vlm_cfg, vlm_chat_multi,
+    whisper_model_name)
 from cache_utils import (ANALYSIS_VERSION, _file_fp, _analysis_cache_load, _analysis_cache_save,
     _cache_load, _cache_save, _video_cache_key,
     _sample_frame_cache_dir, _sample_frame_cache_mark, _sample_frame_cache_ready,
@@ -139,12 +140,8 @@ def _beat_plan(per_seg, plot, params):
               '{"summary":"...","beats":[{"i":1,"importance":"advance","role":"..."}]}\n\n'
               + '\n'.join(ctx))
     out = None
-    use_local = _local_model_available()
     try:
-        if use_local:
-            out = local_llm_chat(prompt, system=sys_, timeout=240)
-        else:
-            out = _w.vlm_text(prompt, system=sys_, timeout=240)
+        out = _llm_light(prompt, system=sys_, timeout=240)
     except Exception:
         out = None
     data = _try_parse_json(out)
@@ -411,8 +408,8 @@ def _detect_genre(plot):
         return ''
     names = '、'.join(v['name'] for v in GENRE_TEMPLATES.values())
     try:
-        out = local_llm_chat('这段视频的剧情梗概：' + str(plot)[:600] + '。它最适合按哪类题材解说？只回答其中一个类型名（' + names + ' 之一），不要任何其他内容。',
-                              system='只输出类型名。', timeout=60)
+        out = _llm_light('这段视频的剧情梗概：' + str(plot)[:600] + '。它最适合按哪类题材解说？只回答其中一个类型名（' + names + ' 之一），不要任何其他内容。',
+                         system='只输出类型名。', timeout=60)
     except Exception:
         return ''
     out = (out or "").strip()
@@ -1102,6 +1099,19 @@ def _llm_text(prompt, system='', timeout=180):
         return _w.vlm_text(prompt, system=system, timeout=timeout)
     except Exception:
         return None
+
+
+def _llm_light(prompt, system='', timeout=180):
+    # S4: 辅助任务优先走轻量模型（local.light_model）；未配置/失败回退主模型 _llm_text。
+    # NARRATE_LIGHT_LLM=0 可整体关闭（辅助任务直接走主模型）。
+    if os.environ.get('NARRATE_LIGHT_LLM') != '0':
+        try:
+            r = local_llm_light_chat(prompt, system=system, timeout=timeout)
+            if r and r.strip():
+                return r
+        except Exception:
+            pass
+    return _llm_text(prompt, system=system, timeout=timeout)
 
 
 def _asr_text_in(asr, s, e):
@@ -2061,7 +2071,7 @@ def _infer_scene_story(scenes, asr=None, movie_name='', progress=None, window=10
             head += '【已发生的前情】\n' + prev_summary + '\n'
         prompt = head + '\n【场景记录】\n' + '\n'.join(lines)
         try:
-            resp = _llm_text(prompt, '你是影视剧情分析师，擅长从画面与台词还原剧情。', timeout=240)
+            resp = _llm_light(prompt, '你是影视剧情分析师，擅长从画面与台词还原剧情。', timeout=240)
         except Exception:
             resp = None
         parsed = _story_parse_chunk(resp or '') if resp else {}
@@ -2168,7 +2178,7 @@ def _llm_align_beats_to_scenes(beats, scenes, movie_name='', scene_story=None):
     # 优先本地LLM
     try:
         if _w.local_llm_enabled() and _w.local_llm_ping()[0]:
-            resp = local_llm_chat(prompt, timeout=120)
+            resp = _llm_light(prompt, timeout=120)
             obj = _extract_json_obj(resp) or {}
             alignment = _parse_alignment_obj(obj, scenes)
             return _align_from_story_fill(beats, scenes, alignment, scene_story)

@@ -203,6 +203,49 @@ def local_llm_chat(prompt, system=None, timeout=180):
             return _call()
     return _call()
 
+def local_llm_light_cfg():
+    """S4: 轻量辅助模型配置（local.light_model）。辅助任务（判型/详略规划/剧情理解/对齐）
+    优先使用更小的模型，缩短独占 GPU 槽的推理时间；未配置返回 None，调用方回退主模型。"""
+    cfg = load_ai_config().get('local') or {}
+    lm = (cfg.get('light_model') or '').strip()
+    if not lm:
+        return None
+    return {
+        'base_url': (cfg.get('base_url') or 'http://localhost:11434/v1').rstrip('/'),
+        'model': lm,
+        'api_key': cfg.get('api_key') or '',
+    }
+
+
+def local_llm_light_chat(prompt, system=None, timeout=180):
+    """S4: 轻量辅助模型调用（Ollama /v1/chat/completions）。未配置抛 RuntimeError，
+    由调用方回退主模型；本地端点同样独占 GPU 槽（S7），远端不加锁。"""
+    cfg = local_llm_light_cfg()
+    if not cfg:
+        raise RuntimeError('轻量辅助模型未配置')
+    import urllib.request, json as _json
+    messages = []
+    if system:
+        messages.append({'role': 'system', 'content': system})
+    messages.append({'role': 'user', 'content': prompt})
+    payload = {'model': cfg['model'], 'messages': messages, 'max_tokens': 1500, 'temperature': 0.8}
+    headers = {'Content-Type': 'application/json'}
+    if cfg['api_key']:
+        headers['Authorization'] = 'Bearer ' + cfg['api_key']
+    req = urllib.request.Request(cfg['base_url'] + '/chat/completions',
+                                 data=_json.dumps(payload).encode('utf-8'), headers=headers)
+
+    def _call():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+
+    if _is_local_url(cfg['base_url']):
+        with _gpu_slot():
+            return _call()
+    return _call()
+
+
 def mirror_cfg():
     """国内下载镜像配置：让 whisper(来自 HuggingFace) 与 ollama 模型拉取走镜像/代理，免科学上网。"""
     cfg = load_ai_config().get('mirror') or {}
