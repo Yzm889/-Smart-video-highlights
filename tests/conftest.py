@@ -38,6 +38,10 @@ def _isolate_project_state(tmp_path):
     T._EDGE_INSTALLED_CACHE = {'val': None, 'ts': 0}
     old_edge = T._EDGE_STATE
     T._EDGE_STATE = {'fails': 0, 'dead_until': 0.0, 'reason': ''}
+    # 编码器探测缓存同样隔离：本机有 GPU 走 nvenc、CI 无 GPU 走 libx264，
+    # 若被前序测试的探测结果污染，编码路径会随执行顺序漂移。
+    old_enc = S._ENC_CACHE
+    S._ENC_CACHE = {'probe': None}
     try:
         yield
     finally:
@@ -49,3 +53,4 @@ def _isolate_project_state(tmp_path):
         S._ai_status_cache = old_status
         T._EDGE_INSTALLED_CACHE = old_inst
         T._EDGE_STATE = old_edge
+        S._ENC_CACHE = old_enc
