@@ -13,7 +13,6 @@ mock 掉 VLM 推理与缓存层，调用真实的 _vlm_sample_timeline()，验�
 """
 import json
 import os
-import shutil
 import sys
 import tempfile
 

@@ -16,7 +16,6 @@
 import json
 import os
 import sys
-import tempfile
 
 import pytest
 
@@ -362,7 +361,6 @@ def test_cancel_remaining_marks_correct_queue_indices():
 
 def test_task_queue_path_follows_outdir():
     """改写 OUTDIR 后，重新取路径要跟踪到新位置。"""
-    import importlib
     saved = W.OUTDIR
     try:
         # 内部函数现算路径
@@ -421,9 +419,7 @@ def test_get_tasks_dict_items_would_crash():
     dict.items() 在并发修改下的 RuntimeError。
     """
     # 跳过实际复现（CPython 3.13+ GIL 保护较严，难稳定复现），改为契约断言
-    import inspect
-    import webui_server
-    src = inspect.getsource(webui_server.handler.__dict__['_get_tasks']) if False else None
+    # 原死代码 src = inspect.getsource(...) if False else None 已删除
     # 直接通过端点更难，我们只断言 fix 行为：list() 包裹的迭代里 PROGRESS.pop 安全
     # （上一用例已覆盖）
     assert True
@@ -474,7 +470,6 @@ def test_cancel_handles_concurrent_evict_gracefully():
     → except 被外层大 try 兜住 → 用户看到通用异常消息。
     修复后用 .get() 兜底，按用户意图视为已自然结束。
     """
-    import time as _t
     rid = 'race-cancel'
     W.PROGRESS[rid] = {'done': True, 'phase': 'x', 'error': None}
 
@@ -506,7 +501,7 @@ def test_save_progress_is_atomic_and_iterates_safely():
     （a）不抛 RuntimeError；（b）写出的文件可被 json.load 读回。
     """
     import json as _json, threading
-    saved_keys_before = set(W.PROGRESS.keys())
+    # 原未用快照 saved_keys_before = set(W.PROGRESS.keys()) 已删除
     try:
         # 准备一个满状态的 PROGRESS
         W.PROGRESS.clear()

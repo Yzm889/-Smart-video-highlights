@@ -329,3 +329,16 @@
 - S1 上传后后台预热 ASR+VLM（依赖资源隔离调度先行）
 - S3 合并 LLM 轮次（写稿+对齐 / 剧情理解+对齐 一体化）
 - S4 辅助任务降级 8B 模型、S7 任务按资源隔离调度、S8 磁盘清理策略
+
+
+| **S1** | 上传后后台预热 ASR+VLM：上传完成即在空闲期启动后台分析（`_warmup_start` → ASR 写 `asr_*` 缓存 → `_vlm_sample_timeline` 写 `vlm_sample_*` 缓存）；点击解说时 `_warmup_wait` 等 15s（命中缓存秒过），超时则预热让位、正式任务自行分析（S7 `_gpu_slot` 保证不互抢）；同视频幂等、换视频让位、`NARRATE_WARMUP=0` 可整体关闭 | 1h 视频 20-50min 分析等待 → 上传后空闲期完成，点击解说即出 | ✅ |
+| 缺陷修复 | `_vlm_sample_timeline` 原实现无论完成与否都写缓存——取消/失败写部分结果会污染缓存，导致后续任务命中缺口、断点续跑被短路；现改为仅全部完成且无失败批次才写缓存 | 取消/失败后重试仍完整、续跑生效 | ✅ |
+| 门禁债 | `pyflakes webui_server.py tests/` 全绿：① webui_server.py 引擎层 re-export 符号（经 `_w.<name>` 晚绑定，pyflakes 静态不可见）以 `_REEXPORT_ANCHOR` 显式引用消除 F401；② `_atomic_json_dump/_load_json_file/_model_narr_guide`（拆分迁至 movie_narrator）显式别名绑定消除 F821 误报；③ 删除测试文件确证未用的 import 与 2 处死代码（`src = ... if False`、未用快照） | `python -m pyflakes webui_server.py tests/` 退出码 0 | ✅ |
+| 测试 | 新增 `tests/test_warmup.py`（10 用例：触发/幂等/换视频让位/等待完成/超时取消/硬开关关闭/ASR·VLM 链路与缓存写读/无台词跳过 VLM/cancel_check 不写部分缓存/完成写缓存） | 回归 +10 | ✅ |
+
+**S1 后回归**：全量 `252 passed / 24 failed / 2 skipped`（S7 后 242/24/2）——失败 24 项仍为环境敏感项（test_vlm_resume mock 与实现不一致、test_core ffmpeg 滤镜能力/无本地模型、test_fatal_fixes、test_script_driven、test_local_tts 等），**未新增失败**；pyflakes 门禁通过。
+
+**待办**（后续批次）：
+- S3 合并 LLM 轮次（写稿+对齐 / 剧情理解+对齐 一体化）
+- S4 辅助任务降级 8B 模型
+- S8 磁盘清理策略

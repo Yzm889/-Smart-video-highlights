@@ -61,20 +61,20 @@ _EMOTION_MAP = tts_engines._EMOTION_MAP
 _EMOTION_VOICES = tts_engines._EMOTION_VOICES
 _CHATTS = tts_engines._CHATTS
 
-from ai_providers import AI_CONFIG_PATH, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # [3.2] 引擎层 re-export
+from ai_providers import AI_CONFIG_PATH, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # noqa: F401  # [3.2] 引擎层 re-export
 
-from text_utils import _clamp_line, _clean_caption, _strip_tts_markup
+from text_utils import _clamp_line, _clean_caption, _strip_tts_markup  # noqa: F401
 from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \
     _analysis_cache_save, _cache_load, _cache_save, _file_fp, \
     _sample_frame_cache_dir, _sample_frame_cache_mark, _sample_frame_cache_ready, \
-    _sample_frame_cache_trim, _video_cache_key
+    _sample_frame_cache_trim, _video_cache_key  # noqa: F401
 from ffmpeg_utils import AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS, \
     _has_audio_track, ffmpeg_exe, ffmpeg_run, probe_audio_len, \
-    probe_duration
+    probe_duration  # noqa: F401
 from video_render import _NAR_CPS, _NAR_MIN_CHARS, _NAR_MAX_CHARS, _NAR_MAX_SPEED, _NAR_MIN_SPEED, \
     _target_chars, _fit_voice, _render_narrate, \
     _merge_spans, _cut_video_by_spans, \
-    _build_subtitle_style, _compose_narration_video
+    _build_subtitle_style, _compose_narration_video  # noqa: F401
 # 兼容旧命名空间：拆分前下列符号定义在 webui 模块级，保持模块属性可见（长期建议调用方迁到归属模块）
 import cache_utils, ffmpeg_utils  # noqa: F401  (仅用于下方别名，保证 pyflakes 视为 used)
 ANALYSIS_CACHE_DIR = cache_utils.ANALYSIS_CACHE_DIR
@@ -97,7 +97,7 @@ _cuda_available = ai_providers._cuda_available
 _WHISPER_MODELS = ai_providers._WHISPER_MODELS  # handler.py 经 _w 引用（whisper 状态页）
 _fmt_hms = ai_providers._fmt_hms
 
-import os, sys, json, math, random, re, shutil, subprocess, threading, time, base64, itertools, tempfile
+import os, sys, json, math, random, re, shutil, subprocess, threading, time, base64, itertools
 # urlparse/parse_qs/unquote 仅 handler.py 经 _w.<名> 引用：改别名绑定，pyflakes 视为 used
 import urllib.parse
 urlparse = urllib.parse.urlparse
@@ -145,6 +145,22 @@ OUTDIR = os.path.join(HERE, 'webui_output')
 import bili_downloader  # noqa: E402  (B站搜索/下载；公共符号已回注宿主)
 import beat_analysis  # noqa: E402  (分镜/卡点分析引擎；公共符号已回注宿主)
 import movie_narrator  # noqa: E402  (电影解说模块；公共符号已回注宿主)
+# 下列符号定义于 movie_narrator（拆分时迁出）并经其末尾宿主注入同名绑定；
+# 此处显式别名绑定等价于注入结果，同时让 pyflakes 静态可见（消除 F821 误报）。
+_atomic_json_dump = movie_narrator._atomic_json_dump
+_load_json_file = movie_narrator._load_json_file
+_model_narr_guide = movie_narrator._model_narr_guide
+# 引擎层 re-export 锚点：下列符号仅经 _w.<name> 晚绑定使用（movie_narrator / workflows /
+# handler 经宿主对象属性访问），pyflakes 静态跨模块不可见 → 显式引用消除 F401 误报。
+_REEXPORT_ANCHOR = (_aborted, asr_segments, local_llm_chat, vlm_chat_multi, refresh_whisper_models,
+                   _clamp_line, ANALYSIS_VERSION, _analysis_cache_load, _analysis_cache_save,
+                   _cache_load, _cache_save, _file_fp, _sample_frame_cache_dir,
+                   _sample_frame_cache_mark, _sample_frame_cache_ready, _sample_frame_cache_trim,
+                   _video_cache_key, AbortError, RUN_PROCS, _PROC_LOCK, _TLS, _has_audio_track,
+                   ffmpeg_exe, _NAR_CPS, _NAR_MIN_CHARS, _NAR_MAX_CHARS, _NAR_MAX_SPEED,
+                   _NAR_MIN_SPEED, _target_chars, _fit_voice, _render_narrate, _merge_spans,
+                   _cut_video_by_spans, _build_subtitle_style, _compose_narration_video,
+                   bili_downloader, beat_analysis, movie_narrator)
 _ACTIVE_TASK_FILE = os.path.join(OUTDIR, '_active_task.json')
 
 def _save_active_task(runid, phase='', pct=0, run_dir='', task_type=''):

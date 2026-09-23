@@ -1457,6 +1457,8 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             data = self._read_json(length, max_len=64 * 1024) or {}
             final, err = _w._upload_finalize(data.get('upload_id'), data.get('name'), data.get('chunks'))
+            if final:
+                _w._warmup_start(final)   # S1: 上传完成即后台预热 ASR+VLM（空闲期分析，点击解说时命中缓存）
             self._send(200, json.dumps({'ok': bool(final), 'error': err,
                                         'size': os.path.getsize(final) if final else 0}).encode('utf-8'),
                        'application/json')

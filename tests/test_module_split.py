@@ -40,7 +40,6 @@ def test_handler_host_refs_resolve():
 def test_split_modules_inject_back():
     """公共符号注入回宿主：webui_server.dispatch_* / Handler 等旧入口完整。"""
     import handler
-    import workflows
     for n in ('dispatch_build', 'dispatch_beatcut', 'dispatch_narrate', 'dispatch_movie',
               'dispatch_movie_tts', 'dispatch_movie_compose', 'dispatch_tts_single',
               'dispatch_tts_regen_all', 'dispatch_instruct', 'collect_partial', 'assemble',

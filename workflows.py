@@ -10,6 +10,10 @@
 import base64, os, shutil, sys, threading, time
 import logging
 
+from cache_utils import _video_cache_key, _cache_load, _cache_save
+from ai_providers import asr_segments, whisper_model_name
+from ffmpeg_utils import probe_audio_len
+
 _log = logging.getLogger('framecut.workflows')
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -983,6 +987,120 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
         progress['done'] = True
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/')
     return final
+# ---------------------------------------------------------------------------
+# S1 · 上传后后台预热 ASR+VLM（把 1h 视频约 20-50 分钟的分析挪到上传后的空闲时间）
+# ---------------------------------------------------------------------------
+# 预热与正式任务共用同一套分析缓存（_video_cache_key 指纹 + asr_/vlm_sample_ 键）：
+# 预热完成 → 正式任务缓存命中秒过；预热未完成 → 正式任务等 timeout 后标记让位，
+# 预热线程在 VLM 批次间退出，正式任务自行分析（S7 的 _gpu_slot 保证两者不互抢本地推理）。
+_WARMUP_LOCK = threading.Lock()
+_WARMUP_STATE = {'video_fp': None, 'running': False, 'cancel': False,
+                 'event': threading.Event()}
+
+_WARMUP_EXTS = ('.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.ts', '.m4v')
+
+
+def _warmup_fp(video_path):
+    """视频指纹（与 ASR/VLM 缓存同一指纹来源）；异常返回空串。"""
+    try:
+        fp = _video_cache_key(video_path, 'warmup').split('_')[0]
+        return fp if len(fp) == 32 else ''
+    except Exception:
+        return ''
+
+
+def _warmup_cancelled():
+    with _WARMUP_LOCK:
+        return bool(_WARMUP_STATE['cancel'])
+
+
+def _warmup_start(video_path):
+    """上传完成后的空闲期后台预热：ASR + VLM 写入共享缓存。
+    同视频已在预热则忽略；换了新视频则让旧预热让位。失败静默（不影响主流程）。"""
+    if not video_path or not os.path.isfile(video_path):
+        return
+    if os.path.splitext(video_path)[1].lower() not in _WARMUP_EXTS:
+        return
+    if os.environ.get('NARRATE_WARMUP') == '0':
+        return
+    fp = _warmup_fp(video_path)
+    if not fp:
+        return
+    with _WARMUP_LOCK:
+        if _WARMUP_STATE['running']:
+            if _WARMUP_STATE['video_fp'] == fp:
+                return  # 同一视频已在预热
+            _WARMUP_STATE['cancel'] = True  # 让旧预热在阶段间让位
+        _WARMUP_STATE['video_fp'] = fp
+        _WARMUP_STATE['cancel'] = False
+        _WARMUP_STATE['running'] = True
+        _WARMUP_STATE['event'] = threading.Event()
+    _log.info('[WARMUP] 开始后台预热: %s' % os.path.basename(video_path))
+    threading.Thread(target=_warmup_worker, args=(video_path, fp), daemon=True).start()
+
+
+def _warmup_worker(video_path, fp):
+    """预热执行体：ASR（写 asr_* 缓存）→ VLM（_vlm_sample_timeline 写 vlm_sample_* 缓存）。
+    与正式任务共用缓存键，完成后正式任务直接命中。"""
+    try:
+        vdur = probe_audio_len(video_path) or 0.0
+        if vdur <= 0:
+            return
+        # 1) ASR（与正式任务同一缓存键）
+        asr_key = _video_cache_key(video_path, 'asr_' + whisper_model_name())
+        asr = _cache_load(asr_key)
+        if not asr:
+            asr = asr_segments(video_path)
+            if asr:
+                _cache_save(asr_key, asr)
+                _log.info('[WARMUP] ASR完成: %d段' % len(asr))
+        if _warmup_cancelled():
+            return
+        # 2) VLM（画面索引，最耗时）：无台词信息时跳过（VLM 只分析台词窗口附近，收益低）
+        if not asr or not _w.vlm_enabled():
+            return
+        try:
+            if not _w.vlm_ping()[0]:
+                return
+        except Exception:
+            return
+        run_dir = os.path.join(_w.OUTDIR, '_warmup_' + fp)
+        os.makedirs(run_dir, exist_ok=True)
+        _w._vlm_sample_timeline(video_path, vdur, asr, run_dir, cancel_check=_warmup_cancelled)
+        _log.info('[WARMUP] VLM画面索引完成')
+    except Exception as e:
+        _log.info('[WARMUP] 预热失败（静默，不影响主流程）: %s' % e)
+    finally:
+        with _WARMUP_LOCK:
+            _WARMUP_STATE['running'] = False
+            _WARMUP_STATE['event'].set()  # 通知等待者（完成/失败都通知）
+
+
+def _warmup_wait(video_path, timeout=15.0):
+    """正式任务钩子：若同一视频正在后台预热，等它完成（命中缓存）；
+    超时则标记让位，预热线程在 VLM 批次间退出，正式任务自行分析。"""
+    try:
+        fp = _warmup_fp(video_path)
+    except Exception:
+        return
+    if not fp:
+        return
+    with _WARMUP_LOCK:
+        running = _WARMUP_STATE['running']
+        same = (_WARMUP_STATE['video_fp'] == fp)
+        ev = _WARMUP_STATE['event']
+    if not running or not same:
+        return
+    ev.wait(timeout=timeout)
+    if ev.is_set():
+        _log.info('[WARMUP] 预热已完成，正式任务直接命中缓存')
+        return
+    with _WARMUP_LOCK:
+        if _WARMUP_STATE['video_fp'] == fp and _WARMUP_STATE['running']:
+            _WARMUP_STATE['cancel'] = True
+    _log.info('[WARMUP] 预热超时(%ss)，让位给正式任务' % timeout)
+
+
 def _start_next_queued():
     """从排队队列中取出下一个任务并启动。"""
     with _w._TASK_QUEUE_LOCK:
@@ -1054,5 +1172,8 @@ for _name in (
     'assemble',
     'finalize',
     '_start_next_queued',
+    '_warmup_start',
+    '_warmup_wait',
+    '_warmup_cancelled',
 ):
     setattr(_w, _name, globals()[_name])

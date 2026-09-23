@@ -1577,7 +1577,7 @@ def _load_json_file(path):
         return None
 
 
-def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0):
+def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0, cancel_check=None):
     """时间轴驱动：均匀抽样建立画面索引，跳过场景检测。
 
     每interval秒抽1帧，±12秒内有台词才跑VLM，3帧批量调用。
@@ -1788,6 +1788,11 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             _all_done = False
             _log.info('[DIAG] VLM断点续跑: 收到取消信号，已保留%d个场景进度' % len(_analyzed))
             break
+        # S1: 预热让位钩子——正式任务接管时放弃剩余批次（进度保留在进度文件，下次可续跑）
+        if cancel_check is not None and cancel_check():
+            _all_done = False
+            _log.info('[DIAG] VLM断点续跑: 预热让位，已保留%d个场景进度' % len(_analyzed))
+            break
         batch = _pending_frames[bi:bi + batch_size]
         t_start = batch[0][1]
         t_end = batch[-1][1]
@@ -1857,7 +1862,10 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
 
     results.sort(key=lambda x: x['start'])
     _log.info(f'[DIAG] VLM均匀抽样(批量+差分复用): {len(sample_times)}个点, VLM {vlm_count}次(原需{len(need_vlm)}次, 复用省{_vlm_saved}帧), 跳过{skip_count}个无台词')
-    _cache_save(cache_key, results)
+    # [S1 缺陷修复] 仅全部完成且无失败批次时写缓存：
+    # 取消/失败写部分结果会污染缓存，后续任务命中后缺口永久化、断点续跑被短路。
+    if _all_done and not _failed:
+        _cache_save(cache_key, results)
     # 全部完成并已落缓存 → 清理断点进度文件（下次走缓存，不再需要续跑）
     # 中途取消 / 有失败批次时不删：取消留给下次续跑恢复，失败留给下次重试。
     if _all_done and not _failed and progress_file and os.path.exists(progress_file):
@@ -2769,6 +2777,12 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     up('识别台词(本地Whisper)', 32)
     if _aborted():
         raise AbortError('用户取消了任务')
+    # S1: 上传后的后台预热可能正在跑同一视频的分析 —— 等它完成（命中缓存），
+    # 超时则让预热让位，正式任务自行分析（S7 的 _gpu_slot 保证两者不互抢 GPU）
+    try:
+        _w._warmup_wait(video_path)
+    except Exception:
+        pass
     # ASR缓存：同视频同模型不重复转写
     whisper_model = whisper_model_name()
     asr_cache_key = _video_cache_key(video_path, f'asr_{whisper_model}')

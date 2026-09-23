@@ -3,11 +3,6 @@
 不应让 `OSError: [Errno 28] No space left on device`、`TimeoutError: ...`、
 `ConnectionRefusedError(...)` 这类机器消息原样泄漏给前端。
 """
-import os
-import sys
-
-import pytest
-import webui_server as S
 import handler as H
 
 
