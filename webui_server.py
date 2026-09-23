@@ -2399,6 +2399,15 @@ def sweep_run_artifacts():
         days = 3
     if days <= 0:
         return 0
+    # S9: 上传残片周期兜底——_upload_prune 原本只在新上传 init 时触发（用户不再
+    # 传新文件则残片永久滞留）；纳入 6h 周期清扫后不依赖用户操作。判定与 _upload_prune
+    # 一致：会话目录 >24h 无写入即视为放弃（活跃会话每片写入都会刷新 mtime），
+    # 合并成品 final__ 待取走同样在 24h 内保留。清理整体关闭（cleanup_src_days=0）
+    # 时一并跳过，与 run_dir 清扫同一开关。
+    try:
+        _upload_prune()
+    except Exception:
+        pass
     cutoff = time.time() - days * 86400
     try:
         active = _active_run_dirs()
