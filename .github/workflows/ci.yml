@@ -27,9 +27,24 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
+          python -c "import sys; print('PY', sys.version)"
+          python -c "import imageio_ffmpeg; print('IMGFF', imageio_ffmpeg.__version__)"
 
       - name: pyflakes 静态检查
         run: python -m pyflakes webui_server.py tests/
 
       - name: pytest 回归测试
-        run: python -m pytest tests -q --tb=short
+        run: |
+          python -m pytest tests -q --tb=short --disable-warnings 2>&1 | tee pytest.log
+          rc=${PIPESTATUS[0]}
+          # 把失败/错误明细转成 GitHub annotation（页面可查，便于远程定位 Linux 环境失败）
+          python -c "
+import io
+for line in io.open('pytest.log', encoding='utf-8', errors='replace'):
+    s = line.rstrip()
+    if not s:
+        continue
+    if s.startswith('FAILED') or s.startswith('ERROR') or s.startswith('E   ') or 'assert ' in s or 'Error' in s:
+        print('::error file=ci,line=1::' + s[:400])
+"
+          exit $rc
