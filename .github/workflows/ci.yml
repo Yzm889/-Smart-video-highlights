@@ -35,6 +35,11 @@ jobs:
       - name: pyflakes 静态检查
         run: python -m pyflakes webui_server.py tests/
 
+      - name: 诊断 Linux ffmpeg（临时，定位后移除）
+        run: |
+          python .github/ci_diag_clip.py 2>&1 | tee diag.log
+          grep -E 'CLIP_|FFMPEG_' diag.log | sed 's/^/::error file=ci,line=1::/' | head -20 || true
+
       - name: pytest 回归测试
         run: |
           python -m pytest tests -q --tb=short --disable-warnings 2>&1 | tee pytest.log

@@ -16,6 +16,7 @@ def _isolate_project_state(tmp_path):
     与 webui_output/ 写入垃圾条目（_render_plan_job 等现在会写历史，必须隔离）。"""
     import webui_server as S
     import ai_providers
+    import tts_engines as T
     p = tmp_path / 'ai_config.json'
     p.write_text('{}', encoding='utf-8')
     old_cfg, old_hist, old_out = S.AI_CONFIG_PATH, S.HISTORY_PATH, S.OUTDIR
@@ -27,6 +28,16 @@ def _isolate_project_state(tmp_path):
     ai_providers._AI_CFG_CACHE = {'data': None, 'mtime': 0}
     S.HISTORY_PATH = str(tmp_path / 'history.json')
     S.OUTDIR = str(tmp_path / 'webui_output')
+    # [CI] ai_status() 有 5s 结果缓存、_edge_tts_installed() 有 30s 探测缓存——
+    # 若前序测试真实调用过（如 ai_status() 里探测 edge），mock 会被缓存命中吞掉。
+    # 本机慢跑时窗口恰好错过（看似全绿），CI 跑得快则必现。这里统一清缓存，保证
+    # 每个测试都在无污染状态下评估 mock。
+    old_status = S._ai_status_cache
+    S._ai_status_cache = {'data': None, 'time': 0}
+    old_inst = T._EDGE_INSTALLED_CACHE
+    T._EDGE_INSTALLED_CACHE = {'val': None, 'ts': 0}
+    old_edge = T._EDGE_STATE
+    T._EDGE_STATE = {'fails': 0, 'dead_until': 0.0, 'reason': ''}
     try:
         yield
     finally:
@@ -35,3 +46,6 @@ def _isolate_project_state(tmp_path):
         ai_providers._AI_CFG_CACHE = {'data': None, 'mtime': 0}
         S.HISTORY_PATH = old_hist
         S.OUTDIR = old_out
+        S._ai_status_cache = old_status
+        T._EDGE_INSTALLED_CACHE = old_inst
+        T._EDGE_STATE = old_edge
