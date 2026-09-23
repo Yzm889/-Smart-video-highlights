@@ -77,8 +77,8 @@ def test_collect_partial_classifies(tmp_path):
     run.mkdir()
     (run / 'final.mp4').write_bytes(b'vid')
     (run / 'narr0.wav').write_bytes(b'aud')
-    (run / 'subs.srt').write_text('1\n00:00:01,000 --> 00:00:02,000\nhi')
-    (run / 'script.txt').write_text('解说稿内容')
+    (run / 'subs.srt').write_text('1\n00:00:01,000 --> 00:00:02,000\nhi', encoding='utf-8')
+    (run / 'script.txt').write_text('解说稿内容', encoding='utf-8')
     res = S.collect_partial(str(run))
     kinds = {f['name']: f['kind'] for f in res['files']}
     assert kinds == {
@@ -221,8 +221,9 @@ def test_offline_caption_uses_original_name():
 def test_generate_narration_economy_local_rewrite(monkeypatch):
     """省流 + 本地模型就绪时，用本地模型离线改写解说词，且标记 used_local=True。"""
     import webui_server as S
+    import movie_narrator as M
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
-    monkeypatch.setattr(S, 'local_llm_chat',
+    monkeypatch.setattr(M, 'local_llm_chat',
                         lambda prompt, system=None, timeout=180: '春天来了樱花盛开\n主角漫步在树下\n微风拂过落英缤纷')
     segs = [(0.0, 5.0), (5.0, 10.0), (10.0, 15.0)]
     asr = [{'start': 1.0, 'end': 3.0, 'text': '你好'}]
@@ -260,14 +261,16 @@ def test_narrate_analysis_runs_local_asr_in_economy():
 # Whisper 模型可配置 + 本地缓存目录
 # ---------------------------------------------------------------------------
 def test_whisper_model_name_default_and_sanitize(monkeypatch):
-    import webui_server as S
-    monkeypatch.setattr(S, 'load_ai_config', lambda: {})
-    assert S.whisper_model_name() == 'base'
-    monkeypatch.setattr(S, 'load_ai_config', lambda: {'whisper': {'model': 'medium'}})
-    assert S.whisper_model_name() == 'medium'
+    import ai_providers as A
+    valid = {'base', 'small', 'medium', 'large-v3', 'distil-large-v3'}
+    monkeypatch.setattr(A, '_WHISPER_MODELS', valid)
+    monkeypatch.setattr(A, 'load_ai_config', lambda: {})
+    assert A.whisper_model_name() == 'distil-large-v3'
+    monkeypatch.setattr(A, 'load_ai_config', lambda: {'whisper': {'model': 'medium'}})
+    assert A.whisper_model_name() == 'medium'
     # 非法值必须回退 base，避免 WhisperModel 抛错
-    monkeypatch.setattr(S, 'load_ai_config', lambda: {'whisper': {'model': '诺莫'}})
-    assert S.whisper_model_name() == 'base'
+    monkeypatch.setattr(A, 'load_ai_config', lambda: {'whisper': {'model': '诺莫'}})
+    assert A.whisper_model_name() == 'base'
 
 
 def test_whisper_models_dir_points_into_project(monkeypatch):
@@ -317,9 +320,10 @@ def test_vlm_enabled_reflects_config(monkeypatch):
 def test_generate_narration_vlm_branch_when_enabled(monkeypatch):
     """省流 + 本地 VLM 就绪：必须走 VLM 真解说，返回其文案并标记 used_local。"""
     import webui_server as S
+    import movie_narrator as M
     monkeypatch.setattr(S, 'vlm_enabled', lambda: True)
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: False)
-    monkeypatch.setattr(S, 'local_vlm_narrate',
+    monkeypatch.setattr(M, 'local_vlm_narrate',
                         lambda per_seg, frames, params, *a, **k: (['画面里主角拔剑出鞘', '他转身迎战群敌'], True))
     segs = [(0.0, 5.0), (5.0, 10.0)]
     asr = [{'start': 1.0, 'end': 3.0, 'text': '你好'}]
@@ -331,9 +335,10 @@ def test_generate_narration_vlm_branch_when_enabled(monkeypatch):
 def test_generate_narration_vlm_fallback_on_error(monkeypatch):
     """VLM 调用失败（如未拉模型）时不得抛异常，应回退真实台词/模板。"""
     import webui_server as S
+    import movie_narrator as M
     monkeypatch.setattr(S, 'vlm_enabled', lambda: True)
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: False)
-    monkeypatch.setattr(S, 'local_vlm_narrate', lambda per_seg, frames, params, *a, **k: (_ for _ in ()).throw(RuntimeError('offline')))
+    monkeypatch.setattr(M, 'local_vlm_narrate', lambda per_seg, frames, params, *a, **k: (_ for _ in ()).throw(RuntimeError('offline')))
     segs = [(0.0, 5.0), (5.0, 10.0)]
     asr = [{'start': 1.0, 'end': 3.0, 'text': '真实台词内容'}]
     out, used_local = S.generate_narration(segs, asr, {'economy': True}, frames={0: 'f.jpg'})
@@ -361,13 +366,16 @@ def test_ai_status_includes_whisper_vlm(monkeypatch):
 def test_compose_applies_ducking(monkeypatch, tmp_path):
     import webui_server as S
     import ffmpeg_utils
+    import video_render
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
         return 0, b'', b'Stream #0:1: Audio: aac'  # 任何调用都成功，且含音轨
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(ffmpeg_utils, 'ffmpeg_run', fake_ffmpeg)  # b4拆分: 模块内部(_has_audio_track等)调用同走 fake
+    monkeypatch.setattr(video_render, 'ffmpeg_run', fake_ffmpeg)  # video_render拆分: 模块内直接引用同名
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 5.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 5.0)
     final = S._compose_narration_video(
         'x.mp4', [(0.0, 5.0)], ['解说词'], [('fake.wav', 0.0)], str(tmp_path), {}, music_path=None)
     joined = ' '.join(' '.join(c) for c in calls)
@@ -466,13 +474,16 @@ def test_compose_ducking_expression_quoted(monkeypatch, tmp_path):
     报 "No option name near 'frame'" 导致解说混音失败。"""
     import webui_server as S
     import ffmpeg_utils
+    import video_render
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
         return 0, b'', b'Stream #0:1: Audio: aac'
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(ffmpeg_utils, 'ffmpeg_run', fake_ffmpeg)  # b4拆分: 模块内部调用同走 fake
+    monkeypatch.setattr(video_render, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 5.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 5.0)
     S._compose_narration_video(
         'x.mp4', [(0.0, 5.0)], ['解说词'], [('fake.wav', 0.0)], str(tmp_path), {}, music_path=None)
     joined = ' '.join(' '.join(c) for c in calls)
@@ -483,12 +494,15 @@ def test_compose_ducking_expression_quoted(monkeypatch, tmp_path):
 def test_compose_clips_tts_to_segment(monkeypatch, tmp_path):
     """配音 3 元组 (audio, start, end)：应把配音裁剪在本镜头段内，避免跨段语音重叠。"""
     import webui_server as S
+    import video_render
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
         return 0, b'', b'Stream #0:1: Audio: aac'
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
+    monkeypatch.setattr(video_render, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 8.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 8.0)
     S._compose_narration_video(
         'x.mp4', [(0.0, 5.0)], ['解说词'], [('fake.wav', 0.0, 5.0)], str(tmp_path), {}, music_path=None)
     joined = ' '.join(' '.join(c) for c in calls)
@@ -498,12 +512,15 @@ def test_compose_clips_tts_to_segment(monkeypatch, tmp_path):
 def test_compose_supports_two_tuple_tts(monkeypatch, tmp_path):
     """向后兼容：tts_paths 仍支持旧 2 元组 (audio, start)，不裁剪（无段尾信息）。"""
     import webui_server as S
+    import video_render
     calls = []
     def fake_ffmpeg(args, input_data=None):
         calls.append(args)
         return 0, b'', b'Stream #0:1: Audio: aac'
     monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
+    monkeypatch.setattr(video_render, 'ffmpeg_run', fake_ffmpeg)
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 5.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 5.0)
     S._compose_narration_video(
         'x.mp4', [(0.0, 5.0)], ['解说词'], [('fake.wav', 0.0)], str(tmp_path), {}, music_path=None)
     joined = ' '.join(' '.join(c) for c in calls)
@@ -557,7 +574,7 @@ def test_narrate_movie_auto_routing():
     """回归（自动选路）：联网解说默认免费离线；只有配置了云端 key 才用付费 LLM/配音（填 key = 同意付费）。"""
     import webui_server as S, inspect
     src = inspect.getsource(S.narrate_movie)
-    assert "economy=not ai_enabled('chat')" in src, '未配置云端 key 时应走免费离线切句'
+    assert "economy=not _w.ai_enabled('chat')" in src, '未配置云端 key 时应走免费离线切句'
     assert 'use_mimo = bool(_tcfg2.get(\'api_key\')) and bool(_tcfg2.get(\'model\'))' in src, \
         '云端 TTS 必须由 key+model 配置决定（未配置即为 False）'
     assert 'local_tts_speak(' in src, '云端 TTS 不可用时必须有本地配音兜底'
@@ -596,28 +613,34 @@ def test_whisper_model_ready_ignores_ai_config_json(monkeypatch, tmp_path):
 def _beatcut_env(monkeypatch, tmp_path, keep_audio=False):
     """构造 beat_cut_video 的 mock 环境，返回 (S, calls)。"""
     import webui_server as S
+    import beat_analysis as B
     calls = []
 
     def fake_ffmpeg(args, input_data=None):
         calls.append(list(args))
         return 0, b'', b'Stream #0:0: Video: h264'
 
-    monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
-    monkeypatch.setattr(S, 'detect_scene_cuts', lambda v, threshold=0.3, progress=None: [1.0, 3.0, 5.0])
-    # 卡点分析现为「一次抽帧」：mock _analyze_video_frames 与从帧信号提取的内部函数
-    monkeypatch.setattr(S, '_analyze_video_frames', lambda v, fps_s=4.0, **kw: {})
-    monkeypatch.setattr(S, '_detect_motion_from_frames', lambda an, min_gap=0.6, strength='standard': [2.0, 4.0])
-    monkeypatch.setattr(S, '_detect_visual_from_frames', lambda an, strength='standard': [])
-    monkeypatch.setattr(S, 'detect_strong_beats',
+    monkeypatch.setattr(B, 'ffmpeg_run', fake_ffmpeg)
+    monkeypatch.setattr(B, 'detect_scene_cuts', lambda v, threshold=0.3, progress=None: [1.0, 3.0, 5.0])
+    monkeypatch.setattr(B, '_analyze_video_frames', lambda v, fps_s=4.0, **kw: {})
+    monkeypatch.setattr(B, '_detect_motion_from_frames', lambda an, min_gap=0.6, strength='standard': [2.0, 4.0])
+    monkeypatch.setattr(B, '_detect_visual_from_frames', lambda an, strength='standard': [])
+    monkeypatch.setattr(B, 'detect_strong_beats',
                         lambda m, top_k=None, min_sep=0.25: ([1.0, 2.0, 3.0, 4.0, 5.0], 1.0))
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 6.0)
-    monkeypatch.setattr(S, '_has_audio_track', lambda p: keep_audio)
+    monkeypatch.setattr(B, 'probe_audio_len', lambda p: 6.0)
+    monkeypatch.setattr(B, '_has_audio_track', lambda p: keep_audio)
 
     def fake_make_clip(video_path, seg_dur, seg, w=1280, h=720, fps=30, start=0.0):
         with open(seg, 'wb') as f:
             f.write(b'x')
 
-    monkeypatch.setattr(S, 'make_video_clip', fake_make_clip)
+    import types
+    monkeypatch.setattr(B, '_w', types.SimpleNamespace(
+        make_video_clip=fake_make_clip,
+        video_encode_args=lambda quality=23, bitrate=None: ['-c:v', 'libx264'],
+        OUTDIR=str(tmp_path),
+        W=1920, H=1080,
+    ))
     return S, calls
 
 
@@ -668,7 +691,9 @@ def test_beatcut_xfade_transition(monkeypatch, tmp_path):
 def test_beat_sync_fills_beat_segments(monkeypatch, tmp_path):
     """回归：节拍同步每段画面时长必须填满拍点间隔（src_end-src_start ≈ seg_dur），
     否则拼接总长 < 音乐时长，-shortest 会把音乐结尾砍掉。"""
-    import webui_server as S, os
+    import webui_server as S
+    import beat_analysis as B
+    import os
 
     captured = {}
 
@@ -680,9 +705,9 @@ def test_beat_sync_fills_beat_segments(monkeypatch, tmp_path):
             captured['concat'] = open(txt_path, encoding='utf8').read()
         return 0, b'', b''
 
-    monkeypatch.setattr(S, 'ffmpeg_run', fake_ffmpeg)
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 10.0)
-    monkeypatch.setattr(S, 'detect_beats', lambda a, sensitivity=0.5: [1.0, 3.0, 6.0])
+    monkeypatch.setattr(B, 'ffmpeg_run', fake_ffmpeg)
+    monkeypatch.setattr(B, 'probe_audio_len', lambda p: 10.0)
+    monkeypatch.setattr(B, 'detect_beats', lambda a, sensitivity=0.5: [1.0, 3.0, 6.0])
     out = os.path.join(str(tmp_path), 'out.mp4')
     res = S.generate_beat_sync_video('src.mp4', 'music.mp3', out,
                                      beat_sensitivity=0.5, min_clip_dur=0.6, progress=None)
@@ -836,8 +861,10 @@ def test_plan_beat_cuts_thins_over_quota():
 def test_segment_timeline_scene_priority_and_margins(monkeypatch):
     """锚点：解说分段场景切点优先；距开头 <4.0s 的切点被滤掉；结尾保留。"""
     import webui_server as S
-    monkeypatch.setattr(S, 'detect_scene_cuts', lambda v, threshold=0.3: [1.0, 4.5, 10.0])
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 12.0)
+    import movie_narrator as M
+    import beat_analysis as B
+    monkeypatch.setattr(B, 'detect_scene_cuts', lambda v, threshold=0.3: [1.0, 4.5, 10.0])
+    monkeypatch.setattr(M, 'probe_audio_len', lambda p: 12.0)
     segs = S._segment_timeline('fake.mp4')
     # 1.0 距开头 <4.0 被滤；10.0 距片尾 2.0 <3.0 被滤；仅 4.5 保留
     assert segs == [(0.0, 4.5), (4.5, 12.0)], '首尾边距应过滤 1.0 与 10.0：%s' % (segs,)
@@ -846,8 +873,10 @@ def test_segment_timeline_scene_priority_and_margins(monkeypatch):
 def test_segment_timeline_even_split_without_cuts(monkeypatch):
     """锚点：无场景切点时按 max_seg 均分。"""
     import webui_server as S
-    monkeypatch.setattr(S, 'detect_scene_cuts', lambda v, threshold=0.3: [])
-    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 50.0)
+    import movie_narrator as M
+    import beat_analysis as B
+    monkeypatch.setattr(B, 'detect_scene_cuts', lambda v, threshold=0.3: [])
+    monkeypatch.setattr(M, 'probe_audio_len', lambda p: 50.0)
     segs = S._segment_timeline('fake.mp4', max_seg=25.0)
     assert segs == [(0.0, 25.0), (25.0, 50.0)]
 
@@ -889,7 +918,9 @@ def test_analyze_video_frames_keeps_adaptive_pipe():
 def test_cached_scene_cuts_roundtrip_and_invalidate(monkeypatch, tmp_path):
     """缓存命中（第二次不再检测）；换阈值、改文件内容都应重新分析。"""
     import webui_server as S
-    monkeypatch.setattr(S, 'ANALYSIS_CACHE_DIR', str(tmp_path / 'cache'))
+    import beat_analysis as B
+    import cache_utils
+    monkeypatch.setattr(cache_utils, 'ANALYSIS_CACHE_DIR', str(tmp_path / 'cache'))
     big = tmp_path / 'v.mp4'
     big.write_bytes(b'v' * 8192)
     calls = []
@@ -898,7 +929,7 @@ def test_cached_scene_cuts_roundtrip_and_invalidate(monkeypatch, tmp_path):
         calls.append(threshold)
         return [1.0, 2.0]
 
-    monkeypatch.setattr(S, 'detect_scene_cuts', fake_detect)
+    monkeypatch.setattr(B, 'detect_scene_cuts', fake_detect)
     assert S._cached_scene_cuts(str(big), threshold=0.25) == [1.0, 2.0]
     assert S._cached_scene_cuts(str(big), threshold=0.25) == [1.0, 2.0]
     assert len(calls) == 1, '第二次应命中缓存，不再调用检测'
@@ -912,7 +943,9 @@ def test_cached_scene_cuts_roundtrip_and_invalidate(monkeypatch, tmp_path):
 def test_cached_scene_cuts_skips_small_fake_files(monkeypatch, tmp_path):
     """<4KB 假文件不走缓存：两次调用各自实时分析，杜绝 mock 数据落盘。"""
     import webui_server as S
-    monkeypatch.setattr(S, 'ANALYSIS_CACHE_DIR', str(tmp_path / 'cache'))
+    import beat_analysis as B
+    import cache_utils
+    monkeypatch.setattr(cache_utils, 'ANALYSIS_CACHE_DIR', str(tmp_path / 'cache'))
     tiny = tmp_path / 't.mp4'
     tiny.write_bytes(b'v')
     seq = [[1.0], [2.0]]
@@ -920,7 +953,7 @@ def test_cached_scene_cuts_skips_small_fake_files(monkeypatch, tmp_path):
     def fake_detect(v, threshold=0.3):
         return seq.pop(0)
 
-    monkeypatch.setattr(S, 'detect_scene_cuts', fake_detect)
+    monkeypatch.setattr(B, 'detect_scene_cuts', fake_detect)
     assert S._cached_scene_cuts(str(tiny)) == [1.0]
     assert S._cached_scene_cuts(str(tiny)) == [2.0], '小文件每次都应实时分析'
 
@@ -951,9 +984,13 @@ def test_merge_segs_adaptive_density():
 def test_compose_srt_follows_voice(monkeypatch, tmp_path):
     """字幕窗口应跟随配音（有声才显字、念完即收），而不是挂满整个镜头段。"""
     import webui_server as S
+    import video_render
     monkeypatch.setattr(S, 'ffmpeg_run', lambda args, input_data=None: (0, b'', b''))
+    monkeypatch.setattr(video_render, 'ffmpeg_run', lambda args, input_data=None: (0, b'', b''))
     monkeypatch.setattr(S, '_has_audio_track', lambda p: False)
+    monkeypatch.setattr(video_render, '_has_audio_track', lambda p: False)
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 3.0 if str(p).endswith('.wav') else 20.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len', lambda p: 3.0 if str(p).endswith('.wav') else 20.0)
     wav = tmp_path / 'n0.wav'
     wav.write_bytes(b'w')
     segs = [(0.0, 10.0), (10.0, 20.0)]
@@ -1124,7 +1161,8 @@ def test_narrate_flow_deduplicated():
 def test_segment_timeline_clamps_max_seg(monkeypatch):
     """maxSeg 服务端钳制 4~600s：API/指令路径可绕过前端 min=8，极端值会切出海量碎段。"""
     import webui_server as S
-    monkeypatch.setattr(S, 'detect_scene_cuts', lambda v, threshold=0.3: [])
+    import beat_analysis as B
+    monkeypatch.setattr(B, 'detect_scene_cuts', lambda v, threshold=0.3: [])
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 40.0)
     segs = S._segment_timeline('fake.mp4', max_seg=0.5)
     assert len(segs) <= 10, '极端 max_seg 必须被钳制（40s/4s=10 段）：%d' % len(segs)
@@ -1142,6 +1180,7 @@ def test_beatcut_max_cuts_clamped():
 def test_concurrent_cache_writes_safe(monkeypatch, tmp_path):
     """并发分析同一视频：多线程同时写缓存不得产生半写文件或坏数据（os.replace 原子替换）。"""
     import webui_server as S, threading, time, os
+    import beat_analysis as B
     import cache_utils
     monkeypatch.setattr(S, 'ANALYSIS_CACHE_DIR', str(tmp_path / 'cache'))
     monkeypatch.setattr(cache_utils, 'ANALYSIS_CACHE_DIR', str(tmp_path / 'cache'))  # b4拆分: cache_utils 内部用自身模块常量
@@ -1152,7 +1191,7 @@ def test_concurrent_cache_writes_safe(monkeypatch, tmp_path):
         time.sleep(0.2)   # 制造并发窗口：10 个线程几乎同时算完并落盘
         return [1.0, 2.0]
 
-    monkeypatch.setattr(S, 'detect_scene_cuts', slow_detect)
+    monkeypatch.setattr(B, 'detect_scene_cuts', slow_detect)
     results = []
 
     def run():
@@ -1282,7 +1321,7 @@ def test_bili_search_normalization(monkeypatch):
     fake = types.ModuleType('yt_dlp')
     fake.YoutubeDL = FakeYDL
     monkeypatch.setitem(sys.modules, 'yt_dlp', fake)
-    monkeypatch.setattr(S, '_bili_cookiefile', lambda: 'cookies.txt')
+    monkeypatch.setattr('bili_downloader._bili_cookiefile', lambda: 'cookies.txt')
     res = S.bili_search('美食', 2)
     assert res[0] == {'bvid': 'BV1abc', 'title': '测试视频', 'author': 'UP主',
                       'duration': 61, 'pic': 'http://x/1.jpg'}
@@ -1550,6 +1589,8 @@ def _write_video_cfg(S, encoder):
     import json
     with open(S.AI_CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump({'video': {'encoder': encoder}}, f)
+    import ai_providers
+    ai_providers._AI_CFG_CACHE = {'data': None, 'mtime': 0}
 
 
 def test_video_encoder_cfg_defaults_to_auto():
@@ -1599,10 +1640,15 @@ def test_video_encode_args_auto_without_gpu(monkeypatch):
 def test_encoder_preset_unified_source_pin():
     """源码 pin：8 处编码点统一走 video_encode_args，旧的不一致 preset 'fast' 不得复活。"""
     import webui_server as S
-    src = open(os.path.join(os.path.dirname(os.path.abspath(S.__file__)),
-                            'webui_server.py'), encoding='utf-8').read()
+    base = os.path.dirname(os.path.abspath(S.__file__))
+    src = open(os.path.join(base, 'webui_server.py'), encoding='utf-8').read()
+    src_vr = open(os.path.join(base, 'video_render.py'), encoding='utf-8').read()
+    src_ba = open(os.path.join(base, 'beat_analysis.py'), encoding='utf-8').read()
     assert "'fast'" not in src, "发现旧的 'fast' preset，8 处编码应统一为 veryfast/GPU 档位"
-    assert src.count('video_encode_args(') >= 9, '应为 1 处定义 + 8 处调用'
+    assert "'fast'" not in src_vr, "video_render.py 中不应出现旧的 'fast' preset"
+    assert "'fast'" not in src_ba, "beat_analysis.py 中不应出现旧的 'fast' preset"
+    total = src.count('video_encode_args(') + src_vr.count('video_encode_args(') + src_ba.count('video_encode_args(')
+    assert total >= 9, '应为 1 处定义 + 8 处调用（跨 webui_server + video_render + beat_analysis），实际 %d' % total
 
 
 # ---------------------------------------------------------------------------
@@ -1968,10 +2014,12 @@ def test_stamp_title_skips_text_rather_than_tofu(monkeypatch):
 # 并发限流 / 错误上下文 / CC.BY 署名
 # ---------------------------------------------------------------------------
 def test_task_concurrency_limit(monkeypatch, tmp_path):
-    """并发上限：占满后再提交直接拒绝（不做无限排队）；上限可用 MAX_CONCURRENT_TASKS 调。"""
+    """并发上限：占满后再提交进入排队队列；上限可用 MAX_CONCURRENT_TASKS 调。"""
     import webui_server as S, threading, time
     monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
     monkeypatch.setattr(S, '_TASK_SEM', threading.Semaphore(1))   # 上限调成 1 便于确定性验证
+    monkeypatch.setattr(S, '_TASK_QUEUE', [])
+    monkeypatch.setattr(S, '_TASK_QUEUE_LOCK', threading.Lock())
     monkeypatch.setenv('MAX_CONCURRENT_TASKS', '5')
     assert S._max_concurrent_tasks() == 5, '上限应可通过环境变量调整'
     monkeypatch.setenv('MAX_CONCURRENT_TASKS', 'not-a-number')
@@ -1981,15 +2029,13 @@ def test_task_concurrency_limit(monkeypatch, tmp_path):
     h = S.Handler.__new__(S.Handler)      # 只用到 _spawn，不需要真的 HTTP 连接
     rid1 = h._spawn(lambda req, prog: gate.wait(5), {})
     assert rid1 in S.PROGRESS
-    try:
-        h._spawn(lambda req, prog: None, {})
-        assert False, '超过并发上限应直接拒绝，不能无限排队'
-    except RuntimeError as e:
-        assert '最多' in str(e), '拒绝文案要让用户看懂：%s' % e
-    gate.set()
-    time.sleep(0.3)                        # 等第一个任务线程结束并归还名额
+    # 占满后第二个任务应进入排队而非拒绝
     rid2 = h._spawn(lambda req, prog: None, {})
-    assert rid1 != rid2, 'runid 不得重复（否则两个任务会互相覆盖进度）'
+    assert rid2 in S.PROGRESS
+    assert rid2 != rid1, 'runid 不得重复'
+    assert S.PROGRESS[rid2].get('queued'), '第二个任务应标记为排队中'
+    gate.set()
+    time.sleep(0.5)                        # 等第一个任务线程结束并触发排队任务
     time.sleep(0.3)
     assert S._TASK_SEM.acquire(blocking=False), '任务结束后名额必须归还'
 
@@ -2110,7 +2156,7 @@ def test_narration_prompt_includes_seg_visuals(monkeypatch):
     monkeypatch.setattr(S, 'local_llm_chat', fake_chat)
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
     monkeypatch.setattr(S, '_local_model_available', lambda: True)
-    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params: {0: '画面A', 1: '画面B'})
+    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params, progress=None: {0: '画面A', 1: '画面B'})
     monkeypatch.setattr(S, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
     monkeypatch.setattr(S, '_beat_plan', lambda per_seg, plot, params: {
         'summary': '', 'beats': [{'i': i + 1, 'importance': 'advance', 'role': ''} for i in range(2)]})
@@ -2156,7 +2202,7 @@ def test_narration_prompt_includes_genre(monkeypatch):
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
     monkeypatch.setattr(S, '_local_model_available', lambda: True)
     monkeypatch.setattr(S, '_detect_genre', lambda plot: 'suspense')
-    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params: {0: '画面A', 1: '画面B'})
+    monkeypatch.setattr(S, '_seg_visual_captions', lambda frames, per_seg, params, progress=None: {0: '画面A', 1: '画面B'})
     monkeypatch.setattr(S, '_plot_brief', lambda frames, per_seg, params: '剧情梗概')
     monkeypatch.setattr(S, '_beat_plan', lambda per_seg, plot, params: {
         'summary': '', 'beats': [{'i': i + 1, 'importance': 'advance', 'role': ''} for i in range(2)]})
@@ -2183,3 +2229,57 @@ def test_strip_think_qwen3():
     import webui_server as S
     raw = '<think>用户想要悬念开头，我应该先……</think>你猜错了，第三个密码不是数字。'
     assert S._strip_think(raw) == '你猜错了，第三个密码不是数字。'
+
+# ---------------------------------------------------------------------------
+# ai_status().voice（生成前置引导：语音模型未配齐应硬拦截 narrate/movie）
+# ---------------------------------------------------------------------------
+def _voice_cfg(monkeypatch, engine='auto', cloud_tts=None, edge=False, cosy=False,
+               chat=False, sherpa=False):
+    import webui_server as S
+    def fake_cfg():
+        return {'engine': engine, 'voice': 'zh-CN-XiaoxiaoNeural', 'rate': '+0%'}
+    def fake_load():
+        c = {}
+        if cloud_tts:
+            c['tts'] = cloud_tts
+        return c
+    monkeypatch.setattr(S, 'tts_local_cfg', fake_cfg)
+    monkeypatch.setattr(S, 'load_ai_config', fake_load)
+    monkeypatch.setattr(S, 'local_tts_label', lambda: '测试引擎')
+    monkeypatch.setattr(S, 'edge_tts_available', lambda: edge)
+    monkeypatch.setattr(S, 'edge_tts_dead_reason', lambda: '')
+    monkeypatch.setattr(S, 'cosyvoice_available', lambda: cosy)
+    monkeypatch.setattr(S, 'chattts_available', lambda: chat)
+    monkeypatch.setattr(S, 'sherpa_tts_ready', lambda: sherpa)
+    return S
+
+
+def test_ai_status_voice_hard_block_when_no_natural_engine(monkeypatch):
+    """配音自然链全空（只剩 SAPI）→ voice.ready 必须 False，供前端硬拦截 narrate/movie。"""
+    S = _voice_cfg(monkeypatch)
+    v = S._voice_status()
+    assert v['ready'] is False
+    assert v['selected_ready'] is False
+    assert v['engines']['sapi']['ready'] is True  # 只剩系统兜底
+
+
+def test_ai_status_voice_ok_when_any_natural_engine(monkeypatch):
+    """任一自然引擎可用（即使所选引擎自身不可用，运行时按序兜底）→ 不硬拦截。"""
+    S = _voice_cfg(monkeypatch, engine='edge', edge=False, sherpa=True)
+    v = S._voice_status()
+    assert v['ready'] is True
+    assert v['selected_ready'] is False   # 所选 edge 未就绪，但整条链仍会自然兜底
+
+
+def test_ai_status_voice_ok_when_cloud_tts_key(monkeypatch):
+    S = _voice_cfg(monkeypatch, cloud_tts={'api_key': 'K', 'model': 'M', 'provider': 'dashscope'})
+    v = S._voice_status()
+    assert v['ready'] is True
+    assert v['engines']['cloud']['ready'] is True
+
+
+def test_ai_status_voice_ok_when_explicit_sapi(monkeypatch):
+    """用户显式选 SAPI → 已知情接受机械音，不算缺失。"""
+    S = _voice_cfg(monkeypatch, engine='sapi')
+    v = S._voice_status()
+    assert v['ready'] is True

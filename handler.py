@@ -454,10 +454,14 @@ class Handler(BaseHTTPRequestHandler):
             video_spans = {}
             n_narr = len(state.get('narr', []))
             if narr_map_state and len(narr_map_state) == len(segs_state):
-                for bi in range(n_narr):
-                    bsegs = [segs_state[k] for k in range(len(segs_state)) if narr_map_state[k] == bi]
-                    if bsegs:
-                        video_spans[bi] = {'start': round(bsegs[0][0], 2), 'end': round(bsegs[-1][1], 2)}
+                groups = {}
+                for k, bi in enumerate(narr_map_state):
+                    if bi not in groups:
+                        groups[bi] = (segs_state[k][0], segs_state[k][1])
+                    else:
+                        groups[bi] = (groups[bi][0], segs_state[k][1])
+                for bi, (s, e) in groups.items():
+                    video_spans[bi] = {'start': round(s, 2), 'end': round(e, 2)}
             video_dur = round(_w.probe_audio_len(state['video_path']) or 0, 1)
             # 回退：narr_map不对（全0或不匹配）时，按时长均匀分配默认位置
             _missing = [i for i in range(n_narr) if i not in video_spans]
@@ -1133,7 +1137,7 @@ class Handler(BaseHTTPRequestHandler):
             # 清理临时文件
             if os.path.exists(_tmp):
                 try: os.unlink(_tmp)
-                except: pass
+                except OSError: pass
             if os.path.exists(_out) and os.path.getsize(_out) > 1000:
                 self._send(200, json.dumps({'ok': True, 'name': _name}).encode('utf-8'), 'application/json')
             else:
@@ -1708,7 +1712,6 @@ class Handler(BaseHTTPRequestHandler):
         '/api/local/test': '_get_local_test',
         '/api/material/list': '_get_material_list',
         '/api/material/tags': '_get_material_tags',
-        '/api/model/remove': '_get_model_remove',
         '/api/music/search': '_get_music_search',
         '/api/music/use': '_get_music_use',
         '/api/progress': '_get_progress',
@@ -1806,6 +1809,14 @@ def start_server(port=8765, open_browser=True):
     os.makedirs(_w.WORKDIR, exist_ok=True)
     os.makedirs(_w.OUTDIR, exist_ok=True)
     _w.ensure_default_images()
+    # 日志配置：RotatingFileHandler 自动轮转，防止日志无限增长
+    import logging
+    from logging.handlers import RotatingFileHandler
+    _log_file = os.path.join(_w.WORKDIR, 'framecut.log')
+    _handler = RotatingFileHandler(_log_file, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+    _handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
+    logging.getLogger().addHandler(_handler)
+    logging.getLogger().setLevel(logging.INFO)
     host = os.environ.get('HOST', '127.0.0.1')
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f'http://{host}:{port}/'

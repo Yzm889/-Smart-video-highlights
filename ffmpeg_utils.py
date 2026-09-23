@@ -18,11 +18,14 @@ class AbortError(Exception):
 
     pass
 
+_FFMPEG_EXE = None
+
 def ffmpeg_exe():
-
-    from imageio_ffmpeg import get_ffmpeg_exe
-
-    return get_ffmpeg_exe()
+    global _FFMPEG_EXE
+    if _FFMPEG_EXE is None:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        _FFMPEG_EXE = get_ffmpeg_exe()
+    return _FFMPEG_EXE
 
 # ---------------------------------------------------------------------------
 
@@ -450,11 +453,21 @@ def _concat_audio_clips(clip_paths, out_path):
 
                     pass
 
+_AUDIO_TRACK_CACHE = {}
+_AUDIO_TRACK_LOCK = threading.Lock()
+
 def _has_audio_track(p):
-
-    """返回视频文件是否含音轨。"""
-
+    """返回视频文件是否含音轨。结果按路径+mtime缓存，同一文件不重复启动 ffmpeg。"""
+    try:
+        key = (os.path.abspath(p), os.path.getmtime(p))
+    except OSError:
+        key = (os.path.abspath(p), 0)
+    with _AUDIO_TRACK_LOCK:
+        if key in _AUDIO_TRACK_CACHE:
+            return _AUDIO_TRACK_CACHE[key]
     rc, o, e = ffmpeg_run(['-i', p])
-
-    return 'Audio:' in e.decode('utf-8', 'ignore')
+    result = 'Audio:' in e.decode('utf-8', 'ignore')
+    with _AUDIO_TRACK_LOCK:
+        _AUDIO_TRACK_CACHE[key] = result
+    return result
 

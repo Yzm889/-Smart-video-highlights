@@ -1,14 +1,32 @@
-# 一帧成片 (FrameCut) 依赖
-# 安装：pip install -r requirements.txt
-# 版本策略：下限=实测可用，上限=排除未验证的未来主版本（Python 3.9~3.14 兼容）
-Pillow>=10.0,<13
-numpy>=1.24,<3
-imageio-ffmpeg>=0.4,<1
-librosa>=0.10,<2
-# 电影解说 · 本地台词识别（免费、中文模型，需联网下载一次 ~140MB 模型权重）
-faster-whisper>=1.0,<2
-# B 站素材：搜索与下载（/api/bili/*，yt-dlp 原生支持 B 站）；日期版本滚动更新，不设上限
-yt-dlp>=2024.8
-# 想让「省流(本地离线)」模式用显卡加速 Whisper 转写，需安装 CUDA 版 PyTorch（自动检测，无显卡则回退 CPU）：
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
-# 默认 pip install -r requirements.txt 装的是 CPU 版 torch（faster-whisper 依赖），仍可跑，只是慢些。
+# 一帧成片 · FrameCut - Python 依赖
+# 安装: pip install -r requirements.txt
+# 注意: torch 请根据 CUDA 版本单独安装，见下方说明
+
+# === 核心依赖 ===
+numpy>=1.24.0
+Pillow>=9.0.0
+psutil>=5.9.0
+soundfile>=0.12.0
+imageio-ffmpeg>=0.4.8
+
+# === AI 模型 ===
+torch>=2.0.0
+torchaudio>=2.0.0
+# torch 安装命令（CUDA 12.1）:
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+faster-whisper>=1.0.0
+sherpa-onnx>=1.10.0
+huggingface-hub>=0.16.0
+
+# === 音频处理 ===
+librosa>=0.10.0
+
+# === 视频下载 ===
+yt-dlp>=2024.1.0
+
+# === 可选：ChatTTS（本地配音，需额外下载模型）===
+# ChatTTS  # 从源码安装: pip install git+https://github.com/2noise/ChatTTS.git
+
+# === 可选：CosyVoice（本地配音，需单独配置venv）===
+# CosyVoice 不通过 pip 安装，见 docs/cosyvoice_setup.md

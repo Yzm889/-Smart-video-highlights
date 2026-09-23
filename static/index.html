@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -27,20 +27,16 @@
       <span class="flow-num">1</span><span class="flow-label">开始</span>
     </button>
     <div class="flow-line"></div>
-    <button class="flow-step" data-flow="2" data-step="upload" onclick="goFlowStep(2)">
-      <span class="flow-num">2</span><span class="flow-label">素材</span>
+    <button class="flow-step" data-flow="2" data-step="narrate" onclick="goFlowStep(2)">
+      <span class="flow-num">2</span><span class="flow-label">解说/素材</span>
     </button>
     <div class="flow-line"></div>
-    <button class="flow-step" data-flow="3" data-step="narrate" onclick="goFlowStep(3)">
-      <span class="flow-num">3</span><span class="flow-label">解说</span>
+    <button class="flow-step" data-flow="3" data-step="adjust" onclick="goFlowStep(3)">
+      <span class="flow-num">3</span><span class="flow-label">调整</span>
     </button>
     <div class="flow-line"></div>
-    <button class="flow-step" data-flow="4" data-step="adjust" onclick="goFlowStep(4)">
-      <span class="flow-num">4</span><span class="flow-label">调整</span>
-    </button>
-    <div class="flow-line"></div>
-    <button class="flow-step" data-flow="5" data-step="build" onclick="goFlowStep(5)">
-      <span class="flow-num">5</span><span class="flow-label">合成</span>
+    <button class="flow-step" data-flow="4" data-step="build" onclick="goFlowStep(4)">
+      <span class="flow-num">4</span><span class="flow-label">合成</span>
     </button>
   </div>
   <div class="flow-more">
@@ -296,7 +292,7 @@
       </div>
     </div>
 
-    <div class="card" id="drop" data-step="upload" onclick="document.getElementById('fileInput').click()" style="cursor:pointer;">
+    <div class="card" id="drop" data-step="narrate" onclick="document.getElementById('fileInput').click()" style="cursor:pointer;">
     <b>把图片或视频拖到这里，或点此选择文件</b>
     <div class="hint">支持顺序混排：图片自动加镜头运动(推近/平移/拉远/轻摇)，视频自动裁剪，之间带交叉淡入淡出转场。</div>
     <div class="hint bili-hint">📺 需要 B 站视频？<a href="https://www.v2ob.com/bilibili/" target="_blank" rel="noopener" style="color:#1d4ed8;text-decoration:underline;">v2ob.com</a> 可免费提取 B 站视频（MP4，跳转使用）· 或直接在下方搜索并自动下载入素材 <span style="opacity:.7;">（请仅下载你有权使用的视频，注意版权）</span></div>
@@ -324,7 +320,7 @@
       <div class="next-step-bar"><button class="next-step-btn" onclick="nextFlowStep()">下一步：生成解说 →</button></div>
 
 
-  <div class="card" id="beatcutCard" data-step="upload">
+  <div class="card" id="beatcutCard" data-step="narrate">
     <h2>🎯 智能强卡点（本应用核心）</h2>
     <div id="bcDrop" class="musdrop">🎬 拖入一段视频（自动识别<b>场景切换</b>与<b>动作停顿帧</b>）</div>
     <input type="file" id="bcInput" accept="video/*" style="display:none">
@@ -573,10 +569,10 @@
     <div class="hint" id="movieInfo">未选视频：仅生成解说稿（可在结果区复制）。选了视频：产出带解说配音+字幕的成片。</div>
     <div class="row" style="margin-top:10px;">
       <div class="mode-hint" id="movieModeHint">🤖 <b>自动路径</b>：本地模型免费优先 → 配置了云端 key 时用云端增强 → 都没有时离线切句/模板兜底。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
-      <div class="field"><label for="movieMaxSeg">最大分段(秒)</label>
-        <input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
+      <div class="field" style="flex:1"><label for="movieClipRatio">剪辑占比（%）</label>
+        <input type="number" id="movieClipRatio" value="75" min="30" max="100" style="width:70px">
+        <span style="font-size:11px;color:var(--muted)">值越小剪辑越狠，留更多空白给转场</span></div>
       <label style="align-self:center;"><input type="checkbox" id="movieBgm" style="width:auto"> 加配乐</label>
-      <label style="align-self:center;"><input type="checkbox" id="moviePlotRefine" checked style="width:auto"> 🧠 剧情理解润色</label>
     </div>
     <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
       <select id="presetSelect" style="width:140px" onchange="applyPreset(this.value)">
@@ -651,11 +647,11 @@
     </div>
     <video id="adjGlobalVideo" style="width:100%;max-height:360px;border-radius:8px;background:#000" playsinline></video>
     <div style="display:flex;gap:12px;margin-top:8px;align-items:center;flex-wrap:wrap">
-      <audio id="adjGlobalAudio" preload="auto" style="flex:1;min-width:200px;height:28px" controls></audio>
+      <audio id="adjGlobalAudio" preload="auto" style="flex:1;min-width:180px;height:32px;max-width:55%" controls></audio>
       <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)" title="解说配音音量">
         <span>🎙️</span>
-        <input type="range" id="adjGlobalAudVol" min="0" max="100" value="100" style="width:80px" oninput="setGlobalAudVol(this.value)">
-        <span id="adjGlobalAudVolVal" style="min-width:30px;font-family:monospace">100%</span>
+        <input type="range" id="adjGlobalAudVol" min="0" max="100" value="100" style="width:70px">
+        <span id="adjGlobalAudVolVal" style="min-width:30px;font-family:monospace;color:var(--text)">100%</span>
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:8px;align-items:center">

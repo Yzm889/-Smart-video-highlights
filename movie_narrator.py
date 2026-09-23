@@ -19,7 +19,8 @@ from text_utils import _clean_caption
 from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
     _compose_narration_video)
 from beat_analysis import _cached_scene_cuts
-from tts_engines import (local_tts_speak, edge_tts_speak, edge_tts_dead_reason,
+from tts_engines import (local_tts_speak, edge_tts_speak, edge_tts_available,
+    edge_tts_dead_reason,
     _edge_internal, has_tts_markup, _enhance_tts_markup)
 
 _log = logging.getLogger('framecut.narrator')
@@ -1672,7 +1673,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                     pass
         os.makedirs(frame_dir, exist_ok=True)
         rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % (interval / 2.0), '-i', video_path,
-                                 '-vf', 'fps=1/%.6f,scale=min(iw\\,768):-2' % interval,
+                                 '-vf', 'fps=1/%.6f,scale=min(iw\\,640):-2' % interval,
                                  '-q:v', '4', '-an', '-start_number', '0',
                                  os.path.join(frame_dir, 'sample_%04d.jpg')])
         n_got = sum(1 for i in range(total_samples)
@@ -1692,7 +1693,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                 ts = sample_times[idx]
                 fp = os.path.join(frame_dir, 'sample_%04d.jpg' % idx)
                 r2, _o2, _e2 = ffmpeg_run(['-y', '-ss', '%.3f' % ts, '-i', video_path,
-                                           '-frames:v', '1', '-vf', 'scale=min(iw\\,768):-2',
+                                           '-frames:v', '1', '-vf', 'scale=min(iw\\,640):-2',
                                            '-q:v', '4', '-an', fp])
         _sample_frame_cache_mark(frame_dir, total_samples)
         _sample_frame_cache_trim()
@@ -1729,7 +1730,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         except Exception:
             return 0.0
 
-    _SIM_THRESHOLD = 0.88  # [P0-1 低风险优化] 原值 0.92，降低以复用更多相似帧（省约10%~20% VLM调用）
+    _SIM_THRESHOLD = 0.85  # [P0-1 低风险优化] 0.92→0.88→0.85，持续放宽以复用更多相似帧（省约10%~25% VLM调用）
     _reuse = {}          # idx -> leader_idx（当前帧复用leader的分析结果）
     _key_frames = []     # 需要VLM分析的关键帧列表（子集 of need_vlm）
     for _item in need_vlm:
@@ -1749,7 +1750,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
 
     # 第二遍：批量VLM调用，6帧一次（VLM调用次数降5/6）
     vlm_count = 0
-    batch_size = 6  # [P0-1 低风险优化] 原值 3，qwen3-vl 多图能力足够，批量调用次数减半
+    batch_size = 8  # [S5 低风险优化] 原值 3→6→8，qwen3-vl 多图能力足够，批量调用次数再减 25%
     batch_prompt = ('你是影视场景分析助手。以下按时间顺序给出%d张画面帧。'
                     '请对每张帧分别用JSON描述，帧之间用---分隔。'
                     '每个JSON字段：location/characters/event/dialogue/summary。只输出JSON和---分隔符。' % batch_size)
@@ -1894,7 +1895,7 @@ def _vlm_sample_captions(video_path, vdur, run_dir, n_samples=24, progress=None)
             progress['pct'] = 44 + int(6 * idx / n_samples)
         fp = os.path.join(frame_dir, 'sample_%03d.jpg' % idx)
         rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % t, '-i', video_path,
-                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,768):-2',
+                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,640):-2',
                                  '-q:v', '4', '-an', fp])
         if rc != 0 or not os.path.exists(fp):
             continue
@@ -1988,7 +1989,7 @@ def _scene_dialogue_of(sc, asr):
     return _scene_dialogue(asr, st0, st1)
 
 
-def _infer_scene_story(scenes, asr=None, movie_name='', progress=None, window=6):
+def _infer_scene_story(scenes, asr=None, movie_name='', progress=None, window=10):
     """剧情理解层核心：按时间窗把「有内容的场景」分批让 LLM 推断叙事含义。
 
     只推断 VLM 真实分析过（有画面内容）的场景窗；『无台词区间』等占位窗跳过。
@@ -2256,6 +2257,47 @@ def _llm_refine_beats_with_scenes(beats, scenes, alignment, asr, movie_name=''):
         _log.info(f'[DIAG] 剧情理解润色失败: {e}')
         return beats
 
+
+def _score_segments(segs, scene_descs, narr_map, asr=None, scene_alignment=None):
+    """为每个视频段打分：场景对齐权重×事件信息量×台词量。返回 [(score, seg), ...]。
+    用于 clipRatio 智能剪辑：铺设率过高时优先保留信息量最大的段。
+    scene_alignment（LLM语义对齐结果）是最强信号：对齐的片段说明LLM认为
+    该画面和解说词匹配，必须优先保留。"""
+    # 预计算对齐的场景索引集合
+    aligned_scenes = set()
+    if scene_alignment:
+        for sc_idxs in scene_alignment.values():
+            if isinstance(sc_idxs, (list, tuple, set)):
+                aligned_scenes.update(int(s) for s in sc_idxs)
+    scored = []
+    for i, (a, b) in enumerate(segs):
+        s = 0.0
+        nm = narr_map[i] if i < len(narr_map) else i
+        # 0) LLM场景对齐：最强信号，对齐的片段大幅加分
+        if nm in aligned_scenes:
+            s += 50
+        # 1) 画面信息量
+        desc = scene_descs[nm] if nm < len(scene_descs) else {}
+        if isinstance(desc, dict):
+            event = str(desc.get('event', ''))
+            chars = str(desc.get('characters', ''))
+            summ = str(desc.get('summary', ''))
+            s += len(event) * 0.8 + len(chars) * 0.3 + len(summ) * 0.2
+            if event:
+                s += 10
+        # 2) 时长适中偏好
+        dur = b - a
+        if 3 <= dur <= 15:
+            s += 5
+        elif dur > 20:
+            s -= 3
+        # 3) 有台词加分
+        if asr:
+            txt = _asr_text_in(asr, a, b)
+            if txt:
+                s += len(txt) * 0.1
+        scored.append((s, (a, b)))
+    return scored
 
 def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
@@ -2819,12 +2861,12 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         if scene_alignment:
             _log.info(f'[DIAG] LLM语义对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
     # 阶段2.5：剧情理解层 - 用画面描述+台词润色解说词（可选，默认开启）
+    # 让解说词贴合画面内容，避免解说和画面错位
     if params.get('plotRefine', params.get('plot_refine', True)) and scene_alignment and scene_descs:
         up('剧情理解润色（让解说贴合画面）', 50)
         refined = _llm_refine_beats_with_scenes(texts, scene_descs, scene_alignment, asr, movie_name=movie_name)
         if refined and len(refined) == len(texts):
             texts = refined
-            # 润色后重新检查TTS标记
             texts = _enhance_tts_markup(texts)
     # 阶段3：在对齐的场景内选片段（_allocate_script_spans 内部处理），
     # 对齐失败时自动退回台词bigram匹配保底
@@ -2834,18 +2876,56 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if not segs:
         raise RuntimeError('画面分配失败（视频可能过短）')
 
+    # 【智能剪辑】仅当铺设率>98%（几乎全覆盖无空隙）时才轻度精简，默认保留90%
+    # 过于激进的删减会丢掉重要剧情片段，质量下降比多几秒冗余更严重
+    _clip_ratio = float(params.get('clipRatio', 0.90))
+    _total_cov = sum(b-a for a,b in segs)
+    if _total_cov > 0.98 * vdur and _clip_ratio < 0.98:
+        _target_dur = vdur * _clip_ratio
+        _scored = _score_segments(segs, scene_descs, narr_map, asr, scene_alignment=scene_alignment)
+        _scored.sort(key=lambda x: x[0], reverse=True)  # 按信息密度降序
+        _kept = []
+        _acc = 0.0
+        _min_keep = max(1, int(len(segs) * 0.8))  # 至少保留80%的片段
+        for _info, _seg in _scored:
+            if len(_kept) >= _min_keep and _acc >= _target_dur * 0.95:
+                break
+            if _acc + (_seg[1]-_seg[0]) <= _target_dur or len(_kept) < _min_keep:
+                _kept.append(_seg)
+                _acc += (_seg[1]-_seg[0])
+        if _kept and len(_kept) < len(segs):
+            _kept.sort(key=lambda s: s[0])  # 按时间排序
+            segs = _kept
+            _log.info(f'[DIAG] 智能剪辑: {len(segs)}/{len(segs)+len(_kept)}段精选铺设{_acc:.0f}s/{vdur:.0f}s ({_clip_ratio:.0%})')
+
     # events 保持旧格式返回，供 diag 与「按解说词重新匹配分镜」复用
     events = [{'desc': t[:40], 'keywords': []} for t in texts]
     return segs, texts, asr, {}, 'movie', events, narr_map
 
 
+def _tts_concurrency():
+    """TTS 并发路数：环境变量 TTS_CONCURRENCY 覆盖，默认 3，钳制 1~5。
+    仅「本地引擎 + edge-tts 可用」时生效（网络等待可重叠）；mimo/本地 CPU 引擎保持串行。"""
+    try:
+        v = int(os.environ.get('TTS_CONCURRENCY', '') or 3)
+    except ValueError:
+        v = 3
+    return max(1, min(5, v))
+
+
 def _generate_all_tts(narr, run_dir, progress=None):
     """逐段生成所有配音，返回 [(index, clip_path), ...]。不做视频裁剪。
     断点续跑：已存在且有效的 narr%d.mp3 直接跳过，只生成缺失的。
-    【熔断探测恢复】每 3 段检查 edge-tts 是否被熔断，是则用极短文本探测。
-    edge-tts 成功后内部自动复位熔断，下一段立即恢复使用。
+    【并发（S6）】默认路径（本地引擎 + edge-tts 可用）用 TTS_CONCURRENCY 路并发：
+      - 每段是独立 edge-tts CLI 子进程，线程安全；
+      - 并发下首选引擎全部锁定为 edge（local_tts_speak 的锁定语义），音色一致；
+      - 并发数可用环境变量 TTS_CONCURRENCY 覆盖（=1 即完全回退原串行行为）；
+      - mimo（云端）/ 本地 CPU 引擎（cosyvoice/chattts/sherpa/sapi）保持串行，避免抢资源/限流。
+    【熔断探测恢复】并发下探测文件（.edge_probe.mp3）用任务级锁互斥；
+    各 worker 按自己处理的段数每 3 段检查一次，edge-tts 成功后内部自动复位熔断。
     【诊断日志】逐段记录 {idx, engine, ok, error, duration_ms} 到 tts_log.json。"""
     import time as _time
+    import concurrent.futures as _cf
     # 路径修复：progress_state 中的 run_dir 可能是相对路径（如 "run-1-..."），
     # 转成绝对路径（基于 _w.OUTDIR）避免 TTS 文件写到项目根目录导致"有日志无文件"。
     if run_dir and not os.path.isabs(run_dir):
@@ -2854,29 +2934,49 @@ def _generate_all_tts(narr, run_dir, progress=None):
     _tcfg = load_ai_config().get('tts') or {}
     use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
     skipped = 0
-    _probe_counter = 0
     _tts_diag = []   # 诊断日志：[{idx, engine, ok, error, duration_ms, source}]
+    _n_workers = _tts_concurrency()
+    _parallel = (not use_mimo) and bool(edge_tts_available()) and _n_workers > 1
+    _prog_lock = threading.Lock()
+    _probe_lock = threading.Lock()   # 并发下 .edge_probe.mp3 是共享路径，探测必须互斥
+    _probe_state = {'n': 0}
+
+    # === 断点续跑：主线程统一检查，只提交缺失段 ===
+    pending = []   # [(idx, txt)]
     for i, txt in enumerate(narr):
-        if _aborted():
-            break
-        if not txt.strip():
+        if not (txt or '').strip():
             continue
-        # === 熔断探测恢复（根因 1 改良）：每 3 段检查，被熔断则探测 ===
-        _probe_counter += 1
-        if _probe_counter % 3 == 0 and edge_tts_dead_reason():
-            _edge_probe_recover(run_dir)
-        # 断点续跑：检查已有文件
-        _t0 = _time.time()
         existing = os.path.join(run_dir, 'narr%d.mp3' % i)
         if os.path.exists(existing) and os.path.getsize(existing) > 100:
             results.append((i, existing))
             skipped += 1
             _tts_diag.append({'idx': i, 'engine': 'cache', 'ok': True, 'error': '',
-                         'duration_ms': 0, 'source': 'cache'})
-            if progress:
-                progress['phase'] = '逐段配音 %d/%d（断点续跑，已跳过%d段）' % (i + 1, len(narr), skipped)
-                progress['pct'] = 55 + int(25 * (i + 1) / max(1, len(narr)))
-            continue
+                              'duration_ms': 0, 'source': 'cache'})
+        else:
+            pending.append((i, txt))
+    total = len(pending)
+    done = 0
+    _log.info('[DIAG] TTS开始: 共%d段, 需生成%d, 跳过%d, 并发%d路' % (
+        len(narr), total, skipped, _n_workers if _parallel else 1))
+
+    def _update_progress(phase, pct):
+        if progress:
+            with _prog_lock:
+                progress['phase'] = phase
+                progress['pct'] = pct
+
+    def _synth_one(item):
+        """合成单段；返回 (idx, clip, eng, err, dur_ms, is_abort)。"""
+        i, txt = item
+        if _aborted():
+            return (i, None, None, '', 0, True)
+        # 熔断探测恢复（根因 1 改良）：每 3 段检查，被熔断则探测
+        _probe_state['n'] += 1
+        if _probe_state['n'] % 3 == 0 and edge_tts_dead_reason():
+            with _probe_lock:
+                if edge_tts_dead_reason():
+                    _edge_probe_recover(run_dir)
+        _t0 = _time.time()
         clip = None
         _eng = None
         _err = ''
@@ -2895,54 +2995,70 @@ def _generate_all_tts(narr, run_dir, progress=None):
                 _err = _eng or 'all_engines_failed'
                 _eng = _eng or 'none'
         _dur = int((_time.time() - _t0) * 1000)
+        return (i, clip, _eng, _err, _dur, False)
+
+    def _apply(result, source):
+        """汇总一段结果并推进进度。返回 True 表示收到取消信号。"""
+        nonlocal done
+        i, clip, _eng, _err, _dur, is_abort = result
+        if is_abort:
+            return True
         if clip is not None:
             results.append((i, clip))
-            _tts_diag.append({'idx': i, 'engine': _eng, 'ok': True, 'error': '', 'duration_ms': _dur, 'source': 'fresh'})
+            _tts_diag.append({'idx': i, 'engine': _eng, 'ok': True, 'error': '',
+                              'duration_ms': _dur, 'source': source})
         else:
-            _tts_diag.append({'idx': i, 'engine': _eng, 'ok': False, 'error': _err, 'duration_ms': _dur, 'source': 'fresh'})
-        if progress:
-            progress['phase'] = '逐段配音 %d/%d' % (i + 1, len(narr)) + ('（断点续跑，已跳过%d段）' % skipped if skipped else '')
-            progress['pct'] = 55 + int(25 * (i + 1) / max(1, len(narr)))
+            _tts_diag.append({'idx': i, 'engine': _eng, 'ok': False, 'error': _err,
+                              'duration_ms': _dur, 'source': source})
+        done += 1
+        processed = skipped + done
+        if _parallel:
+            _update_progress('逐段配音 %d/%d（并发%d路）' % (processed, len(narr), _n_workers),
+                             55 + int(25 * processed / max(1, len(narr))))
+        else:
+            _update_progress('逐段配音 %d/%d' % (processed, len(narr))
+                             + ('（断点续跑，已跳过%d段）' % skipped if skipped else ''),
+                             55 + int(25 * processed / max(1, len(narr))))
+        return False
+
+    # === 第一轮：并发或串行生成 ===
+    if _parallel and total > 0:
+        with _cf.ThreadPoolExecutor(max_workers=_n_workers) as _ex:
+            _futs = [_ex.submit(_synth_one, it) for it in pending]
+            for _f in _cf.as_completed(_futs):
+                try:
+                    _r = _f.result()
+                except Exception as _e:
+                    _log.info('[DIAG] TTS并发worker异常: %s' % _e)
+                    continue
+                if _apply(_r, 'fresh'):
+                    break   # 协作式取消：收到信号即停止汇总（worker 内自行快速返回）
+    else:
+        for _item in pending:
+            if _aborted():
+                break
+            _r = _synth_one(_item)
+            if _apply(_r, 'fresh'):
+                break
+
     if skipped:
         _log.info('[DIAG] TTS断点续跑: 跳过%d段已生成配音' % skipped)
     _log.info('[DIAG] TTS第一轮完成: %d/%d段' % (len(results), len(narr)))
     # 失败重试：第一轮没成功的段落再试一次（可能是瞬时网络抖动或熔断恢复）
     success_idx = set(i for i, _ in results)
-    failed = [i for i in range(len(narr)) if i not in success_idx and narr[i].strip()]
+    failed = [i for i in range(len(narr)) if i not in success_idx and (narr[i] or '').strip()]
     if failed:
         _log.info('[DIAG] TTS重试 %d 个失败段落' % len(failed))
         _time.sleep(1.0)  # 等熔断恢复
         for i in failed:
             if _aborted(): break
-            txt = narr[i]
-            _t0 = _time.time()
-            clip = None
-            _eng = None
-            _err = ''
-            if use_mimo:
-                np_ = os.path.join(run_dir, 'narr%d.mp3' % i)
-                if _w.ai_tts(txt, np_):
-                    clip = np_
-                    _eng = 'mimo'
-                else:
-                    _err = 'mimo_failed'
-            if clip is None:
-                ok, _eng, lp = local_tts_speak(txt, os.path.join(run_dir, 'narr%d.mp3' % i))
-                if ok:
-                    clip = lp
-                else:
-                    _err = _eng or 'all_engines_failed'
-                    _eng = _eng or 'none'
-            _dur = int((_time.time() - _t0) * 1000)
-            if clip is not None:
-                results.append((i, clip))
-                _tts_diag.append({'idx': i, 'engine': _eng, 'ok': True, 'error': '',
-                             'duration_ms': _dur, 'source': 'retry'})
-            else:
-                _tts_diag.append({'idx': i, 'engine': _eng, 'ok': False, 'error': _err,
-                             'duration_ms': _dur, 'source': 'retry'})
+            _r = _synth_one((i, narr[i]))
+            if _r[5]:
+                break
+            _apply(_r, 'retry')
             if progress:
-                progress['phase'] = '配音重试 %d/%d' % (len([r for r in results if r[0] in failed]), len(failed))
+                with _prog_lock:
+                    progress['phase'] = '配音重试 %d/%d' % (len([r for r in results if r[0] in failed]), len(failed))
     results.sort(key=lambda x: x[0])
     # 写入诊断日志
     _log_path = os.path.join(run_dir, 'tts_log.json')

@@ -1208,29 +1208,56 @@ function renderNarrGuide(s){
 // task: 'narrate'|'movie'|'instruct'|'build'|'beatcut'；返回 Promise<true> 表示允许继续
 function preflight(task){
   return new Promise(resolve => {
-    const decide = (s) => {
+    // 每次点生成都实时拉最新 ai_status：用户「去配置」装好引擎回来后缓存必须失效，
+    // 否则会拿旧快照误拦截（旧快照没有 voice 字段时按不拦截兼容处理）。
+    fetch('/api/ai_status').then(r => r.json()).then(s => {
       _aiStatus = s;
-      let missing = null, explicit = false;
-      // 注：「省流/智能」模式选择器已于第 26 轮移除，改为后端自动选路（本地优先、配了 key 才用云端），
-      // 故不再读取 narMode/movieMode/eco；此处只对「主动勾选了画面描述」这类仍存在的开关做前置确认。
       const aiCap = $('aiCap');
+      const pfFree = $('pfFree');
+      if (pfFree) pfFree.style.display = '';
+      let missing = null, explicit = false, hard = false;
+      // 注：模式选择器已移除，改为后端自动选路（本地优先、配 key 才用云端），
+      // 故不再读 narMode/movieMode/eco；只对仍存在的开关（画面描述）做前置确认。
       if (task === 'build' && aiCap && aiCap.checked && !s.vision && !s.vlm_ready){ missing = '画面描述(Vision)'; explicit = true; }
       else if (task === 'instruct' && !s.chat && !s.local){ missing = '真AI 解说(LLM)'; explicit = false; }
+      // 硬拦截：出配音的任务（短片解说 / 剧情解说视频）连一个「自然语音引擎」都没有时，
+      // 会静默落到系统 SAPI 机械音——禁止直接生成，用户必须先配好（点「去配置」跳配音区）。
+      else if ((task === 'narrate' || task === 'movie') && s.voice && !s.voice.ready){
+        missing = '配音引擎'; hard = true;
+      }
       if (missing){
-        _pendingGen = resolve;  // 点「仍用免费生成」时 resolve(true)
-        // 根据缺少的配置类型决定「去配置」跳转到云端还是本地
-        _pfTarget = (explicit && (missing.indexOf('LLM') >= 0 || missing.indexOf('Vision') >= 0 || missing.indexOf('真AI') >= 0)) ? 'cloud' : 'local';
-        $('pfTitle').textContent = (explicit ? '已选真AI 但未配置 ' : '尚未配置 ') + missing + ' API';
-        $('pfMsg').innerHTML = explicit
-          ? '你选择了「<b>真AI</b>」模式，但 <b>' + missing + ' API</b> 还没配置，无法生成。<br>请先去「🤖 AI 配置」填好 Key；不填也没关系，会自动使用免费本地路径。'
-          : '你还没有配置 <b>' + missing + ' API</b>。直接点「生成」会用 <b>本地离线模式</b>：本地 faster-whisper 识别真实台词 + SAPI 免费配音（不调任何付费接口，有显卡会用 GPU 加速）。<br>想让免费模式解说词更聪明：在「🤖 AI 配置 → ③ 本地模型」部署本机 Ollama+qwen 离线改写；或在「⑤ 本地视觉理解 VLM」部署 qwen2.5vl，会自动<b>逐段看画面</b>生成真解说（仍不花一分钱）；或点「仍用本地离线生成」继续。';
+        _pendingGen = resolve;
+        if (hard){
+          _pfTarget = 'tts';
+          $('pfTitle').textContent = '未配置可用的自然配音引擎';
+          const v = s.voice || {};
+          const eng = v.engines || {};
+          const miss = [];
+          if (!(eng.cloud||{}).ready) miss.push('云端 TTS Key');
+          if (!(eng.edge||{}).ready) miss.push('Edge-tts');
+          if (!(eng.cosyvoice||{}).ready) miss.push('CosyVoice');
+          if (!(eng.chattts||{}).ready) miss.push('ChatTTS');
+          if (!(eng.sherpa||{}).ready) miss.push('离线 sherpa 模型');
+          const cfg = v.engine && v.engine !== 'auto' ? '（当前配置：<b>' + escapeHtml(v.label || v.engine) + '</b>）' : '';
+          $('pfMsg').innerHTML = '本任务需要<b>配音</b>，但当前没有任何可用的<b>自然语音引擎</b>' + cfg + '。'
+            + '<br>未就绪：' + (miss.length ? miss.join('、') : '——') + '；仅剩系统 SAPI（机械音）。'
+            + '<br>为避免出片效果被毁，已<b>暂停生成</b>。'
+            + '<br>请先到「🤖 AI 配置 → 🔊 本地配音引擎」安装/下载任一个自然语音（或填云端 TTS Key），再回来点「生成」。';
+          if (pfFree) pfFree.style.display = 'none';  // 硬拦截：不提供「跳过」按钮
+        } else {
+          // 根据缺少的配置类型决定「去配置」跳转到云端还是本地
+          _pfTarget = (explicit && (missing.indexOf('LLM') >= 0 || missing.indexOf('Vision') >= 0 || missing.indexOf('真AI') >= 0)) ? 'cloud' : 'local';
+          $('pfTitle').textContent = (explicit ? '已选真AI 但未配置 ' : '尚未配置 ') + missing + ' API';
+          $('pfMsg').innerHTML = explicit
+            ? '你选择了「<b>真AI</b>」模式，但 <b>' + missing + ' API</b> 还没配置，无法生成。<br>请先去「🤖 AI 配置」填好 Key；不填也没关系，会自动使用免费本地路径。'
+            : '你还没有配置 <b>' + missing + ' API</b>。直接点「生成」会用 <b>本地离线模式</b>：本地 faster-whisper 识别真实台词 + SAPI 免费配音（不调任何付费接口，有显卡会用 GPU 加速）。<br>想让免费模式解说词更聪明：在「🤖 AI 配置 → ③ 本地模型」部署本机 Ollama+qwen 离线改写；或在「⑤ 本地视觉理解 VLM」部署 qwen2.5vl，会自动<b>逐段看画面</b>生成真解说（仍不花一分钱）；或点「仍用本地离线生成」继续。';
+          if (pfFree) pfFree.style.display = '';
+        }
         $('preflight').style.display = 'flex';
       } else {
         resolve(true);
       }
-    };
-    if (_aiStatus) decide(_aiStatus);
-    else fetch('/api/ai_status').then(r=>r.json()).then(decide).catch(()=>resolve(true));
+    }).catch(() => resolve(true));
   });
 }
 function closePreflight(){ $('preflight').style.display = 'none'; }
@@ -1594,11 +1621,7 @@ let _tasksTimer = null;   // 任务中心轮询定时器（声明在最前，避
 let _flowCurrent = 1;     // 当前流程步骤（声明在最前，避免 showStep 中 TDZ 报错）
 let _flowDone = new Set(); // 已完成步骤（声明在最前，避免 showStep 中 TDZ 报错）
 const STEP_CARDS = {
-  start: ['guideCard', 'smartCard', 'instructCard'],
-  upload: ['drop'],
-  music: ['musicCard', 'libCard'],
-  beatcut: ['beatcutCard'],
-  narrate: ['narCard', 'movieCard'],
+  start: ['guideCard', 'smartCard', 'instructCard'],  music: ['musicCard', 'libCard'],  narrate: ['narCard', 'movieCard', 'drop', 'beatcutCard'],
   adjust: ['adjustCard'],
   ai: ['aiCard'],
   output: ['timelineCard', 'outCard'],
@@ -1615,7 +1638,7 @@ function showStep(step){
   });
   document.querySelectorAll('.stepbtn').forEach(b => b.classList.toggle('active', b.dataset.step === step));
   // 更新流程导航
-  var flowMap = {start:1, upload:2, narrate:3, adjust:4, build:5};
+  var flowMap = {start:1, narrate:2, adjust:3, build:4};
   if(flowMap[step]){
     _flowCurrent = flowMap[step];
     if(typeof updateFlowUI === 'function') updateFlowUI();
@@ -1676,7 +1699,7 @@ function goStep(targetId){
   let init = 'start';
   try { init = localStorage.getItem('springStudio.lastStep') || 'start'; } catch(e){}
   // 只允许主流程步骤，其他步骤（如beatcut/ai/output等独立页）重置为start
-  const MAIN_STEPS = ['start', 'upload', 'narrate', 'adjust', 'build'];
+  const MAIN_STEPS = ['start', 'narrate', 'adjust', 'build'];
   if (!STEP_CARDS[init] || MAIN_STEPS.indexOf(init) === -1) init = 'start';
   showStep(init);
   document.querySelectorAll('.stepbtn').forEach(b => b.addEventListener('click', () => showStep(b.dataset.step)));
@@ -1814,7 +1837,7 @@ window.addEventListener('online', () => {
 // ---- [P2] 复用上次参数：成功发起生成时快照表单，「📋 上次参数」一键回填 ----
 const PARAM_FIELDS = {
   narrate:  ['narMaxSeg','narTheme','narReq','narrStyle','detailLevel','narPlot','narAutoCut','narTargetSec','exportResolution','exportBitrate','exportQualityTier','exportTransition','narBgm'],
-  movie:    ['movieName','moviePlot','movieMaxSeg','moviePlotRefine','movieBgm'],
+  movie:    ['movieName','moviePlot','movieMaxSeg','movieClipRatio','movieBgm'],
   instruct: ['instructInput'],
 };
 function snapshotParams(key){
@@ -1994,9 +2017,14 @@ function jumpToAISection(section){
       if (cloudD) cloudD.open = true;
       if (localD) localD.open = false;
     } else {
-      // local / vlm / whisper / mirror 都在本地离线模型折叠区里
+      // local / vlm / whisper / mirror / tts 都在本地引擎配置折叠区里
       if (localD) localD.open = true;
       if (cloudD) cloudD.open = false;
+    }
+    if (section === 'tts' || section === 'voice') {
+      // 配音引擎跳转：额外滚动到引擎选择控件，方便直接换引擎/下载模型
+      const eng = document.getElementById('ttsLocalEngine');
+      if (eng) eng.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, 350);
 }
@@ -2402,7 +2430,7 @@ async function buildMovieNarrate(){
   $('movieStatus').textContent = '提交任务…';
   gStart('🌐 联网解说生成');
   const body = { movie: name, plot: plot,
-    params: { maxSeg: parseFloat($('movieMaxSeg').value) || 25, w:1280, h:720, fps:30, plotRefine: $('moviePlotRefine') ? $('moviePlotRefine').checked : true } };
+    params: { maxSeg: parseFloat($('movieMaxSeg').value) || 25, w:1280, h:720, fps:30, clipRatio: parseFloat($('movieClipRatio') ? $('movieClipRatio').value : 75) / 100 } };
   if(MOVIE_VIDEO){ body.video = await videoToBody(MOVIE_VIDEO); }
   if($('movieBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
@@ -4512,10 +4540,29 @@ function nextAdjustSegment(){
 // 设置全局预览音频音量
 function setGlobalAudVol(val){
   var el = document.getElementById('adjGlobalAudVolVal');
-  if(el) el.textContent = val + '%';
+  if(el) el.textContent = val + '%';   // 用 textContent 设值
   var audio = document.getElementById('adjGlobalAudio');
-  if(audio) audio.volume = val / 100;
+  if(audio){
+    audio.volume = val / 100;
+    try { localStorage.setItem('_globalAudVol', val); } catch(e){}
+  }
 }
+
+document.addEventListener('DOMContentLoaded', function(){
+  // 绑定全局预览音量滑块事件
+  var vol = document.getElementById('adjGlobalAudVol');
+  if(vol){
+    // 恢复上次音量
+    try{
+      var saved = parseFloat(localStorage.getItem('_globalAudVol'));
+      if(!isNaN(saved) && saved >= 0 && saved <= 100){
+        vol.value = saved;
+        setGlobalAudVol(saved);
+      }
+    }catch(e){}
+    vol.addEventListener('input', function(){ setGlobalAudVol(this.value); });
+  }
+});
 
 // 设置配音音量（预览时实时生效）
 function setNarrationVolume(idx, val){
@@ -4824,42 +4871,42 @@ const BUILTIN_TEMPLATES = {
   '⭐ 电影解说（经典）': {
     desc: '经典电影解说风格，白色字幕黑描边，自动剪辑+配乐',
     tts: {engine:'edge', voice:'zh-CN-YunxiNeural', rate:'+5%'},
-    maxSeg: 25, bgm: true, plotRefine: true, autoCut: true,
+    maxSeg: 25, bgm: true, clipRatio: 0.75, autoCut: true,
     narrStyle: 'movie', detailLevel: 'balanced', targetSec: 'auto',
     subtitle: {fontSize: 22, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 科普讲解': {
     desc: '知识科普风格，蓝色字幕，详细展开',
     tts: {engine:'edge', voice:'zh-CN-XiaoxiaoNeural', rate:'+0%'},
-    maxSeg: 30, bgm: false, plotRefine: true, autoCut: true,
+    maxSeg: 30, bgm: false, clipRatio: 0.75, autoCut: true,
     narrStyle: 'science', detailLevel: 'detailed', targetSec: 'auto',
     subtitle: {fontSize: 20, color: '#60A5FA', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 搞笑吐槽': {
     desc: '搞笑吐槽风格，黄色字幕，精简概括',
     tts: {engine:'edge', voice:'zh-CN-XiaoyiNeural', rate:'+10%'},
-    maxSeg: 20, bgm: true, plotRefine: false, autoCut: true,
+    maxSeg: 20, bgm: true, clipRatio: 0.95, autoCut: true,
     narrStyle: 'funny', detailLevel: 'concise', targetSec: '3',
     subtitle: {fontSize: 24, color: '#FBBF24', outlineColor: '#000000', outlineWidth: 3, alignment: 2, marginV: 60}
   },
   '⭐ 悬疑解读': {
     desc: '悬疑烧脑风格，红色字幕，详细展开',
     tts: {engine:'edge', voice:'zh-CN-YunyangNeural', rate:'-5%'},
-    maxSeg: 25, bgm: true, plotRefine: true, autoCut: true,
+    maxSeg: 25, bgm: true, clipRatio: 0.75, autoCut: true,
     narrStyle: 'suspense', detailLevel: 'detailed', targetSec: '5',
     subtitle: {fontSize: 22, color: '#F87171', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 极简旁白（保留全片）': {
     desc: '不剪辑，保留完整原片，只加旁白字幕',
     tts: {engine:'edge', voice:'zh-CN-YunjianNeural', rate:'+0%'},
-    maxSeg: 40, bgm: false, plotRefine: false, autoCut: false,
+    maxSeg: 40, bgm: false, clipRatio: 0.95, autoCut: false,
     narrStyle: 'movie', detailLevel: 'concise', targetSec: 'auto',
     subtitle: {fontSize: 20, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 短视频风（1分钟）': {
     desc: '抖音/短视频风格，精简到1分钟，大字幕',
     tts: {engine:'edge', voice:'zh-CN-XiaoxiaoNeural', rate:'+15%'},
-    maxSeg: 15, bgm: true, plotRefine: true, autoCut: true,
+    maxSeg: 15, bgm: true, clipRatio: 0.75, autoCut: true,
     narrStyle: 'movie', detailLevel: 'concise', targetSec: '1',
     subtitle: {fontSize: 28, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 3, alignment: 2, marginV: 80}
   }
@@ -4903,7 +4950,7 @@ function savePreset(){
   const preset = {
     maxSeg: parseInt((document.getElementById('movieMaxSeg')||{}).value)||25,
     bgm: !!(document.getElementById('movieBgm')||{}).checked,
-    plotRefine: !!(document.getElementById('moviePlotRefine')||{}).checked,
+    clipRatio: parseFloat(document.getElementById('movieClipRatio')||75)/100,
     autoCut: !!(document.getElementById('narAutoCut')||{}).checked,
     targetSec: (document.getElementById('narTargetSec')||{}).value || 'auto',
     subtitle: getSubtitleStyle(),
@@ -4931,9 +4978,9 @@ function applyPreset(name){
     p = presets[name];
   }
   if(!p){ toast('模板不存在','error'); return; }
-  if(p.maxSeg && document.getElementById('movieMaxSeg')) document.getElementById('movieMaxSeg').value = p.maxSeg;
+  if(p.maxSeg && document.getElementById('movieMaxSeg')) document.getElementById('movieMaxSeg').value = p.maxSeg; if(p.clipRatio && document.getElementById('movieClipRatio')) document.getElementById('movieClipRatio').value = Math.round(p.clipRatio*100);
   if(document.getElementById('movieBgm')) document.getElementById('movieBgm').checked = !!p.bgm;
-  if(document.getElementById('moviePlotRefine')) document.getElementById('moviePlotRefine').checked = p.plotRefine !== false;
+  
   if(p.narrStyle && document.getElementById('narrStyle')) document.getElementById('narrStyle').value = p.narrStyle;
   if(p.detailLevel && document.getElementById('detailLevel')) document.getElementById('detailLevel').value = p.detailLevel;
   if(p.autoCut !== undefined && document.getElementById('narAutoCut')) document.getElementById('narAutoCut').checked = !!p.autoCut;

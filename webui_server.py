@@ -1343,10 +1343,96 @@ def detect_hardware():
     return info
 
 
-def ai_status():
-    """返回各 AI 能力的就绪状态，供前端做生成前置引导（未配 key 时不应静默免费生成）。"""
-    vok, vmsg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
+def _voice_status():
+    """汇总配音链路就绪状态，供生成前置引导（ai_status().voice）。
+
+    就绪定义（防「静默掉到 SAPI 机械音」）：
+    - 显式选 sapi → 用户已知情接受机械音，视为就绪；
+    - 其余情况：云端 TTS Key 或本地任一「自然语音引擎」可用即视为就绪
+      （edge / CosyVoice / ChatTTS / 离线 sherpa 任一可用，配音会自动按序兜底，
+       不会静默落 SAPI）。
+    全部探测均为本地导入/文件系统检查，不联网、不下载；单点探测异常按不可用处理。
+    """
+    e = {
+        'cloud': {'ready': False},
+        'edge': {'ready': False},
+        'cosyvoice': {'ready': False},
+        'chattts': {'ready': False},
+        'sherpa': {'ready': False},
+        'sapi': {'ready': False},
+    }
+
+    def _probe(fn):
+        try:
+            return bool(fn())
+        except Exception:
+            return False
+
+    try:
+        cfg = tts_local_cfg() or {}
+        engine = str(cfg.get('engine') or 'auto').lower()
+    except Exception:
+        engine = 'auto'
+    try:
+        label = local_tts_label() or ''
+    except Exception:
+        label = ''
+    try:
+        cloud_cfg = (load_ai_config().get('tts') or {})
+        cloud = bool(cloud_cfg.get('api_key') and cloud_cfg.get('model')) and (
+            (str(cloud_cfg.get('provider') or 'openai').lower() in ('dashscope', 'mimo'))
+            or bool(cloud_cfg.get('base_url')))
+    except Exception:
+        cloud = False
+    e['cloud']['ready'] = cloud
+    e['edge']['ready'] = _probe(edge_tts_available) and not _probe(edge_tts_dead_reason)
+    e['cosyvoice']['ready'] = _probe(cosyvoice_available)
+    e['chattts']['ready'] = _probe(chattts_available)
+    e['sherpa']['ready'] = _probe(sherpa_tts_ready)
+    e['sapi']['ready'] = True  # Windows 系统兜底（pyttsx3 存在即视为可用）
+
+    chain = cloud or e['edge']['ready'] or e['cosyvoice']['ready'] \
+        or e['chattts']['ready'] or e['sherpa']['ready']
+    # selected_ready：所选引擎自身是否就绪（auto → 看整条自然链）
+    selected_ready = chain if engine == 'auto' else (
+        True if engine == 'sapi' else bool(e.get(engine, {}).get('ready')))
+    # ready：最终会不会静默落 SAPI。显式 sapi 视为用户已接受；其余只要自然链非空即可。
+    ready = True if engine == 'sapi' else chain
+    if ready:
+        reason = '配音就绪：' + (label or '自然语音引擎可用')
+    else:
+        missing = []
+        if not cloud:
+            missing.append('云端 TTS Key')
+        if not e['edge']['ready']:
+            missing.append('Edge-tts(需能连微软朗读)')
+        if not e['cosyvoice']['ready']:
+            missing.append('CosyVoice(需安装)')
+        if not e['chattts']['ready']:
+            missing.append('ChatTTS(需安装)')
+        if not e['sherpa']['ready']:
+            missing.append('离线 sherpa 模型(需下载)')
+        reason = '当前无可用的自然配音引擎（' + '、'.join(missing) + '均未就绪），只剩系统 SAPI 机械音。'
     return {
+        'engine': engine,
+        'label': label,
+        'ready': ready,
+        'selected_ready': selected_ready,
+        'reason': reason,
+        'engines': e,
+    }
+
+
+_ai_status_cache = {'time': 0, 'data': None}
+def ai_status():
+    """返回各 AI 能力的就绪状态，供前端做生成前置引导。
+    5秒缓存：vlm_ping() 会阻塞，前端轮询时避免重复检查导致超时。"""
+    import time as _time
+    now = _time.time()
+    if _ai_status_cache['data'] and now - _ai_status_cache['time'] < 5.0:
+        return _ai_status_cache['data']
+    vok, vmsg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
+    _result = {
         'chat': ai_enabled('chat'),
         'vision': ai_enabled('vision'),
         'tts': _tts_available(),
@@ -1371,8 +1457,12 @@ def ai_status():
         'narr_guide': _model_narr_guide(),
         'any_ai': ai_enabled('chat') or ai_enabled('vision'),
         'configured': bool(load_ai_config()),
+        'voice': _voice_status(),
         'mirror': mirror_cfg(),
     }
+    _ai_status_cache['time'] = now
+    _ai_status_cache['data'] = _result
+    return _result
 
 
 def compute_mode(params, needs_chat=True):

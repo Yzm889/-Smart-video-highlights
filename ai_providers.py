@@ -140,10 +140,16 @@ def asr_segments(video_path, progress=None, pct_range=None):
             pass
         return []
 
+_AI_CFG_CACHE = {'data': None, 'mtime': 0}
+
 def load_ai_config():
     try:
-        with open(AI_CONFIG_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        mt = os.path.getmtime(AI_CONFIG_PATH)
+        if mt != _AI_CFG_CACHE['mtime']:
+            with open(AI_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                _AI_CFG_CACHE['data'] = json.load(f)
+            _AI_CFG_CACHE['mtime'] = mt
+        return _AI_CFG_CACHE['data'] or {}
     except Exception:
         return {}
 
@@ -268,24 +274,32 @@ def _aborted():
     p = PROGRESS.get(rid)
     return bool(p and p.get('abort'))
 
+_CUDA_CACHE = {'val': None}
+
 def _cuda_available():
     """轻量检测 NVIDIA GPU 是否可用：不依赖 torch（很多用户没装），先用 nvidia-smi，再 fallback torch。
-    faster-whisper 的 CTranslate2 后端原生支持 CUDA，只要驱动在就能用，不需要 torch。"""
+    faster-whisper 的 CTranslate2 后端原生支持 CUDA，只要驱动在就能用，不需要 torch。
+    结果缓存：硬件在进程生命周期内不变。"""
+    if _CUDA_CACHE['val'] is not None:
+        return _CUDA_CACHE['val']
+    result = False
     try:
         import subprocess
         r = subprocess.run(['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
                            capture_output=True, text=True, timeout=5)
         if r.returncode == 0 and r.stdout.strip():
-            return True
+            result = True
     except Exception:
         pass
-    try:
-        import torch
-        if getattr(torch, 'cuda', None) is not None and torch.cuda.is_available():
-            return True
-    except Exception:
-        pass
-    return False
+    if not result:
+        try:
+            import torch
+            if getattr(torch, 'cuda', None) is not None and torch.cuda.is_available():
+                result = True
+        except Exception:
+            pass
+    _CUDA_CACHE['val'] = result
+    return result
 
 def _fmt_hms(sec):
     sec = max(0.0, float(sec or 0))

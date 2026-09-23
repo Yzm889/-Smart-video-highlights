@@ -26,7 +26,7 @@ if ROOT not in sys.path:
 
 VDUR = 3600.0          # interval = max(15, 3600/60) = 60 → 60 个抽样点
 N_SAMPLES = 60
-BATCH = 6              # 与 _vlm_sample_timeline 内的 batch_size 一致
+BATCH = 8              # 与 _vlm_sample_timeline 内的 batch_size 一致（S5：3→6→8）
 
 
 class Env:

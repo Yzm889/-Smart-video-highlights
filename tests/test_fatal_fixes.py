@@ -232,10 +232,16 @@ def test_ffmpeg_run_releases_resources_on_abort(monkeypatch):
 # ---------------------------------------------------------------------------
 def test_tts_setup_running_always_clears(monkeypatch, tmp_path):
     """下载线程无论成功失败都必须清 running，否则功能永久锁死、前端永远转圈。"""
+    import tts_engines
     monkeypatch.setattr(S, 'tts_models_dir', lambda: str(tmp_path))
+    monkeypatch.setattr(tts_engines, 'tts_models_dir', lambda: str(tmp_path))
     bad_models = {k: dict(v, url='file:///definitely-not-exist')
                   for k, v in S.SHERPA_TTS_MODELS.items()}
     monkeypatch.setattr(S, 'SHERPA_TTS_MODELS', bad_models)
+    monkeypatch.setattr(tts_engines, 'SHERPA_TTS_MODELS', bad_models)
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'urlretrieve', lambda *a, **k: (_ for _ in ()).throw(OSError('mocked download failure')))
 
     started = threading.Event()
 

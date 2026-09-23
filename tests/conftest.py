@@ -24,6 +24,7 @@ def _isolate_project_state(tmp_path):
     # 测试统一以 webui 入口为事实来源，这里同步 patch 保证 load_ai_config 系读到临时配置。
     old_ai_cfg = ai_providers.AI_CONFIG_PATH
     ai_providers.AI_CONFIG_PATH = str(p)
+    ai_providers._AI_CFG_CACHE = {'data': None, 'mtime': 0}
     S.HISTORY_PATH = str(tmp_path / 'history.json')
     S.OUTDIR = str(tmp_path / 'webui_output')
     try:
@@ -31,5 +32,6 @@ def _isolate_project_state(tmp_path):
     finally:
         S.AI_CONFIG_PATH = old_cfg
         ai_providers.AI_CONFIG_PATH = old_ai_cfg
+        ai_providers._AI_CFG_CACHE = {'data': None, 'mtime': 0}
         S.HISTORY_PATH = old_hist
         S.OUTDIR = old_out

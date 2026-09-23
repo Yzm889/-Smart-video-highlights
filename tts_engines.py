@@ -107,21 +107,35 @@ def edge_tts_dead_reason():
         return _s['reason'] or '连续失败'
     return ''
 
+_EDGE_INSTALLED_CACHE = {'val': None, 'ts': 0}
+
+def _edge_tts_installed():
+    """edge-tts 是否已安装（模块或命令行）；结果缓存 30 秒避免重复 find_spec/subprocess。"""
+    now = time.time()
+    if _EDGE_INSTALLED_CACHE['val'] is not None and (now - _EDGE_INSTALLED_CACHE['ts']) < 30:
+        return _EDGE_INSTALLED_CACHE['val']
+    result = False
+    try:
+        import importlib.util as _u
+        if _u.find_spec('edge_tts') is not None:
+            result = True
+    except Exception:
+        pass
+    if not result:
+        try:
+            r = subprocess.run(['edge-tts', '--version'], capture_output=True, timeout=25)
+            result = (r.returncode == 0)
+        except Exception:
+            result = False
+    _EDGE_INSTALLED_CACHE['val'] = result
+    _EDGE_INSTALLED_CACHE['ts'] = now
+    return result
+
 def edge_tts_available():
     """edge-tts 是否已安装且当前可用（python 模块或命令行任一即可，熔断期内视为不可用）。"""
     if edge_tts_dead_reason():
         return False
-    try:
-        import importlib.util as _u
-        if _u.find_spec('edge_tts') is not None:
-            return True
-    except Exception:
-        pass
-    try:
-        r = subprocess.run(['edge-tts', '--version'], capture_output=True, timeout=25)
-        return r.returncode == 0
-    except Exception:
-        return False
+    return _edge_tts_installed()
 
 def _edge_note_failure(reason=''):
     """记一次「整轮重试后仍失败」。达到阈值才熔断。
@@ -989,6 +1003,15 @@ def has_tts_markup(text):
     """检查文案是否包含 TTS 标记。"""
     return bool(re.search(r'\{(情绪|停顿|慢|快|高音|低音|大声|小声)', text or ''))
 
+_EMOTION_KEYWORDS = {
+    '激动': ['没想到', '竟然', '居然', '惊人', '震撼', '奇迹', '破纪录', '夺冠', '加冕', '巅峰', '高光'],
+    '悲伤': ['死', '牺牲', '悲剧', '去世', '离别', '崩溃', '绝望', '痛苦', '眼泪', '心碎', '遗憾'],
+    '紧张': ['危险', '紧张', '追逐', '打斗', '千钧一发', '命悬一线', '危机', '追杀', '逃亡', '惊险'],
+    '严肃': ['秘密', '真相', '阴谋', '背叛', '悬念', '重要', '关键', '决定', '命运', '历史'],
+    '温柔': ['温柔', '回忆', '温情', '爱情', '家人', '陪伴', '温暖', '幸福', '感动', '深情'],
+}
+_SLOW_KEYWORDS = ['年', '万', '亿', '%', '第', '首次', '唯一', '最', '纪录', '票房', '冠军']
+
 def _enhance_tts_markup(texts):
     """TTS 标记后处理：检查 LLM 生成的解说词标记是否完整合理，自动补全/修正。
     - 修复未闭合的 {情绪:xx}/{慢} 等标签
@@ -997,17 +1020,6 @@ def _enhance_tts_markup(texts):
     """
     if not texts:
         return texts
-
-    # 情绪关键词映射
-    emotion_keywords = {
-        '激动': ['没想到', '竟然', '居然', '惊人', '震撼', '奇迹', '破纪录', '夺冠', '加冕', '巅峰', '高光'],
-        '悲伤': ['死', '牺牲', '悲剧', '去世', '离别', '崩溃', '绝望', '痛苦', '眼泪', '心碎', '遗憾'],
-        '紧张': ['危险', '紧张', '追逐', '打斗', '千钧一发', '命悬一线', '危机', '追杀', '逃亡', '惊险'],
-        '严肃': ['秘密', '真相', '阴谋', '背叛', '悬念', '重要', '关键', '决定', '命运', '历史'],
-        '温柔': ['温柔', '回忆', '温情', '爱情', '家人', '陪伴', '温暖', '幸福', '感动', '深情'],
-    }
-    # 慢读关键词（重要信息）
-    slow_keywords = ['年', '万', '亿', '%', '第', '首次', '唯一', '最', '纪录', '票房', '冠军']
 
     result = []
     for idx, text in enumerate(texts):
@@ -1038,14 +1050,14 @@ def _enhance_tts_markup(texts):
             # 检测情绪（按关键词匹配强度，不按序号奇偶）
             emotion = None
             emo_hits = 0
-            for emo, kws in emotion_keywords.items():
+            for emo, kws in _EMOTION_KEYWORDS.items():
                 hits = sum(1 for kw in kws if kw in t)
                 if hits > emo_hits:
                     emotion = emo
                     emo_hits = hits
             # 有情绪关键词时添加，但整段最多50%的节有情绪标记（避免过度）
             if emotion and emo_hits > 0:
-                for kw in emotion_keywords[emotion]:
+                for kw in _EMOTION_KEYWORDS[emotion]:
                     if kw in t:
                         pos = t.find(kw)
                         # 从关键词前最近的标点或句首开始
@@ -1057,7 +1069,7 @@ def _enhance_tts_markup(texts):
                         break
 
             # 重要信息放慢（只包裹数字本身+后面几个字，不切断词语）
-            if any(kw in t for kw in slow_keywords) and '慢' not in added:
+            if any(kw in t for kw in _SLOW_KEYWORDS) and '慢' not in added:
                 m = re.search(r'\d+[万亿%]?', t)
                 if m:
                     # 从数字前一个标点或句首开始，到数字后最近的标点结束
@@ -1130,19 +1142,21 @@ def _tts_available():
 
 # [3.2b] 由 webui 迁入的会话辅助函数（被本地引擎/前端引用）
 
+_OPEN_TAG_RE = re.compile(r'\{(\w+)(?::[^}]*)?\}')
+_CLOSE_TAG_RE = re.compile(r'\{/(\w+)\}')
+
 def _fix_unclosed_tags(text):
     """修复未闭合的 TTS 标记：{情绪:xx} 必须有 {/情绪}，{慢} 必须有 {/慢}。"""
-    # 检查情绪标签
-    open_emotion = re.findall(r'\{情绪:([^}]+)\}', text)
-    close_emotion = len(re.findall(r'\{/情绪\}', text))
-    if len(open_emotion) > close_emotion:
-        text = text + '{/情绪}' * (len(open_emotion) - close_emotion)
-    # 检查 prosody 标签
-    for tag in ['慢', '快', '高音', '低音', '大声', '小声']:
-        opens = len(re.findall(r'\{%s\}' % tag, text))
-        closes = len(re.findall(r'\{/%s\}' % tag, text))
-        if opens > closes:
-            text = text + ('{/%s}' % tag) * (opens - closes)
+    counts = {}
+    for m in _OPEN_TAG_RE.finditer(text):
+        tag = m.group(1)
+        counts[tag] = counts.get(tag, 0) + 1
+    for m in _CLOSE_TAG_RE.finditer(text):
+        tag = m.group(1)
+        counts[tag] = counts.get(tag, 0) - 1
+    for tag, n in counts.items():
+        if n > 0:
+            text += ('{/%s}' % tag) * n
     return text
 
 

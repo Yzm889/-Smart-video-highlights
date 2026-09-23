@@ -323,7 +323,11 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
     gap = vdur - keep
     # 连续覆盖全片（中间没有实质空隙）→ 没有可剪的内容，直接跳过，省一次全片重编码
     covered_gap = sum(max(0.0, raw[i + 1][0] - raw[i][1]) for i in range(len(raw) - 1))
-    if raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.25:
+    # 【修复】当铺满整片时 covered_gap≈0 会触发 no_cut，用户感到「没剪辑」。
+    # 收严到「所有片段间完全无空隙且首尾完全覆盖」才算无剪辑——有任何可见空隙一律真剪。
+    _no_cut = (raw and raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.0)
+
+    if _no_cut:
         return video_path, raw, 0.0
 
     cut_dir = os.path.join(run_dir, 'cuts')
@@ -479,8 +483,9 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     keep = sum(b - a for a, b in raw)
     gap = vdur - keep
     covered_gap = sum(max(0.0, raw[i + 1][0] - raw[i][1]) for i in range(len(raw) - 1))
-    # 无实质剪辑（全片连续覆盖）→ 不裁剪，仅烧字幕+缩放（两遍管线在此直接返回原片，不改时长）
-    _no_cut = (raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.25)
+    # 【修复】当铺满整片时 covered_gap≈0 会触发 no_cut，用户感到「没剪辑」。
+    # 收严到「所有片段间完全无空隙且首尾完全覆盖」才算无剪辑——有任何可见空隙一律真剪。
+    _no_cut = (raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.0)
 
     has_audio = _has_audio_track(video_path)
     out = os.path.join(run_dir, 'vburn.mp4')

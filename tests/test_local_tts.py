@@ -46,6 +46,8 @@ def test_local_tts_prefers_edge_then_falls_back(monkeypatch, tmp_path):
     assert (ok, eng) == (True, 'edge')
 
     monkeypatch.setattr(T, 'edge_tts_available', lambda: False)
+    monkeypatch.setattr(T, 'cosyvoice_available', lambda: False)
+    monkeypatch.setattr(T, 'chattts_available', lambda: False)
     monkeypatch.setattr(T, 'sherpa_tts_speak', lambda t, p, speed=1.0: _ok_edge(t, p))
     ok, eng, _p = S.local_tts_speak('测试', out)
     assert (ok, eng) == (True, 'sherpa')
@@ -146,6 +148,8 @@ def test_task_locks_tts_engine(monkeypatch, tmp_path):
         assert S.local_tts_speak('第一句', str(tmp_path / '1.mp3'))[1] == 'edge'
         # 第二段：edge 突然不可用了，必须回退——但要改锁到新引擎，不能还是 edge
         monkeypatch.setattr(T, 'edge_tts_available', lambda: False)
+        monkeypatch.setattr(T, 'cosyvoice_available', lambda: False)
+        monkeypatch.setattr(T, 'chattts_available', lambda: False)
         eng2 = S.local_tts_speak('第二句', str(tmp_path / '2.mp3'))[1]
         assert eng2 == 'sherpa', '锁定的引擎失效后应改锁到备用：%s' % eng2
         assert S._TLS.tts_engine == 'sherpa'
@@ -171,6 +175,8 @@ def test_local_tts_label_reflects_state(monkeypatch):
     monkeypatch.setattr(T, 'sherpa_tts_available', lambda: False)
     assert 'edge-tts' in S.local_tts_label()
     monkeypatch.setattr(T, 'edge_tts_available', lambda: False)
+    monkeypatch.setattr(T, 'cosyvoice_available', lambda: False)
+    monkeypatch.setattr(T, 'chattts_available', lambda: False)
     assert 'SAPI' in S.local_tts_label()
     monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'sherpa'}})
     monkeypatch.setattr(T, 'sherpa_tts_available', lambda: True)
