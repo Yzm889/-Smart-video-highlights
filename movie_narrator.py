@@ -2266,6 +2266,75 @@ def _llm_refine_beats_with_scenes(beats, scenes, alignment, asr, movie_name=''):
         return beats
 
 
+def _llm_align_and_refine(beats, scenes, scene_story, asr, movie_name=''):
+    # [S3 合并轮次] 语义对齐 + 剧情润色合并为一次 LLM 调用。
+    # 输入：解说稿 beats、画面索引 scenes、剧情理解 scene_story（可选）、台词 asr。
+    # 输出：- (alignment, refined) 对齐与润色都可用；
+    #       - (alignment, None)   只有对齐（润色缺失，调用方回退独立润色轮）；
+    #       - (None, refined)     只有润色（对齐缺失，调用方回退独立对齐轮）；
+    #       - None                整体失败（调用方回退旧分步路径）。
+    # 仅走本地 LLM（云端行为不变，由旧路径的云端兜底覆盖）。
+    if not beats or not scenes:
+        return None
+    # 场景侧：有剧情理解则展示叙事含义，否则回退画面描述
+    scene_lines = []
+    for i, sc in enumerate(scenes):
+        st = (scene_story or {}).get(i) or {}
+        if st.get('story'):
+            parts = ['剧情:' + st['story']]
+            if st.get('who'):
+                parts.append('人物:' + st['who'])
+            if st.get('act'):
+                parts.append('作用:' + st['act'])
+            if st.get('keywords'):
+                parts.append('关键词:' + ','.join(st['keywords']))
+            line = '；'.join(parts)
+        else:
+            line = _scene_describe(sc)
+        scene_lines.append('场景%d(%.0f-%.0fs): %s' % (i, sc.get('start', 0) or 0, sc.get('end', 0) or 0, line))
+    beat_lines = ['解说词%d: %s' % (i, t[:120]) for i, t in enumerate(beats)]
+    prompt = ('你是影视剪辑师与解说文案编辑。任务分两步：\n'
+              '1) 把每段解说词对齐到最相关的场景序号（可多选，按相关度排序；对不上就空数组）；\n'
+              '2) 根据对应场景的画面与台词，把每段解说词润色得更贴合画面——不改变剧情主线与因果关系，'
+              '不添加画面里没有的情节，保持口语化解说风格，每段30-60字。\n'
+              '只输出JSON：{"对齐":[{"解说词":0,"场景":[1,2]},...], "润色":["第0段润色后",...]}\n'
+              '润色数组与解说词顺序一一对应。\n\n')
+    if movie_name:
+        prompt += '电影：%s\n\n' % movie_name
+    prompt += '【场景列表】\n' + '\n'.join(scene_lines[:80])
+    prompt += '\n\n【解说词列表】\n' + '\n'.join(beat_lines[:60])
+    try:
+        if _w.local_llm_enabled() and _w.local_llm_ping()[0]:
+            resp = local_llm_chat(prompt,
+                                  system='你是影视剪辑师，擅长解说词与画面的语义对齐与贴合润色，只输出JSON。',
+                                  timeout=180)
+        else:
+            return None
+    except Exception as e:
+        _log.info('[DIAG] S3合并对齐+润色调用失败: %s' % e)
+        return None
+    obj = _extract_json_obj(resp or '') or {}
+    if not obj:
+        return None
+    # 对齐：解析失败/为空 → None（触发调用方回退独立对齐轮）
+    alignment = _parse_alignment_obj(obj, scenes)
+    if alignment:
+        alignment = _align_from_story_fill(beats, scenes, alignment, scene_story)
+    else:
+        alignment = None
+    # 润色：缺字段/行数不符 → None（触发调用方回退独立润色轮）
+    refined = None
+    refined_raw = obj.get('润色') or obj.get('refined') or []
+    if isinstance(refined_raw, list) and refined_raw:
+        lines = [str(x).strip() for x in refined_raw if str(x) is not None and str(x).strip()]
+        if len(lines) == len(beats):
+            refined = lines
+    if refined is not None:
+        _log.info('[DIAG] S3合并对齐+润色: 对齐%d节, 润色%d段' %
+                  (len(alignment or {}), len(refined)))
+    return alignment, refined
+
+
 def _score_segments(segs, scene_descs, narr_map, asr=None, scene_alignment=None):
     """为每个视频段打分：场景对齐权重×事件信息量×台词量。返回 [(score, seg), ...]。
     用于 clipRatio 智能剪辑：铺设率过高时优先保留信息量最大的段。
@@ -2867,20 +2936,34 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     scene_story = {}
     if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
         scene_story = _infer_scene_story(scene_descs, asr=asr, movie_name=movie_name, progress=progress)
-    # 阶段2：LLM语义对齐
+    # 阶段2+2.5：LLM语义对齐 + 剧情润色 合并为一次调用（S3 合并轮次，省一次完整推理）
     scene_alignment = {}
+    refined_texts = None
+    _merge_llm = os.environ.get('NARRATE_MERGE_LLM') != '0'
     if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
-        up('解说词-场景语义对齐', 48)
-        scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name, scene_story=scene_story)
-        if scene_alignment:
-            _log.info(f'[DIAG] LLM语义对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
-    # 阶段2.5：剧情理解层 - 用画面描述+台词润色解说词（可选，默认开启）
-    # 让解说词贴合画面内容，避免解说和画面错位
+        up('解说词-场景对齐与润色', 48)
+        if _merge_llm:
+            try:
+                _merged = _llm_align_and_refine(texts, scene_descs, scene_story, asr, movie_name=movie_name)
+            except Exception as e:
+                _log.info('[DIAG] S3合并轮次异常，回退分步: %s' % e)
+                _merged = None
+            if _merged:
+                scene_alignment, refined_texts = _merged
+                if scene_alignment:
+                    _log.info(f'[DIAG] S3合并对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
+        # 降级1：合并未给出对齐 → 回退独立对齐轮（其内部含云端兜底）
+        if not scene_alignment:
+            scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name, scene_story=scene_story)
+            if scene_alignment:
+                _log.info(f'[DIAG] LLM语义对齐(回退): {len(scene_alignment)}/{len(texts)}节已对齐')
+    # 阶段2.5：剧情润色（合并未给出 → 回退独立润色轮；可选，默认开启）
     if params.get('plotRefine', params.get('plot_refine', True)) and scene_alignment and scene_descs:
-        up('剧情理解润色（让解说贴合画面）', 50)
-        refined = _llm_refine_beats_with_scenes(texts, scene_descs, scene_alignment, asr, movie_name=movie_name)
-        if refined and len(refined) == len(texts):
-            texts = refined
+        if refined_texts is None:
+            up('剧情理解润色（让解说贴合画面）', 50)
+            refined_texts = _llm_refine_beats_with_scenes(texts, scene_descs, scene_alignment, asr, movie_name=movie_name)
+        if refined_texts and len(refined_texts) == len(texts):
+            texts = refined_texts
             texts = _enhance_tts_markup(texts)
     # 阶段3：在对齐的场景内选片段（_allocate_script_spans 内部处理），
     # 对齐失败时自动退回台词bigram匹配保底
