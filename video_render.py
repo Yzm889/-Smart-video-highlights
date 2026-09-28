@@ -225,19 +225,26 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
     _single_pass = False
     if auto_cut:
         up('按分镜剪辑画面', 30)
+        # 【剪辑失效根因修复】分析阶段可能已经把 keep=False / 低信息密度段剔除了
+        # （cut_plan.removed>0）。此时若仍按「首尾覆盖+无空隙」判定 no_cut 会跳过剪辑，
+        # 成片=原片全部画面 —— 用户看到「没剪」。有被剪段 → 强制真剪（拼接保留段）。
+        _cp_removed = int(((progress or {}).get('cut_plan') or {}).get('removed') or 0)
+        _skip_no_cut = bool(_cp_removed)
         if _SINGLE_PASS_CUT:
             try:
                 src_video, segs, cut_sec = _cut_and_burn_video(
-                    video_path, segs, voice_durs, run_dir, params, narr_srt, tts_clips, progress)
+                    video_path, segs, voice_durs, run_dir, params, narr_srt, tts_clips, progress,
+                    skip_no_cut=_skip_no_cut)
                 _single_pass = True
                 _log.info('[DIAG] P1-1 单遍合并成功：视频仅编码 1 次')
             except Exception as _ce:
                 _log.warning('[DIAG] P1-1 单遍合并失败，回退两遍管线: %s' % _ce)
+                _warn(progress, 'P1-1 单遍合并失败，已回退两遍管线：%s' % _ce)
                 src_video, segs, cut_sec = _w._cut_video_by_spans(
-                    video_path, segs, run_dir, progress, voice_durs=voice_durs)
+                    video_path, segs, run_dir, progress, voice_durs=voice_durs, skip_no_cut=_skip_no_cut)
         else:
             src_video, segs, cut_sec = _w._cut_video_by_spans(
-                video_path, segs, run_dir, progress, voice_durs=voice_durs)
+                video_path, segs, run_dir, progress, voice_durs=voice_durs, skip_no_cut=_skip_no_cut)
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
@@ -278,7 +285,20 @@ def _merge_spans(spans, eps=0.05):
     return out
 
 
-def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=None):
+def _warn(progress, msg):
+    """把降级/失败信息写入 progress.warnings（前端展示），杜绝「静默降级」。
+    任何「本应剪辑/配音/合成，但走了兜底」的路径都必须调用。"""
+    if progress is not None:
+        try:
+            wl = progress.get('warnings') or []
+            if msg not in wl:
+                wl.append(str(msg))
+                progress['warnings'] = wl
+        except Exception:
+            pass
+
+
+def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=None, skip_no_cut=False):
     """按保留区间真剪辑：只留 spans 覆盖的画面，顺序拼成新片，并给出新时间轴。
 
     这是「剧情驱动剪辑」名副其实的关键。历史实现里解说链路只做「烧字幕 + 混音」，
@@ -325,9 +345,13 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
     covered_gap = sum(max(0.0, raw[i + 1][0] - raw[i][1]) for i in range(len(raw) - 1))
     # 【修复】当铺满整片时 covered_gap≈0 会触发 no_cut，用户感到「没剪辑」。
     # 收严到「所有片段间完全无空隙且首尾完全覆盖」才算无剪辑——有任何可见空隙一律真剪。
-    _no_cut = (raw and raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.0)
+    # skip_no_cut=True（分析阶段已剔除被剪段）时，即使保留段首尾覆盖也执行真剪，
+    # 否则「剪辑失效」：被剪段信息被拿走后又按覆盖判定跳过剪辑，成片保留全部画面。
+    _no_cut = (not skip_no_cut) and raw and raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.0
 
     if _no_cut:
+        if skip_no_cut:
+            _warn(progress, '剪辑跳过（保留段已覆盖全片，无空隙可剪）')
         return video_path, raw, 0.0
 
     cut_dir = os.path.join(run_dir, 'cuts')
@@ -387,8 +411,11 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
             rc, _o, e = ffmpeg_run(cmd)
         if rc != 0 or not os.path.exists(out):
             raise RuntimeError('拼接失败: ' + e.decode('utf-8', 'ignore')[-300:])
-    except Exception:
-        # 剪辑属增强项：失败就退回原片，保证「能出片」优先于「剪得漂亮」
+    except Exception as _ce:
+        # 剪辑属增强项：失败就退回原片，保证「能出片」优先于「剪得漂亮」。
+        # 【不静默】明确写入 progress.warnings，前端展示，用户知道「没有剪成功」而不是以为剪了。
+        _log.warning('[DIAG] 剪辑失败回退原片: %s' % _ce)
+        _warn(progress, '剪辑失败，成片将保留全部画面（未剪辑）：%s' % str(_ce)[:120])
         return video_path, raw, 0.0
 
     # 拼接后的新时间轴：按每段实际时长（含 P1-2 画面微变速）逐段累计，
@@ -446,7 +473,7 @@ def _build_voice_spans(segs, voice_durs, tts_clips):
     return vs
 
 
-def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts_clips, progress=None):
+def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts_clips, progress=None, skip_no_cut=False):
     """P1-1 单遍合并：剪切 + 画面微变速(setpts) + 烧字幕 + 缩放，全部在【一次】视频编码里完成。
 
     与两遍管线(_cut_video_by_spans 出 cut.mp4 + _compose_narration_video 内烧字幕步)输出等价，
@@ -485,7 +512,7 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     covered_gap = sum(max(0.0, raw[i + 1][0] - raw[i][1]) for i in range(len(raw) - 1))
     # 【修复】当铺满整片时 covered_gap≈0 会触发 no_cut，用户感到「没剪辑」。
     # 收严到「所有片段间完全无空隙且首尾完全覆盖」才算无剪辑——有任何可见空隙一律真剪。
-    _no_cut = (raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.0)
+    _no_cut = (not skip_no_cut) and (raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.0)
 
     has_audio = _has_audio_track(video_path)
     out = os.path.join(run_dir, 'vburn.mp4')

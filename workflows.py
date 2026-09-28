@@ -505,7 +505,12 @@ def dispatch_narrate(req, prog):
         if not vp:
             raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
         music_path = _w._resolve_music(req.get('music'))
+        music_path = _w._resolve_music(req.get('music'))
         final, diag = _w.narrate_video(vp, req.get('params', {}), run_dir, prog, music_path=music_path)
+        # 【不静默】合成完成≠视频存在：final 为空/文件缺失/过小都要明确报错，
+        # 而不是让前端显示「✅ 完成」却没有可播放的成片。
+        if not final or not os.path.exists(final) or os.path.getsize(final) < 1024:
+            raise RuntimeError('成片生成失败：合成阶段未产出有效视频文件，请查看后端日志（可能 ffmpeg 或配音引擎失败）')
         prog['done'] = True
         prog['pct'] = 100
         prog['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/')
@@ -529,7 +534,7 @@ def dispatch_movie(req, prog):
                                     req.get('params', {}), run_dir, prog, music_path=music_path)
         prog['done'] = True
         prog['pct'] = 100
-        if final:
+        if final and os.path.exists(final) and os.path.getsize(final) >= 1024:
             prog['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/')
         elif vp:
             prog['error'] = '解说稿已生成，但视频合成失败（请检查ffmpeg或配音引擎日志）'
@@ -576,10 +581,12 @@ def dispatch_movie_compose(req, prog):
         final = _w.compose_movie_from_tts(run_dir, prog, music_path=music_path,
                                        adjusted_items=adjusted, skip=skip,
                                        user_params=user_params)
+        # 【不静默】合成完成≠视频存在：校验成片文件，失败要明确报错而不是显示「✅ 完成」。
+        if not final or not os.path.exists(final) or os.path.getsize(final) < 1024:
+            raise RuntimeError('成片生成失败：合成阶段未产出有效视频文件，请查看后端日志（可能 ffmpeg 或配音引擎失败）')
         prog['done'] = True
         prog['pct'] = 100
-        if final:
-            prog['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/')
+        prog['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/')
         _w._record_history(req, prog, 'movie')
     except Exception as e:
         _w.fail_task(prog, e)

@@ -36,6 +36,152 @@ function toggleTheme(){
   localStorage.setItem('framecut_theme', next);
 }
 
+// ---- 界面语言切换（中文 / English）----
+// 轻量 i18n：运行时把可见文本按词典替换为英文；切回中文直接刷新页面还原。
+// 词典只覆盖核心界面文案；后端返回的动态进度/错误文案保持中文（避免半吊子翻译）。
+const I18N_DICT = {
+  '💬 指令成片（一句话自动路由）': '💬 Prompt to Video (auto-route)',
+  '⚡ 一键智能生成': '⚡ One-click Generate',
+  '⚡ 一键生成解说视频': '⚡ Generate Narrated Video',
+  '🎯 智能强卡点（本应用核心）': '🎯 Smart Beat Cut (core)',
+  '🎬 电影解说（AI 剧情解说视频）': '🎬 Movie Narrate (AI plot)',
+  '🎯 分析并预览（可微调）': '🎯 Analyze & Preview',
+  '⚡ 直接生成': '⚡ Generate Now',
+  '🎙 生成配音并调整': '🎙 Generate & Adjust',
+  '下一步：上传素材 →': 'Next: Upload →',
+  '下一步：生成解说 →': 'Next: Narrate →',
+  '下一步：手动调整 →': 'Next: Adjust →',
+  '手动调整': 'Adjust',
+  '一键生成': 'One-click',
+  '一帧成片': 'FrameCut',
+  '开始': 'Start',
+  '解说/素材': 'Narrate/Assets',
+  '调整': 'Adjust',
+  '合成': 'Compose',
+  '更多 ▾': 'More ▾',
+  '🎵 音乐': '🎵 Music',
+  '🎯 卡点': '🎯 Beat Cut',
+  '🤖 AI配置': '🤖 AI Setup',
+  '⚙️ 输出设置': '⚙️ Output',
+  '📋 任务': '📋 Tasks',
+  '🕘 记录': '🕘 History',
+  '🧹 存储': '🧹 Storage',
+  '去配置': 'Configure',
+  '仍用本地离线生成': 'Use local offline mode',
+  '⏹ 取消': '⏹ Cancel',
+  '⏹ 停止': '⏹ Stop',
+  '🖥 配置本地模型': '🖥 Setup local model',
+  '🎬 电影解说': '🎬 Movie Narrate',
+  '🎯 智能强卡点': '🎯 Smart Beat Cut',
+  '✨ 一键合成': '✨ One-click Compose',
+  '📋 复制': '📋 Copy',
+  '↗ 打开': '↗ Open',
+  '🔍 自动检测可用镜像': '🔍 Detect mirrors',
+  '⚡ 一键生成': '⚡ One-click',
+  '💬 指令成片': '💬 Prompt to Video',
+  '📖 新手引导': '📖 Guide',
+  '🚀 执行': '🚀 Run',
+  '📋 上次': '📋 Last',
+  '🖼 生成封面': '🖼 Cover',
+  '🔍 搜 B 站': '🔍 Search Bilibili',
+  '⬆ 上传到素材库': '⬆ Upload to Library',
+  '🔄 刷新': '🔄 Refresh',
+  '卡点强度': 'Cut Strength',
+  '节拍灵敏度': 'Beat Sensitivity',
+  '片段最小时长(秒)': 'Min Clip (s)',
+  '片头保护(秒)': 'Head Protect (s)',
+  '转场': 'Transition',
+  '转场时长(秒)': 'Transition Dur (s)',
+  '✅ 强卡点完成': '✅ Done',
+  '✅ 解说完成': '✅ Done',
+  '🎬 视频解说': '🎬 Video Narrate',
+  '🔍 片名搜剧情': '🔍 Search by Title',
+  '题材类型（决定解说模板）': 'Genre',
+  '最大分段(秒)': 'Max Segment (s)',
+  '视频主题/梗概（选填，纯风景片建议填）': 'Theme/Plot (optional)',
+  '解说要求/风格（选填，会作为前置条件交给模型）': 'Narration style (optional)',
+  '解说风格': 'Narration Style',
+  '详略程度': 'Detail Level',
+  '剪辑占比（%）': 'Clip Ratio (%)',
+  '加配乐': 'Add BGM',
+  '📋 上次参数': '📋 Last Params',
+  '⏹ 停止生成': '⏹ Stop',
+  '💾 保存': '💾 Save',
+  '📂 恢复配音': '📂 Restore',
+  '还没有选择视频。': 'No video selected yet.',
+  '夜间': 'Night',
+  '日间': 'Day',
+  'AI 配置': 'AI Setup',
+  '去配置 ›': 'Configure ›',
+  '已按你的调整合成': 'Composed with your edits',
+  '停止生成': 'Stop',
+  '解说完成': 'Done',
+  '配音完成，待合成': 'Voice done, ready to compose',
+  '配音已生成': 'Voice generated',
+  '合成视频': 'Compose Video',
+  '确认配音，开始合成视频': 'Confirm & Compose Video',
+  '直接生成': 'Generate Now',
+  '生成配音并调整': 'Generate & Adjust',
+  '节拍同步模式': 'Beat Sync Mode',
+  '保留原声': 'Keep Original Audio',
+  '原声保留': 'Keep Original Audio',
+  '前N秒不切点，避免商标/片头被切除': 'No cuts in the first N seconds to protect logos/intros.',
+  '按鼓点切段:片段不重叠、免重编码防闪跳(修复顺序重复/画面跳闪)': 'Cut to beats: no overlap, no re-encode flicker.',
+  '仅智能强卡点模式生效': 'Applies to Smart Beat Cut mode only.',
+  '强力＝捕捉更多动作爆发/镜头切换帧并严格吸附鼓点。': 'High = catch more motion bursts and lock to beats.',
+  '未配置可用的自然配音引擎': 'No TTS engine configured',
+  '需要配音': 'Requires narration',
+};
+
+const I18N_LS = 'framecut_lang';
+function currentLang(){ return localStorage.getItem(I18N_LS) || 'zh'; }
+
+function applyI18nEn(){
+  const dict = I18N_DICT;
+  // 1) 叶子文本节点替换（长 key 优先，避免短 key 提前命中破坏长 key）
+  const keys = Object.keys(dict).sort(function(a, b){ return b.length - a.length; });
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+  const texts = [];
+  while(walker.nextNode()) texts.push(walker.currentNode);
+  texts.forEach(function(n){
+    let t = n.nodeValue; if(!t || !t.trim()) return;
+    let changed = false;
+    for(let i = 0; i < keys.length; i++){
+      const k = keys[i], v = dict[k];
+      if(k && t.indexOf(k) >= 0){ t = t.split(k).join(v); changed = true; }
+    }
+    if(changed) n.nodeValue = t;
+  });
+  // 2) placeholder / title 属性
+  document.querySelectorAll('[placeholder]').forEach(function(el){
+    const p = el.getAttribute('placeholder');
+    if(p && dict[p]) el.setAttribute('placeholder', dict[p]);
+  });
+  document.querySelectorAll('[title]').forEach(function(el){
+    const t = el.getAttribute('title');
+    if(t && dict[t]) el.setAttribute('title', dict[t]);
+  });
+  document.documentElement.lang = 'en';
+}
+
+function toggleLang(){
+  const next = currentLang() === 'zh' ? 'en' : 'zh';
+  localStorage.setItem(I18N_LS, next);
+  const btn = document.getElementById('langToggle');
+  if(btn) btn.textContent = (next === 'zh' ? 'EN' : '中文');
+  if(next === 'zh'){ location.reload(); return; }
+  applyI18nEn();
+}
+
+(function(){
+  const btn = document.getElementById('langToggle');
+  if(btn){
+    btn.textContent = (currentLang() === 'zh' ? 'EN' : '中文');
+    btn.style.display = '';
+  }
+  if(currentLang() === 'en'){ applyI18nEn(); }
+})();
+
 
 const ITEMS = [];
 const $ = id => document.getElementById(id);
@@ -2352,6 +2498,49 @@ async function buildNarrate(){
   }catch(e){ $('narStatus').textContent='❌ '+netErrMsg(e); }
   go.disabled=false;
 }
+function renderCutPlan(holder, p){
+  // 🎬 剪辑方案透明化：显示成片保留/剪除了哪些画面，每段对应哪句解说词。
+  // 让用户一眼看出「解说词与画面怎么对应、剪了什么、为什么剪」。
+  if(!holder) return;
+  const cp = p && p.cut_plan;
+  if(!cp || !Array.isArray(cp.segments) || !cp.segments.length){ holder.innerHTML=''; return; }
+  const segs = cp.segments;
+  const sdur = Math.max(cp.src_dur || 0, 1e-6);
+  let bar = '<div class="cp-timeline">';
+  segs.forEach(s=>{
+    const w = Math.max(1.2, ((s.end - s.start) / sdur) * 100);
+    bar += '<i class="cp-tick '+(s.keep?'k':'r')+'" style="width:'+w+'%"></i>';
+  });
+  bar += '</div><div class="cp-scale"><span>0:00</span><span>'+fmtTime(sdur)+'</span></div>';
+  let h = '<div class="cutplan">';
+  h += '<div class="cutplan-hd">🎬 剪辑方案 · 成片保留画面 <b>'+cp.coverage+'%</b>（'+cp.kept+' 段保留 / '+cp.removed+' 段剪除 · 共剪掉 '+cp.removed_sec+'s）</div>';
+  h += bar;
+  h += '<div class="cutplan-list">';
+  segs.forEach(s=>{
+    const tag = s.keep ? '<span class="cp-tag k">保留</span>' : '<span class="cp-tag r">剪除</span>';
+    const cap = s.caption ? '<span class="cp-cap">解说：「'+escapeHtml(s.caption)+'」</span>' : '<span class="cp-cap dim">（该段无解说）</span>';
+    h += '<div class="cutplan-row '+(s.keep?'k':'r')+'">'
+      + '<span class="cp-time">'+fmtTime(s.start)+'–'+fmtTime(s.end)+'</span>'
+      + tag
+      + '<span class="cp-why">'+(s.reason||'')+'</span>'
+      + cap
+      + '</div>';
+  });
+  h += '</div></div>';
+  holder.innerHTML = h;
+}
+
+function renderWarnings(holder, p){
+  // ⚠️ 失败/降级不静默：后端把任何兜底路径写进 p.warnings，前端红字展示。
+  if(!holder) return;
+  const wl = (p && Array.isArray(p.warnings) && p.warnings.length) ? p.warnings : [];
+  if(wl.length){
+    holder.innerHTML = '<div class="warnbox">⚠️ 本次存在降级/失败项：<br>⚠️ ' + wl.map(w=>escapeHtml(w)).join('<br>⚠️ ') + '</div>';
+    holder.style.display = 'block';
+  } else { holder.innerHTML=''; holder.style.display='none'; }
+}
+
+
 function pollNarrate(runid){
   return new Promise(resolve=>{
     let _errs = 0;
@@ -2370,13 +2559,17 @@ function pollNarrate(runid){
           if(p.error){ renderPartial('narPartial', p.partial); showTaskError($('narStatus'), p.error, p); gErr(p.error); resolve(); return; }
           // 两步走·第一步：配音已生成，展示确认面板
           if(p.tts_list && p.tts_list.length){
-            $('narStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），正在跳转到手动调整…';
+            $('narStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段）→ 请到「⑥ 手动调整」试听确认后点「合成视频」出片';
+            const nd = $('narDiag');
+            if(nd) nd.innerHTML = '🎙️ <b>配音已生成（'+p.tts_list.length+'段）</b>，视频尚未合成。<br>下一步：在「⑥ 手动调整」逐段试听/修改后，点击「<b>合成视频</b>」按钮产出成片。'; renderCutPlan($('narCutPlan'), p); renderWarnings($('narWarn'), p);
+            const nt = $('narDoneTitle'); if(nt) nt.textContent = '🎙️ 配音完成，待合成';
             renderAdjustPanel(p.tts_list, p.run_dir || '', 'nar', p.script || []);
             if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
           }
           $('narStatus').textContent='✅ 完成'; gDone();
+          const nDone = $('narDoneTitle'); if(nDone) nDone.textContent='✅ 解说完成';
           $('narResult').style.display='block';
           $('narPlayer').src='/media/'+p.file+'?t='+Date.now();
           setModeBadge('narBadge', p.mode);
@@ -2388,7 +2581,7 @@ function pollNarrate(runid){
           let txt='分段 '+(d.segments||0)+' · 台词 '+(d.asr_lines||0)+' 条 · 配音 '+(d.voice_clips||0)+' 段';
           txt += _cutDiag(d.cut);
           if(d.narration){ txt += ' · 解说：' + d.narration.join(' / '); }
-          $('narDiag').textContent = txt;
+          $('narDiag').textContent = txt; renderCutPlan($('narCutPlan'), p); renderWarnings($('narWarn'), p);
           resolve(); return;
         }
         // 已点「⏹ 停止」时不要再覆盖状态文案，否则用户看不到停止反馈
@@ -2461,19 +2654,23 @@ function pollMovie(runid){
           _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
           if(p.error){ renderPartial('moviePartial', p.partial); showTaskError($('movieStatus'), p.error, p); gErr(p.error); resolve(); return; }
           if(p.tts_list && p.tts_list.length){
-            $('movieStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段），正在跳转到手动调整…';
+            $('movieStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段）→ 请到「⑥ 手动调整」试听确认后点「合成视频」出片';
+            const mnd = $('movieDiag');
+            if(mnd) mnd.innerHTML = '🎙️ <b>配音已生成（'+p.tts_list.length+'段）</b>，视频尚未合成。<br>下一步：在「⑥ 手动调整」逐段试听/修改后，点击「<b>合成视频</b>」按钮产出成片。'; renderCutPlan($('movieCutPlan'), p); renderWarnings($('movieWarn'), p);
+            const mt = $('movieDoneTitle'); if(mt) mt.textContent = '🎙️ 配音完成，待合成';
             renderAdjustPanel(p.tts_list, p.run_dir || '', 'movie', p.script || []);
             if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
           }
           $('movieStatus').textContent = '✅ 完成'; gDone();
+          const mDone = $('movieDoneTitle'); if(mDone) mDone.textContent = '✅ 完成';
           const d = p.diag || {};
           let txt = '事件 ' + (d.events || 0) + ' · 分段 ' + (d.segments || 0) + ' · 台词 ' + (d.asr_lines || 0) + ' 条 · 对齐 ' + (d.aligned || 0) + ' · 配音 ' + (d.voice_clips || 0) + ' 段';
           txt += _cutDiag(d.cut);
           if(d.narration && d.narration.length) txt += '\n解说：' + d.narration.join(' / ');
           if(p.script && p.script.length && !p.file) txt += '\n（仅解说稿）' + p.script.map(s => s.desc).join(' / ');
-          $('movieDiag').textContent = txt;
+          $('movieDiag').textContent = txt; renderCutPlan($('movieCutPlan'), p); renderWarnings($('movieWarn'), p);
           // 质量自检：标记不匹配片段
           var qWrap = document.getElementById('movieQuality');
           if(d.quality && d.quality.mismatch > 0){

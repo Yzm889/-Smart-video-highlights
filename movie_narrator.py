@@ -1281,7 +1281,10 @@ def _narrate_analysis(video_path, params, run_dir, progress=None):
     if not segs:
         segs = fine
         outline = [{'start': s, 'end': e, 'importance': 'advance', 'keep': True} for (s, e) in fine]
-    # 剪辑主线：剪除纯填充微段（keep=False），让成片聚焦主线、密度正常
+    # 剪辑主线：剪除纯填充微段（keep=False），让成片聚焦主线、密度正常。
+    # 【透明化】被剪掉的段不能悄悄消失：先收集成 _excluded，稍后随 cut_plan 一并落盘，
+    # 供前端「剪辑方案」展示（用户可看到剪掉了哪些画面、为什么）。
+    _excluded = [(s, o) for s, o in zip(segs, outline) if not o.get('keep', True)]
     kept = [(s, o) for s, o in zip(segs, outline) if o.get('keep', True)]
     if kept:
         segs = [s for s, _ in kept]
@@ -1298,6 +1301,43 @@ def _narrate_analysis(video_path, params, run_dir, progress=None):
         mode = 'vlm'
     elif used_local:
         mode = 'local'
+    # ---- 剪辑方案 cut_plan 落盘（透明化的核心中间产物）----
+    # 包含全部保留段（带解说词）与被剪段（keep=False + 原因），按时间排序。
+    # 前端据此展示「哪些画面保留/剪掉、解说词与画面怎么对应」；渲染阶段也据此
+    # 决定是否真剪（有被剪段 → 拼接保留段，绝不静默跳过剪辑）。
+    try:
+        _src_dur = probe_audio_len(video_path) or 0.0
+        _imp_name = {'key': '关键转折', 'advance': '主线推进',
+                     'transition': '过渡衔接', 'mood': '氛围渲染'}
+        _cp = []
+        for _i, (_s0, _s1) in enumerate(segs):
+            _o = outline[_i] if _i < len(outline) else {}
+            _cap = narr[_i] if _i < len(narr) else ''
+            _cp.append({'i': len(_cp), 'start': round(float(_s0), 2), 'end': round(float(_s1), 2),
+                        'keep': True,
+                        'importance': str(_o.get('importance', 'advance')),
+                        'reason': _imp_name.get(str(_o.get('importance', 'advance')), '主线'),
+                        'caption': (_cap or '').strip(),
+                        'asr': _asr_text_in(asr, float(_s0), float(_s1))[:60]})
+        for (_s0, _s1), _o in _excluded:
+            _cp.append({'i': len(_cp), 'start': round(float(_s0), 2), 'end': round(float(_s1), 2),
+                        'keep': False,
+                        'importance': str(_o.get('importance', 'transition')),
+                        'reason': '过渡/氛围填充段（无台词微段，自动剪除）',
+                        'caption': '', 'asr': ''})
+        _cp.sort(key=lambda x: x['start'])
+        _cov = (sum(b - a for a, b in segs) / _src_dur) if _src_dur else 0.0
+        if progress:
+            progress['cut_plan'] = {
+                'src_dur': round(_src_dur, 2),
+                'coverage': round(_cov * 100, 1),
+                'kept': sum(1 for x in _cp if x['keep']),
+                'removed': sum(1 for x in _cp if not x['keep']),
+                'removed_sec': round(sum((x['end'] - x['start']) for x in _cp if not x['keep']), 1),
+                'segments': _cp,
+            }
+    except Exception as _e:
+        _log.info(f'[DIAG] cut_plan 构建失败(不影响主流程): {_e}')
     return segs, narr, asr, frames, mode, outline
 
 
@@ -3001,9 +3041,46 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                 _kept.append(_seg)
                 _acc += (_seg[1]-_seg[0])
         if _kept and len(_kept) < len(segs):
+            _removed_by_clip = [s for s in segs if s not in _kept]  # 被智能剪辑剔除的段（透明化用）
             _kept.sort(key=lambda s: s[0])  # 按时间排序
             segs = _kept
             _log.info(f'[DIAG] 智能剪辑: {len(segs)}/{len(segs)+len(_kept)}段精选铺设{_acc:.0f}s/{vdur:.0f}s ({_clip_ratio:.0%})')
+    else:
+        _removed_by_clip = []
+
+    # ---- 剪辑方案 cut_plan 落盘（剧情驱动：解说词 ↔ 画面区间的对照表）----
+    # 每段保留画面带「对应的解说词」（narr_map），前端据此检查解说与画面是否对得上；
+    # 被剪段（keep=False）也列出，用户能看到智能剪辑删掉了哪些画面、为什么。
+    try:
+        def _strip(t):
+            import re as _re
+            return _re.sub(r'[\[\]][a-zA-Z0-9_,;:（）()\u4e00-\u9fa5]*[\[\]]', '', (t or '')).strip()
+        _cp2 = []
+        for _k, (_s0, _s1) in enumerate(segs):
+            _bi = narr_map[_k] if _k < len(narr_map) else min(_k, len(texts) - 1)
+            _cap = texts[_bi] if 0 <= _bi < len(texts) else ''
+            _cp2.append({'i': len(_cp2), 'start': round(float(_s0), 2), 'end': round(float(_s1), 2),
+                         'keep': True, 'importance': 'advance',
+                         'reason': '解说词对应画面',
+                         'caption': _strip(_cap)[:120], 'asr': ''})
+        for (_s0, _s1) in _removed_by_clip:
+            _cp2.append({'i': len(_cp2), 'start': round(float(_s0), 2), 'end': round(float(_s1), 2),
+                         'keep': False, 'importance': 'transition',
+                         'reason': '信息密度较低，智能剪辑精简（保留%d%%）' % int(_clip_ratio * 100),
+                         'caption': '', 'asr': ''})
+        _cp2.sort(key=lambda x: x['start'])
+        _cov2 = (sum(b - a for a, b in segs) / vdur) if vdur else 0.0
+        if progress:
+            progress['cut_plan'] = {
+                'src_dur': round(vdur, 2),
+                'coverage': round(_cov2 * 100, 1),
+                'kept': sum(1 for x in _cp2 if x['keep']),
+                'removed': sum(1 for x in _cp2 if not x['keep']),
+                'removed_sec': round(sum((x['end'] - x['start']) for x in _cp2 if not x['keep']), 1),
+                'segments': _cp2,
+            }
+    except Exception as _e2:
+        _log.info(f'[DIAG] 剧情 cut_plan 构建失败(不影响主流程): {_e2}')
 
     # events 保持旧格式返回，供 diag 与「按解说词重新匹配分镜」复用
     events = [{'desc': t[:40], 'keywords': []} for t in texts]
@@ -3222,6 +3299,9 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     if not os.path.exists(state_path):
         raise RuntimeError('未找到配音状态文件，请先生成配音')
     state = _json.load(open(state_path, encoding='utf-8'))
+    # 恢复第一步的剪辑方案：渲染据此决定是否真剪（removed>0 → 必须剪）
+    if progress is not None and state.get('cut_plan'):
+        progress['cut_plan'] = state['cut_plan']
     video_path = state['video_path']
     if not video_path or not os.path.exists(video_path):
         # 源片副本可能已被磁盘清扫回收（超过 cleanup_src_days 未使用）——
@@ -3480,6 +3560,9 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             'tts_results': [[i, p] for i, p in tts_results],
             'movie_name': movie_name,
             'asr': asr if asr else [],
+            # 剪辑方案随状态保存：第二步合成时据此决定「是否真剪」，
+            # 避免被剪段信息丢失后按覆盖判定跳过剪辑（剪辑失效根因）。
+            'cut_plan': (progress or {}).get('cut_plan'),
         }
         # [P0-1] 状态文件必须原子写：写到一半被打断（断电/kill/磁盘满）会留半截 JSON，
         # 下次 json.load 抛异常 → 进度文件报废、用户白跑。已有 _atomic_json_dump 帮手。
@@ -3507,8 +3590,11 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                 cover_path = os.path.join(run_dir, 'cover.jpg')
                 ffmpeg_run(['-y', '-i', video_path, '-vframes', '1', '-q:v', '3', cover_path])
                 if os.path.exists(cover_path):
+                    # 封面仅作展示用（progress['cover']），【不】写入 progress['file']：
+                    # file 语义是「成品视频」，第一步只是配音待确认，若把封面塞进 file，
+                    # _record_history 会把封面当成成品写进 ⑨记录（图片探测时长失败又被静默跳过），
+                    # 导致「今天明明生成了配音，记录里却什么都没有」。
                     progress['cover'] = os.path.relpath(cover_path, _w.OUTDIR).replace('\\', '/')
-                    progress['file'] = progress['cover']
             except Exception:
                 pass
         diag = {'narr': len(narr), 'tts_ok': len(tts_results), 'tts_total': len(narr),
@@ -3571,7 +3657,11 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     # 主线程继续做裁剪（TTS在后台跑，segs现在是每节一个范围）
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 54)
-        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
+        # 第一步已剔除被剪段（cut_plan.removed>0）→ 强制真剪，杜绝「没剪」静默发生
+        _cp3 = (progress or {}).get('cut_plan') or {}
+        src_video, segs, cut_sec = _cut_video_by_spans(
+            video_path, segs, run_dir, progress,
+            skip_no_cut=bool(int(_cp3.get('removed') or 0)))
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)

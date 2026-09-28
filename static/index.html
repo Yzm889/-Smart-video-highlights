@@ -9,12 +9,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=14">
+<link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
 <header>
   <div class="brand"><h1>一帧成片</h1><div class="sub">FrameCut · AI 节拍短片</div></div>
   <div class="htools">
+    <button class="theme-toggle" id="langToggle" onclick="toggleLang()" style="display:none" title="界面语言 / Language">EN</button>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">🌙 夜间</button>
     <div id="srv"></div>
   </div>
@@ -534,7 +535,7 @@
     </div>
     <div class="bar" id="narBar"><i></i></div>
     <div id="narResult" style="display:none;">
-      <h2 style="margin-top:14px;">✅ 解说完成</h2>
+      <h2 style="margin-top:14px;" id="narDoneTitle">✅ 解说完成</h2>
       <video id="narPlayer" controls playsinline></video>
       <span class="modebadge" id="narBadge"></span>
       <div id="narPartial" class="partial" style="display:none"></div>
@@ -542,6 +543,8 @@
       <button class="btn mini ghost" id="narCoverBtn" style="display:none" onclick="makeCover(_coverCtx.nar.file, 'coverBoxNar', '电影解说')">🖼 生成封面</button></div>
       <div id="coverBoxNar" style="display:none"></div>
       <div class="hint" id="narDiag"></div>
+      <div id="narWarn" class="warnbox" style="display:none"></div>
+      <div id="narCutPlan"></div>
       <div class="next-step-bar">
         <button class="next-step-btn" onclick="nextFlowStep()">下一步：手动调整 →</button>
       </div>
@@ -590,7 +593,7 @@
     </div>
     <div class="bar" id="movieBar"><i></i></div>
     <div id="movieResult" style="display:none;">
-      <h2 style="margin-top:14px;">✅ 完成</h2>
+      <h2 style="margin-top:14px;" id="movieDoneTitle">✅ 完成</h2>
       <video id="moviePlayer" controls playsinline></video>
       <span class="modebadge" id="movieBadge"></span>
       <div id="moviePartial" class="partial" style="display:none"></div>
@@ -598,6 +601,8 @@
       <button class="btn mini ghost" id="movieCoverBtn" style="display:none" onclick="makeCover(_coverCtx.movie.file, 'coverBoxMovie', '联网解说')">🖼 生成封面</button></div>
       <div id="coverBoxMovie" style="display:none"></div>
       <div class="hint" id="movieDiag"></div>
+      <div id="movieWarn" class="warnbox" style="display:none"></div>
+      <div id="movieCutPlan"></div>
         <div id="movieQuality" style="display:none"></div>
     </div>
   </div>
@@ -1180,7 +1185,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=33"></script>
+<script src="/static/app.js?v=36"></script>
 </body>
 </html>
 

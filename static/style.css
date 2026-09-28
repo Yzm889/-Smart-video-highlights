@@ -1779,3 +1779,24 @@ select option { background: var(--fc-surface-2); color: var(--fc-text); }
 [data-theme="light"] .card-title { color: var(--fc-text); }
 [data-theme="light"] [style*="1px solid #ddd"] { border-color: var(--fc-line) !important; }
 [data-theme="light"] [style*="1px dashed #ddd"] { border-color: var(--fc-line-soft) !important; }
+
+/* ===== 🎬 剪辑方案透明化（cut_plan 展示） ===== */
+.warnbox{ margin:10px 0; padding:10px 14px; background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.35); border-radius:8px; font-size:13px; color:#f87171; line-height:1.7; }
+.cutplan{ margin:10px 0; padding:10px 14px; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.1); border-radius:10px; font-size:13px; }
+.cutplan-hd{ margin-bottom:8px; font-weight:600; }
+.cutplan-hd b{ color:var(--accent,#5cb87a); }
+.cp-timeline{ display:flex; width:100%; height:18px; border-radius:6px; overflow:hidden; background:rgba(255,255,255,.06); margin-bottom:2px; }
+.cp-tick.k{ background:#3f9e63; opacity:.85; }
+.cp-tick.r{ background:#d64545; opacity:.9; }
+.cp-scale{ display:flex; justify-content:space-between; font-size:11px; color:var(--muted,#9aa3ad); margin-bottom:8px; }
+.cutplan-list{ max-height:260px; overflow-y:auto; display:flex; flex-direction:column; gap:4px; }
+.cutplan-row{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:6px 8px; border-radius:6px; background:rgba(255,255,255,.03); }
+.cutplan-row.k{ border-left:3px solid #3f9e63; }
+.cutplan-row.r{ border-left:3px solid #d64545; opacity:.75; }
+.cp-time{ font-variant-numeric:tabular-nums; color:var(--muted,#9aa3ad); min-width:96px; }
+.cp-tag{ font-size:11px; padding:1px 8px; border-radius:99px; font-weight:600; }
+.cp-tag.k{ background:rgba(63,158,99,.2); color:#6fd392; }
+.cp-tag.r{ background:rgba(214,69,69,.2); color:#f08a8a; }
+.cp-why{ color:var(--muted,#9aa3ad); }
+.cp-cap{ flex:1 1 240px; min-width:200px; color:var(--fg,#e5e7eb); }
+.cp-cap.dim{ color:var(--muted,#9aa3ad); font-style:italic; }
