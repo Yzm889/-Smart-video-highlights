@@ -2499,7 +2499,7 @@ def _upload_final_path(upload_id, name):
 def _resolve_upload_video(vobj, run_dir, prefix='src'):
     """视频对象统一落盘到 run_dir，两种形态并存：
     {name, data(base64)} 旧路径（小文件）；{name, upload_id} 分片上传（大文件——
-    直接移动合并成品，省一次整文件拷贝）。返回本地文件路径；无效返回 None。"""
+    复制合并成品到任务目录，保留上传源以便重复分析）。返回本地文件路径；无效返回 None。"""
     if not vobj:
         return None
     ext = os.path.splitext(vobj.get('name') or 'x.mp4')[1] or '.mp4'
@@ -2517,13 +2517,11 @@ def _resolve_upload_video(vobj, run_dir, prefix='src'):
     src = _upload_final_path(vobj.get('upload_id'), vobj.get('name'))
     if src:
         fp = os.path.join(run_dir, prefix + ext)
-        shutil.move(src, fp)
-        try:
-            d = _upload_dir_of(vobj.get('upload_id'))
-            if d and os.path.isdir(d) and not os.listdir(d):
-                os.rmdir(d)
-        except OSError:
-            pass
+        # 复制而非移动：上传成品是「源文件」。协同流程里同一个视频经常要反复分析
+        # （分析中重复点、调参后重跑、中断重来）。旧版 move 会在第一次分析后移走成品，
+        # 导致第二次用同一 upload_id 提交时 _upload_final_path 找不到文件、报「未收到视频」。
+        # 保留上传会话目录，由 _upload_prune 按 24h/100 会话统一清理。
+        shutil.copy2(src, fp)
         return fp
     return None
 

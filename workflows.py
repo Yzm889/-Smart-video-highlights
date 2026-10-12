@@ -237,7 +237,7 @@ def dispatch_build(req, prog):
                 # name 保留用户原始文件名：省流文案直接对用户展示，不能露出 up_N 内部名
                 work.append({'kind': 'image', 'src': fp, 'name': it.get('name', ''), 'dur': it.get('dur', 3), 'motion': len(work) % 4})
             else:
-                # 视频素材两种形态：base64（小文件）或分片上传 upload_id（大文件，直接 move 免二次拷贝）
+                # 视频素材两种形态：base64（小文件）或分片上传 upload_id（大文件，copy 到工作目录，可重复解析）
                 fp = os.path.join(_w.WORKDIR, f'up_{_rid}_{idx}_vid.mp4')
                 os.makedirs(_w.WORKDIR, exist_ok=True)
                 src = _w._resolve_upload_video(it, _w.WORKDIR, f'up_{_rid}_{idx}_vid')

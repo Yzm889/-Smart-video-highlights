@@ -1274,8 +1274,8 @@ def test_upload_chunk_and_finalize(monkeypatch, tmp_path):
     assert S._upload_finalize(uid, 'x.mp4', 0)[0] is None, '非法分片数必须拒绝'
 
 
-def test_resolve_upload_video_moves_final(monkeypatch, tmp_path):
-    """任务取走分片成品用 move 免二次拷贝；无效会话返回 None。"""
+def test_resolve_upload_video_copies_final(monkeypatch, tmp_path):
+    """任务取分片成品用 copy（保留上传源，支持同一视频重复分析）；无效会话返回 None。"""
     import webui_server as S, os
     monkeypatch.setattr(S, 'UPLOAD_DIR', str(tmp_path / 'uploads'))
     run_dir = str(tmp_path / 'run')
@@ -1287,7 +1287,12 @@ def test_resolve_upload_video_moves_final(monkeypatch, tmp_path):
     open(final, 'wb').write(b'vv')
     fp = S._resolve_upload_video({'name': 'v.mp4', 'upload_id': 'up-1-a'}, run_dir)
     assert fp and open(fp, 'rb').read() == b'vv'
-    assert not os.path.exists(final), '成品应被移走（免二次拷贝）'
+    assert os.path.exists(final), '成品应保留（copy 而非 move），同一视频可重复分析'
+    # 回归：旧版 move 会让第二次用同一 upload_id 解析失败、前端报「未收到视频」
+    run_dir2 = str(tmp_path / 'run2')
+    os.makedirs(run_dir2)
+    fp2 = S._resolve_upload_video({'name': 'v.mp4', 'upload_id': 'up-1-a'}, run_dir2)
+    assert fp2 and open(fp2, 'rb').read() == b'vv', '同一 upload_id 第二次解析也应成功'
 
 
 def test_upload_resume_have_parts(monkeypatch, tmp_path):

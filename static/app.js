@@ -6513,6 +6513,7 @@ document.addEventListener('click', function(e){
 // ===== 🤝 人机协同两段式编辑台 =====
 let collabTaskId=null, collabPollTimer=null, collabRunBase=null;
 let collabVideoBody=null, collabLocalFile=null, collabDurationSec=0, collabStopEnd=-1;
+let collabAnalyzing=false;   // 分析进行中：锁定「开始分析」按钮，防止重复提交同一视频
 
 // ---------- 视频导入：拖拽/点选上传 + 本地预览 ----------
 (function collabInitDrop(){
@@ -6563,17 +6564,24 @@ function collabClearFile(){
 
 async function collabStartAnalyze(){
   const btn=document.getElementById('collabGoBtn');
+  if(collabAnalyzing){return;}   // 分析进行中：锁定，禁止重复提交（旧版可重复点，第二次用同一上传源会失败）
   const path=document.getElementById('collabVideo').value.trim();
   if(collabLocalFile && !collabVideoBody){alert('视频还在上传中，请稍候…');return;}
   let body;
-  if(collabVideoBody){ body={video:collabVideoBody, options:{max_seg:25}}; }
+  if(collabVideoBody){
+    // 前端预校验：video 对象必须含有效 data 或 upload_id，否则到后端必然报「未收到视频」
+    const v=collabVideoBody;
+    if(!(v.data||v.upload_id)){alert('视频没有准备好，请重新选择视频文件');collabVideoBody=null;return;}
+    body={video:v, options:{max_seg:25}};
+  }
   else if(path){ body={video_path:path, options:{max_seg:25}}; }
   else { alert('请先导入视频或填写本地路径'); return; }
   btn.disabled=true; btn.textContent='分析中…';
+  collabAnalyzing=true;
   try{
     const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify(body)}).then(r=>r.json());
-    if(!r.ok){alert(r.error||'启动失败');return;}
+    if(!r.ok){throw new Error(r.error||'启动失败');}
     collabTaskId=r.task_id;
     document.getElementById('collabProgress').style.display='block';
     document.getElementById('collabBar').style.width='0%';
@@ -6584,8 +6592,19 @@ async function collabStartAnalyze(){
     document.getElementById('collabDraftResult').style.display='none';
     document.getElementById('collabAlignSummary').style.display='none';
     collabPollTimer=setInterval(collabPoll,1200);
-  }catch(e){alert('请求失败: '+e);}
-  finally{btn.disabled=false; btn.textContent='▶ 开始 AI 分析';}
+    // 按钮保持「分析中…」禁用，直到 collabPoll 进入终态（analyzed/failed）才恢复
+  }catch(e){
+    alert('分析失败：'+e.message);
+    collabAnalyzing=false;
+    btn.disabled=false; btn.textContent='▶ 开始 AI 分析';
+  }
+}
+
+// 分析进入终态（成功/失败）后统一解锁按钮
+function collabResetAnalyzeBtn(){
+  collabAnalyzing=false;
+  const btn=document.getElementById('collabGoBtn');
+  if(btn){btn.disabled=false; btn.textContent='▶ 重新开始 AI 分析';}
 }
 
 async function collabPoll(){
@@ -6593,8 +6612,8 @@ async function collabPoll(){
     const d=await fetch('/api/analyze/'+collabTaskId).then(r=>r.json());
     document.getElementById('collabPhase').textContent=d.phase||'';
     document.getElementById('collabBar').style.width=(d.pct||0)+'%';
-    if(d.status==='analyzed'){clearInterval(collabPollTimer);collabRenderResult(d);}
-    else if(d.status==='failed'){clearInterval(collabPollTimer);alert('分析失败：'+(d.error||''));}
+    if(d.status==='analyzed'){clearInterval(collabPollTimer);collabRenderResult(d);collabResetAnalyzeBtn();}
+    else if(d.status==='failed'){clearInterval(collabPollTimer);collabResetAnalyzeBtn();alert('分析失败：'+(d.error||''));}
   }catch(e){}
 }
 

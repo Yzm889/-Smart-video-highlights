@@ -146,6 +146,16 @@ def dispatch_analyze(req, prog):
             warnings.append('视频落盘失败：%s' % ex)
         if resolved:
             video_path = resolved
+        elif not video_path:
+            # 收到了 video 对象但解析不出有效文件——给可操作的提示，而不是笼统的「(未收到视频)」
+            prog['done'] = True
+            if video_obj.get('upload_id'):
+                prog['error'] = '上传的视频源已失效（没找到已上传文件，可能上传未完成或已被清理）。请重新选择视频后再点「开始 AI 分析」。'
+            elif video_obj.get('name') or video_obj.get('data'):
+                prog['error'] = '视频数据不完整（没收到有效内容）。请重新选择视频后再点「开始 AI 分析」。'
+            else:
+                prog['error'] = '未收到视频：请先在协同台选择视频文件，再点「开始 AI 分析」。'
+            return
     if not video_path or not os.path.exists(video_path):
         prog['done'] = True
         prog['error'] = '视频文件不存在: %s' % (video_path or '(未收到视频)')
