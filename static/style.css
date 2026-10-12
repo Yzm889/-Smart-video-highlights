@@ -1828,6 +1828,12 @@ select option { background: var(--fc-surface-2); color: var(--fc-text); }
 .seg-io-btns button:hover{border-color:var(--accent);color:var(--accent);}
 .seg-io-btns button.primary{border-color:#7fd69a;color:#7fd69a;}
 .seg-note{font-size:11px;color:var(--muted);margin-top:4px;}
+/* 合成前对齐预检：画面时长 vs 解说预估配音时长 */
+.seg-align{font-size:11.5px;margin-top:6px;padding:4px 8px;border-radius:6px;line-height:1.5;background:rgba(255,255,255,0.04);border:1px solid var(--border);}
+.seg-align.ok{color:#7fd69a;border-color:rgba(127,214,154,0.4);background:rgba(127,214,154,0.08);}
+.seg-align.warn{color:#e8b766;border-color:rgba(232,183,102,0.45);background:rgba(232,183,102,0.08);}
+.seg-align.bad{color:#f0908a;border-color:rgba(240,144,138,0.5);background:rgba(240,144,138,0.1);}
+.seg-align.idle{color:var(--muted);}
 
 
 /* ===== 🎯 性能档位四选一 ===== */

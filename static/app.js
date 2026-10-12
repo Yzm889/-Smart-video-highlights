@@ -6529,7 +6529,8 @@ async function collabHandleFile(file){
   }catch(e){}
   document.getElementById('collabVideo').value=file.name;
   document.getElementById('collabResult').style.display='none';
-  document.getElementById('collabRenderBtn').style.display='none';
+  document.getElementById('collabDraftResult').style.display='none';
+  document.getElementById('collabRenderBtns').style.display='none';
   try{
     collabVideoBody=await videoToBody(file);
     info.innerHTML='<span style="color:#7fd69a;">✅ 已选：'+collabEsc(file.name)+'（'+(file.size/1048576).toFixed(1)+'MB）· 已就绪</span>'+
@@ -6567,8 +6568,11 @@ async function collabStartAnalyze(){
     document.getElementById('collabProgress').style.display='block';
     document.getElementById('collabBar').style.width='0%';
     document.getElementById('collabSegments').innerHTML='';
-    document.getElementById('collabRenderBtn').style.display='none';
+    document.getElementById('collabRenderBtns').style.display='none';
+    document.getElementById('collabRenderProgress').style.display='none';
     document.getElementById('collabResult').style.display='none';
+    document.getElementById('collabDraftResult').style.display='none';
+    document.getElementById('collabAlignSummary').style.display='none';
     collabPollTimer=setInterval(collabPoll,1200);
   }catch(e){alert('请求失败: '+e);}
   finally{btn.disabled=false; btn.textContent='▶ 开始 AI 分析';}
@@ -6634,12 +6638,19 @@ function collabRenderResult(d){
           '<button onclick="collabSetIO('+s.segment_id+',\'out\')">⇥ 出点=当前位置</button>'+
         '</div>'+
         '<div class="seg-note">解说的就是这段画面：直接改数字，或在上方播放器定位后抓取；出点必须晚于入点。</div>'+
-        '<div class="seg-foot"><label style="cursor:pointer;"><input type="checkbox" class="seg-keep" '+(s.default_keep?'checked':'')+' onchange="this.closest(\'.seg-card\').classList.toggle(\'cut\',!this.checked)"> 保留此段</label>'+
+        '<div class="seg-align idle">⏱ 对齐计算中…</div>'+
+        '<div class="seg-foot"><label style="cursor:pointer;"><input type="checkbox" class="seg-keep" '+(s.default_keep?'checked':'')+' onchange="this.closest(\'.seg-card\').classList.toggle(\'cut\',!this.checked); collabUpdateAlignSummary();"> 保留此段</label>'+
         '<span style="font-size:11px;color:var(--muted);">段'+s.segment_id+'</span></div>'+
       '</div>';
     wrap.appendChild(el);
+    // 解说词 / 入点 / 出点 任一变化 → 实时重算该段对齐
+    el.querySelectorAll('.seg-nar,.seg-in,.seg-out').forEach(inp=>{
+      inp.addEventListener('input',function(){ collabUpdateAlign(el); collabUpdateAlignSummary(); });
+    });
+    collabUpdateAlign(el);
   });
-  document.getElementById('collabRenderBtn').style.display='block';
+  collabUpdateAlignSummary();
+  document.getElementById('collabRenderBtns').style.display='flex';
 }
 
 document.addEventListener('click',function(e){
@@ -6647,7 +6658,9 @@ document.addEventListener('click',function(e){
   if(!b) return;
   b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
   b.classList.add('on');
-  b.closest('.seg-body').querySelector('.seg-nar').value=b.dataset.text||'';
+  const card=b.closest('.seg-card');
+  card.querySelector('.seg-nar').value=b.dataset.text||'';
+  collabUpdateAlign(card); collabUpdateAlignSummary();
 });
 
 function collabIO(id){
@@ -6677,6 +6690,7 @@ function collabSetIO(id,which){
   if(which==='in') io.inp.value=t.toFixed(1);
   else io.out.value=t.toFixed(1);
   collabValidateCard(io);
+  collabUpdateAlign(io.card); collabUpdateAlignSummary();
 }
 
 function collabValidateCard(io){
@@ -6690,41 +6704,153 @@ function collabValidateCard(io){
   return !bad;
 }
 
-async function collabRender(){
+// 估算解说词配音时长（秒）：edge-tts 中文约 4.3 字/秒 + 标点停顿，仅用于合成前预检，非精确值
+function collabEstTtsSec(text){
+  if(!text) return 0;
+  let t=String(text), extra=0;
+  // 显式停顿标记 {停顿:1.2} / {pause:1}：从字数剔除并把时长加上
+  t=t.replace(/\{(?:停顿|pause)[\s:：]*([\d.]+)\s*\}/gi,function(m,n){extra+=parseFloat(n)||0;return ' ';});
+  let units=0, endP=0, midP=0;
+  for(const ch of t){
+    if(/[\u4e00-\u9fff]/.test(ch)) units+=1;
+    else if(/[a-z0-9']/i.test(ch)) units+=0.55;
+    else if(/[。！？!?；;]/.test(ch)) endP+=1;
+    else if(/[，,、：:…—]/.test(ch)) midP+=1;
+  }
+  if(units<=0) return 0;
+  return Math.max(0.8, units/4.3 + Math.min(endP*0.4 + midP*0.18, 3.0) + extra);
+}
+
+function collabUpdateAlign(card){
+  const box=card.querySelector('.seg-align');
+  if(!box) return;
+  const keep=card.querySelector('.seg-keep').checked;
+  const s=parseFloat(card.querySelector('.seg-in').value), e=parseFloat(card.querySelector('.seg-out').value);
+  const text=(card.querySelector('.seg-nar').value||'').trim();
+  const dur=e-s;
+  const f1=v=>(v||0).toFixed(1);
+  box.className='seg-align';
+  if(!keep){ box.classList.add('idle'); box.textContent='🚫 已剪除，不参与合成'; return; }
+  if(!(dur>0)){ box.classList.add('bad'); box.textContent='🔴 入点/出点无效（出点必须晚于入点）'; return; }
+  if(!text){ box.classList.add('idle'); box.textContent='⏱ 画面 '+f1(dur)+'s · 无解说（纯画面段）'; return; }
+  const est=collabEstTtsSec(text);
+  const head='⏱ 画面 '+f1(dur)+'s · 解说≈'+f1(est)+'s · ';
+  if(est > dur*1.15 + 0.4){
+    box.classList.add('bad');
+    box.textContent=head+'🔴 解说偏长约 '+f1(est-dur*1.15)+'s，配音会超出画面/画面被拉到极限，建议精简或加大出点';
+  } else if(est > dur + 0.3){
+    box.classList.add('warn');
+    box.textContent=head+'🟡 解说略长，合成时画面会轻微放慢贴合配音';
+  } else if(dur - est > 4.0){
+    box.classList.add('warn');
+    box.textContent=head+'🟡 解说偏短，画面约有 '+f1(dur-est)+'s 留白（可补解说或缩短出点）';
+  } else {
+    box.classList.add('ok');
+    box.textContent=head+'✅ 时长基本匹配';
+  }
+}
+
+function collabSetSummary(box, kind, html){
+  const base='display:block;margin:10px 0 2px;padding:9px 12px;border-radius:8px;font-size:13px;line-height:1.6;';
+  const styles={
+    bad:  base+'color:#f0908a;background:rgba(240,144,138,0.1);border:1px solid rgba(240,144,138,0.5);',
+    warn: base+'color:#e8b766;background:rgba(232,183,102,0.08);border:1px solid rgba(232,183,102,0.4);',
+    ok:   base+'color:#7fd69a;background:rgba(127,214,154,0.08);border:1px solid rgba(127,214,154,0.35);'
+  };
+  box.style.cssText=styles[kind];
+  box.innerHTML=html;
+}
+
+function collabUpdateAlignSummary(){
+  const box=document.getElementById('collabAlignSummary');
+  if(!box) return;
   const cards=[...document.querySelectorAll('#collabSegments .seg-card')];
-  const segs=[]; let bad=0;
+  if(!cards.length){ box.style.display='none'; return; }
+  let bad=0, warn=0, kept=0;
+  cards.forEach(c=>{
+    if(!c.querySelector('.seg-keep').checked) return;
+    kept++;
+    const a=c.querySelector('.seg-align');
+    if(a&&a.classList.contains('bad')) bad++;
+    else if(a&&a.classList.contains('warn')) warn++;
+  });
+  if(bad>0) collabSetSummary(box,'bad','🔴 <b>'+bad+' 段</b>解说明显超出画面（或入点/出点无效），直接合成会配音跨段、画面被强行放慢。建议先改，保留 '+kept+' 段。');
+  else if(warn>0) collabSetSummary(box,'warn','🟡 <b>'+warn+' 段</b>解说略长或偏短（可以合成，建议扫一眼）。保留 '+kept+' 段。');
+  else collabSetSummary(box,'ok','✅ 保留的 '+kept+' 段，解说与画面时长基本匹配，可以合成。');
+}
+
+async function collabRender(draft){
+  const cards=[...document.querySelectorAll('#collabSegments .seg-card')];
+  const segs=[]; let invalid=0;
   for(const c of cards){
+    if(!c.querySelector('.seg-keep').checked) continue;   // 只提交保留段
     const id=parseInt(c.dataset.id);
-    const io={inp:c.querySelector('.seg-in'),out:c.querySelector('.seg-out')};
-    const s=parseFloat(io.inp.value), e=parseFloat(io.out.value);
-    if(!(e>s)){bad++;continue;}
-    segs.push({segment_id:id, keep:c.querySelector('.seg-keep').checked,
+    const s=parseFloat(c.querySelector('.seg-in').value), e=parseFloat(c.querySelector('.seg-out').value);
+    if(!(e>s)){invalid++;continue;}
+    segs.push({segment_id:id, keep:true,
       narration:c.querySelector('.seg-nar').value, start:+s.toFixed(2), end:+e.toFixed(2)});
   }
-  if(bad>0 && !confirm('有 '+bad+' 段入点/出点无效（出点需晚于入点），将跳过。继续？')) return;
-  const kept=segs.filter(s=>s.keep);
-  if(!kept.length){alert('请至少勾选保留一段再合成');return;}
+  if(invalid>0 && !confirm('有 '+invalid+' 个保留段入点/出点无效（出点需晚于入点），将跳过。继续？')) return;
+  if(!segs.length){alert('请至少勾选一个入点/出点有效的保留段再合成');return;}
+  // 预检：解说明显超出画面的保留段（seg-align 标红且入点有效）
+  const over=cards.filter(c=>{
+    if(!c.querySelector('.seg-keep').checked) return false;
+    const a=c.querySelector('.seg-align');
+    const s=parseFloat(c.querySelector('.seg-in').value), e=parseFloat(c.querySelector('.seg-out').value);
+    return !!(a&&a.classList.contains('bad')&&(e>s));
+  });
+  // 草稿就是用来暴露对齐问题的，超长也允许出；正式高清合成才二次确认
+  if(!draft && over.length && !confirm('有 '+over.length+' 段解说明显超出画面，合成时配音可能跨段、画面被强行放慢。\n建议先精简解说或加大出点；仍要按现状合成吗？')) return;
   const btn=document.getElementById('collabRenderBtn');
-  btn.disabled=true; btn.textContent='合成中…';
+  const dbtn=document.getElementById('collabDraftBtn');
+  btn.disabled=true; dbtn.disabled=true;
+  dbtn.textContent='草稿生成中…';
+  btn.textContent=draft?'🎬 正式高清合成':'高清合成中…';
   document.getElementById('collabResult').style.display='none';
+  if(draft) document.getElementById('collabDraftResult').style.display='none';
   document.getElementById('collabRenderProgress').style.display='block';
   document.getElementById('collabRenderBar').style.width='0%';
-  document.getElementById('collabRenderPhase').textContent='提交合成任务…';
+  document.getElementById('collabRenderPhase').textContent=draft?'提交草稿任务…':'提交合成任务…';
   try{
     const r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({task_id:collabRunBase, segments:segs, params:{w:1280,h:720}})}).then(r=>r.json());
+      body:JSON.stringify({task_id:collabRunBase, segments:segs, params:{w:1280,h:720}, draft:!!draft})}).then(r=>r.json());
     if(!r.ok) throw new Error(r.error||'提交失败');
-    await collabPollRender(r.task_id);
+    await collabPollRender(r.task_id, draft);
   }catch(err){
-    alert('合成失败：'+err.message);
+    alert((draft?'草稿':'合成')+'失败：'+err.message);
   }
   finally{
-    btn.disabled=false; btn.textContent='🎬 按我的选择开始合成（定稿解说词·留剪·入点出点）';
+    btn.disabled=false; dbtn.disabled=false;
+    dbtn.textContent='⚡ 先出快速草稿（480p·几十秒）';
+    btn.textContent='🎬 正式高清合成';
     document.getElementById('collabRenderProgress').style.display='none';
   }
 }
 
-function collabPollRender(runid){
+function collabRenderAlignTable(align){
+  const box=document.getElementById('collabAlignTable');
+  if(!box||!align||!align.length){ if(box) box.innerHTML=''; return; }
+  let bad=0;
+  const rows=align.map(a=>{
+    let st,color;
+    if(a.missing_voice){ st='🔴 配音丢失'; color='#f0908a'; bad++; }
+    else if(a.delta!==null && a.delta>0.35){ st='🔴 配音超 '+a.delta.toFixed(1)+'s·会被截断'; color='#f0908a'; bad++; }
+    else if(a.delta===null){ st='⚪ 纯画面'; color='#9aa0a6'; }
+    else if(a.delta<-4){ st='🟡 留白 '+(-a.delta).toFixed(1)+'s'; color='#e8b766'; }
+    else { st='🟢 匹配'; color='#7fd69a'; }
+    return '<tr><td style="padding:3px 6px;">段'+a.segment_id+'</td><td style="padding:3px 6px;">'+a.pic_sec.toFixed(1)+'s</td>'+
+           '<td style="padding:3px 6px;">'+(a.voice_sec?a.voice_sec.toFixed(1)+'s':'—')+'</td>'+
+           '<td style="padding:3px 6px;color:'+color+'">'+st+'</td></tr>';
+  }).join('');
+  const head=bad>0
+    ? '<div style="color:#f0908a;margin-bottom:6px;font-weight:600;">⚠️ 有 '+bad+' 段有问题（配音丢失/被截断），请回编辑台改后再出正式片。</div>'
+    : '<div style="color:#7fd69a;margin-bottom:6px;font-weight:600;">✅ 配音与画面基本对齐，可以出正式高清片。</div>';
+  box.innerHTML=head+'<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead>'+
+    '<tr style="color:var(--muted);text-align:left;"><th style="padding:3px 6px;">段</th><th>画面</th><th>真实配音</th><th>对齐</th></tr></thead>'+
+    '<tbody>'+rows+'</tbody></table>';
+}
+
+function collabPollRender(runid, draft){
   return new Promise((resolve,reject)=>{
     const iv=setInterval(()=>{
       fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
@@ -6735,13 +6861,21 @@ function collabPollRender(runid){
           if(p.error){reject(new Error(p.error));return;}
           if(p.file){
             const url='/media/'+p.file+'?t='+Date.now();
-            const box=document.getElementById('collabResult');
-            box.style.display='block';
-            document.getElementById('collabResultPlayer').src=url;
-            document.getElementById('collabResultLink').href=url;
-            box.scrollIntoView({behavior:'smooth',block:'nearest'});
+            if(draft){
+              const dbox=document.getElementById('collabDraftResult');
+              dbox.style.display='block';
+              document.getElementById('collabDraftPlayer').src=url;
+              collabRenderAlignTable(p.align||[]);
+              dbox.scrollIntoView({behavior:'smooth',block:'nearest'});
+            } else {
+              const box=document.getElementById('collabResult');
+              box.style.display='block';
+              document.getElementById('collabResultPlayer').src=url;
+              document.getElementById('collabResultLink').href=url;
+              box.scrollIntoView({behavior:'smooth',block:'nearest'});
+            }
           }
-          resolve();
+          resolve(p);
         }
       }).catch(()=>{});
     },1200);

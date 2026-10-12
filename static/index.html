@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=18">
+<link rel="stylesheet" href="/static/style.css?v=19">
 </head>
 <body>
 <header>
@@ -263,6 +263,7 @@
 
   <div id="collabNarrative" class="collab-narrative" style="display:none;"></div>
   <div id="collabWarnings" class="warnbox" style="display:none;"></div>
+  <div id="collabAlignSummary" style="display:none;margin:10px 0 2px;padding:9px 12px;border-radius:8px;font-size:13px;line-height:1.6;"></div>
   <div id="collabSegments" class="collab-segs"></div>
 
   <!-- 阶段②合成进度 -->
@@ -272,14 +273,27 @@
       <div id="collabRenderBar" style="height:100%;width:0;background:#7fd69a;transition:width .3s;"></div>
     </div>
   </div>
+
+  <!-- 快速草稿结果（低清·核对对齐用） -->
+  <div id="collabDraftResult" style="display:none;margin-top:14px;padding:12px;border-radius:10px;border:1px solid rgba(232,183,102,0.4);background:rgba(232,183,102,0.06);">
+    <div style="font-size:14px;margin-bottom:6px;color:#e8b766;font-weight:600;">⚡ 快速草稿（480p，仅用于核对，非正式画质）</div>
+    <video id="collabDraftPlayer" controls style="width:100%;border-radius:8px;background:#000;"></video>
+    <div id="collabAlignTable" style="margin-top:10px;font-size:12.5px;line-height:1.6;"></div>
+    <div style="font-size:12.5px;color:var(--muted);margin-top:8px;">重点看：每段配音在不在、念的是不是这段画面、有没有被截断。确认对齐后，再点下方「🎬 正式高清合成」。</div>
+  </div>
+
   <div id="collabResult" style="display:none;margin-top:14px;">
     <div style="font-size:14px;margin-bottom:6px;color:#7fd69a;font-weight:600;">✅ 成片已生成（可直接预览/下载）</div>
     <video id="collabResultPlayer" controls style="width:100%;border-radius:8px;background:#000;"></video>
     <a id="collabResultLink" class="btn" download style="display:inline-block;margin-top:8px;text-decoration:none;">⬇ 下载成片</a>
   </div>
 
-  <button id="collabRenderBtn" class="btn" style="display:none;margin-top:14px;width:100%;padding:12px;background:#7fd69a;color:#1a1a1a;font-weight:600;"
-          onclick="collabRender()">🎬 按我的选择开始合成（定稿解说词·留剪·入点出点）</button>
+  <div id="collabRenderBtns" style="display:none;margin-top:14px;gap:10px;flex-wrap:wrap;">
+    <button id="collabDraftBtn" class="btn" style="flex:1;min-width:200px;padding:12px;background:transparent;color:#e8b766;border:1px solid #e8b766;font-weight:600;"
+            onclick="collabRender(true)">⚡ 先出快速草稿（480p·几十秒）</button>
+    <button id="collabRenderBtn" class="btn" style="flex:1.4;min-width:240px;padding:12px;background:#7fd69a;color:#1a1a1a;font-weight:600;"
+            onclick="collabRender(false)">🎬 正式高清合成</button>
+  </div>
 </div>
 
     <!-- 一键智能模式 -->
@@ -1260,7 +1274,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=56"></script>
+<script src="/static/app.js?v=58"></script>
 </body>
 </html>
 
