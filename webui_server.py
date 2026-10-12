@@ -4024,6 +4024,8 @@ dispatch_movie_compose = getattr(_workflows_mod, 'dispatch_movie_compose', None)
 dispatch_tts_single = getattr(_workflows_mod, 'dispatch_tts_single', None)
 dispatch_tts_regen_all = getattr(_workflows_mod, 'dispatch_tts_regen_all', None)
 dispatch_instruct = getattr(_workflows_mod, 'dispatch_instruct', None)
+import analyze_pipeline  # noqa: E402  (人机协同两段式·阶段①自动分析)
+dispatch_analyze = analyze_pipeline.dispatch_analyze
 collect_partial = getattr(_workflows_mod, 'collect_partial', None)
 assemble = getattr(_workflows_mod, 'assemble', None)
 finalize = getattr(_workflows_mod, 'finalize', None)

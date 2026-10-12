@@ -1477,6 +1477,44 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
 
+
+    def _post_analyze(self):
+        """阶段①：上传/选择视频后触发自动分析（切分+ASR+缩略图+多版草稿+叙事建议）。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=10 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(_w.dispatch_analyze, req)
+            self._send(200, json.dumps({'ok': True, 'task_id': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _get_analyze(self):
+        """轮询阶段①进度；完成后返回结构化 segments 供编辑台加载。"""
+        path = _w.urlparse(self.path).path
+        tid = path[len('/api/analyze/'):].split('?')[0].strip('/')
+        if not tid:
+            self._send(400, json.dumps({'ok': False, 'error': 'missing task_id'}).encode('utf-8'), 'application/json')
+            return
+        prog = _w.PROGRESS.get(tid)
+        if prog is None:
+            self._send(404, json.dumps({'ok': False, 'error': '任务不存在或已过期: %s' % tid}).encode('utf-8'), 'application/json')
+            return
+        result = prog.get('analyze_result')
+        out = {
+            'task_id': tid,
+            'status': 'analyzed' if (prog.get('done') and result) else ('failed' if prog.get('error') else 'analyzing'),
+            'phase': prog.get('phase', ''),
+            'pct': prog.get('pct', 0),
+        }
+        if result:
+            out.update(result)
+        if prog.get('error'):
+            out['error'] = prog['error']
+        self._send(200, json.dumps(out, ensure_ascii=False).encode('utf-8'), 'application/json')
+
     def _post_narrate(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -1734,9 +1772,11 @@ class Handler(BaseHTTPRequestHandler):
         ('/media/', '_get_media_files'),
         ('/music_lib/', '_get_music_lib_files'),
         ('/material_lib/', '_get_material_lib_files'),
+        ('/api/analyze/', '_get_analyze'),
     ]
     POST_EXACT = {
         '/api/ai/config': '_post_ai_config',
+        '/api/analyze': '_post_analyze',
         '/api/beatcut': '_post_beatcut',
         '/api/bili/cancel': '_post_bili_cancel',
         '/api/bili/download': '_post_bili_download',
@@ -1905,11 +1945,16 @@ atexit.register(_kill_all_child_processes)
 
 
 def webbrowser_open(url):
-    import webbrowser
+    # Windows 下 webbrowser.open 经常静默失败（默认浏览器关联异常时不报错也不开），
+    # os.startfile 走 ShellExecute，是 Windows 上最可靠的开 URL 方式。
     try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+        if sys.platform == 'win32':
+            os.startfile(url)
+        else:
+            import webbrowser
+            webbrowser.open(url)
+    except Exception as e:
+        print(f'  [warn] 自动打开浏览器失败: {e}，请手动访问 {url}', flush=True)
 
 
 # ---------------------------------------------------------------------------

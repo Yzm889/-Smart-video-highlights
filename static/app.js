@@ -6330,3 +6330,191 @@ document.addEventListener('click', function(e){
     if(cancelBtn && cancelBtn.offsetParent !== null) cancelBtn.click();
   }
 })();
+
+
+// ===== 🤝 人机协同两段式编辑台 =====
+let collabTaskId=null, collabPollTimer=null;
+
+async function collabStartAnalyze(){
+  const v=document.getElementById('collabVideo').value.trim();
+  if(!v){alert('请填视频路径');return;}
+  const btn=document.getElementById('collabGoBtn');
+  btn.disabled=true; btn.textContent='分析中…';
+  try{
+    const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_path:v,options:{max_seg:25}})}).then(r=>r.json());
+    if(!r.ok){alert(r.error||'启动失败');return;}
+    collabTaskId=r.task_id;
+    document.getElementById('collabProgress').style.display='block';
+    document.getElementById('collabBar').style.width='0%';
+    collabPollTimer=setInterval(collabPoll,1200);
+  }catch(e){alert('请求失败: '+e);}
+  finally{btn.disabled=false; btn.textContent='▶ 开始分析';}
+}
+
+async function collabPoll(){
+  try{
+    const d=await fetch('/api/analyze/'+collabTaskId).then(r=>r.json());
+    document.getElementById('collabPhase').textContent=d.phase||'';
+    document.getElementById('collabBar').style.width=(d.pct||0)+'%';
+    if(d.status==='analyzed'){clearInterval(collabPollTimer);collabRenderResult(d);}
+    else if(d.status==='failed'){clearInterval(collabPollTimer);alert('分析失败：'+(d.error||''));}
+  }catch(e){}
+}
+
+function collabEsc(t){const d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
+
+function collabRenderResult(d){
+  document.getElementById('collabProgress').style.display='none';
+  const ns=d.narrative_suggestion||{};
+  const nb=document.getElementById('collabNarrative');
+  nb.style.display='block';
+  nb.innerHTML='<b>🧭 AI 叙事建议</b><br>主线段 ['+(ns.main_line||[]).join(', ')+'] · 建议剪除 ['+(ns.suggested_cuts||[]).join(', ')+']'+
+    (ns.reason?'<br><span style="color:var(--muted);font-size:12px;">'+collabEsc(ns.reason)+'</span>':'');
+  const ws=d.warnings||[];
+  const wb=document.getElementById('collabWarnings');
+  wb.style.display=ws.length?'block':'none';
+  wb.innerHTML=ws.map(w=>'⚠️ '+collabEsc(w)).join('<br>');
+
+  const wrap=document.getElementById('collabSegments');
+  wrap.innerHTML='';
+  (d.segments||[]).forEach(s=>{
+    const el=document.createElement('div');
+    el.className='seg-card'+(s.default_keep?'':' cut');
+    el.dataset.id=s.segment_id;
+    const mm=sec=>String(Math.floor(sec/60)).padStart(2,'0')+':'+String(Math.floor(sec%60)).padStart(2,'0');
+    const drafts=(s.ai_draft_narrations||[]).map((dr,i)=>
+      '<button class="'+(i===0?'on':'')+'" data-text="'+collabEsc(dr.text)+'">'+collabEsc(dr.style)+'</button>'
+    ).join('');
+    const firstDraft=(s.ai_draft_narrations[0]||{}).text||'';
+    el.innerHTML=
+      (s.thumbnail_url?'<img src="'+s.thumbnail_url+'" loading="lazy">':'')+
+      '<div class="seg-body">'+
+        '<div class="seg-time">'+mm(s.start)+' – '+mm(s.end)+' <span style="color:var(--muted);font-weight:400;">· '+(s.ai_importance_hint==='cut_candidate'?'建议剪除':'建议保留')+'</span></div>'+
+        (s.asr_text?'<div class="seg-asr">🎙 '+collabEsc(s.asr_text)+'</div>':'<div class="seg-asr" style="color:var(--muted);">（无台词）</div>')+
+        '<div class="seg-drafts">'+drafts+'</div>'+
+        '<textarea class="seg-nar" placeholder="这一段说什么（点上方草稿填入，或自己写）">'+collabEsc(firstDraft)+'</textarea>'+
+        '<div class="seg-foot"><label style="cursor:pointer;"><input type="checkbox" class="seg-keep" '+(s.default_keep?'checked':'')+' onchange="this.closest(\'.seg-card\').classList.toggle(\'cut\',!this.checked)"> 保留此段</label>'+
+        '<span style="font-size:11px;color:var(--muted);">段'+s.segment_id+'</span></div>'+
+      '</div>';
+    wrap.appendChild(el);
+  });
+  document.getElementById('collabRenderBtn').style.display='block';
+}
+
+document.addEventListener('click',function(e){
+  const b=e.target.closest('.seg-drafts button');
+  if(!b) return;
+  b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');
+  b.closest('.seg-body').querySelector('.seg-nar').value=b.dataset.text||'';
+});
+
+function collabRender(){
+  const segs=[...document.querySelectorAll('#collabSegments .seg-card')].map(c=>({
+    segment_id:parseInt(c.dataset.id),
+    keep:c.querySelector('.seg-keep').checked,
+    narration:c.querySelector('.seg-nar').value.trim(),
+  }));
+  const kept=segs.filter(s=>s.keep).length;
+  console.log('🤝 协同编辑台用户决策',segs);
+  alert('阶段②合成接口 /api/render 下一步开发。\n\n你当前选择：保留 '+kept+' / 共 '+segs.length+' 段。\n决策数据已打印到浏览器控制台（F12），确认结构后即可接通合成。');
+}
+
+
+// ===== 🎯 性能档位四选一 =====
+const TIER_DEFS = [
+  {id:'cpu', icon:'🐌', name:'入门·CPU', hw:'无独显 / 核显',
+   llm:'qwen3:8b', vlm:'qwen3-vl:4b', asr:'base', tts:'piper-huayan', dl:'~3GB', speed:'慢但能用',
+   desc:'老电脑纯 CPU 跑'},
+  {id:'g6', icon:'🚶', name:'标准·6G', hw:'4-8GB 显存（1660/2060）',
+   llm:'qwen3:8b', vlm:'qwen3-vl:4b', asr:'small', tts:'piper-huayan', dl:'~6GB', speed:'流畅',
+   desc:'4-8GB 显卡'},
+  {id:'g12', icon:'⭐', name:'甜点·12G', hw:'8-12GB 显存（3060 12G）',
+   llm:'qwen3:14b-q4_K_M', vlm:'minicpm-v4.5', asr:'large-v3', tts:'melo-zh', dl:'~11GB', speed:'丝滑',
+   desc:'3060 12G 默认推荐'},
+  {id:'g16', icon:'🚀', name:'宽松·16G+', hw:'16GB+ 显存（4080/3090）',
+   llm:'qwen3:30b-q4_K_M', vlm:'qwen3-vl:30b', asr:'large-v3', tts:'melo-zh', dl:'~25GB', speed:'飞快',
+   desc:'全质量拉满'},
+];
+let tierRecommended = null;
+
+function renderTierCards(recoId){
+  const wrap = document.getElementById('tierCards'); if(!wrap) return;
+  tierRecommended = recoId;
+  wrap.innerHTML = TIER_DEFS.map(t=>{
+    const reco = (t.id===recoId);
+    return '<div class="tier-card'+(reco?' active':'')+'" data-tier="'+t.id+'" onclick="pickTier(\''+t.id+'\')">'
+      + (reco?'<span class="t-reco">推荐</span>':'')
+      + '<div class="t-head">'+t.icon+' '+t.name+'</div>'
+      + '<div class="t-hw">'+t.hw+'</div>'
+      + '<div class="t-row"><span>📝 写稿</span><b>'+t.llm+'</b></div>'
+      + '<div class="t-row"><span>👁 看图</span><b>'+(t.vlm||'（关闭）')+'</b></div>'
+      + '<div class="t-row"><span>🎙 转写</span><b>'+t.asr+'</b></div>'
+      + '<div class="t-row"><span>🔊 配音</span><b>'+t.tts+'</b></div>'
+      + '<div class="t-dl">下载 '+t.dl+' · '+t.speed+'</div>'
+      + '</div>';
+  }).join('');
+}
+
+function pickTier(id){
+  const t = TIER_DEFS.find(x=>x.id===id); if(!t) return;
+  // 高亮
+  document.querySelectorAll('.tier-card').forEach(c=>c.classList.toggle('active', c.dataset.tier===id));
+  // 填模型名
+  const set = (el,val)=>{const e=document.getElementById(el); if(e){e.value=val; if(e.onchange) e.onchange();}};
+  set('localModel', t.llm);
+  set('vlmModel', t.vlm || '');
+  // VLM 勾选：有关键词才启用
+  const vlmEn = document.getElementById('vlmEnabled');
+  if(vlmEn) vlmEn.checked = !!t.vlm;
+  // Whisper（隐藏 input）
+  const wh = document.getElementById('whisperModel');
+  if(wh) wh.value = t.asr;
+  // TTS 引擎：melo-zh / piper-huayan 走 sherpa 离线
+  const eng = document.getElementById('ttsLocalEngine');
+  if(eng){
+    if(t.tts==='melo-zh' || t.tts==='piper-huayan'){
+      eng.value='sherpa';
+    } else if(t.tts==='edge-tts'){
+      eng.value='edge';
+    }
+    if(eng.onchange) eng.onchange();
+  }
+  // 持久化到后端
+  const body = {
+    local:{enabled:true, base_url:'http://localhost:11434/v1', model:t.llm},
+    vlm:{enabled:!!t.vlm, mode:'ollama', base_url:'http://localhost:11434', model:t.vlm||''},
+    whisper:{model:t.asr},
+  };
+  if(t.tts==='melo-zh') body.tts_local={engine:'sherpa', sherpa_model:'melo-zh'};
+  else if(t.tts==='piper-huayan') body.tts_local={engine:'sherpa', sherpa_model:'piper-huayan'};
+  fetch('/api/ai/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(()=>{
+      alert('已选择「'+t.name+'」\n\n写稿: '+t.llm+'\n看图: '+(t.vlm||'关闭')+'\n转写: '+t.asr+'\n配音: '+t.tts+'\n\n请到下面各模块点「📥 拉取模型」下载缺失的。');
+    }).catch(e=>console.warn('tier apply',e));
+}
+
+// 根据显存自动推荐档位
+function recommendTierByVram(vramGb){
+  if(!vramGb || vramGb < 4) return 'cpu';
+  if(vramGb < 8) return 'g6';
+  if(vramGb < 14) return 'g12';
+  return 'g16';
+}
+
+// 包装 loadHardware：硬件检测后自动渲染档位
+const _origLoadHardware = loadHardware;
+loadHardware = function(){
+  _origLoadHardware();
+  fetch('/api/hardware').then(r=>r.json()).then(h=>{
+    const picker = document.getElementById('tierPicker');
+    if(!picker) return;
+    picker.style.display='block';
+    const reco = recommendTierByVram(h.gpu_vram_gb);
+    renderTierCards(reco);
+  }).catch(e=>console.warn('tier detect',e));
+};
+
+// 页面加载时自动检测
+window.addEventListener('load', function(){ setTimeout(loadHardware, 800); });

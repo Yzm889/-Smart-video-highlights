@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=15">
+<link rel="stylesheet" href="/static/style.css?v=17">
 </head>
 <body>
 <header>
@@ -47,6 +47,7 @@
       <button onclick="goStep('beatcutCard');toggleFlowMore()">🎯 卡点</button>
       <button onclick="goStep('aiCard');toggleFlowMore()">🤖 AI配置</button>
       <button onclick="goStep('outCard');toggleFlowMore()">⚙️ 输出设置</button>
+      <button onclick="goStep('collabCard');toggleFlowMore()">🤝 协同编辑台</button>
       <button onclick="goStep('tasksCard');toggleFlowMore()">📋 任务</button>
       <button onclick="goStep('histCard');toggleFlowMore()">🕘 记录</button>
       <button onclick="goStep('storageCard');toggleFlowMore()">🧹 存储</button>
@@ -229,6 +230,35 @@
       <button class="start-subtab" data-subtab="instruct" onclick="switchStartTab('instruct')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">💬 指令成片</button>
       <button class="start-subtab" data-subtab="guide" onclick="switchStartTab('guide')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">📖 新手引导</button>
     </div>
+
+<!-- 🤝 人机协同 · 两段式编辑台（新架构） -->
+<div class="card" id="collabCard" style="border:2px solid #7fd69a; margin-bottom:18px; box-shadow:0 0 18px rgba(120,200,140,0.15);">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <h2 style="margin:0;">🤝 人机协同编辑台</h2>
+    <span style="font-size:12px;color:#7fd69a;background:rgba(120,200,140,0.12);padding:3px 10px;border-radius:12px;border:1px solid rgba(120,200,140,0.3);">两段式 · 新架构</span>
+  </div>
+  <div class="hint" style="margin-bottom:12px;">AI 自动切分镜头、识别台词、写多版草稿；<b>留哪段、解说词怎么写由你定</b>。</div>
+
+  <div style="display:flex;gap:8px;margin-bottom:12px;">
+    <input id="collabVideo" placeholder="视频路径（默认 demo.mp4）" value="demo.mp4"
+           style="flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--input);color:var(--text);">
+    <button class="btn" id="collabGoBtn" onclick="collabStartAnalyze()">▶ 开始分析</button>
+  </div>
+
+  <div id="collabProgress" style="display:none;margin-bottom:12px;">
+    <div id="collabPhase" style="font-size:13px;margin-bottom:6px;color:var(--muted);">准备中…</div>
+    <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+      <div id="collabBar" style="height:100%;width:0;background:var(--accent);transition:width .3s;"></div>
+    </div>
+  </div>
+
+  <div id="collabNarrative" class="collab-narrative" style="display:none;"></div>
+  <div id="collabWarnings" class="warnbox" style="display:none;"></div>
+  <div id="collabSegments" class="collab-segs"></div>
+
+  <button id="collabRenderBtn" class="btn" style="display:none;margin-top:14px;width:100%;padding:12px;background:var(--accent);color:#1a1a1a;font-weight:600;"
+          onclick="collabRender()">🎬 按我的选择开始合成</button>
+</div>
 
     <!-- 一键智能模式 -->
     <div class="card start-tab-content" id="smartCard" data-step="start" data-subtab="smart">
@@ -757,13 +787,23 @@
     <h2>🤖 AI 文案·字幕·配音</h2>
     <div id="hardwareBanner" style="display:none; margin:10px 0; padding:12px 14px; background:#e3f2fd; border:1px solid #90caf9; border-radius:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <span style="font-weight:600; color:#1565c0; font-size:14px;">🖥 硬件检测与模型推荐</span>
+        <span style="font-weight:600; color:#1565c0; font-size:14px;">🖥 硬件检测</span>
         <button class="btn mini ghost" onclick="loadHardware()">🔄 重新检测</button>
       </div>
       <div id="hardwareInfo" style="font-size:13px; color:#333; margin-bottom:6px;"></div>
-      <div id="hardwareRecs" style="font-size:13px; color:#333;"></div>
-      <div id="hardwareActions" style="margin-top:8px;"></div>
+      <div id="hardwareRecs" style="display:none;"></div>
+      <div id="hardwareActions" style="display:none;"></div>
     </div>
+    <!-- 🎯 性能档位四选一 -->
+    <div id="tierPicker" style="display:none; margin:12px 0; padding:14px; background:rgba(120,200,140,0.06); border:1px solid rgba(120,200,140,0.3); border-radius:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-weight:600; color:#2e7d32; font-size:14px;">🎯 性能档位（点选自动配好下面所有模型）</span>
+        <span style="font-size:12px; color:#888;">已根据硬件检测自动推荐高亮档</span>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">选一档后，下面 ③本地模型 / ④Whisper / ⑤VLM 的模型名会自动填好；再点各自的「📥 拉取模型」下载即可。</div>
+      <div id="tierCards" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;"></div>
+    </div>
+
     <div style="margin:8px 0; padding:8px 12px; background:rgba(201,168,76,0.08); border:1px solid rgba(201,168,76,0.25); border-radius:8px; font-size:13px;">
       <label style="cursor:pointer;"><input type="checkbox" id="cleanupMid" style="width:auto;vertical-align:middle;" onchange="saveCleanupMid()"> 🧹 任务完成后自动清理中间产物（保留成片/源视频/封面，省磁盘）</label>
     </div>
@@ -1185,7 +1225,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=36"></script>
+<script src="/static/app.js?v=39"></script>
 </body>
 </html>
 
