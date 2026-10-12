@@ -25,6 +25,7 @@ from movie_narrator import (
     _llm_light,
     _try_parse_json,
     _atomic_json_dump,
+    _w,
 )
 
 _log = logging.getLogger('framecut.analyze')
@@ -134,9 +135,20 @@ def dispatch_analyze(req, prog):
     prog['phase'] = '准备分析'
     prog['pct'] = 2
 
+    # 视频来源：优先上传对象（{name, upload_id/data}，落盘到 run_dir/src.*，render 时稳定可用）；
+    # 否则用本地路径（兼容手动填路径）。
+    video_obj = req.get('video')
+    if video_obj:
+        try:
+            resolved = _w._resolve_upload_video(video_obj, run_dir, 'src')
+        except Exception as ex:
+            resolved = None
+            warnings.append('视频落盘失败：%s' % ex)
+        if resolved:
+            video_path = resolved
     if not video_path or not os.path.exists(video_path):
         prog['done'] = True
-        prog['error'] = '视频文件不存在: %s' % video_path
+        prog['error'] = '视频文件不存在: %s' % (video_path or '(未收到视频)')
         return
 
     # 1. 镜头切分
@@ -206,7 +218,8 @@ def dispatch_analyze(req, prog):
     result = {
         'task_id': run_base,
         'status': 'analyzed',
-        'video': {'duration': round(vdur, 2)},
+        'video': {'duration': round(vdur, 2), 'path': os.path.abspath(video_path)},
+        'video_path': os.path.abspath(video_path),
         'narrative_suggestion': narrative,
         'segments': segments,
         'warnings': warnings,

@@ -891,6 +891,7 @@ class Handler(BaseHTTPRequestHandler):
             'download_model': _w.WHISPER_DL['model'],
             'download_ok': _w.WHISPER_DL['ok'],
             'download_msg': _w.WHISPER_DL['msg'],
+            'download_pct': _w.WHISPER_DL.get('pct', 0),
             'available': avail,
             'valid_models': _w._WHISPER_MODELS,
             # [B] 推理设备信息：前端据此展示「当前 GPU/CPU，CPU 时提示启用 GPU」
@@ -1482,7 +1483,8 @@ class Handler(BaseHTTPRequestHandler):
         """阶段①：上传/选择视频后触发自动分析（切分+ASR+缩略图+多版草稿+叙事建议）。"""
         try:
             length = int(self.headers.get('Content-Length', 0))
-            req = self._read_json(length, max_len=10 * 1024 * 1024)
+            # 小视频(≤8MB)走 base64 内联，膨胀约1.37倍≈11MB，故上限放到 32MB；大视频走分片(upload_id)，body 很小
+            req = self._read_json(length, max_len=32 * 1024 * 1024)
             if req is None:
                 self._send(200, json.dumps({'ok': False, 'error': '请求过大或读取失败'}).encode('utf-8'), 'application/json')
                 return
@@ -1490,6 +1492,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': True, 'task_id': runid}).encode('utf-8'), 'application/json')
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_render(self):
+        """阶段②：按用户在编辑台定稿的留剪/解说词/入点出点合成成片。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=10 * 1024 * 1024)
+            if req is None:
+                self._send(200, json.dumps({'ok': False, 'error': '请求过大或读取失败'}).encode('utf-8'), 'application/json')
+                return
+            runid = self._spawn(_w.dispatch_render, req)
+            self._send(200, json.dumps({'ok': True, 'task_id': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_ollama_install(self):
+        """一键下载并静默安装 Ollama。"""
+        try:
+            runid = self._spawn(_w.dispatch_ollama_install, {})
+            self._send(200, json.dumps({'ok': True, 'task_id': runid}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
+
+    def _post_ollama_cancel(self):
+        """取消 Ollama 下载。"""
+        _w.OLLAMA_INSTALL['cancel'] = True
+        self._send(200, json.dumps({'ok': True}).encode('utf-8'), 'application/json')
+
+    def _get_ollama_install(self):
+        """查询 Ollama 安装进度。"""
+        self._send(200, json.dumps(_w.OLLAMA_INSTALL).encode('utf-8'), 'application/json')
 
     def _get_analyze(self):
         """轮询阶段①进度；完成后返回结构化 segments 供编辑台加载。"""
@@ -1765,6 +1797,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/video_frame': '_get_video_frame',
         '/api/vlm/status': '_get_vlm_status',
         '/api/whisper/status': '_get_whisper_status',
+        '/api/ollama/install': '_get_ollama_install',
         '/index.html': '_get_index',
     }
     GET_PREFIX = [
@@ -1777,6 +1810,9 @@ class Handler(BaseHTTPRequestHandler):
     POST_EXACT = {
         '/api/ai/config': '_post_ai_config',
         '/api/analyze': '_post_analyze',
+        '/api/render': '_post_render',
+        '/api/ollama/install': '_post_ollama_install',
+        '/api/ollama/cancel': '_post_ollama_cancel',
         '/api/beatcut': '_post_beatcut',
         '/api/bili/cancel': '_post_bili_cancel',
         '/api/bili/download': '_post_bili_download',

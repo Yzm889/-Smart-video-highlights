@@ -1818,6 +1818,17 @@ select option { background: var(--fc-surface-2); color: var(--fc-text); }
 .seg-card.cut img{filter:grayscale(1);}
 .collab-narrative{background:rgba(120,200,140,0.08);border:1px solid rgba(120,200,140,0.25);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px;line-height:1.6;}
 
+/* 人机协同编辑台：入点/出点编辑 */
+.seg-io{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
+.seg-io .io-cell{display:flex;flex-direction:column;gap:3px;}
+.seg-io .io-cap{font-size:10px;color:var(--muted);letter-spacing:1px;}
+.seg-io input{width:100%;padding:5px 7px;border-radius:6px;border:1px solid var(--border);background:var(--input);color:var(--text);font-size:12px;box-sizing:border-box;}
+.seg-io-btns{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}
+.seg-io-btns button{font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;}
+.seg-io-btns button:hover{border-color:var(--accent);color:var(--accent);}
+.seg-io-btns button.primary{border-color:#7fd69a;color:#7fd69a;}
+.seg-note{font-size:11px;color:var(--muted);margin-top:4px;}
+
 
 /* ===== 🎯 性能档位四选一 ===== */
 .tier-card{border:2px solid var(--line);border-radius:10px;padding:10px;cursor:pointer;background:rgba(255,255,255,0.02);transition:all .15s;font-size:12px;}

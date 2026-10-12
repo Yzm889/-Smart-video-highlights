@@ -375,6 +375,7 @@ function loadAIConfig(){
       if(typeof updateBuildModeHint === 'function') updateBuildModeHint();
     }
     loadHardware();
+    if(typeof loadModelHub === 'function') loadModelHub();
   }).catch(e=>console.warn('加载 AI 配置失败', e));
 }
 
@@ -396,6 +397,20 @@ function loadHardware(){
     info.push('Ollama: ' + (h.ollama ? '✅ 运行中 (' + h.ollama_models.length + ' 个模型)' : '❌ 未运行'));
     if(h.tier) info.push('档位: ' + h.tier);
     $('hardwareInfo').innerHTML = info.join(' · ');
+    // Ollama 未运行 → 显示安装按钮（微软商店优先）
+    if(!h.ollama){
+      $('hardwareInfo').innerHTML += '<div style="margin-top:8px;">'
+        + '<a class="btn" style="background:#0078d4;color:#fff;" href="ms-windows-store://search/?query=Ollama" target="_blank">🪟 微软商店下载（推荐·不限速）</a>'
+        + ' <button class="btn mini ghost" onclick="installOllama()">📥 自动安装</button>'
+        + ' <button class="btn mini ghost" onclick="cancelOllama()">❌ 取消</button>'
+        + ' <a class="btn mini ghost" href="https://gh-proxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe" target="_blank">🌐 浏览器下载</a>'
+        + '<div id="ollamaBarWrap" style="display:none; margin-top:6px;">'
+        + '<div style="background:#e0e0e0; border-radius:6px; height:20px; overflow:relative;">'
+        + '<div id="ollamaBar" style="background:linear-gradient(90deg,#43a047,#66bb6a); height:100%; width:0%; border-radius:6px; transition:width 0.5s;"></div>'
+        + '</div>'
+        + '<div id="ollamaInstallProg" style="font-size:12px; color:#555; margin-top:3px;"></div>'
+        + '</div></div>';
+    }
     const rec = h.recommendations || {};
     const cur = h.current || {};
     let recHtml = '<div style="margin-bottom:4px;"><b>推荐配置：</b></div>';
@@ -435,6 +450,34 @@ function applyHardwareRecs(){
         else $('aiStatus').textContent = '❌ ' + res.error;
       }).catch(()=>$('aiStatus').textContent='❌ 应用失败');
   });
+}
+
+function cancelOllama(){
+  fetch('/api/ollama/cancel', {method:'POST'}).then(()=>{
+    $('ollamaInstallProg').textContent = '⏹ 已取消';
+  });
+}
+
+function installOllama(){
+  const btn = event.target; btn.disabled = true;
+  const wrap = $('ollamaBarWrap'); const bar = $('ollamaBar'); const prog = $('ollamaInstallProg');
+  if(wrap) wrap.style.display = 'block';
+  fetch('/api/ollama/install', {method:'POST'}).then(r=>r.json()).then(res=>{
+    if(!res.ok){ prog.textContent = '❌ ' + res.error; btn.disabled = false; return; }
+    const poll = setInterval(()=>{
+      fetch('/api/ollama/install').then(r=>r.json()).then(s=>{
+        if(bar) bar.style.width = (s.pct||0) + '%';
+        let txt = (s.phase||'') + ' ' + (s.pct||0) + '%';
+        if(s.speed) txt += ' · ' + s.speed;
+        prog.textContent = txt;
+        if(!s.running){
+          clearInterval(poll);
+          if(s.ok){ prog.textContent = '✅ 安装成功！'; btn.textContent = '✅ 已安装'; loadHardware(); }
+          else { prog.textContent = '❌ ' + (s.msg||'失败'); btn.disabled = false; }
+        }
+      }).catch(()=>{});
+    }, 1000);
+  }).catch(e=>{ prog.textContent = '❌ ' + e; btn.disabled = false; });
 }
 // ---------------------------------------------------------------------------
 // 🔊 本地配音引擎（免费）：edge-tts / 离线模型(sherpa-onnx) / 系统 SAPI
@@ -829,12 +872,27 @@ function loadWhisperStatus(){
     if(res.downloading) s = '⏳ 下载中（' + (res.download_model||'') + '）：' + (res.download_msg||'');
     else if(res.download_ok === false) s = '❌ 上次下载失败：' + (res.download_msg||'');
     el.textContent = s;
+    // 下载进度条（断点续传，百分比按字节加权）
+    const pb = $('whisperProgress');
+    if(pb){
+      if(res.downloading){
+        const p = Math.min(100, Math.max(0, res.download_pct||0));
+        pb.style.display = 'block';
+        pb.innerHTML = '<div style="background:rgba(255,255,255,0.1);border-radius:4px;height:10px;overflow:hidden;">' +
+          '<div style="background:linear-gradient(90deg,var(--accent2),var(--accent));height:100%;width:'+p+'%;transition:width .3s;"></div></div>' +
+          '<div style="font-size:12px;color:var(--accent2);margin-top:3px;">'+p+'%　' + (res.download_msg||'') + '</div>';
+      } else {
+        pb.style.display = 'none';
+        pb.innerHTML = '';
+      }
+    }
     // 模型目录与可用模型提示
     const cb = $('cmdWhisper'); if(cb){
       cb.textContent = '模型目录：' + dir + (res.available && res.available.length ? '　已缓存：' + res.available.join(', ') : '');
     }
-    // 渲染模型卡片
-    const installed = res.available || [];
+    // 渲染模型卡片：只认真正下载完整的模型（valid_models.downloaded），
+    // 不看 available 原始目录名（可能有下载失败残留的空文件夹导致误判）
+    const installed = Object.values(res.valid_models||{}).filter(m=>m.downloaded).map(m=>m.name);
     const cur = res.selected || 'base';
     const downloading = res.downloading ? res.download_model : null;
     if(typeof _renderModelCards === 'function'){
@@ -927,7 +985,7 @@ const LOCAL_MODEL_CATALOG = [
   {tag:'qwen3:8b',         label:'qwen3:8b', desc:'轻快省显存 · 共存更稳', size:'≈5.2GB'},
 ];
 const VLM_MODEL_CATALOG = [
-  {tag:'minicpm-v4.5:q8_0', label:'⭐ MiniCPM-V 4.5', desc:'视频理解专项·96x压缩·同显存多看10倍帧', size:'≈6.5GB'},
+  {tag:'minicpm-v4.5', label:'⭐ MiniCPM-V 4.5', desc:'视频理解专项·96x压缩·同显存多看10倍帧', size:'≈6.5GB'},
   {tag:'qwen3-vl:8b',      label:'qwen3-vl:8b', desc:'新一代视觉·综合强·剧情理解好', size:'≈6.1GB'},
   {tag:'qwen3-vl:30b',     label:'qwen3-vl:30b (MoE)', desc:'旗舰·激活3B速度快·需16GB显存', size:'≈20GB'},
   {tag:'qwen2.5vl:latest', label:'qwen2.5vl', desc:'稳定基准（回退选）', size:'≈5.6GB'},
@@ -945,12 +1003,15 @@ const WHISPER_MODEL_CATALOG = [
 function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn){
   const box = $(boxId); if(!box) return;
   box.innerHTML = catalog.map(m=>{
-    const inst = (installed||[]).some(x => x === m.tag || x.indexOf(m.tag) === 0);
+    // 精确匹配，兼容 ollama 自动补的 :latest 后缀；不用前缀匹配（避免 large-v3 误伤 large-v3-turbo）
+    const inst = (installed||[]).some(x => x === m.tag || x === m.tag + ':latest' ||
+      (m.tag.indexOf(':') < 0 && x.indexOf(':') >= 0 && x.split(':')[0] === m.tag));
     const active = cur === m.tag;
     const pulling = pullingModel === m.tag;
     let state, btnCls, btn;
     if (pulling){ state = '⏳ 下载中…'; btnCls = 'btn mini'; btn = '下载中'; }
-    else if (active){ state = '✅ 使用中'; btnCls = 'btn mini'; btn = '使用中'; }
+    else if (active && inst){ state = '✅ 使用中'; btnCls = 'btn mini'; btn = '使用中'; }
+    else if (active){ state = '⚠️ 已选中·未下载'; btnCls = 'btn mini'; btn = '下载'; }
     else if (inst){ state = '✅ 已安装'; btnCls = 'btn mini ghost'; btn = '点击启用'; }
     else { state = '⬜ 未安装'; btnCls = 'btn mini ghost'; btn = '⬇ 下载并启用'; }
     const rmBtn = (inst && !active) ? `<span style="display:inline-block;margin-top:4px;font-size:11px;color:#ef4444;cursor:pointer;text-decoration:underline;" onclick="event.stopPropagation();removeModel('${m.tag}')">卸载</span>` : '';
@@ -960,6 +1021,106 @@ function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn)
       <span style="display:block;font-size:12px;margin-top:2px;">${state}</span>${rmBtn}</button>`;
   }).join('');
 }
+
+// === 📦 模型中心：跳转到模型下载区域 ===
+function gotoModelSection(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  // 展开所有父级 details 折叠面板
+  let p = el;
+  while(p){
+    if(p.tagName === 'DETAILS') p.open = true;
+    p = p.parentElement;
+  }
+  // 先切换到 AI 配置页
+  if(typeof showStep === 'function') showStep('ai');
+  // 滚动到目标
+  setTimeout(()=>el.scrollIntoView({behavior:'smooth', block:'center'}), 100);
+}
+
+// === 📦 模型中心：集中显示所有模型状态 + 下载进度 ===
+function loadModelHub(){
+  const box = $('modelHubList'); if(!box) return;
+  // 仅首次加载显示"加载中"；轮询刷新时保留现有内容，避免进度条闪烁
+  if(!box.children.length || box.dataset.loaded !== '1'){
+    box.innerHTML = '<div style="color:var(--muted); text-align:center; padding:10px;">加载中...</div>';
+  }
+  Promise.all([
+    fetch('/api/local/status').then(r=>r.json()).catch(()=>({})),
+    fetch('/api/vlm/status').then(r=>r.json()).catch(()=>({})),
+    fetch('/api/whisper/status').then(r=>r.json()).catch(()=>({})),
+    fetch('/api/hardware').then(r=>r.json()).catch(()=>({}))
+  ]).then(([loc, vlm, whisper, hw])=>{
+    const progressBar = (pct, msg) => {
+      const p = Math.min(100, Math.max(0, pct||0));
+      return `<div style="margin-top:6px;">
+        <div style="background:rgba(255,255,255,0.1); border-radius:4px; height:8px; overflow:hidden;">
+          <div style="background:linear-gradient(90deg,var(--accent2),var(--accent)); height:100%; width:${p}%; transition:width .3s;"></div>
+        </div>
+        <div style="font-size:11px; color:var(--accent2); margin-top:2px;">${p}% ${msg||''}</div>
+      </div>`;
+    };
+    const row = (icon, name, model, status, ok, btn, prog) => {
+      const color = ok ? '#4caf50' : '#ff9800';
+      const bg = ok ? 'rgba(76,175,80,0.08)' : 'rgba(255,152,0,0.08)';
+      const border = ok ? 'rgba(76,175,80,0.25)' : 'rgba(255,152,0,0.25)';
+      return `<div style="display:flex; align-items:center; gap:10px; padding:10px 12px; background:${bg}; border-radius:8px; border:1px solid ${border};">
+        <span style="font-size:20px;">${icon}</span>
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600; color:var(--ink);">${name}</div>
+          <div style="font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${model||'—'}</div>
+          ${prog||''}
+        </div>
+        <span style="font-size:12px; color:${color}; font-weight:600; white-space:nowrap;">${status}</span>
+        ${btn||''}
+      </div>`;
+    };
+    let html = '';
+    let anyPulling = false;
+    // Ollama 服务
+    html += row('🦙', 'Ollama 服务', '本地模型运行时',
+      hw.ollama ? '✅ 运行中' : '❌ 未运行', hw.ollama,
+      hw.ollama ? '' : '<a class="btn mini" style="background:#0078d4;color:#fff;text-decoration:none;" href="ms-windows-store://search/?query=Ollama" target="_blank">安装</a>');
+    // 写稿模型
+    const locOk = loc.ready || (loc.model && loc.installed && loc.installed.some(m=>m===(loc.model||'').trim()));
+    const locProg = loc.pulling ? progressBar(loc.pull_pct, loc.pull_msg||'') : '';
+    if(loc.pulling) anyPulling = true;
+    html += row('📝', '写稿模型', loc.model || '未设置',
+      loc.pulling ? '⏳ 下载中' : (locOk ? '✅ 已就绪' : '⬜ 未就绪'), locOk && !loc.pulling,
+      locOk ? '' : `<button class="btn mini ghost" onclick="gotoModelSection('localModelCards')">去下载</button>`, locProg);
+    // VLM
+    const vlmOk = vlm.ready;
+    const vlmProg = vlm.pulling ? progressBar(vlm.pull_pct, vlm.pull_msg||'') : '';
+    if(vlm.pulling) anyPulling = true;
+    html += row('👁', '视觉理解 VLM', vlm.model || '未设置',
+      vlm.pulling ? '⏳ 下载中' : (vlmOk ? '✅ 已就绪' : '⬜ 未就绪'), vlmOk && !vlm.pulling,
+      vlmOk ? '' : `<button class="btn mini ghost" onclick="gotoModelSection('vlmModelCards')">去下载</button>`, vlmProg);
+    // Whisper
+    const wpOk = whisper.ready;
+    const wpModel = whisper.selected || whisper.model || '未设置';
+    const wpProg = whisper.downloading ? progressBar(whisper.download_pct, whisper.download_msg||'') : '';
+    if(whisper.downloading) anyPulling = true;
+    html += row('🎙', '台词识别 Whisper', wpModel,
+      whisper.downloading ? '⏳ 下载中' : (wpOk ? '✅ 已就绪' : '⬜ 未就绪'), wpOk && !whisper.downloading,
+      wpOk ? '' : `<button class="btn mini ghost" onclick="gotoModelSection('whisperSection')">去下载</button>`, wpProg);
+    // TTS
+    html += row('🔊', '配音引擎', 'edge-tts（已内置）',
+      '✅ 已就绪', true, '');
+    box.innerHTML = html;
+    box.dataset.loaded = '1';
+    // 汇总就绪数
+    const total = 5; // Ollama + 写稿 + VLM + Whisper + TTS
+    const readyCount = [hw.ollama, locOk, vlmOk, wpOk, true].filter(Boolean).length;
+    const sum = $('modelHubSum');
+    if(sum){
+      sum.textContent = readyCount + '/' + total + ' 已就绪';
+      sum.style.color = readyCount === total ? '#4caf50' : '#ff9800';
+    }
+    // 有下载中就 2 秒后自动刷新
+    if(anyPulling) setTimeout(loadModelHub, 2000);
+  });
+}
+
 function refreshModelCards(){
   fetch('/api/local/status').then(r=>r.json()).then(st=>{
     _renderModelCards('localModelCards', LOCAL_MODEL_CATALOG,
@@ -6239,7 +6400,14 @@ function markFlowDone(n){
 function nextFlowStep(){
   markFlowDone(_flowCurrent);
   if(_flowCurrent < FLOW_STEPS.length){
-    goFlowStep(_flowCurrent + 1);
+    var next = FLOW_STEPS[_flowCurrent]; // _flowCurrent 从1开始，数组从0开始，next=下一步
+    if(next && next.card){
+      showStep(next.step || next.card);
+      var el = document.getElementById(next.card);
+      if(el) setTimeout(function(){ el.scrollIntoView({behavior:'smooth', block:'start'}); }, 100);
+    } else {
+      goFlowStep(_flowCurrent + 1);
+    }
   }
 }
 
@@ -6333,23 +6501,77 @@ document.addEventListener('click', function(e){
 
 
 // ===== 🤝 人机协同两段式编辑台 =====
-let collabTaskId=null, collabPollTimer=null;
+let collabTaskId=null, collabPollTimer=null, collabRunBase=null;
+let collabVideoBody=null, collabLocalFile=null, collabDurationSec=0, collabStopEnd=-1;
+
+// ---------- 视频导入：拖拽/点选上传 + 本地预览 ----------
+(function collabInitDrop(){
+  const drop=document.getElementById('collabDrop');
+  if(!drop) return;
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='#7fd69a';}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='';}));
+  drop.addEventListener('drop',e=>{const f=e.dataTransfer.files&&e.dataTransfer.files[0]; if(f) collabHandleFile(f);});
+})();
+
+async function collabHandleFile(file){
+  const VIDEO_EXT=['mp4','mkv','avi','mov','flv','wmv','webm','m4v','3gp','ts','rmvb','rm'];
+  const ext=(file.name.split('.').pop()||'').toLowerCase();
+  if(!(file.type.startsWith('video/')||VIDEO_EXT.indexOf(ext)>=0)){alert('请选择视频文件（mp4/mkv/avi/mov等）');return;}
+  collabLocalFile=file; collabVideoBody=null;
+  const info=document.getElementById('collabVideoInfo');
+  info.style.display='flex';
+  info.innerHTML='<span>📤 上传中… '+(file.size/1048576).toFixed(1)+'MB</span>';
+  const player=document.getElementById('collabPlayer');
+  try{
+    const u=URL.createObjectURL(file);
+    player.src=u; player.style.display='block';
+    player.onloadedmetadata=()=>{collabDurationSec=player.duration||0;};
+  }catch(e){}
+  document.getElementById('collabVideo').value=file.name;
+  document.getElementById('collabResult').style.display='none';
+  document.getElementById('collabRenderBtn').style.display='none';
+  try{
+    collabVideoBody=await videoToBody(file);
+    info.innerHTML='<span style="color:#7fd69a;">✅ 已选：'+collabEsc(file.name)+'（'+(file.size/1048576).toFixed(1)+'MB）· 已就绪</span>'+
+      '<button class="btn mini" style="padding:3px 10px;font-size:12px;" onclick="collabClearFile()">✕ 移除</button>';
+  }catch(e){
+    collabVideoBody=null;
+    info.innerHTML='<span style="color:#e88;">❌ 上传失败：'+collabEsc(e.message)+'（可改用下方本地路径）</span>';
+  }
+}
+
+function collabClearFile(){
+  collabLocalFile=null; collabVideoBody=null;
+  document.getElementById('collabInput').value='';
+  document.getElementById('collabVideoInfo').style.display='none';
+  const p=document.getElementById('collabPlayer');
+  try{p.pause();}catch(e){}
+  p.removeAttribute('src'); p.style.display='none';
+  document.getElementById('collabVideo').value='demo.mp4';
+}
 
 async function collabStartAnalyze(){
-  const v=document.getElementById('collabVideo').value.trim();
-  if(!v){alert('请填视频路径');return;}
   const btn=document.getElementById('collabGoBtn');
+  const path=document.getElementById('collabVideo').value.trim();
+  if(collabLocalFile && !collabVideoBody){alert('视频还在上传中，请稍候…');return;}
+  let body;
+  if(collabVideoBody){ body={video:collabVideoBody, options:{max_seg:25}}; }
+  else if(path){ body={video_path:path, options:{max_seg:25}}; }
+  else { alert('请先导入视频或填写本地路径'); return; }
   btn.disabled=true; btn.textContent='分析中…';
   try{
     const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({video_path:v,options:{max_seg:25}})}).then(r=>r.json());
+      body:JSON.stringify(body)}).then(r=>r.json());
     if(!r.ok){alert(r.error||'启动失败');return;}
     collabTaskId=r.task_id;
     document.getElementById('collabProgress').style.display='block';
     document.getElementById('collabBar').style.width='0%';
+    document.getElementById('collabSegments').innerHTML='';
+    document.getElementById('collabRenderBtn').style.display='none';
+    document.getElementById('collabResult').style.display='none';
     collabPollTimer=setInterval(collabPoll,1200);
   }catch(e){alert('请求失败: '+e);}
-  finally{btn.disabled=false; btn.textContent='▶ 开始分析';}
+  finally{btn.disabled=false; btn.textContent='▶ 开始 AI 分析';}
 }
 
 async function collabPoll(){
@@ -6364,12 +6586,21 @@ async function collabPoll(){
 
 function collabEsc(t){const d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
 
+// 秒 → mm:ss.s
+function collabFmt(t){
+  t=Math.max(0,parseFloat(t)||0);
+  const m=Math.floor(t/60), s=t-m*60;
+  return String(m).padStart(2,'0')+':'+s.toFixed(1).padStart(4,'0');
+}
+
 function collabRenderResult(d){
   document.getElementById('collabProgress').style.display='none';
+  collabRunBase=d.task_id;
+  if(d.video&&d.video.duration){collabDurationSec=d.video.duration;}
   const ns=d.narrative_suggestion||{};
   const nb=document.getElementById('collabNarrative');
   nb.style.display='block';
-  nb.innerHTML='<b>🧭 AI 叙事建议</b><br>主线段 ['+(ns.main_line||[]).join(', ')+'] · 建议剪除 ['+(ns.suggested_cuts||[]).join(', ')+']'+
+  nb.innerHTML='<b>🧭 AI 叙事建议（仅参考，留剪由你决定）</b><br>主线段 ['+(ns.main_line||[]).join(', ')+'] · 建议剪除 ['+(ns.suggested_cuts||[]).join(', ')+']'+
     (ns.reason?'<br><span style="color:var(--muted);font-size:12px;">'+collabEsc(ns.reason)+'</span>':'');
   const ws=d.warnings||[];
   const wb=document.getElementById('collabWarnings');
@@ -6382,7 +6613,6 @@ function collabRenderResult(d){
     const el=document.createElement('div');
     el.className='seg-card'+(s.default_keep?'':' cut');
     el.dataset.id=s.segment_id;
-    const mm=sec=>String(Math.floor(sec/60)).padStart(2,'0')+':'+String(Math.floor(sec%60)).padStart(2,'0');
     const drafts=(s.ai_draft_narrations||[]).map((dr,i)=>
       '<button class="'+(i===0?'on':'')+'" data-text="'+collabEsc(dr.text)+'">'+collabEsc(dr.style)+'</button>'
     ).join('');
@@ -6390,10 +6620,20 @@ function collabRenderResult(d){
     el.innerHTML=
       (s.thumbnail_url?'<img src="'+s.thumbnail_url+'" loading="lazy">':'')+
       '<div class="seg-body">'+
-        '<div class="seg-time">'+mm(s.start)+' – '+mm(s.end)+' <span style="color:var(--muted);font-weight:400;">· '+(s.ai_importance_hint==='cut_candidate'?'建议剪除':'建议保留')+'</span></div>'+
+        '<div class="seg-time">'+collabFmt(s.start)+' – '+collabFmt(s.end)+' <span style="color:var(--muted);font-weight:400;">· '+(s.ai_importance_hint==='cut_candidate'?'AI建议剪除':'AI建议保留')+'</span></div>'+
         (s.asr_text?'<div class="seg-asr">🎙 '+collabEsc(s.asr_text)+'</div>':'<div class="seg-asr" style="color:var(--muted);">（无台词）</div>')+
         '<div class="seg-drafts">'+drafts+'</div>'+
         '<textarea class="seg-nar" placeholder="这一段说什么（点上方草稿填入，或自己写）">'+collabEsc(firstDraft)+'</textarea>'+
+        '<div class="seg-io">'+
+          '<div class="io-cell"><span class="io-cap">入点（秒）</span><input type="number" class="seg-in" step="0.1" min="0" value="'+(+s.start.toFixed(2))+'"></div>'+
+          '<div class="io-cell"><span class="io-cap">出点（秒）</span><input type="number" class="seg-out" step="0.1" min="0" value="'+(+s.end.toFixed(2))+'"></div>'+
+        '</div>'+
+        '<div class="seg-io-btns">'+
+          '<button class="primary" onclick="collabPreviewSeg('+s.segment_id+')">▶ 预览此段</button>'+
+          '<button onclick="collabSetIO('+s.segment_id+',\'in\')">⇤ 入点=当前位置</button>'+
+          '<button onclick="collabSetIO('+s.segment_id+',\'out\')">⇥ 出点=当前位置</button>'+
+        '</div>'+
+        '<div class="seg-note">解说的就是这段画面：直接改数字，或在上方播放器定位后抓取；出点必须晚于入点。</div>'+
         '<div class="seg-foot"><label style="cursor:pointer;"><input type="checkbox" class="seg-keep" '+(s.default_keep?'checked':'')+' onchange="this.closest(\'.seg-card\').classList.toggle(\'cut\',!this.checked)"> 保留此段</label>'+
         '<span style="font-size:11px;color:var(--muted);">段'+s.segment_id+'</span></div>'+
       '</div>';
@@ -6410,15 +6650,102 @@ document.addEventListener('click',function(e){
   b.closest('.seg-body').querySelector('.seg-nar').value=b.dataset.text||'';
 });
 
-function collabRender(){
-  const segs=[...document.querySelectorAll('#collabSegments .seg-card')].map(c=>({
-    segment_id:parseInt(c.dataset.id),
-    keep:c.querySelector('.seg-keep').checked,
-    narration:c.querySelector('.seg-nar').value.trim(),
-  }));
-  const kept=segs.filter(s=>s.keep).length;
-  console.log('🤝 协同编辑台用户决策',segs);
-  alert('阶段②合成接口 /api/render 下一步开发。\n\n你当前选择：保留 '+kept+' / 共 '+segs.length+' 段。\n决策数据已打印到浏览器控制台（F12），确认结构后即可接通合成。');
+function collabIO(id){
+  const c=document.querySelector('#collabSegments .seg-card[data-id="'+id+'"]');
+  if(!c) return null;
+  return {card:c, inp:c.querySelector('.seg-in'), out:c.querySelector('.seg-out')};
+}
+
+function collabPreviewSeg(id){
+  const io=collabIO(id), p=document.getElementById('collabPlayer');
+  if(!io||!p) return;
+  if(!p.src){alert('请先导入视频才能预览');return;}
+  const s=parseFloat(io.inp.value)||0, e=parseFloat(io.out.value)||0;
+  if(!(e>s)){alert('该段入点/出点无效');return;}
+  p.style.display='block';
+  p.currentTime=s;
+  collabStopEnd=e;
+  p.ontimeupdate=()=>{ if(collabStopEnd>=0&&p.currentTime>=collabStopEnd){p.pause();collabStopEnd=-1;} };
+  try{p.play();}catch(err){}
+}
+
+function collabSetIO(id,which){
+  const io=collabIO(id), p=document.getElementById('collabPlayer');
+  if(!io||!p) return;
+  if(!p.src){alert('请先导入视频');return;}
+  const t=Math.max(0,p.currentTime||0);
+  if(which==='in') io.inp.value=t.toFixed(1);
+  else io.out.value=t.toFixed(1);
+  collabValidateCard(io);
+}
+
+function collabValidateCard(io){
+  let s=parseFloat(io.inp.value), e=parseFloat(io.out.value);
+  const max=collabDurationSec||0;
+  if(!(s>=0)) s=0;
+  if(max>0){s=Math.min(s,max);e=Math.min(e,max);}
+  const bad=!(e>s);
+  io.inp.style.borderColor=bad?'#e88':'';
+  io.out.style.borderColor=bad?'#e88':'';
+  return !bad;
+}
+
+async function collabRender(){
+  const cards=[...document.querySelectorAll('#collabSegments .seg-card')];
+  const segs=[]; let bad=0;
+  for(const c of cards){
+    const id=parseInt(c.dataset.id);
+    const io={inp:c.querySelector('.seg-in'),out:c.querySelector('.seg-out')};
+    const s=parseFloat(io.inp.value), e=parseFloat(io.out.value);
+    if(!(e>s)){bad++;continue;}
+    segs.push({segment_id:id, keep:c.querySelector('.seg-keep').checked,
+      narration:c.querySelector('.seg-nar').value, start:+s.toFixed(2), end:+e.toFixed(2)});
+  }
+  if(bad>0 && !confirm('有 '+bad+' 段入点/出点无效（出点需晚于入点），将跳过。继续？')) return;
+  const kept=segs.filter(s=>s.keep);
+  if(!kept.length){alert('请至少勾选保留一段再合成');return;}
+  const btn=document.getElementById('collabRenderBtn');
+  btn.disabled=true; btn.textContent='合成中…';
+  document.getElementById('collabResult').style.display='none';
+  document.getElementById('collabRenderProgress').style.display='block';
+  document.getElementById('collabRenderBar').style.width='0%';
+  document.getElementById('collabRenderPhase').textContent='提交合成任务…';
+  try{
+    const r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({task_id:collabRunBase, segments:segs, params:{w:1280,h:720}})}).then(r=>r.json());
+    if(!r.ok) throw new Error(r.error||'提交失败');
+    await collabPollRender(r.task_id);
+  }catch(err){
+    alert('合成失败：'+err.message);
+  }
+  finally{
+    btn.disabled=false; btn.textContent='🎬 按我的选择开始合成（定稿解说词·留剪·入点出点）';
+    document.getElementById('collabRenderProgress').style.display='none';
+  }
+}
+
+function collabPollRender(runid){
+  return new Promise((resolve,reject)=>{
+    const iv=setInterval(()=>{
+      fetch('/api/progress?run='+runid).then(r=>r.json()).then(p=>{
+        document.getElementById('collabRenderPhase').textContent=(p.phase||'合成中…')+(p.warn?'（'+p.warn+'）':'');
+        if(p.pct) document.getElementById('collabRenderBar').style.width=Math.min(100,p.pct)+'%';
+        if(p.done){
+          clearInterval(iv);
+          if(p.error){reject(new Error(p.error));return;}
+          if(p.file){
+            const url='/media/'+p.file+'?t='+Date.now();
+            const box=document.getElementById('collabResult');
+            box.style.display='block';
+            document.getElementById('collabResultPlayer').src=url;
+            document.getElementById('collabResultLink').href=url;
+            box.scrollIntoView({behavior:'smooth',block:'nearest'});
+          }
+          resolve();
+        }
+      }).catch(()=>{});
+    },1200);
+  });
 }
 
 

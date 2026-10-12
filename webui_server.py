@@ -687,6 +687,97 @@ def scan_ollama_mirrors(timeout=10):
     return {'mirrors': results, 'best': best, 'scanned_at': int(time.time())}
 
 
+# ===== Ollama 一键自动安装 =====
+OLLAMA_INSTALL = {'running': False, 'ok': False, 'msg': '', 'pct': 0, 'phase': '', 'cancel': False}
+
+
+def _system_proxy():
+    """读取 Windows 系统代理设置，返回 http://host:port 或 None。"""
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r'Software\Microsoft\Windows\CurrentVersion\Internet Settings')
+        enabled, _ = winreg.QueryValueEx(key, 'ProxyEnable')
+        if not enabled:
+            winreg.CloseKey(key)
+            return None
+        server, _ = winreg.QueryValueEx(key, 'ProxyServer')
+        winreg.CloseKey(key)
+        if server:
+            if not server.startswith('http'):
+                server = 'http://' + server
+            return server
+    except Exception:
+        pass
+    return None
+
+
+def dispatch_ollama_install(req, prog):
+    """下载 OllamaSetup.exe（gh-proxy.com 国内加速）→ 静默安装 → 等 11434 起来。"""
+    import subprocess, tempfile, os, time
+    import urllib.request
+    P = OLLAMA_INSTALL  # 直接用全局 dict 作进度容器，前端 GET 读的就是它
+    P.update(running=True, ok=False, msg='', pct=0, phase='准备下载...', cancel=False)
+    try:
+        url = 'https://gh-proxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
+        P['phase'] = '下载 OllamaSetup.exe（~1.5GB，gh-proxy 加速）...'
+        exe = os.path.join(tempfile.gettempdir(), 'OllamaSetup.exe')
+        opener = urllib.request.build_opener()
+        r = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        last_t = time.time()
+        last_dl = 0
+        downloaded = 0
+        total = 0
+        for attempt in range(3):
+            try:
+                with opener.open(r, timeout=120) as resp:
+                    total = int(resp.headers.get('Content-Length', 0))
+                    mode = 'ab' if attempt > 0 else 'wb'
+                    with open(exe, mode) as f:
+                        while True:
+                            if P.get('cancel'):
+                                raise RuntimeError('已取消下载')
+                            chunk = resp.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            now = time.time()
+                            dt = now - last_t
+                            if dt >= 0.5:
+                                speed = (downloaded - last_dl) / dt / (1024*1024)
+                                P['speed'] = '%.1f MB/s' % speed
+                                last_t = now
+                                last_dl = downloaded
+                            if total:
+                                P['pct'] = int(downloaded * 90 / total)
+                break  # 成功就跳出重试
+            except Exception as e:
+                if attempt < 2:
+                    P['phase'] = '下载中断，重试 %d/2...' % (attempt + 1)
+                    time.sleep(3)
+                else:
+                    raise RuntimeError('下载多次失败，请开代理后重试（或手动下 https://ollama.com/download/OllamaSetup.exe）')
+        P['phase'] = '静默安装 Ollama...'
+        P['pct'] = 92
+        subprocess.run([exe, '/VERYSILENT', '/NORESTART'], check=True, timeout=300)
+        P['phase'] = '等待 Ollama 服务启动...'
+        P['pct'] = 97
+        for _ in range(30):
+            try:
+                urllib.request.urlopen('http://localhost:11434/api/tags', timeout=2)
+                P.update(ok=True, msg='Ollama 安装成功，服务已启动', pct=100)
+                return
+            except Exception:
+                time.sleep(2)
+        raise RuntimeError('安装完成但 11434 端口未响应，请手动启动 Ollama')
+    except Exception as e:
+        P['msg'] = str(e)[:200]
+        raise
+    finally:
+        P['running'] = False
+
+
 def ai_enabled(section='chat'):
     """判断某个 AI 段是否可用（base_url + api_key + model 齐备）。
     section='chat' 时兼容旧配置：没有 chat 段则回退看 vision 段（deepseek 等共用端点）。"""
@@ -770,6 +861,117 @@ _WHISPER_REPO = {
     'distil-large-v3': 'Systran/faster-distil-whisper-large-v3',
 }
 
+_HF_UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) FrameCut/1.0'}
+
+def _hf_head_size(url):
+    """返回 URL 总字节数（Range 探测）；拿不到返回 0。"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers=_HF_UA)
+        req.add_header('Range', 'bytes=0-0')
+        with urllib.request.urlopen(req, timeout=30) as r:
+            cr = r.headers.get('Content-Range', '') or ''
+            if '/' in cr:
+                return int(cr.split('/')[-1])
+            cl = r.headers.get('Content-Length', '') or ''
+            if cl.isdigit():
+                return int(cl)
+    except Exception:
+        return 0
+    return 0
+
+def _hf_download_files(repo_id, files, target_dir, slot):
+    """通用 HF 仓库文件下载器：手动走普通 HTTP（绕开 Xet 401），断点续传 + 按字节加权百分比。
+    大文件（能 Range 探测大小）走断点续传；小文件（探测不到大小，普通 git 文件）走普通 GET。
+    files 中的文件允许 404（不同模型文件不同，如 vocabulary.txt vs vocabulary.json）。
+    返回 (ok, msg)。仅当核心大文件 model.bin 缺失时才判失败。"""
+    import urllib.request, urllib.error, time as _t
+    endpoint = (mirror_cfg().get('hf_endpoint') or 'https://hf-mirror.com').rstrip('/')
+    base = endpoint + '/' + repo_id + '/resolve/main/'
+    os.makedirs(target_dir, exist_ok=True)
+
+    def _open(fn, headers=None, timeout=60):
+        h = dict(_HF_UA)
+        if headers:
+            h.update(headers)
+        req = urllib.request.Request(base + fn, headers=h)
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def _get_small(fn):
+        """普通小文件：普通 GET + 重试 3 次。返回 True 下载成功 / False 404 或失败。"""
+        tgt = os.path.join(target_dir, fn)
+        for attempt in range(3):
+            try:
+                with _open(fn, timeout=60) as r:
+                    data = r.read()
+                if data:
+                    with open(tgt, 'wb') as f:
+                        f.write(data)
+                    return True
+                return False
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return False  # 该模型没有此文件，正常
+                if attempt < 2:
+                    _t.sleep(2)
+            except Exception:
+                if attempt < 2:
+                    _t.sleep(2)
+        return False
+
+    # 探测每个文件大小（LFS 大文件会返回 Content-Range）
+    sizes = {}
+    for fn in files:
+        sizes[fn] = _hf_head_size(base + fn)
+    big = {fn: sizes[fn] for fn in files if sizes[fn] > 10 * 1024 * 1024}  # >10MB 视为大文件
+    small = [fn for fn in files if fn not in big]
+    grand = sum(big.values())
+
+    # 先下小文件（普通 GET，不占进度；404 忽略）
+    for fn in small:
+        _get_small(fn)
+
+    # 大文件：断点续传 + 百分比
+    base_done = 0
+    for fn, total in big.items():
+        tgt = os.path.join(target_dir, fn)
+        if os.path.exists(tgt) and os.path.getsize(tgt) >= total:
+            base_done += total
+            if grand:
+                slot['pct'] = int(base_done * 100 / grand)
+            continue
+        ok = False
+        for attempt in range(3):
+            try:
+                existing = os.path.getsize(tgt) if os.path.exists(tgt) else 0
+                headers = {'Range': 'bytes=%d-' % existing} if existing > 0 else {}
+                with _open(fn, headers=headers, timeout=300) as resp:
+                    mode = 'ab' if existing > 0 and getattr(resp, 'status', 200) == 206 else 'wb'
+                    with open(tgt, mode) as f:
+                        if mode == 'ab':
+                            f.seek(0, 2)
+                        while True:
+                            chunk = resp.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            if grand:
+                                slot['pct'] = int((base_done + f.tell()) * 100 / grand)
+                                slot['msg'] = '下载 %s：%d%%' % (fn, slot['pct'])
+                if os.path.getsize(tgt) < total:
+                    raise Exception('下载不完整（%d/%d），可续传' % (os.path.getsize(tgt), total))
+                ok = True
+                break
+            except Exception as e:
+                slot['msg'] = '%s 下载失败(第%d次)：%s' % (fn, attempt + 1, str(e)[:80])
+                if attempt < 2:
+                    _t.sleep(3)
+        if not ok:
+            return False, '文件 %s 下载失败（已重试3次，断点已保留，可再点下载续传）' % fn
+        base_done += total
+    slot['pct'] = 100
+    return True, '全部文件下载完成'
+
 def whisper_prepare(model=None):
     """预下载/加载指定 whisper 模型（触发 faster-whisper 自动下载到项目目录）。返回 (ok,msg)。"""
     m = model or whisper_model_name()
@@ -785,21 +987,22 @@ def whisper_prepare(model=None):
             # 本地目录已就绪（手动 aria2c 放置 / 上次已复制真实文件）→ 直接加载，不再联网
             WhisperModel(local, device=device, compute_type=ctype)
             return True, '模型 %s 已就绪' % m
-        # 本地未就绪 → 显式下载为「真实文件」(禁用符号链接)：Windows 下 huggingface_hub 默认用符号链接，
-        # 在 bat 启动的标准 Python 中常解析失败 → WhisperModel 秒报错、状态回退「未下载」。强制复制可根除该坑。
-        try:
-            import huggingface_hub
-            repo = _WHISPER_REPO.get(m, 'Systran/faster-whisper-' + m)
-            huggingface_hub.snapshot_download(
-                repo,
-                local_dir=os.path.join(whisper_models_dir(), m),
-                local_dir_use_symlinks=False,
-            )
-            # 下载成功 → 加载扁平目录（真实文件，无符号链接）
-            WhisperModel(os.path.join(whisper_models_dir(), m), device=device, compute_type=ctype)
-        except Exception:
-            # 镜像 snapshot 拉取失败 → 退回 faster-whisper 自带下载（走同一镜像与代理环境）
-            WhisperModel(m, device=device, compute_type=ctype, download_root=whisper_models_dir())
+        # 本地未就绪 → 走自定义 HTTP 下载器（断点续传 + 百分比，绕开 Xet 401）
+        repo = _WHISPER_REPO.get(m, 'Systran/faster-whisper-' + m)
+        target_dir = os.path.join(whisper_models_dir(), m)
+        files = ['config.json', 'preprocessor_config.json', 'tokenizer.json',
+                 'vocabulary.json', 'vocabulary.txt', 'model.bin']
+        dok, dmsg = _hf_download_files(repo, files, target_dir, WHISPER_DL)
+        if not dok:
+            # 自定义下载失败 → 回退 snapshot_download（再不行交给 faster-whisper 自带）
+            try:
+                import huggingface_hub
+                huggingface_hub.snapshot_download(
+                    repo, local_dir=target_dir, local_dir_use_symlinks=False)
+            except Exception:
+                WhisperModel(m, device=device, compute_type=ctype, download_root=whisper_models_dir())
+        # 加载扁平目录（真实文件，无符号链接）
+        WhisperModel(target_dir, device=device, compute_type=ctype)
         return True, '模型 %s 已就绪' % m
     except Exception as e:
         e2 = str(e)
@@ -818,11 +1021,12 @@ def whisper_download_async(model=None):
     return True, '已开始下载 %s（可在状态中查看进度）' % m
 
 
-WHISPER_DL = {'model': None, 'running': False, 'ok': None, 'msg': ''}
+WHISPER_DL = {'model': None, 'running': False, 'ok': None, 'msg': '', 'pct': 0}
 
 def _whisper_download_thread(model):
     WHISPER_DL['running'] = True
     WHISPER_DL['ok'] = None
+    WHISPER_DL['pct'] = 0
     WHISPER_DL['msg'] = '下载中…'
     # 统一环境：走 HF 镜像 + 清理失效代理（代理没开时 huggingface_hub 会撞 127.0.0.1 被拒 → 10061）
     _whisper_env_setup()
@@ -830,6 +1034,8 @@ def _whisper_download_thread(model):
     WHISPER_DL['running'] = False
     WHISPER_DL['ok'] = ok
     WHISPER_DL['msg'] = msg
+    if ok:
+        WHISPER_DL['pct'] = 100
 
 
 def vlm_enabled():
@@ -847,9 +1053,17 @@ def vlm_ping():
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = _json.loads(r.read().decode('utf-8'))
             models = [m.get('name', '') for m in (data.get('models') or [])]
-            if c['model'] in models:
-                return True, 'Ollama 可达，模型 %s 已就绪' % c['model']
-            return False, 'Ollama 可达，但未拉取 %s（请执行 ollama pull %s）' % (c['model'], c['model'])
+            want = (c['model'] or '').strip()
+            # 兼容 ollama 自动补 :latest 标签：minicpm-v4.5 能匹配 minicpm-v4.5:latest
+            want_variants = {want, want + ':latest', want.split(':')[0]}
+            found = None
+            for mn in models:
+                if mn in want_variants or mn.split(':')[0] == want.split(':')[0]:
+                    found = mn
+                    break
+            if found:
+                return True, 'Ollama 可达，模型 %s 已就绪' % found
+            return False, 'Ollama 可达，但未拉取 %s（请执行 ollama pull %s）' % (want, want)
         else:
             req = urllib.request.Request(c['base_url'] + '/models', method='GET')
             if c['api_key']:
@@ -945,6 +1159,16 @@ VLM_FAST_GGUF_SOURCES = {
 
         'mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf'),
 
+    'minicpm-v4.5': (
+
+        'https://hf-mirror.com/openbmb/MiniCPM-V-4_5-GGUF/resolve/main/MiniCPM-V-4_5-Q4_K_M.gguf',
+
+        'MiniCPM-V-4_5-Q4_K_M.gguf',
+
+        'https://hf-mirror.com/openbmb/MiniCPM-V-4_5-GGUF/resolve/main/mmproj-model-f16.gguf',
+
+        'mmproj-model-f16.gguf'),
+
 }
 
 
@@ -993,9 +1217,12 @@ def _vlm_pull_thread(model):
         spec = VLM_FAST_GGUF_SOURCES.get(model)
 
         if spec:
-
-            _fast_pull_local(model, spec=spec, slot=VLM_PULL)
-
+            ok, msg = _fast_pull_local(model, spec=spec, slot=VLM_PULL)
+            VLM_PULL['ok'] = bool(ok)
+            VLM_PULL['msg'] = msg
+            if ok:
+                VLM_PULL['pct'] = 100
+            VLM_PULL['running'] = False
             return
 
         mc = mirror_cfg()
@@ -1106,6 +1333,7 @@ FAST_GGUF_SOURCES = {
     'qwen2.5:14b': ('https://hf-mirror.com/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf', 'qwen2.5-14b-instruct-q4_k_m.gguf'),
     'qwen2.5:7b': ('https://hf-mirror.com/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m.gguf'),
     'qwen3:14b-q4_K_M': ('https://hf-mirror.com/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf', 'Qwen_Qwen3-14B-Q4_K_M.gguf'),
+    'qwen3:8b': ('https://hf-mirror.com/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf', 'Qwen_Qwen3-8B-Q4_K_M.gguf'),
 
     'qwen2.5:latest': ('https://hf-mirror.com/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m.gguf'),
 }
@@ -1124,40 +1352,73 @@ def _fast_pull_local(model, spec=None, slot=None):
     p_url = src[2] if len(src) > 2 else None
     p_fname = src[3] if len(src) > 3 else None
     aria = shutil.which('aria2c')
-    if not aria:
-        return False, '未找到 aria2c（多线程下载器），可安装 aria2 后重试，或改用官方源'
     dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_dl')
     os.makedirs(dl_dir, exist_ok=True)
     def _pull_one(u, fn, lo, hi):
-        # 单文件下载（-c 断点续传；已有完整文件则跳过），进度按 lo~hi 区间映射
         total = 0
         try:
-            _req = urllib.request.Request(u)
+            _req = urllib.request.Request(u, headers=_HF_UA)
             _req.add_header('Range', 'bytes=0-0')
             with urllib.request.urlopen(_req, timeout=30) as _r:
                 _cr = _r.headers.get('Content-Range', '') or ''
                 if '/' in _cr:
                     total = int(_cr.split('/')[-1])
+                if not total:
+                    _cl = _r.headers.get('Content-Length', '') or ''
+                    if _cl.isdigit():
+                        total = int(_cl)
         except Exception:
             pass
         tgt = os.path.join(dl_dir, fn)
-        if os.path.exists(tgt) and (not total or os.path.getsize(tgt) >= total):
+        # 只有明确知道总大小且文件已达到该大小才算完成，避免误判
+        if total and os.path.exists(tgt) and os.path.getsize(tgt) >= total:
             return True
-        pp = _sp.Popen([aria, '-c', '-x', '8', '-s', '8', '-k', '1M', '--max-tries=0',
-                        '--retry-wait=3', '--timeout=60', '--console-log-level=warn',
-                        '-o', fn, u], cwd=dl_dir,
-                       stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-        while pp.poll() is None:
-            if total and os.path.exists(tgt):
-                slot['pct'] = min(hi, lo + int(os.path.getsize(tgt) * (hi - lo) // max(1, total)))
-            _t.sleep(1)
-        return pp.returncode == 0
+        if aria:
+            pp = _sp.Popen([aria, '-c', '-x', '8', '-s', '8', '-k', '1M', '--max-tries=0',
+                            '--retry-wait=3', '--timeout=60', '--console-log-level=warn',
+                            '-o', fn, u], cwd=dl_dir,
+                           stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            while pp.poll() is None:
+                if total and os.path.exists(tgt):
+                    slot['pct'] = min(hi, lo + int(os.path.getsize(tgt) * (hi - lo) // max(1, total)))
+                _t.sleep(1)
+            return pp.returncode == 0
+        else:
+            # 无 aria2c → Python urllib 单线程下载（支持断点续传 + 自动重试）
+            for attempt in range(3):
+                try:
+                    existing = os.path.getsize(tgt) if os.path.exists(tgt) else 0
+                    headers = dict(_HF_UA)
+                    if existing > 0:
+                        headers['Range'] = 'bytes=%d-' % existing
+                    req = urllib.request.Request(u, headers=headers)
+                    with urllib.request.urlopen(req, timeout=300) as resp:
+                        mode = 'ab' if existing > 0 and resp.status == 206 else 'wb'
+                        with open(tgt, mode) as f:
+                            if mode == 'ab':
+                                f.seek(0, 2)  # 追加模式定位到末尾
+                            while True:
+                                chunk = resp.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                if total:
+                                    # ab 模式 f.tell()=总大小（含断点）；wb 模式 f.tell()=本次大小
+                                    cur = f.tell()
+                                    slot['pct'] = min(hi, lo + int(cur * (hi - lo) // max(1, total)))
+                    return True
+                except Exception as e:
+                    slot['msg'] = '下载失败(第%d次): %s' % (attempt+1, str(e)[:80])
+                    if attempt < 2:
+                        _t.sleep(3)
+            # 重试3次失败 → 保留不完整文件（下次点拉取从断点继续，不浪费已下载部分）
+            return False
 
     if not _pull_one(m_url, m_fname, 0, 85):
-        return False, 'aria2c 下载失败，已回退官方源'
+        return False, '主模型下载失败（已重试3次），请检查网络后重试'
     if p_url:
         if not _pull_one(p_url, p_fname, 85, 92):
-            return False, '视觉投影（mmproj）下载失败'
+            return False, '视觉投影（mmproj）下载失败（已重试3次）'
     # ollama create 导入（cmd /c 规避 PowerShell 对 stderr 进度条的误判；Modelfile 用绝对路径）
     mf = os.path.join(dl_dir, 'Modelfile_' + _re.sub(r'[^0-9A-Za-z]', '_', model))
     with open(mf, 'w', encoding='utf-8') as f:
@@ -1168,17 +1429,23 @@ def _fast_pull_local(model, spec=None, slot=None):
 
     try:
         r = _sp.run(['cmd', '/c', 'ollama', 'create', model, '-f', mf],
-                    capture_output=True, text=True, timeout=1200)
+                    capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=1200)
     except Exception as e:
-        return False, 'ollama create 失败：%s' % str(e)[:120]
-    finally:
-        for _f in (os.path.join(dl_dir, m_fname), mf):
-            try:
-                os.remove(_f)
-            except Exception:
-                pass
+        # 保留已下载的 GGUF 和 Modelfile，下次重试不用重新下载
+        return False, 'ollama create 失败：%s（GGUF 已保留，可重试）' % str(e)[:120]
     if r.returncode != 0:
-        return False, 'ollama create 失败：%s' % ((r.stdout or r.stderr or '')[-200:])
+        return False, 'ollama create 失败：%s（GGUF 已保留，可重试）' % ((r.stdout or r.stderr or '')[-200:])
+    # 只有 create 成功才清理源文件（已导入 Ollama blobs）
+    for _f in (os.path.join(dl_dir, m_fname), mf):
+        try:
+            os.remove(_f)
+        except Exception:
+            pass
+    if p_fname:
+        try:
+            os.remove(os.path.join(dl_dir, p_fname))
+        except Exception:
+            pass
     return True, '加速通道完成：%s' % m_fname
 
 
@@ -4026,6 +4293,8 @@ dispatch_tts_regen_all = getattr(_workflows_mod, 'dispatch_tts_regen_all', None)
 dispatch_instruct = getattr(_workflows_mod, 'dispatch_instruct', None)
 import analyze_pipeline  # noqa: E402  (人机协同两段式·阶段①自动分析)
 dispatch_analyze = analyze_pipeline.dispatch_analyze
+import render_pipeline  # noqa: E402  (人机协同两段式·阶段②按定稿合成)
+dispatch_render = render_pipeline.dispatch_render
 collect_partial = getattr(_workflows_mod, 'collect_partial', None)
 assemble = getattr(_workflows_mod, 'assemble', None)
 finalize = getattr(_workflows_mod, 'finalize', None)

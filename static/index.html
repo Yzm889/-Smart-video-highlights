@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=17">
+<link rel="stylesheet" href="/static/style.css?v=18">
 </head>
 <body>
 <header>
@@ -237,15 +237,24 @@
     <h2 style="margin:0;">🤝 人机协同编辑台</h2>
     <span style="font-size:12px;color:#7fd69a;background:rgba(120,200,140,0.12);padding:3px 10px;border-radius:12px;border:1px solid rgba(120,200,140,0.3);">两段式 · 新架构</span>
   </div>
-  <div class="hint" style="margin-bottom:12px;">AI 自动切分镜头、识别台词、写多版草稿；<b>留哪段、解说词怎么写由你定</b>。</div>
+  <div class="hint" style="margin-bottom:12px;">① AI 自动切分镜头、识别台词、写多版草稿 → <b>你在编辑台定稿解说词、勾选保留、调入点出点</b> → ② 按你的决策合成。</div>
 
-  <div style="display:flex;gap:8px;margin-bottom:12px;">
-    <input id="collabVideo" placeholder="视频路径（默认 demo.mp4）" value="demo.mp4"
-           style="flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--input);color:var(--text);">
-    <button class="btn" id="collabGoBtn" onclick="collabStartAnalyze()">▶ 开始分析</button>
+  <!-- 步骤①：导入视频 -->
+  <div id="collabDrop" class="musdrop" onclick="document.getElementById('collabInput').click()" style="min-height:72px;display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;margin-bottom:8px;">
+    🎬 拖入视频文件，或点此选择（导入后可在下方预览、定位入点/出点）
   </div>
+  <input type="file" id="collabInput" accept="video/*" style="display:none" onchange="if(this.files[0])collabHandleFile(this.files[0]);this.value='';">
+  <div id="collabVideoInfo" style="display:none;margin-bottom:8px;align-items:center;justify-content:space-between;font-size:13px;"></div>
+  <details style="margin-bottom:10px;">
+    <summary style="cursor:pointer;font-size:12px;color:var(--muted);">或直接填服务器本地视频路径（高级）</summary>
+    <input id="collabVideo" placeholder="视频路径（默认 demo.mp4）" value="demo.mp4"
+           style="width:100%;margin-top:6px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--input);color:var(--text);box-sizing:border-box;">
+  </details>
+  <button class="btn" id="collabGoBtn" onclick="collabStartAnalyze()" style="width:100%;padding:11px;">▶ 开始 AI 分析</button>
 
-  <div id="collabProgress" style="display:none;margin-bottom:12px;">
+  <video id="collabPlayer" controls preload="metadata" style="display:none;width:100%;margin-top:12px;border-radius:8px;background:#000;"></video>
+
+  <div id="collabProgress" style="display:none;margin:12px 0;">
     <div id="collabPhase" style="font-size:13px;margin-bottom:6px;color:var(--muted);">准备中…</div>
     <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
       <div id="collabBar" style="height:100%;width:0;background:var(--accent);transition:width .3s;"></div>
@@ -256,8 +265,21 @@
   <div id="collabWarnings" class="warnbox" style="display:none;"></div>
   <div id="collabSegments" class="collab-segs"></div>
 
-  <button id="collabRenderBtn" class="btn" style="display:none;margin-top:14px;width:100%;padding:12px;background:var(--accent);color:#1a1a1a;font-weight:600;"
-          onclick="collabRender()">🎬 按我的选择开始合成</button>
+  <!-- 阶段②合成进度 -->
+  <div id="collabRenderProgress" style="display:none;margin:14px 0;">
+    <div id="collabRenderPhase" style="font-size:13px;margin-bottom:6px;color:var(--muted);">合成中…</div>
+    <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+      <div id="collabRenderBar" style="height:100%;width:0;background:#7fd69a;transition:width .3s;"></div>
+    </div>
+  </div>
+  <div id="collabResult" style="display:none;margin-top:14px;">
+    <div style="font-size:14px;margin-bottom:6px;color:#7fd69a;font-weight:600;">✅ 成片已生成（可直接预览/下载）</div>
+    <video id="collabResultPlayer" controls style="width:100%;border-radius:8px;background:#000;"></video>
+    <a id="collabResultLink" class="btn" download style="display:inline-block;margin-top:8px;text-decoration:none;">⬇ 下载成片</a>
+  </div>
+
+  <button id="collabRenderBtn" class="btn" style="display:none;margin-top:14px;width:100%;padding:12px;background:#7fd69a;color:#1a1a1a;font-weight:600;"
+          onclick="collabRender()">🎬 按我的选择开始合成（定稿解说词·留剪·入点出点）</button>
 </div>
 
     <!-- 一键智能模式 -->
@@ -785,23 +807,35 @@
 
   <div class="card" id="aiCard" data-step="ai">
     <h2>🤖 AI 文案·字幕·配音</h2>
-    <div id="hardwareBanner" style="display:none; margin:10px 0; padding:12px 14px; background:#e3f2fd; border:1px solid #90caf9; border-radius:10px;">
+    <div id="hardwareBanner" style="display:none; margin:10px 0; padding:12px 14px; background:var(--card); border:1px solid var(--card-border); border-radius:var(--radius-sm); backdrop-filter:blur(12px);">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <span style="font-weight:600; color:#1565c0; font-size:14px;">🖥 硬件检测</span>
+        <span style="font-weight:600; color:var(--accent2); font-size:14px;">🖥 硬件检测</span>
         <button class="btn mini ghost" onclick="loadHardware()">🔄 重新检测</button>
       </div>
-      <div id="hardwareInfo" style="font-size:13px; color:#333; margin-bottom:6px;"></div>
+      <div id="hardwareInfo" style="font-size:13px; color:var(--ink); margin-bottom:6px;"></div>
       <div id="hardwareRecs" style="display:none;"></div>
       <div id="hardwareActions" style="display:none;"></div>
     </div>
     <!-- 🎯 性能档位四选一 -->
-    <div id="tierPicker" style="display:none; margin:12px 0; padding:14px; background:rgba(120,200,140,0.06); border:1px solid rgba(120,200,140,0.3); border-radius:12px;">
+    <div id="tierPicker" style="display:none; margin:12px 0; padding:14px; background:rgba(0,212,170,0.06); border:1px solid rgba(0,212,170,0.25); border-radius:var(--radius);">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-        <span style="font-weight:600; color:#2e7d32; font-size:14px;">🎯 性能档位（点选自动配好下面所有模型）</span>
-        <span style="font-size:12px; color:#888;">已根据硬件检测自动推荐高亮档</span>
+        <span style="font-weight:600; color:var(--accent3); font-size:14px;">🎯 性能档位（点选自动配好下面所有模型）</span>
+        <span style="font-size:12px; color:var(--muted);">已根据硬件检测自动推荐高亮档</span>
       </div>
       <div class="hint" style="margin-bottom:10px;">选一档后，下面 ③本地模型 / ④Whisper / ⑤VLM 的模型名会自动填好；再点各自的「📥 拉取模型」下载即可。</div>
       <div id="tierCards" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;"></div>
+    </div>
+
+    <!-- 📦 模型中心：集中显示所有模型状态 + 一键下载 -->
+    <div id="modelHub" style="margin:12px 0; padding:16px; background:var(--card); border:1px solid var(--card-border); border-radius:var(--radius); backdrop-filter:blur(12px);">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <span style="font-weight:700; font-size:15px; color:var(--ink);">📦 模型中心</span>
+        <span id="modelHubSum" style="font-size:13px; font-weight:600; color:var(--muted);"></span>
+        <button class="btn mini ghost" onclick="loadModelHub()">🔄 刷新状态</button>
+      </div>
+      <div id="modelHubList" style="display:flex; flex-direction:column; gap:8px; font-size:13px;">
+        <div style="color:var(--muted); text-align:center; padding:20px;">加载中...</div>
+      </div>
     </div>
 
     <div style="margin:8px 0; padding:8px 12px; background:rgba(201,168,76,0.08); border:1px solid rgba(201,168,76,0.25); border-radius:8px; font-size:13px;">
@@ -895,7 +929,7 @@
         <div class="hint" style="width:100%">📥 点「拉取模型」可<b>网页内一键下载</b> qwen（无需开终端）。⚡ 对 <code>qwen2.5:14b / qwen2.5:7b</code> 会自动优先走<b>国内加速通道</b>（hf-mirror 单文件 + aria2c 多线程 + 本地导入，几 GB 约 3 分钟；失败自动回退官方源）。解说会自动调用它离线改写解说词，<b>不花一分钱、不调云端</b>。<a href="javascript:void(0)" class="jump-link" onclick="goStep('guideCard')">📖 查看新手引导</a></div>
       </div>
       <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
-        <div style="font-weight:600; color:#2e7d32; width:100%;">④ 台词识别模型（Whisper）</div>
+        <div id="whisperSection" style="font-weight:600; color:#2e7d32; width:100%;">④ 台词识别模型（Whisper）</div>
         <details class="bubble"><summary>本步网络要求（点开）</summary><div class="bubble-body">✅ <b>免科学上网</b>：Whisper 权重走 <code>hf-mirror.com</code> 镜像直连。⚠️ 但若你在「🌐 国内下载镜像」的「Ollama 代理」框填了地址、而代理软件没开，会报 <code>10061 连接被拒</code> → 把代理框<b>清空</b>再点下载即可（或先开代理）。<br>ℹ️ 下载时控制台若出现 <code>Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN…</code> —— 这是<b>正常提示、不是报错</b>，只说明没登录、限速稍低，下载照常进行。不用管，等它跑完变「✅ 已下载」即可（想要更快可去 huggingface.co 免费注册拿个 token 填到 ⑥，但个人使用完全不用）。<br>🛟 <b>网页点下载也总失败？</b>用你已验证能下的 <code>aria2c</code> 手动拉：把这 4 个文件下到 <code>C:\Users\XOS\Desktop\spring_video\models\whisper\base\</code>（先建 <code>base</code> 文件夹）即被网页识别为「已下载」：<code>config.json</code>、<code>model.bin</code>、<code>tokenizer.json</code>、<code>vocabulary.txt</code>，地址前缀 <code>https://hf-mirror.com/Systran/faster-whisper-base/resolve/main/</code>。</div></details>
         <div style="width:100%;">
           <div class="hint" style="margin-bottom:6px;">🎙 台词识别模型（点击卡片选择并下载，已安装的直接启用）：</div>
@@ -904,6 +938,7 @@
           <div class="hint" style="margin-top:6px;">💡 装了 CUDA 版 torch 后，<b>large-v3 在显卡上又快又准</b>，中文台词识别明显优于 base；纯 CPU 建议 base/small。</div>
         </div>
         <div class="hint" id="whisperStatus" style="width:100%">状态加载中…</div>
+        <div id="whisperProgress" style="display:none; width:100%; margin:4px 0;"></div>
         <div class="cmdbox" id="cmdWhisper"></div>
         <div class="hint" style="width:100%">模型权重自动存到项目目录 <code>models/whisper/</code>，首次生成时若缺失会自动联网下载（仅一次）。点「下载」可提前预载，下方显示就绪状态与进度。</div>
       </div>
@@ -1225,7 +1260,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=39"></script>
+<script src="/static/app.js?v=56"></script>
 </body>
 </html>
 

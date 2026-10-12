@@ -53,6 +53,16 @@ def _whisper_env_setup():
     """统一设置 Whisper 加载/下载环境：走 HF 镜像 + 清理失效系统代理（避免 WinError 10061）。
     所有 WhisperModel 调用前都要跑（含首次生成时的 asr_segments），否则系统里没开的代理会令连接被本机拒绝。"""
     mc = mirror_cfg()
+    # 禁用 HuggingFace 新版 Xet 存储协议（cas-server.xethub.hf.co）：
+    # 该协议在 hf-mirror 下会返回 401 Unauthorized，强制走普通 HTTP LFS 下载，镜像才能正常代理。
+    os.environ['HF_HUB_DISABLE_XET'] = '1'
+    os.environ['HF_XET_DISABLE'] = '1'
+    try:
+        import huggingface_hub
+        if hasattr(huggingface_hub.constants, 'HF_HUB_DISABLE_XET'):
+            huggingface_hub.constants.HF_HUB_DISABLE_XET = True
+    except Exception:
+        pass
     if mc.get('use_hf_mirror') and mc.get('hf_endpoint'):
         os.environ['HF_ENDPOINT'] = mc['hf_endpoint']
         try:
