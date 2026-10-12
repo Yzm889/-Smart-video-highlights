@@ -1207,7 +1207,14 @@ function loadLocalStatus(){
     if(btn){ btn.disabled = !!res.pulling; btn.textContent = res.pulling ? '⏳ 拉取中…' : '📥 拉取模型'; }
     if(res.pulling) setTimeout(loadLocalStatus, 2000);
     const chip = $('aiLocal'); if(chip){ chip.className = 'aichip ' + (res.ready ? 'ok' : 'no');
-      chip.textContent = res.ready ? '🖥 本地模型 已就绪' : '🖥 本地模型 未部署'; }
+      chip.textContent = res.ready ? '🖥 本地模型 已就绪' : (res.enabled ? '🖥 本地模型 未就绪（模型未下载/服务未起）' : '🖥 本地模型 未部署'); }
+    // 同步顶部文字模型聚合芯片：云端已配置则保持云端，否则跟随本地真实就绪（与模型中心同源）
+    const chatc = $('aiChat');
+    if(chatc && !(_aiStatus && _aiStatus.chat)){
+      chatc.className = 'aichip ' + (res.ready ? 'ok' : 'no');
+      chatc.textContent = res.ready ? '🖥 本地LLM 已就绪'
+        : (res.enabled ? '🖥 本地LLM 未就绪（模型未下载/服务未起）' : '🤖 真AI(LLM) 未配置');
+    }
     if (typeof refreshModelCards === 'function') _renderModelCards('localModelCards', LOCAL_MODEL_CATALOG,
       (res.model||'').trim(), res.installed, res.pulling ? res.pull_model : null, 'pickLocalModel');
   }).catch(e=>console.warn('加载本地模型状态失败', e));
@@ -1467,16 +1474,19 @@ function loadAiStatus(){
     _aiStatus = s;
     const chat = $('aiChat'), vis = $('aiVision');
     if (chat){
-      const chatOk = s.chat || s.local;
+      const chatOk = s.chat || s.local_ready;
       chat.className = 'aichip ' + (chatOk ? 'ok' : 'no');
-      chat.textContent = s.chat ? '☁️ 云端LLM 已配置' : (s.local ? '🖥 本地LLM 已就绪' : '🤖 真AI(LLM) 未配置'); }
+      chat.textContent = s.chat ? '☁️ 云端LLM 已配置'
+        : (s.local_ready ? '🖥 本地LLM 已就绪'
+          : (s.local ? '🖥 本地LLM 未就绪（模型未下载/服务未起）' : '🤖 真AI(LLM) 未配置')); }
     if (vis){
       const visOk = s.vision || s.vlm_ready;
       vis.className = 'aichip ' + (visOk ? 'ok' : 'no');
       vis.textContent = s.vision ? '☁️ 云端视觉 已配置' : (s.vlm_ready ? '📷 本地视觉 已就绪' : '👁 画面描述 未配置'); }
     const loc = $('aiLocal');
-    if (loc){ loc.className = 'aichip ' + (s.local ? 'ok' : 'no');
-      loc.textContent = s.local ? '🖥 本地模型 已就绪' : '🖥 本地模型 未部署'; }
+    if (loc){ loc.className = 'aichip ' + (s.local_ready ? 'ok' : 'no');
+      loc.textContent = s.local_ready ? '🖥 本地模型 已就绪'
+        : (s.local ? '🖥 本地模型 未就绪（见下方模型中心）' : '🖥 本地模型 未部署'); }
     const vlm = $('aiVlm');
     if (vlm){ vlm.className = 'aichip ' + (s.vlm_ready ? 'ok' : 'no');
       vlm.textContent = s.vlm_ready ? '📷 视觉理解 已就绪' : (s.vlm_enabled ? '📷 视觉理解 未就绪' : '📷 视觉理解 未部署'); }
@@ -1504,7 +1514,7 @@ function renderNarrGuide(s){
       + '想要《赌圣》式剧情解说，请部署一个<b>文字模型</b>（写稿主力），并到「🤖 AI 配置 → ③ 本地模型」把模型填成它：'
       + ' <code>'+(g.recommend||'ollama pull qwen2.5:14b')+'</code>'
       + (g.installed && g.installed.length ? ' <span class="dim">已装：'+g.installed.join('、')+'</span>' : '');
-  } else if (s.vlm_ready || s.local){
+  } else if (s.vlm_ready || s.local_ready){
     ng.className = 'narr-guide';
     ng.innerHTML = 'ℹ️ 解说稿生成时自动使用可用的本地模型（视觉模型看懂画面 + 文字模型写剧情解说）。';
   } else {
@@ -1526,7 +1536,7 @@ function preflight(task){
       // 注：模式选择器已移除，改为后端自动选路（本地优先、配 key 才用云端），
       // 故不再读 narMode/movieMode/eco；只对仍存在的开关（画面描述）做前置确认。
       if (task === 'build' && aiCap && aiCap.checked && !s.vision && !s.vlm_ready){ missing = '画面描述(Vision)'; explicit = true; }
-      else if (task === 'instruct' && !s.chat && !s.local){ missing = '真AI 解说(LLM)'; explicit = false; }
+      else if (task === 'instruct' && !s.chat && !s.local_ready){ missing = '真AI 解说(LLM)'; explicit = false; }
       // 硬拦截：出配音的任务（短片解说 / 剧情解说视频）连一个「自然语音引擎」都没有时，
       // 会静默落到系统 SAPI 机械音——禁止直接生成，用户必须先配好（点「去配置」跳配音区）。
       else if ((task === 'narrate' || task === 'movie') && s.voice && !s.voice.ready){

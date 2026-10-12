@@ -802,10 +802,22 @@ def local_llm_enabled():
 
 
 def local_llm_ping():
-    """轻量探活：GET {base_url}/models。返回 (ok, message)。不加载模型、不阻塞。"""
+    """探活 + 校验目标模型已就绪。返回 (ok, message)。不加载模型、不阻塞。
+
+    与 vlm_ping 对齐：配置了模型名时，不仅要求服务可达，还要求该模型已在本机拉取，
+    否则顶部状态会误报「已就绪」而模型中心显示「未下载」。
+    非 Ollama 的 OpenAI 兼容端点（无法枚举 /api/tags）退化为「服务可达即就绪」。"""
     cfg = local_llm_cfg()
     if not cfg['base_url']:
         return False, '未配置 base_url'
+    want = (cfg.get('model') or '').strip()
+    if want:
+        # local_model_exists: True=已装 / False=服务可达但未装 / None=服务不可达或非 ollama 端点
+        exists = local_model_exists(want)
+        if exists is True:
+            return True, '本地模型 %s 已就绪' % want
+        if exists is False:
+            return False, '本地模型服务可达，但未安装 %s（请在下方点拉取）' % want
     import urllib.request
     try:
         req = urllib.request.Request(cfg['base_url'] + '/models', method='GET')
@@ -1731,6 +1743,7 @@ def ai_status():
     if _ai_status_cache['data'] and now - _ai_status_cache['time'] < 5.0:
         return _ai_status_cache['data']
     vok, vmsg = (vlm_ping() if vlm_enabled() else (False, 'VLM 未启用'))
+    lok, lmsg = (local_llm_ping() if local_llm_enabled() else (False, '本地模型未启用'))
     _result = {
         'chat': ai_enabled('chat'),
         'vision': ai_enabled('vision'),
@@ -1748,6 +1761,8 @@ def ai_status():
             'label': local_tts_label(),
         },
         'local': local_llm_enabled(),
+        'local_ready': bool(lok),
+        'local_msg': lmsg,
         'whisper_model': whisper_model_name(),
         'whisper_ready': whisper_model_ready(),
         'vlm_enabled': vlm_enabled(),
