@@ -162,8 +162,15 @@ def _install_whisper(monkeypatch):
 
     def _fake_ffmpeg(cmd):
         out = cmd[-1]
-        with open(out, 'wb') as f:
-            f.write(b'RIFFWAVE')
+        # asr_segments 现在用 stdlib wave 自己解码（绕开 PyAV>=15 不兼容），
+        # 这里必须写真实 PCM wav，不能再写 'RIFFWAVE' 占位字节。
+        import wave
+        import struct
+        with wave.open(out, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b''.join(struct.pack('<h', 0) for _ in range(1600)))
         return 0, b'', b''
     monkeypatch.setattr(A, 'ffmpeg_run', _fake_ffmpeg)
     monkeypatch.setattr(A, '_whisper_env_setup', lambda: None)

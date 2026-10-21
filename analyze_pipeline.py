@@ -175,8 +175,14 @@ def dispatch_analyze(req, prog):
     prog['phase'] = '识别台词中'
     prog['pct'] = 15
     asr = asr_segments(video_path, progress=prog, pct_range=(15, 45))
+    # ASR 内部把真实异常写进了 PROGRESS['warnings']（模型缺失/CUDA 缺库/网络等），
+    # 这里原样带到结果里——不能只说「无台词」，用户无从判断是片源静音还是环境坏了。
+    for w in (prog.get('warnings') or []):
+        if w not in warnings:
+            warnings.append(w)
     if not asr:
-        warnings.append('ASR 不可用或该视频无台词：解说词草稿将受限，你可在编辑台直接手写')
+        warnings.append('ASR 未识别到台词：可能是该片段本就无对白，也可能是语音识别环境异常'
+                        '（详见上方原因）。解说词草稿将受限，你可在编辑台直接手写。')
 
     # 3. 每段缩略图 + ASR 归窗
     thumb_dir = os.path.join(run_dir, 'thumbnails')

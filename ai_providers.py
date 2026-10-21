@@ -96,6 +96,39 @@ def _whisper_load_path(m):
         return d
     return m
 
+def _note_progress_warning(msg):
+    """把一条告警追加到当前任务（PROGRESS[runid]）的 warnings 上。
+
+    PROGRESS 是按 runid 索引的，必须写到 PROGRESS[rid]；写顶层键会污染全局字典。
+    非任务线程（测试/主线程）没有 runid，此时静默跳过——那里没有对应的进度面板可展示。
+    """
+    rid = getattr(_TLS, 'runid', None)
+    if not rid:
+        return
+    p = PROGRESS.get(rid)
+    if isinstance(p, dict):
+        p['warnings'] = list(p.get('warnings') or []) + [msg]
+
+
+def _load_wav_as_float32(wav_path):
+    """把 16kHz/单声道/16bit PCM 的 wav 读成 float32 numpy 数组。
+
+    为什么不用 faster_whisper 内部的 decode_audio：那条路径走 PyAV 的
+    av.open(..., metadata_errors='ignore')，而 PyAV>=15 已移除该关键字参数
+    （本机 av19.0.1 + faster-whisper1.2.1 实测抛
+    `TypeError: open() got an unexpected keyword argument 'metadata_errors'`），
+    结果整个 ASR 静默失败。我们自己产出的 wav 一定是标准 PCM，用 stdlib wave
+    读即可，既绕开版本耦合，也省掉一次解码。"""
+    import wave
+    import numpy as np
+    with wave.open(wav_path, 'rb') as wf:
+        if wf.getsampwidth() != 2 or wf.getnchannels() != 1:
+            raise RuntimeError('wav 格式不符：需要 16bit 单声道，实际 %dbit/%dch'
+                               % (wf.getsampwidth() * 8, wf.getnchannels()))
+        raw = wf.readframes(wf.getnframes())
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 def asr_segments(video_path, progress=None, pct_range=None):
     """faster-whisper 本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
     自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
@@ -118,11 +151,12 @@ def asr_segments(video_path, progress=None, pct_range=None):
         _whisper_env_setup()
         _use_gpu = (device == 'cuda')
 
-        def _transcribe():
+        def _transcribe(dev=None, ctype_=None):
             # 模型加载 + 转写 + 消费生成器：整段处于推理态
-            model = WhisperModel(_whisper_load_path(whisper_model_name()), device=device, compute_type=ctype,
+            model = WhisperModel(_whisper_load_path(whisper_model_name()),
+                                 device=dev or device, compute_type=ctype_ or ctype,
                                  download_root=whisper_models_dir())
-            segments, info = model.transcribe(wav, language='zh', vad_filter=True,
+            segments, info = model.transcribe(_load_wav_as_float32(wav), language='zh', vad_filter=True,
                                               initial_prompt='以下是普通话的句子。')
             total = 0.0
             try:
@@ -147,12 +181,24 @@ def asr_segments(video_path, progress=None, pct_range=None):
                                          if total > 0 else '识别台词…')
             return segs
 
-        # S7: GPU 转写独占推理槽；CPU 转写不占显存，可与其他推理并行
+        # GPU 推理失败（显存不足 / cuBLAS 缺库 / 驱动抽风）时降级 CPU 重跑一次，
+        # 而不是让整条 ASR 直接报废——CPU 慢但一定能出结果，好过一句「没识别出台词」。
         if _use_gpu:
-            with _gpu_slot():
-                return _transcribe()
+            try:
+                with _gpu_slot():
+                    return _transcribe()
+            except AbortError:
+                raise
+            except Exception as ex:
+                _note_progress_warning(
+                    'GPU 转写失败，已降级 CPU（较慢）：%s: %s' % (type(ex).__name__, str(ex)[:160]))
+                return _transcribe('cpu', 'int8')
         return _transcribe()
-    except Exception:
+    except Exception as ex:
+        # 失败必须留下痕迹：这条路径以前是裸 except -> return []，
+        # 上层只看到「ASR 没结果」，用户完全不知道是模型没装、CUDA 缺库还是网络问题。
+        # 这里把真实原因挂到当前任务的 warnings，analyze_pipeline 会写进结果并显示。
+        _note_progress_warning('ASR 转写失败：%s: %s' % (type(ex).__name__, str(ex)[:200]))
         try:
             if os.path.exists(wav):
                 os.remove(wav)
@@ -355,10 +401,36 @@ def _aborted():
 
 _CUDA_CACHE = {'val': None}
 
+def _cuda_runtime_present():
+    """检测 CTranslate2 GPU 推理真正需要的 CUDA 运行时库是否在进程可加载范围内。
+
+    nvidia-smi 只证明「驱动在」，不证明「CUDA 库在」。ctranslate2 走 cuBLAS，
+    缺库时首次推理才抛 `Library cublas64_12.dll is not found`——那时整条 ASR 已经
+    被上层 except 吞掉，用户只看到「没识别出台词」。这里提前探一次：
+      1) 先看 ctranslate2 自带的 dll 目录（pip 装了 nvidia-cublas-cu12 就会落在这）；
+      2) 再看系统 PATH 里的 CUDA Toolkit。
+    两处都没有就老实走 CPU，别让GPU 空转。"""
+    import glob
+    import os
+    try:
+        import ctranslate2
+        base = os.path.dirname(os.path.abspath(ctranslate2.__file__))
+        for pat in ('**/cublas64_12.dll', '**/cudnn64_9.dll', '**/cublas64_11.dll'):
+            if glob.glob(os.path.join(base, pat), recursive=True):
+                return True
+    except Exception:
+        pass
+    for name in ('cublas64_12.dll', 'cudnn64_9.dll', 'cublas64_11.dll'):
+        for root in (os.environ.get('PATH') or '').split(os.pathsep):
+            if root and os.path.exists(os.path.join(root, name)):
+                return True
+    return False
+
 def _cuda_available():
-    """轻量检测 NVIDIA GPU 是否可用：不依赖 torch（很多用户没装），先用 nvidia-smi，再 fallback torch。
-    faster-whisper 的 CTranslate2 后端原生支持 CUDA，只要驱动在就能用，不需要 torch。
-    结果缓存：硬件在进程生命周期内不变。"""
+    """轻量检测 NVIDIA GPU 是否可用于推理：既要有驱动（nvidia-smi / torch），
+    也要有 CUDA 运行时库（cublas/cudnn）。两者齐备才算可用。
+    原因见 _cuda_runtime_present()：只有驱动没有库时，GPU 推理必崩且错误被上层吞掉。
+    结果缓存：硬件/环境在进程生命周期内不变。"""
     if _CUDA_CACHE['val'] is not None:
         return _CUDA_CACHE['val']
     result = False
@@ -377,6 +449,8 @@ def _cuda_available():
                 result = True
         except Exception:
             pass
+    if result:
+        result = _cuda_runtime_present()
     _CUDA_CACHE['val'] = result
     return result
 

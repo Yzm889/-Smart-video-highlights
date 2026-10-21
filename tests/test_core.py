@@ -2081,9 +2081,17 @@ def test_task_concurrency_limit(monkeypatch, tmp_path):
     assert rid2 != rid1, 'runid 不得重复'
     assert S.PROGRESS[rid2].get('queued'), '第二个任务应标记为排队中'
     gate.set()
-    time.sleep(0.5)                        # 等第一个任务线程结束并触发排队任务
-    time.sleep(0.3)
-    assert S._TASK_SEM.acquire(blocking=False), '任务结束后名额必须归还'
+    # 等「名额归还」而不是用固定 sleep 猜时间：原来 sleep(0.8) 在全量并发跑时
+    # 偶尔不够（机器繁忙 → 线程尚未走到 finally），表现为随机红。
+    # 这里轮询到信号量可获取为止，最长 5s，既确定又不拖慢。
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if S._TASK_SEM.acquire(blocking=False):
+            S._TASK_SEM.release()      # 探测用，立刻还回去，别影响后续用例
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail('任务结束后名额必须在 5s 内归还（信号量未释放）')
 
 
 def test_fail_task_records_error_context(tmp_path):

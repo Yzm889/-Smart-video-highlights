@@ -100,13 +100,14 @@ def test_render_narrate_aligns_to_cut_timeline(monkeypatch, tmp_path):
     run_dir = str(tmp_path)
     seen = {}
 
-    def fake_cut(video_path, spans, rd, progress=None, voice_durs=None):
+    def fake_cut(video_path, spans, rd, progress=None, voice_durs=None, skip_no_cut=False):
         seen['spans'] = list(spans)
         return 'cut.mp4', [(0.0, 3.0), (3.0, 6.0)], 4.0
 
     monkeypatch.setattr(S, '_cut_video_by_spans', fake_cut)
     # P1-1 单遍合并路径也需打桩：用同一套「剪辑后视频+新时间轴」契约，保证确定性（不触发真实 ffmpeg）
-    def fake_single_cut(video_path, segs, voice_durs, rd, params, narr, tts_clips, progress=None):
+    def fake_single_cut(video_path, segs, voice_durs, rd, params, narr, tts_clips, progress=None,
+                        skip_no_cut=False):
         seen['spans'] = list(segs)
         return 'cut.mp4', [(0.0, 3.0), (3.0, 6.0)], 4.0
 
@@ -140,7 +141,7 @@ def test_render_narrate_respects_auto_cut(monkeypatch, tmp_path, auto_cut, expec
     """autoCut 关闭时不剪辑（保留旧行为，供用户对照）。"""
     called = {'cut': False}
 
-    def fake_cut(video_path, spans, rd, progress=None, voice_durs=None):
+    def fake_cut(video_path, spans, rd, progress=None, voice_durs=None, skip_no_cut=False):
         called['cut'] = True
         return video_path, spans, 0.0
 
