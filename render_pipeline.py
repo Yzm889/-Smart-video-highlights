@@ -46,7 +46,9 @@ def dispatch_render(req, prog):
         task_id = (req.get('task_id') or '').strip()
         if not task_id:
             raise RuntimeError('缺少 task_id（请重新进入阶段①分析）')
-        analyze_dir = os.path.join(_w.OUTDIR, task_id) if not os.path.isabs(task_id) else task_id
+        # 走 _safe_dir 校验：旧写法 `X if not os.path.isabs(X) else X` 会把
+        # 请求里任意绝对路径当信任根，等于开放「任意目录写」。
+        analyze_dir = _w._safe_dir(_w.OUTDIR, task_id)
         result_path = os.path.join(analyze_dir, 'analyze_result.json')
         if not os.path.exists(result_path):
             raise RuntimeError('找不到阶段①分析结果（任务可能已过期），请重新分析视频')

@@ -2163,6 +2163,30 @@ def _record_history(req, prog, kind=''):
         pass
 
 
+def _safe_dir(base, name):
+    """拼接**目录**路径并校验结果仍落在 base 内，用于「按用户给的目录名建目录/写产物」。
+
+    与 _safe_join 的区别：_safe_join 只用于读已存在的文件（会校验 isfile），
+    而这里允许目标尚不存在（调用方随后 makedirs）——写路径尤其要兜住。
+    拒绝绝对路径、盘符、反斜杠开头与 .. 穿越；非法一律抛 ValueError，
+    绝不能像旧写法那样 `X if not os.path.isabs(X) else X` 直接信任入参。"""
+    try:
+        if not name or not str(name).strip():
+            raise ValueError('目录名为空')
+        name = str(name).strip()
+        if name.startswith(('/', '\\')) or ':' in name or name.startswith('..'):
+            raise ValueError('非法目录名：%s' % name)
+        base_abs = os.path.abspath(base)
+        full = os.path.abspath(os.path.join(base_abs, name))
+        if os.path.commonpath([base_abs, full]) != base_abs:
+            raise ValueError('目录越界：%s' % name)
+        return full
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError('非法目录名：%s' % name)
+
+
 def _safe_join(base, name):
     """拼接文件路径并校验结果仍落在 base 目录内。防 /media/../ 等目录穿越
     读到 ai_config.json 等敏感文件（默认只绑 127.0.0.1 风险低，但 Docker 部署

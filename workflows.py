@@ -571,7 +571,7 @@ def dispatch_movie_compose(req, prog):
         run_dir_name = req.get('run_dir') or prog.get('run_dir')
         if not run_dir_name:
             raise RuntimeError('缺少run_dir参数')
-        run_dir = os.path.join(_w.OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+        run_dir = _w._safe_dir(_w.OUTDIR, run_dir_name)
         if not os.path.exists(os.path.join(run_dir, 'tts_state.json')):
             raise RuntimeError('配音状态不存在，请先生成配音')
         music_path = _w._resolve_music(req.get('music'))
@@ -602,7 +602,7 @@ def dispatch_tts_single(req, prog):
             prog['error'] = '缺少text或run_dir'
             prog['done'] = True
             return
-        run_dir = os.path.join(_w.OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+        run_dir = _w._safe_dir(_w.OUTDIR, run_dir_name)
         os.makedirs(run_dir, exist_ok=True)
         out_path = os.path.join(run_dir, 'narr%d.mp3' % idx)
         ok, _eng, lp = _w.local_tts_speak(text, out_path)

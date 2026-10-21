@@ -172,6 +172,17 @@ def _note_progress_warning(msg):
         p['warnings'] = list(p.get('warnings') or []) + [msg]
 
 
+def _silent_remove(path):
+    """删掉中间文件，删不掉也不影响主流程（临时文件清理不该让任务失败）。"""
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
 def _load_wav_as_float32(wav_path):
     """把 16kHz/单声道/16bit PCM 的 wav 读成 float32 numpy 数组。
 
@@ -261,12 +272,12 @@ def asr_segments(video_path, progress=None, pct_range=None):
         # 上层只看到「ASR 没结果」，用户完全不知道是模型没装、CUDA 缺库还是网络问题。
         # 这里把真实原因挂到当前任务的 warnings，analyze_pipeline 会写进结果并显示。
         _note_progress_warning('ASR 转写失败：%s: %s' % (type(ex).__name__, str(ex)[:200]))
-        try:
-            if os.path.exists(wav):
-                os.remove(wav)
-        except Exception:
-            pass
         return []
+    finally:
+        # 中间 wav 无论成功失败都必须删：16kHz/16bit 单声道约 1.9MB/分钟，
+        # 98 分钟就是 181MB。以前只在异常分支删、成功路径直接 return 掉，
+        # 实测 webui_workspace/ 累计沉淀了 247MB。
+        _silent_remove(wav)
 
 _AI_CFG_CACHE = {'data': None, 'mtime': 0}
 
