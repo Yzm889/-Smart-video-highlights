@@ -398,21 +398,17 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
         rc, _o, e = ffmpeg_run(['-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
                                 '-c', 'copy', '-movflags', '+faststart', out])
         if rc != 0 or not os.path.exists(out):
-            # 各段编码参数不一致时 copy 会失败 → 兜底 filter concat（重编码，慢但稳）
-            inputs = []
-            for p in pieces:
-                inputs += ['-i', p]
-            fc = ''.join('[%d:v]' % i for i in range(len(pieces)))
+            # 兜底：copy 拼接失败（多为各段编码参数/时间戳不一致）时，
+            # 改用 concat demuxer + 重编码——仍走 concat.txt 清单（单 -i），
+            # 绝不用 N 路 -i 的单条 filter_complex 命令：段数多时 ffmpeg 会因命令行 /
+            # 滤镜复杂度炸掉，导致整段剪辑回退原片、成片完全没剪。重编码慢但稳，
+            # 且只在兜底路径触发。
+            fb = (['-y', '-f', 'concat', '-safe', '0', '-i', concat_txt]
+                  + _w.video_encode_args_interim())
             if has_audio:
-                fc += ''.join('[%d:a]' % i for i in range(len(pieces)))
-                fc += 'concat=n=%d:v=1:a=1[vout][aout]' % len(pieces)
-                cmd = ['-y'] + inputs + ['-filter_complex', fc, '-map', '[vout]', '-map', '[aout]']
-                cmd += _w.video_encode_args_interim() + ['-c:a', 'aac', '-b:a', '160k', '-threads', '0', out]
-            else:
-                fc += 'concat=n=%d:v=1:a=0[vout]' % len(pieces)
-                cmd = ['-y'] + inputs + ['-filter_complex', fc, '-map', '[vout]']
-                cmd += _w.video_encode_args_interim() + ['-threads', '0', out]
-            rc, _o, e = ffmpeg_run(cmd)
+                fb += ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
+            fb += ['-movflags', '+faststart', out]
+            rc, _o, e = ffmpeg_run(fb)
         if rc != 0 or not os.path.exists(out):
             raise RuntimeError('拼接失败: ' + e.decode('utf-8', 'ignore')[-300:])
     except Exception as _ce:
