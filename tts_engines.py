@@ -16,7 +16,14 @@ _EDGE_RETRY_SLEEP = 1.2
 _EDGE_MAX_FAILS = 4
 _EDGE_DEAD_SECONDS = 120
 _EDGE_RUN_DOWNGRADE = 2
-_EDGE_HOSTS = ('speech.platform.bing.com', 'login.live.com')
+# 只探 edge 真正依赖的朗读服务端点。曾加入 login.live.com 作备选，
+# 实测该域名能 TLS 握手而朗读服务被拦，导致「任一通即可用」误判，
+# 每段仍旧卡满超时——探测必须对准实际用的那个域名。
+_EDGE_HOSTS = ('speech.platform.bing.com',)
+# edge-tts 单个子进程超时。原值 180s 在服务端连不上时会每轮跑满超时：
+# 3 轮重试 × 数十段 = 卡死几十分钟（长视频可达数小时），表现为「合成假死」。
+# 一句解说词（≤200 字）正常 1~3s 出结果，25s 留足网络抖动余量。
+_EDGE_SUBPROC_TIMEOUT = 25
 _EDGE_STATE = {'fails': 0, 'dead_until': 0.0, 'reason': '', 'probe_tick': 0}
 _CHATTS = {'model': None, 'loading': False, 'error': ''}
 _COSYVOICE = {'model': None, 'loading': False, 'error': '', 'voice': '中文女'}
@@ -150,12 +157,17 @@ def _edge_reachable(ttl=60.0):
     ok = False
     try:
         import socket
+        import ssl
+        ctx = ssl.create_default_context()
         for host in _EDGE_HOSTS:
             try:
-                s = socket.create_connection((host, 443), timeout=3)
-                s.close()
-                ok = True
-                break
+                # 必须做 TLS 握手而不是只建 TCP：实测本机能连上 443（TCP OK）
+                # 但 TLS 握手被拦，只探 TCP 会误判「edge 可用」，
+                # 结果每段都去跑满子进程超时，长视频直接卡死。
+                with socket.create_connection((host, 443), timeout=3) as s:
+                    with ctx.wrap_socket(s, server_hostname=host):
+                        ok = True
+                        break
             except Exception:
                 continue
     except Exception:
@@ -483,7 +495,8 @@ def edge_tts_speak(text, out_path, voice=None, rate=None):
             except Exception:
                 pass
             try:
-                r = subprocess.run(cmd, capture_output=True, timeout=180)
+                r = subprocess.run(cmd, capture_output=True,
+                                   timeout=_EDGE_SUBPROC_TIMEOUT)
                 if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
                     _edge_internal().update(fails=0, dead_until=0.0, reason='')   # 成功即复位熔断（[2.4] 线程级，无线程态时回退全局）
                     return True

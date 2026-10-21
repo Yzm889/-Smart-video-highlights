@@ -46,32 +46,54 @@ def test_warn_tts_handles_empty_and_no_progress():
 
 
 def test_edge_availability_checks_reachability(monkeypatch):
-    """B. 只装了模块但服务不可达时，必须判为不可用。
-    否则每段都要白跑满 _EDGE_RETRY 轮重试，还误导并发路径判断。"""
+    """B. 三条件（已装 + 未熔断 + 服务端可达）缺一即不可用。
+
+    只查「装没装」会造成假阳性：edge 是联网服务，网络不通时每段都去跑满
+    子进程超时，长视频直接卡死几十分钟。"""
     monkeypatch.setattr(T, 'edge_tts_dead_reason', lambda: '')
     monkeypatch.setattr(T, '_edge_tts_installed', lambda: True)
-    T._EDGE_NET_CACHE['ok'] = None
-    T._EDGE_NET_CACHE['at'] = 0.0
 
-    def _no_conn(*a, **k):
-        raise OSError('network unreachable')
-    monkeypatch.setattr('socket.create_connection', _no_conn)
+    monkeypatch.setattr(T, '_edge_reachable', lambda *a, **k: False)
     assert T.edge_tts_available() is False, '服务不可达时必须判不可用'
 
-    monkeypatch.setattr('socket.create_connection', lambda *a, **k: _FakeSock())
+    monkeypatch.setattr(T, '_edge_reachable', lambda *a, **k: True)
+    assert T.edge_tts_available() is True
+
+
+def test_edge_reachable_uses_tls_not_just_tcp(monkeypatch):
+    """B3. 连通性探测必须做 TLS 握手，只建 TCP 会误判。
+
+    实测本机能连上 443（TCP OK）但 TLS 握手被拦：只探 TCP 会认为 edge 可用，
+    结果每段都卡满超时。探测还必须对准 edge 实际用的朗读服务域名——
+    用「任一域名通即可」是错的（login.live.com 通而朗读服务被拦时仍会误判）。
+    """
+    import socket
+    import ssl
+    assert T._EDGE_HOSTS == ('speech.platform.bing.com',), '必须只探实际依赖的端点'
     T._EDGE_NET_CACHE['ok'] = None
     T._EDGE_NET_CACHE['at'] = 0.0
-    assert T.edge_tts_available() is True
+    # TCP 通但 TLS 失败 → 必须判不可达
+    monkeypatch.setattr(socket, 'create_connection', lambda *a, **k: _FakeSock())
+    monkeypatch.setattr(ssl.SSLContext, 'wrap_socket',
+                        lambda *a, **k: (_ for _ in ()).throw(OSError('TLS reset')))
+    assert T._edge_reachable() is False, 'TCP 通但 TLS 握手失败时必须判不可达'
 
 
 def test_edge_availability_false_when_not_installed(monkeypatch):
     """B2. 没装模块就是不可用，哪怕网络通。"""
     monkeypatch.setattr(T, 'edge_tts_dead_reason', lambda: '')
     monkeypatch.setattr(T, '_edge_tts_installed', lambda: False)
-    monkeypatch.setattr('socket.create_connection', lambda *a, **k: _FakeSock())
-    T._EDGE_NET_CACHE['ok'] = None
-    T._EDGE_NET_CACHE['at'] = 0.0
+    monkeypatch.setattr(T, '_edge_reachable', lambda *a, **k: True)
     assert T.edge_tts_available() is False
+
+
+def test_edge_subproc_timeout_is_bounded():
+    """B4. edge 子进程超时必须有上限且够短。
+
+    原值 180s 在服务端连不上时每轮跑满超时：3 轮 × 数十段 = 卡死几十分钟，
+    长视频可达数小时，用户只看到进度条不动。下限也要留够正常合成时间。"""
+    assert 5 <= T._EDGE_SUBPROC_TIMEOUT <= 60, \
+        '超时过长会卡死合成、过短会误杀正常请求：%s' % T._EDGE_SUBPROC_TIMEOUT
 
 
 def test_drop_empty_removes_zero_byte_artifact(tmp_path):

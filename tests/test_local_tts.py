@@ -69,13 +69,15 @@ def test_local_tts_respects_explicit_engine(monkeypatch, tmp_path):
 
 def test_edge_failure_breaks_circuit(monkeypatch, tmp_path):
     """edge-tts 连不上时连续失败应熔断，避免几十段逐段重试把任务拖成假死。
-    subprocess 全部打桩为失败，测试不依赖真实网络。"""
+    subprocess 与网络连通探测全部打桩，测试不依赖真实网络。"""
 
     class _R:
         returncode = 1
         stderr = b'Cannot connect to host speech.platform.bing.com'
 
     T._EDGE_STATE.update(fails=0, dead_until=0.0, reason='')
+    # 本用例验证熔断语义，把连通性视为可达，否则在无外网环境会被探测短路
+    monkeypatch.setattr(T, '_edge_reachable', lambda *a, **k: True)
     monkeypatch.setattr(T.subprocess, 'run', lambda *a, **k: _R())
     monkeypatch.setattr(T, '_EDGE_RETRY', 1)      # 关掉重试，单独验证熔断计数
     monkeypatch.setattr(T, '_EDGE_RETRY_SLEEP', 0)
