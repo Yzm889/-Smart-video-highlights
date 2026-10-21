@@ -1327,6 +1327,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
 
+    def _post_deepseek_plot(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length, max_len=4 * 1024) or {}
+            title = str(data.get('title') or '').strip()
+            which = str(data.get('which') or 'nar')
+            if not title:
+                raise RuntimeError('请先在片名/主题框填写片名，或直接在剧情框写一段描述再点「一键查剧情」')
+            prompt = _w.build_plot_prompt(title, which)
+            plot = _w.chat_text(prompt, system='你是影视剧情检索助手，只输出剧情内容本身，不要寒暄、不要解释你的检索方式。')
+            self._send(200, json.dumps({'ok': True, 'plot': plot, 'title': title}).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:300]}).encode('utf-8'), 'application/json')
+
     def _post_material_upload(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -1842,6 +1856,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/active_task/clear': '_post_clear_active_task',
         '/api/confirm': '_post_confirm',
         '/api/cover': '_post_cover',
+        '/api/deepseek_plot': '_post_deepseek_plot',
         '/api/history/clear': '_post_history_clear',
         '/api/history/delete': '_post_history_delete',
         '/api/instruct': '_post_instruct',

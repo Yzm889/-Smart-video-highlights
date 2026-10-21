@@ -520,7 +520,7 @@
         <div class="plot-edit">
           <textarea id="narPlot" rows="14" placeholder="例：&#10;1. 灾变前的最后时光&#10;故事开始时，副警长瑞克和搭档肖恩在巡逻车里聊天，随后瑞克中枪昏迷。&#10;&#10;2. 末日后苏醒&#10;瑞克在医院中醒来，发现医院空无一人，世界已变。&#10;&#10;3. 初识丧尸与幸存者&#10;瑞克回到家，开枪打死第一个行尸，被摩根父子所救。"></textarea>
           <div class="plot-side">
-            <button class="btn mini" id="narDsBtn" onclick="openDeepSeek('nar')">🔎 DeepSeek 查剧情</button>
+            <button class="btn mini" id="narDsBtn" onclick="fetchDeepSeekPlot('nar')">🔎 一键查剧情</button>
             <a class="btn mini ghost" style="text-align:center;" href="https://chat.deepseek.com/" target="_blank" rel="noopener">🌐 打开 DeepSeek</a>
             <label for="narTargetSec" style="font-size:12px; font-weight:600; color:#3d6a5c; margin-top:6px;">目标成片时长</label>
             <select id="narTargetSec">
@@ -530,7 +530,7 @@
               <option value="300">约 5 分钟</option>
               <option value="600">约 10 分钟</option>
             </select>
-            <div class="hint" id="narDsHint">点「🔎 DeepSeek 查剧情」会<b>自动复制提问模板</b>并打开 DeepSeek（记得勾选联网搜索），把回复的剧情粘贴回左边即可。没填片名时会复制通用模板。</div>
+            <div class="hint" id="narDsHint">点「🔎 一键查剧情」会用你配置的 DeepSeek/通义等云端 Key <b>直接拉取剧情摘要并回填左侧</b>（无需手动复制）。未配 Key 或失败时会提示，可用右侧「🌐 打开 DeepSeek」手动查询。</div>
           </div>
         </div>
         <div class="hint" style="margin-top:6px;">填了剧情就走<b>解说驱动剪辑</b>：先按你的剧情写出<b>完整解说稿</b>（开场钩子 → 情节推进 → 结尾升华），再按每句话的字数去原片里<b>挑有内容的画面</b>——解说讲不完的过场空镜会被跳过，成片因此比原片短。<b>剧情写得越具体，解说越像样；只写三行梗概就只能出三句。</b>留空则走「AI 识别画面」模式。</div>
@@ -628,9 +628,9 @@
     <div class="plot-edit" style="margin-top:6px;">
       <textarea id="moviePlot" rows="8" placeholder="可直接粘贴豆瓣简介/剧情分幕…留空则自动联网搜索"></textarea>
       <div class="plot-side">
-        <button class="btn mini" onclick="openDeepSeek('movie')">🔎 DeepSeek 查剧情</button>
+        <button class="btn mini" id="movieDsBtn" onclick="fetchDeepSeekPlot('movie')">🔎 一键查剧情</button>
         <a class="btn mini ghost" style="text-align:center;" href="https://chat.deepseek.com/" target="_blank" rel="noopener">🌐 打开 DeepSeek</a>
-        <div class="hint" id="movieDsHint">按上面片名复制提问模板并打开 DeepSeek，搜到的剧情粘回左边即可。</div>
+        <div class="hint" id="movieDsHint">点「🔎 一键查剧情」用云端 Key 直接拉取剧情摘要并回填左侧；未配 Key 或失败时用右侧「🌐 打开 DeepSeek」手动查询。</div>
       </div>
     </div>
     <div id="movieDrop" class="musdrop" style="margin-top:10px;">🎞️ （可选）拖入正片/片段，自动按剧情对齐生成解说视频</div>
@@ -1274,7 +1274,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=60"></script>
+<script src="/static/app.js?v=61"></script>
 </body>
 </html>
 

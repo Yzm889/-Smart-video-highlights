@@ -2624,6 +2624,36 @@ function openDeepSeek(which){
     hintEl.innerHTML = '⚠️ 新标签被浏览器拦截了，请<a href="https://chat.deepseek.com/" target="_blank" rel="noopener">手动打开 DeepSeek</a>（提问已复制）。';
   }
 }
+// ---- 🔎 一键查剧情：直接调后端 /api/deepseek_plot（DeepSeek 等 chat API），回填剧情框 ----
+async function fetchDeepSeekPlot(which){
+  const isMovie = (which === 'movie');
+  const nameEl = isMovie ? $('movieName') : $('narTheme');
+  const boxEl  = isMovie ? $('moviePlot') : $('narPlot');
+  const hintEl = $(isMovie ? 'movieDsHint' : 'narDsHint');
+  const btn    = $(isMovie ? 'movieDsBtn' : 'narDsBtn');
+  const title  = ((nameEl && nameEl.value) || '').trim();
+  if(!title){
+    if(hintEl) hintEl.innerHTML = '⚠️ 先在片名/主题框填片名，或直接在剧情框写一段描述再点「一键查剧情」。';
+    return;
+  }
+  const old = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ 查询中…'; }
+  if(hintEl) hintEl.innerHTML = '⏳ 正在向 DeepSeek 请求剧情摘要…';
+  try{
+    const r = await fetch('/api/deepseek_plot', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title, which})});
+    const j = await r.json();
+    if(j.ok){
+      boxEl.value = j.plot;
+      if(hintEl) hintEl.innerHTML = '✅ 已填入剧情摘要，可直接编辑后再生成解说。';
+    }else{
+      if(hintEl) hintEl.innerHTML = '⚠️ ' + escapeHtml(j.error || '查询失败') + '（也可点右侧「🌐 打开 DeepSeek」手动查询）';
+    }
+  }catch(e){
+    if(hintEl) hintEl.innerHTML = '⚠️ 请求失败：' + escapeHtml(String(e)) + '（也可点右侧「🌐 打开 DeepSeek」手动查询）';
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = old; }
+  }
+}
 
 async function buildNarrate(){
   if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; $('narDrop').classList.add('shake'); setTimeout(()=>$('narDrop').classList.remove('shake'),600); return; }

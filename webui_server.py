@@ -794,6 +794,57 @@ def chat_cfg():
     return cfg.get('chat') or cfg.get('vision') or {}
 
 
+def build_plot_prompt(title, which=None):
+    """构造「一键查剧情」发给 chat 段（DeepSeek 等）的提示词。
+    与前端旧 _deepSeekPrompt 逻辑对齐：片名走「分 8-12 幕梗概」；超长描述（>24 字）
+    视为已有素材，请求其按时间顺序整理成 8-12 幕。纯文本、无副作用，便于单测。"""
+    key = (title or '').strip()
+    if len(key) > 24:
+        return ('我要为下面这段视频写解说词，请帮我把它的剧情/内容按时间顺序整理成 8-12 幕，'
+                '每一幕用一到两句话概括关键情节，不要写评价：\n' + key)
+    if key:
+        return ('请给我《' + key + '》的详细剧情梗概（请基于你已有的知识，分 8-12 幕），'
+                '每一幕用一到两句话概括关键情节，人物给出姓名与身份，不要剧透结局，'
+                '不要写评价，直接输出分幕正文。')
+    return ('请给我一部影视作品的剧情梗概（我稍后补充片名）：按时间顺序分 8-12 幕，'
+            '每幕一到两句话概括关键情节，不要剧透结局。')
+
+
+def chat_text(prompt, system=None, timeout=180):
+    """纯文本 chat 段 LLM 调用（一键查剧情 / 剧情摘要等）。失败抛异常，由调用方转成
+    可判别的错误响应，绝不静默返回空成功。复用 chat_cfg()（优先 chat 段，回退 vision 段，
+    兼容 deepseek 等共用端点）。"""
+    c = chat_cfg()
+    if not (c.get('base_url') and c.get('api_key') and c.get('model')):
+        raise RuntimeError('未配置云端 chat API（DeepSeek/通义/智谱等），无法调用一键查剧情；'
+                           '请在「🤖 AI 配置」填写 Key，或用右侧「🌐 打开 DeepSeek」手动查询')
+    import urllib.request, json as _json
+    headers = {'Content-Type': 'application/json'}
+    if c['api_key']:
+        headers['Authorization'] = 'Bearer ' + c['api_key']
+    mode = (c.get('mode') or 'openai').lower()
+    messages = ([{'role': 'system', 'content': system}] if system else []) + [{'role': 'user', 'content': prompt}]
+    if mode == 'ollama':
+        payload = {'model': c['model'], 'messages': messages, 'stream': False}
+        url = c['base_url'].rstrip('/') + '/api/chat'
+    else:
+        payload = {'model': c['model'], 'messages': messages, 'max_tokens': 1500, 'temperature': 0.7}
+        url = c['base_url'].rstrip('/') + '/v1/chat/completions'
+    req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'), headers=headers)
+
+    def _call():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        if mode == 'ollama':
+            return _strip_think((data.get('message') or {}).get('content', ''))
+        return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+    # S7: 本地 ollama 推理独占 GPU 槽；openai 模式（可能云端）与远程不加锁
+    if mode == 'ollama' and _is_local_url(c['base_url']):
+        with _gpu_slot():
+            return _call()
+    return _call()
+
+
 
 def local_llm_enabled():
     """是否已启用本地模型（配置层面：enabled 且填了 base_url）。"""
