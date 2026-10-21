@@ -1146,17 +1146,30 @@ def _start_next_queued():
             del _w._TLS.tts_engine
         except Exception:
             pass
+        # 登记活动任务（崩溃恢复 / UI 活动态），与直接任务路径保持一致：
+        # 旧实现漏了这步，排队任务一旦开始运行，活动态与重启恢复都对它失效。
+        _w._save_active_task(runid, phase=prog.get('phase', ''), pct=prog.get('pct', 0),
+                             run_dir=run_dir, task_type=getattr(fn, '__name__', 'unknown'))
+        # 监听 prog 变化，实时更新活动任务状态
+        class _ProgProxy(dict):
+            def __setitem__(self, k, v):
+                super().__setitem__(k, v)
+                if k in ('phase', 'pct'):
+                    _w._save_active_task(runid, phase=self.get('phase', ''), pct=self.get('pct', 0),
+                                         run_dir=run_dir, task_type=getattr(fn, '__name__', 'unknown'))
+        prog_p = _ProgProxy(prog)
         try:
-            fn(req, prog)
-            if not prog.get('error'):
-                _w._finish_task_credits(req, prog)
+            fn(req, prog_p)
+            if not prog_p.get('error'):
+                _w._finish_task_credits(req, prog_p)
         except _w.AbortError:
-            prog['done'] = True
-            prog['aborted'] = True
-            prog['error'] = '已取消（用户中断）'
+            prog_p['done'] = True
+            prog_p['aborted'] = True
+            prog_p['error'] = '已取消（用户中断）'
         except Exception as e:
-            _w.fail_task(prog, e)
+            _w.fail_task(prog_p, e)
         finally:
+            _w._clear_active_task()   # 任务结束，清除活动状态
             _w._TASK_SEM.release()
             _w._start_next_queued()
     t = threading.Thread(target=_queued_runner, daemon=True)
