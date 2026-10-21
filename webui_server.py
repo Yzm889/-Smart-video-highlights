@@ -1542,20 +1542,45 @@ def _local_pull_thread(model):
         LOCAL_PULL['running'] = False
 
 def extract_segment_frames(video_path, segs, out_dir, max_side=640):
-    """为每个镜头段抽 1 张中间帧(jpg)，用于 VLM 视觉理解。返回 {seg_idx: frame_path}。"""
+    """为每个镜头段抽 1 张中间帧(jpg)，用于 VLM 视觉理解 / 缩略图预览。
+    返回 {seg_idx: frame_path}。多段并行抽取（受并发度上限保护），长视频（60+ 段）
+    抽帧从「逐段串行」的分钟级压到秒级；统一 scale 滤镜保证输出尺寸一致。"""
     os.makedirs(out_dir, exist_ok=True)
-    frames = {}
     vdur = probe_audio_len(video_path) or 0.0
-    for i, (s0, s1) in enumerate(segs):
+    if not segs:
+        return {}
+    # 并发度：抽帧是 subprocess（ffmpeg 释放 GIL），线程池收益明显；
+    # 但同一视频同时起太多 ffmpeg 也会抢磁盘/IO，封顶 8。
+    _MAX_FRAME_WORKERS = 8
+    workers = min(_MAX_FRAME_WORKERS, len(segs))
+
+    def _one(i, s0, s1):
         mid = max(0.0, (s0 + s1) / 2.0)
         if vdur and mid > vdur:
             mid = max(0.0, vdur - 0.1)
-        fp = os.path.join(out_dir, f'frame_{i}.jpg')
+        fp = os.path.join(out_dir, 'frame_%d.jpg' % i)
         rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % mid, '-i', video_path,
                                 '-frames:v', '1', '-vf', 'scale=min(iw\\,%d):-2' % max_side,
                                 '-q:v', '4', '-an', fp])
         if rc == 0 and os.path.exists(fp):
-            frames[i] = fp
+            return i, fp
+        return i, None
+
+    if workers <= 1:
+        frames = {}
+        for i, (s0, s1) in enumerate(segs):
+            idx, fp = _one(i, s0, s1)
+            if fp:
+                frames[idx] = fp
+        return frames
+    import concurrent.futures as _cf
+    frames = {}
+    with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_one, i, s0, s1) for i, (s0, s1) in enumerate(segs)]
+        for fut in _cf.as_completed(futs):
+            idx, fp = fut.result()
+            if fp:
+                frames[idx] = fp
     return frames
 
 # ---------------------------------------------------------------------------
