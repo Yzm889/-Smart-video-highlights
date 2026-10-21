@@ -495,24 +495,33 @@ class Handler(BaseHTTPRequestHandler):
             if not run_dir_name:
                 self._send(400, b'missing run_dir', 'text/plain')
                 return
-            run_dir = os.path.join(_w.OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+            # 防穿越：run_dir 必须落在 OUTDIR 内，拒绝绝对路径 / 盘符 / .. 
+            # 旧实现 `os.path.join(OUTDIR, x) if not isabs(x) else x` 直接信任
+            # 入参，HOST=0.0.0.0 时可被诱导到任意目录读取 state / 抽取任意视频帧。
+            try:
+                run_dir = _w._safe_dir(_w.OUTDIR, run_dir_name)
+            except ValueError as _ve:
+                self._send(400, ('非法 run_dir：%s' % _ve).encode('utf-8'), 'text/plain')
+                return
             state_path = os.path.join(run_dir, 'tts_state.json')
             if not os.path.exists(state_path):
                 self._send(404, b'state not found', 'text/plain')
                 return
             import json as _j
-            state = _j.load(open(state_path, encoding='utf-8'))
+            with open(state_path, encoding='utf-8') as _sf:
+                state = _j.load(_sf)
             video_path = state['video_path']
             if not os.path.exists(video_path):
                 self._send(404, b'video not found', 'text/plain')
                 return
-            # 用ffmpeg提取帧
-            import imageio_ffmpeg as _iff
-            ff = _iff.get_ffmpeg_exe()
+            # 帧缓存：同一时间点已抽过就直接复用，避免拖时间轴高频起 ffmpeg
             frame_path = os.path.join(run_dir, 'preview_%d.jpg' % int(t * 1000))
-            import subprocess as _sp
-            cmd = [ff, '-y', '-ss', str(max(0, t)), '-i', video_path, '-frames:v', '1', '-q:v', '3', frame_path]
-            _sp.run(cmd, capture_output=True, timeout=30)
+            if not os.path.exists(frame_path):
+                import imageio_ffmpeg as _iff
+                ff = _iff.get_ffmpeg_exe()
+                import subprocess as _sp
+                cmd = [ff, '-y', '-ss', str(max(0, t)), '-i', video_path, '-frames:v', '1', '-q:v', '3', frame_path]
+                _sp.run(cmd, capture_output=True, timeout=30)
             if os.path.exists(frame_path):
                 with open(frame_path, 'rb') as f:
                     data = f.read()
