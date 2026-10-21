@@ -16,6 +16,7 @@ _EDGE_RETRY_SLEEP = 1.2
 _EDGE_MAX_FAILS = 4
 _EDGE_DEAD_SECONDS = 120
 _EDGE_RUN_DOWNGRADE = 2
+_EDGE_HOSTS = ('speech.platform.bing.com', 'login.live.com')
 _EDGE_STATE = {'fails': 0, 'dead_until': 0.0, 'reason': '', 'probe_tick': 0}
 _CHATTS = {'model': None, 'loading': False, 'error': ''}
 _COSYVOICE = {'model': None, 'loading': False, 'error': '', 'voice': '中文女'}
@@ -131,11 +132,48 @@ def _edge_tts_installed():
     _EDGE_INSTALLED_CACHE['ts'] = now
     return result
 
+_EDGE_NET_CACHE = {'ok': None, 'at': 0.0}
+
+
+def _edge_reachable(ttl=60.0):
+    """edge-tts 依赖的微软朗读服务是否可达（轻量 TCP 探测，结果缓存 ttl 秒）。
+
+    只检查「装没装」是不够的：edge-tts 是联网服务，断网/墙/代理拦截时
+    模块在、服务不通，edge_tts_speak 每次都要跑满 _EDGE_RETRY 轮才失败，
+    _generate_all_tts 还会据此启用并发路径，白白浪费几十秒。
+    这里先探一次 TCP（不做 TLS 握手，够快），不通就直接走本地引擎。"""
+    import time as _t
+    now = _t.time()
+    c = _EDGE_NET_CACHE
+    if c['ok'] is not None and now - c['at'] < ttl:
+        return c['ok']
+    ok = False
+    try:
+        import socket
+        for host in _EDGE_HOSTS:
+            try:
+                s = socket.create_connection((host, 443), timeout=3)
+                s.close()
+                ok = True
+                break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    c['ok'], c['at'] = ok, now
+    return ok
+
+
 def edge_tts_available():
-    """edge-tts 是否已安装且当前可用（python 模块或命令行任一即可，熔断期内视为不可用）。"""
+    """edge-tts 是否可用：模块已装 + 不在熔断期 + 服务端可达。
+
+    三项缺一不可——只查模块会造成「可用但实际次次失败」的假阳性，
+    让每段配音都白等重试，最后还静悄悄掉到 SAPI。"""
     if edge_tts_dead_reason():
         return False
-    return _edge_tts_installed()
+    if not _edge_tts_installed():
+        return False
+    return _edge_reachable()
 
 def _edge_note_failure(reason=''):
     """记一次「整轮重试后仍失败」。达到阈值才熔断。
@@ -520,6 +558,15 @@ def _tts_force_downgrade(eng):
     if fails is not None:
         fails[eng] = fails.get(eng, 0) + 1
 
+def _drop_empty(path):
+    """删除 0 字节/极小的失败产物（配音文件残留会让用户误以为「有配音没声音」）。"""
+    try:
+        if path and os.path.exists(path) and os.path.getsize(path) < 100:
+            os.unlink(path)
+    except Exception:
+        pass
+
+
 def _ping_preferred_engine(run_dir):
     """[2.3] 配音前对首选引擎做一次「首段试点」：用一句固定文本 ping。
     成功 → 按当前引擎顺序走；失败 → 立即把该引擎在本 run 内降权（切 sherpa/sapi），
@@ -679,6 +726,9 @@ def local_tts_speak(text, out_path):
                 _TLS.tts_engine = 'edge'      # 锁定：后续段落沿用同一音色
                 return True, 'edge', out_path
             _tts_note_fail('edge')            # [2.1] edge 整轮重试仍失败 → 记录连续失败
+            # edge-tts 命令会先建文件再写入，失败时留下 0 字节 mp3 赖在产物目录里，
+            # 用户看到「有配音文件却没声音」会摸不着头脑。这里立刻抹掉。
+            _drop_empty(out_path)
         elif eng == 'cosyvoice':
             if not cosyvoice_available():
                 continue

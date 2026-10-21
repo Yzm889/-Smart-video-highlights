@@ -3298,8 +3298,34 @@ def _generate_all_tts(narr, run_dir, progress=None):
                                          'error': e.get('error', '')} for e in _bad]
     except Exception as _e:
         _log.info(f'[DIAG] TTS日志写入失败: {_e}')
+    _warn_tts_engine_degraded(_tts_diag, progress)
     _log.info('[DIAG] TTS最终完成: %d/%d段, 日志%s' % (len(results), len(narr), _log_path))
     return results
+
+
+def _warn_tts_engine_degraded(diag, progress):
+    """配音引擎被降级时，必须让用户知道——否则「不静默」就是一句空话。
+
+    实测场景：edge-tts（晓晓/云希，自然）连不上微软服务时，管线静悄悄全部
+    落到 SAPI（系统自带，机械感重），tts_log 里 success=4、无一条错误，
+    用户拿到的成片音色断崖下降却毫不知情，只以为「配音就这样」。
+    这里在进度里写明实际用的引擎，前端进度条旁边直接可见。
+    """
+    # 注意用 `is None`：progress 早期常是空字典，`not {}` 为真会把告警整个吞掉
+    if progress is None or not diag:
+        return
+    used = [e.get('engine', '') for e in diag if e.get('ok') and e.get('engine')
+            and e.get('engine') not in ('cache',)]
+    if not used:
+        return
+    fallback_engines = ('sapi', 'sapi_fallback')
+    if any(e in fallback_engines for e in used):
+        progress['warn'] = (
+            (progress.get('warn') + '；' if progress.get('warn') else '')
+            + '配音引擎已降级到系统自带 SAPI（机械感较重）：edge-tts 当前不可用，'
+              '多为网络连不上微软朗读服务。检查网络/代理后可恢复。')
+        progress['tts_engine_degraded'] = True
+    progress['tts_engine'] = max(set(used), key=used.count)
 
 
 def _edge_probe_recover(run_dir):
