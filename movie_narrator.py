@@ -747,10 +747,13 @@ def _model_narr_guide():
     return guide
 
 
-def _segment_timeline(video_path, max_seg=25.0):
+def _segment_timeline(video_path, max_seg=25.0, seg_cap=60):
     """解说分段：场景切分优先，无切点则按 max_seg 均分。返回 [(start,end)]。
     max_seg 服务端钳制到 4~600 秒：API/指令路径可绕过前端 min=8 的限制，
-    极端值（如 0.5s）会切出成百上千个碎段，直接拖垮解说稿生成与配音。"""
+    极端值（如 0.5s）会切出成百上千个碎段，直接拖垮解说稿生成与配音。
+    seg_cap 是段数硬顶：长视频（如 98 分钟）按场景切点会切出 200+ 段，
+    缩略图/草稿/配音逐段串行，阶段①直接不可用。超出后贪心合并最短相邻段，
+    把段数压到硬顶以内（见 _enforce_seg_cap）。"""
     max_seg = min(600.0, max(4.0, float(max_seg or 25.0)))
     sc = _cached_scene_cuts(video_path, threshold=0.25)   # 与卡点共享场景切点缓存
     vdur = probe_audio_len(video_path) or 0.0
@@ -782,6 +785,28 @@ def _segment_timeline(video_path, max_seg=25.0):
             s1 = raw_segs[i][1]
         segs.append((s0, s1))
         i += 1
+    # 长视频段数硬顶：超出后贪心合并最短相邻段，保证阶段①可用。
+    if seg_cap and len(segs) > seg_cap:
+        segs = _enforce_seg_cap(segs, seg_cap)
+    return segs
+
+
+def _enforce_seg_cap(segs, cap):
+    """段数硬顶执行：反复合并「最短段」与其较短的相邻段，直到 len<=cap。
+
+    只改变相邻边界，不丢时间轴总覆盖（首段起点与末段终点保持不变）。
+    段数上限 cap 通常远小于原始段数，贪心合并复杂度 O(n*cap) 足够快。"""
+    segs = [tuple(s) for s in segs]
+    while len(segs) > cap and len(segs) > 1:
+        mi = min(range(len(segs)), key=lambda k: segs[k][1] - segs[k][0])
+        left_d = (segs[mi][1] - segs[mi][0]) if mi > 0 else float('inf')
+        right_d = (segs[mi + 1][1] - segs[mi + 1][0]) if mi + 1 < len(segs) else float('inf')
+        if mi > 0 and left_d <= right_d:
+            segs[mi - 1] = (segs[mi - 1][0], segs[mi][1])
+            del segs[mi]
+        else:
+            segs[mi] = (segs[mi][0], segs[mi + 1][1])
+            del segs[mi + 1]
     return segs
 
 
