@@ -2,7 +2,7 @@
 """引擎/工具模块（由 webui_server.py 第4批拆分生成，符号与拆分前等价）。"""
 import os, time
 # ---- 跨模块依赖（拆分后显式导入） ----
-from ai_providers import load_ai_config
+from ai_providers import load_ai_config, _gpu_slot
 from ffmpeg_utils import _TLS, _concat_audio_clips
 from text_utils import _split_long_text, _strip_tts_markup
 
@@ -262,20 +262,21 @@ def chattts_speak(text, out_path, progress=None):
         model = _CHATTS['model']
         if model is not None:
             try:
-                wavs = model.infer(chat_text, use_decoder=True, do_sample=True,
-                                   temperature=0.3, top_P=0.7, top_K=20)
-                if wavs and len(wavs) > 0:
-                    import torchaudio
-                    import torch
-                    wav = wavs[0]
-                    if isinstance(wav, torch.Tensor):
-                        if wav.dim() == 1:
-                            wav = wav.unsqueeze(0)
-                        torchaudio.save(out_path, wav.cpu(), 24000)
-                    else:
-                        import numpy as np
-                        import soundfile as sf
-                        sf.write(out_path, np.array(wav[0]), 24000)
+                with _gpu_slot():
+                    wavs = model.infer(chat_text, use_decoder=True, do_sample=True,
+                                       temperature=0.3, top_P=0.7, top_K=20)
+                    if wavs and len(wavs) > 0:
+                        import torchaudio
+                        import torch
+                        wav = wavs[0]
+                        if isinstance(wav, torch.Tensor):
+                            if wav.dim() == 1:
+                                wav = wav.unsqueeze(0)
+                            torchaudio.save(out_path, wav.cpu(), 24000)
+                        else:
+                            import numpy as np
+                            import soundfile as sf
+                            sf.write(out_path, np.array(wav[0]), 24000)
                     return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
             except Exception as e:
                 _CHATTS['error'] = str(e)[:300]
@@ -291,8 +292,9 @@ def chattts_speak(text, out_path, progress=None):
             with open(txt_file, 'w', encoding='utf-8') as f:
                 f.write(chat_text)
             worker = os.path.join(HERE, 'chattts_worker.py')
-            r = subprocess.run([venv_py, worker, txt_file, out_path],
-                               capture_output=True, timeout=300, cwd=HERE)
+            with _gpu_slot():
+                r = subprocess.run([venv_py, worker, txt_file, out_path],
+                                   capture_output=True, timeout=300, cwd=HERE)
             try:
                 os.unlink(txt_file)
             except Exception:
@@ -397,8 +399,9 @@ def cosyvoice_speak(text, out_path, progress=None):
                 _COSYVOICE['error'] = '参考音频不存在，请重新安装CosyVoice'
                 print('[COSYVOICE] no ref audio')
                 return False
-            r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _ref_wav],
-                               capture_output=True, timeout=300, cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE)
+            with _gpu_slot():
+                r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _ref_wav],
+                                   capture_output=True, timeout=300, cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE)
             try:
                 os.unlink(txt_file)
             except Exception:
@@ -431,12 +434,13 @@ def cosyvoice_speak(text, out_path, progress=None):
 
     if _COSYVOICE['model'] is not None:
         try:
-            import torchaudio
-            model = _COSYVOICE['model']
-            for i, j in enumerate(model.inference_sft(clean_text, _COSYVOICE['voice'], stream=False)):
-                torchaudio.save(out_path, j['tts_speech'], model.sample_rate)
-                break
-            return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
+            with _gpu_slot():
+                import torchaudio
+                model = _COSYVOICE['model']
+                for i, j in enumerate(model.inference_sft(clean_text, _COSYVOICE['voice'], stream=False)):
+                    torchaudio.save(out_path, j['tts_speech'], model.sample_rate)
+                    break
+                return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
         except Exception as e:
             _COSYVOICE['error'] = str(e)[:300]
             print('[COSYVOICE] 主进程推理失败:', _COSYVOICE['error'][:200])
