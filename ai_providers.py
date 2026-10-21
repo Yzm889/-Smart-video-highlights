@@ -183,7 +183,7 @@ def _silent_remove(path):
         pass
 
 
-def _load_wav_as_float32(wav_path):
+def _load_wav_as_float32(wav_path, chunk_frames=1 << 20):
     """把 16kHz/单声道/16bit PCM 的 wav 读成 float32 numpy 数组。
 
     为什么不用 faster_whisper 内部的 decode_audio：那条路径走 PyAV 的
@@ -191,15 +191,30 @@ def _load_wav_as_float32(wav_path):
     （本机 av19.0.1 + faster-whisper1.2.1 实测抛
     `TypeError: open() got an unexpected keyword argument 'metadata_errors'`），
     结果整个 ASR 静默失败。我们自己产出的 wav 一定是标准 PCM，用 stdlib wave
-    读即可，既绕开版本耦合，也省掉一次解码。"""
+    读即可，既绕开版本耦合，也省掉一次解码。
+
+    【F8/M2-5 内存】旧实现 `raw = wf.readframes(n)` 一次性把整段字节读进内存，
+    紧接着又 `np.frombuffer(raw).astype(float32)` 新建同尺寸 float 数组——两副本
+    同时驻留，98 分钟视频峰值约 560MB。改为「预分配 float 缓冲 + 分块读入」，
+    每块转换完即释放 raw 字节，峰值降到仅 float 缓冲（约 376MB），数值结果与旧实现
+    逐位一致（不引入任何精度损失，确保 ASR 行为不变）。"""
     import wave
     import numpy as np
     with wave.open(wav_path, 'rb') as wf:
         if wf.getsampwidth() != 2 or wf.getnchannels() != 1:
             raise RuntimeError('wav 格式不符：需要 16bit 单声道，实际 %dbit/%dch'
                                % (wf.getsampwidth() * 8, wf.getnchannels()))
-        raw = wf.readframes(wf.getnframes())
-    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        n = wf.getnframes()
+        out = np.empty(n, dtype=np.float32)
+        read = 0
+        while read < n:
+            c = min(chunk_frames, n - read)
+            raw = wf.readframes(c)
+            if not raw:
+                break
+            out[read:read + c] = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            read += c
+    return out[:read]
 
 
 def asr_segments(video_path, progress=None, pct_range=None):
