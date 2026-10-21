@@ -1713,8 +1713,8 @@ class Handler(BaseHTTPRequestHandler):
             # 旧实现 `except: pass` 让所有分镜图变空白而接口仍报 ok:True，
             # 用户只会以为「这个视频没图」。这里在响应里带 thumbs_ok / thumbs_warn
             # 标志，并把告警写入 plan['warnings']，让前端能显示占位图而不是一片空白。
-            # 注意：本方法是同步对齐接口，没有 runid 对应的 prog，故不调用
-            # _w._warn（webui_server 也未暴露它），直接把告警落到响应与 plan 上。
+            # 注意：本方法是同步对齐接口，没有 runid 对应的 prog，故不调用宿主侧
+            # 的告警辅助方法（webui_server 当时未暴露对应符号），直接把告警落到响应与 plan 上。
             thumbs_ok = False
             thumbs_warn = ''
             try:
