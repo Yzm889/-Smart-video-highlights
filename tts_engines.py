@@ -9,6 +9,7 @@ from text_utils import _split_long_text, _strip_tts_markup
 import re
 import subprocess
 import sys
+import threading
 # ---- 熔断 / 降权 / 引擎缓存 / 模型表（原 webui_server 全局，随引擎层迁入，webui 经 re-export 共享同一对象） ----
 HERE = os.path.dirname(os.path.abspath(__file__))
 _EDGE_RETRY = 3
@@ -116,28 +117,35 @@ def edge_tts_dead_reason():
     return ''
 
 _EDGE_INSTALLED_CACHE = {'val': None, 'ts': 0}
+# 探测锁：并发 worker 在缓存失效时会各自起 25s 子进程 / TLS 握手，
+# 用一把锁 + 双重检查，保证同一时刻只有一个线程在探测，其余等待复用结果。
+_EDGE_PROBE_LOCK = threading.Lock()
 
 def _edge_tts_installed():
     """edge-tts 是否已安装（模块或命令行）；结果缓存 30 秒避免重复 find_spec/subprocess。"""
     now = time.time()
     if _EDGE_INSTALLED_CACHE['val'] is not None and (now - _EDGE_INSTALLED_CACHE['ts']) < 30:
         return _EDGE_INSTALLED_CACHE['val']
-    result = False
-    try:
-        import importlib.util as _u
-        if _u.find_spec('edge_tts') is not None:
-            result = True
-    except Exception:
-        pass
-    if not result:
+    with _EDGE_PROBE_LOCK:
+        # 双重检查：拿到锁时别的线程可能已探测完
+        if _EDGE_INSTALLED_CACHE['val'] is not None and (time.time() - _EDGE_INSTALLED_CACHE['ts']) < 30:
+            return _EDGE_INSTALLED_CACHE['val']
+        result = False
         try:
-            r = subprocess.run(['edge-tts', '--version'], capture_output=True, timeout=25)
-            result = (r.returncode == 0)
+            import importlib.util as _u
+            if _u.find_spec('edge_tts') is not None:
+                result = True
         except Exception:
-            result = False
-    _EDGE_INSTALLED_CACHE['val'] = result
-    _EDGE_INSTALLED_CACHE['ts'] = now
-    return result
+            pass
+        if not result:
+            try:
+                r = subprocess.run(['edge-tts', '--version'], capture_output=True, timeout=25)
+                result = (r.returncode == 0)
+            except Exception:
+                result = False
+        _EDGE_INSTALLED_CACHE['val'] = result
+        _EDGE_INSTALLED_CACHE['ts'] = time.time()
+        return result
 
 _EDGE_NET_CACHE = {'ok': None, 'at': 0.0}
 
@@ -154,26 +162,30 @@ def _edge_reachable(ttl=60.0):
     c = _EDGE_NET_CACHE
     if c['ok'] is not None and now - c['at'] < ttl:
         return c['ok']
-    ok = False
-    try:
-        import socket
-        import ssl
-        ctx = ssl.create_default_context()
-        for host in _EDGE_HOSTS:
-            try:
-                # 必须做 TLS 握手而不是只建 TCP：实测本机能连上 443（TCP OK）
-                # 但 TLS 握手被拦，只探 TCP 会误判「edge 可用」，
-                # 结果每段都去跑满子进程超时，长视频直接卡死。
-                with socket.create_connection((host, 443), timeout=3) as s:
-                    with ctx.wrap_socket(s, server_hostname=host):
-                        ok = True
-                        break
-            except Exception:
-                continue
-    except Exception:
-        pass
-    c['ok'], c['at'] = ok, now
-    return ok
+    with _EDGE_PROBE_LOCK:
+        # 双重检查：拿到锁时别的线程可能已探测完
+        if c['ok'] is not None and _t.time() - c['at'] < ttl:
+            return c['ok']
+        ok = False
+        try:
+            import socket
+            import ssl
+            ctx = ssl.create_default_context()
+            for host in _EDGE_HOSTS:
+                try:
+                    # 必须做 TLS 握手而不是只建 TCP：实测本机能连上 443（TCP OK）
+                    # 但 TLS 握手被拦，只探 TCP 会误判「edge 可用」，
+                    # 结果每段都去跑满子进程超时，长视频直接卡死。
+                    with socket.create_connection((host, 443), timeout=3) as s:
+                        with ctx.wrap_socket(s, server_hostname=host):
+                            ok = True
+                            break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        c['ok'], c['at'] = ok, _t.time()
+        return ok
 
 
 def edge_tts_available():
