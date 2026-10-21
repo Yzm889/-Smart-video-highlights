@@ -288,11 +288,15 @@ def dispatch_build(req, prog):
 
 
 def _plan_thumbs(video_path, segs, run_dir, max_side=220):
-    """为每个镜头段抽一张中间帧缩略图(jpg)，用于人机协同预览。返回 {idx: 绝对路径}。"""
-    try:
-        return _w.extract_segment_frames(video_path, segs, os.path.join(run_dir, 'thumbs'), max_side=max_side)
-    except Exception:
-        return {}
+    """为每个镜头段抽一张中间帧缩略图(jpg)，用于人机协同预览。返回 {idx: 绝对路径}。
+
+    抽帧失败时**向上抛**而不是返回空 dict：旧实现 `except: return {}` 会把失败
+    伪装成「这个视频没图」，调用方看到空 dict 后所有分镜缩略图变空白，
+    接口照样返回 ok:True，用户无从判断是 ffmpeg 崩了、磁盘满还是权限问题。
+    缩略图是增强项，失败可以由调用方降级，但降级必须由调用方显式决定。"""
+    return _w.extract_segment_frames(video_path, segs,
+                                     os.path.join(run_dir, 'thumbs'),
+                                     max_side=max_side)
 
 
 def _plan_to_ui(plan, run_dir):

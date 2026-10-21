@@ -1700,14 +1700,26 @@ class Handler(BaseHTTPRequestHandler):
             plan['segs'] = segs
             plan['narr'] = lines
             plan['align_source'] = src
+            # 缩略图是增强项：抽不到图仍要正常出方案，但**必须留下痕迹**。
+            # 旧实现 `except: pass` 让所有分镜图变空白而接口仍报 ok:True，
+            # 用户只会以为「这个视频没图」。这里在响应里带 thumbs_ok / thumbs_warn
+            # 标志，并把告警写入 plan['warnings']，让前端能显示占位图而不是一片空白。
+            # 注意：本方法是同步对齐接口，没有 runid 对应的 prog，故不调用
+            # _w._warn（webui_server 也未暴露它），直接把告警落到响应与 plan 上。
+            thumbs_ok = False
+            thumbs_warn = ''
             try:
                 plan['thumbs'] = _w._plan_thumbs(plan['video'], segs,
                                               plan.get('run_dir') or os.path.dirname(plan['video']))
-            except Exception:
-                pass
+                thumbs_ok = bool(plan['thumbs'])
+            except Exception as _te:
+                plan['thumbs'] = {}
+                thumbs_warn = '分镜缩略图生成失败（不影响解说与合成）：%s' % str(_te)[:120]
+                plan.setdefault('warnings', []).append(thumbs_warn)
             rel = lambda p: (os.path.relpath(p, _w.OUTDIR).replace('\\', '/') if p and os.path.exists(p) else '')
             self._send(200, json.dumps({
                 'ok': True, 'source': src, 'shots': len(shots),
+                'thumbs_ok': thumbs_ok, 'thumbs_warn': thumbs_warn,
                 'msg': ('已按解说词语义重新匹配分镜' if src == 'model' else '模型不可用，已按解说词长度比例分配分镜'),
                 'segs': [{'i': i, 'start': round(a, 3), 'end': round(b, 3), 'caption': c,
                           'thumb': rel(plan.get('thumbs', {}).get(i))}
