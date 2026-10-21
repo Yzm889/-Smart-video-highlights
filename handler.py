@@ -440,7 +440,11 @@ class Handler(BaseHTTPRequestHandler):
             if not run_dir_name:
                 self._send(200, json.dumps({'ok': False, 'error': '缺少run_dir'}).encode('utf-8'), 'application/json')
                 return
-            run_dir = os.path.join(_w.OUTDIR, run_dir_name) if not os.path.isabs(run_dir_name) else run_dir_name
+            try:
+                run_dir = _w._safe_dir(_w.OUTDIR, run_dir_name)
+            except ValueError as _ve:
+                self._send(200, json.dumps({'ok': False, 'error': '非法 run_dir：%s' % _ve}).encode('utf-8'), 'application/json')
+                return
             state_path = os.path.join(run_dir, 'tts_state.json')
             if not os.path.exists(state_path):
                 self._send(200, json.dumps({'ok': False, 'error': 'tts_state.json不存在'}).encode('utf-8'), 'application/json')
@@ -605,7 +609,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_err(400, 'other', '缺少run_id/seg_idx/text', stage='参数校验',
                            hint='请确保三个参数都填了（run_id、seg_idx 从 0 起、text 非空）。')
             return
-        run_dir = os.path.join(_w.OUTDIR, run_id)
+        try:
+            run_dir = _w._safe_dir(_w.OUTDIR, run_id)
+        except ValueError as _ve:
+            self._send_err(400, 'path', '非法 run_id（禁止绝对路径/.. 穿越）：%s' % _ve, stage='参数校验',
+                           hint='run_id 应为本服务生成的任务目录名，不能包含 .. 或绝对路径。')
+            return
         state_path = os.path.join(run_dir, 'state.json')
         if not os.path.exists(state_path):
             self._send_err(404, 'path', '该任务没有保存中间状态（可能是旧版本生成的）',
@@ -702,7 +711,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_err(400, 'other', '缺少run_id或text', stage='参数校验',
                            hint='run_id 在「⑨记录 → 已完成任务」有；text 是当前编辑框的解说词。')
             return
-        run_dir = os.path.join(_w.OUTDIR, run_id)
+        try:
+            run_dir = _w._safe_dir(_w.OUTDIR, run_id)
+        except ValueError as _ve:
+            self._send_err(400, 'path', '非法 run_id（禁止绝对路径/.. 穿越）：%s' % _ve, stage='参数校验',
+                           hint='run_id 应为本服务生成的任务目录名，不能包含 .. 或绝对路径。')
+            return
         state_path = os.path.join(run_dir, 'tts_state.json')
         if not os.path.exists(state_path):
             self._send_err(404, 'path', '未找到任务状态', stage='定位 tts_state.json',
