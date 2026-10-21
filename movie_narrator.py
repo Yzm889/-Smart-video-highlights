@@ -95,20 +95,53 @@ def _plot_brief(frames, per_seg, params):
 
 
 def _try_parse_json(text):
-    """从模型输出中尽力提取 JSON 对象。返回 dict 或 None。"""
+    """从模型输出中尽力提取 JSON 对象。返回 dict 或 None。
+
+    模型有时会一次吐出多个 JSON 对象（实测 qwen3 输出 3 组草稿，用换行隔开）。
+    旧实现用贪婪正则匹配首尾花括号，会把 3 个对象连成一大块非法 JSON
+    → 整段解析失败 → 已经生成好的草稿被全部丢弃，
+    阶段①报 llm_parse_fail，编辑台这一段一个字都没有。
+    现在改为逐个提取：第一个对象成功就返回；都失败才返回 None。
+    """
     if not text:
         return None
-    import re as _re, json as _json
+    import json as _json
+    import re as _re
     try:
-        return _json.loads(text)
+        obj = _json.loads(text)
+        return obj if isinstance(obj, dict) else None
     except Exception:
         pass
-    m = _re.search(r'\{.*\}', text, _re.S)
-    if m:
-        try:
-            return _json.loads(m.group(0))
-        except Exception:
-            pass
+    # 逐个提取「平衡的 JSON 对象」：从每个 '{' 起，按括号深度找配对
+    for m in _re.finditer(r'\{', text):
+        start = m.start()
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == '\\':
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = _json.loads(text[start:i + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                    break
     return None
 
 

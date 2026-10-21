@@ -96,6 +96,68 @@ def _whisper_load_path(m):
         return d
     return m
 
+_CUDA_DLLS_REGISTERED = {'done': False}
+
+
+def _cuda_dll_dirs():
+    """返回 pip 装的 CUDA 运行时库所在目录（仅 Windows）。
+
+    装了 nvidia-cublas-cu12 / nvidia-cudnn-cu12 后，DLL 落在
+    site-packages/nvidia/{cublas,cudnn}/bin/ 下。这个目录既不在 PATH、也不在
+    ctranslate2 自己旁边，ctranslate2 加载时直接报
+    `Library cublas64_12.dll is not found`。"""
+    if os.name != 'nt':
+        return []
+    import site
+    roots = [os.path.dirname(os.path.abspath(__file__))]
+    try:
+        roots.extend(site.getsitepackages())
+        roots.append(site.getusersitepackages())
+    except Exception:
+        pass
+    out = []
+    for root in roots:
+        for sub in ('nvidia/cublas/bin', 'nvidia/cudnn/bin',
+                    'nvidia/cuda_runtime/bin', 'nvidia/cuda_nvrtc/bin'):
+            d = os.path.join(root, *sub.split('/'))
+            if os.path.isdir(d) and d not in out:
+                out.append(d)
+    return out
+
+
+def _ensure_cuda_dll_path():
+    """把 CUDA 库目录前置到本进程 PATH，让 ctranslate2 能加载到 cublas。
+
+    注意：os.add_dll_directory 对 ctranslate2 无效（它走传统 DLL 搜索，
+    实测仍然报 cublas64_12.dll not found）。这里改的是**本进程的环境变量副本**，
+    不碰用户系统 PATH；子进程（ffmpeg 等）会继承，但也只是多几个搜索目录。
+    代价：98 分钟视频的 ASR 从 30 分钟（CPU int8）回到 5 分钟（GPU fp16）。"""
+    if _CUDA_DLLS_REGISTERED['done']:
+        return
+    _CUDA_DLLS_REGISTERED['done'] = True
+    try:
+        dirs = _cuda_dll_dirs()
+        if not dirs:
+            return
+        cur = os.environ.get('PATH') or ''
+        missing = [d for d in dirs if d.lower() not in cur.lower()]
+        if missing:
+            os.environ['PATH'] = os.pathsep.join(missing) + os.pathsep + cur
+        # 已加载过 ctypes 的 DLL 不受影响，但 WinDLL 走 PATH，这里再主动加载一次
+        import ctypes
+        for name in ('cublas64_12.dll', 'cudnn64_9.dll'):
+            for d in dirs:
+                p = os.path.join(d, name)
+                if os.path.exists(p):
+                    try:
+                        ctypes.CDLL(p)
+                        break
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+
 def _note_progress_warning(msg):
     """把一条告警追加到当前任务（PROGRESS[runid]）的 warnings 上。
 
@@ -231,6 +293,25 @@ def local_llm_cfg():
         'api_key': cfg.get('api_key') or '',
     }
 
+def _llm_payload(model, messages, max_tokens=1500, temperature=0.8):
+    """构造 Ollama 请求体，对混合思考模型（Qwen3 等）显式关闭思考。
+
+    Qwen3 默认开启 thinking：实测 14b-q4_K_M 一次「自我介绍」就用掉 492 字思考
+    token，而 max_tokens 是思考+正文的共享配额——写解说稿这种需要 1500 token
+    的任务，思考一开就把配额吃光，正文返回空串，上层拿到 llm_empty，
+    阶段①所有段落在编辑台都是「无草稿」。
+    关思考后：5.7s vs 28.9s（快 5 倍），正文完整。解说稿是短文本格式活，
+    不需要链式推理，关掉思考是正确的取舍。
+    Ollama >= 0.9 支持 think 字段；老版本忽略未知字段，不影响。"""
+    return {
+        'model': model,
+        'messages': messages,
+        'max_tokens': max_tokens,
+        'temperature': temperature,
+        'think': False,
+    }
+
+
 def local_llm_chat(prompt, system=None, timeout=180):
     """调用本地 OpenAI 兼容端点生成文本（Ollama /v1/chat/completions）。失败抛异常。"""
     cfg = local_llm_cfg()
@@ -241,7 +322,7 @@ def local_llm_chat(prompt, system=None, timeout=180):
     if system:
         messages.append({'role': 'system', 'content': system})
     messages.append({'role': 'user', 'content': prompt})
-    payload = {'model': cfg['model'], 'messages': messages, 'max_tokens': 1500, 'temperature': 0.8}
+    payload = _llm_payload(cfg['model'], messages)
     headers = {'Content-Type': 'application/json'}
     if cfg['api_key']:
         headers['Authorization'] = 'Bearer ' + cfg['api_key']
@@ -284,7 +365,7 @@ def local_llm_light_chat(prompt, system=None, timeout=180):
     if system:
         messages.append({'role': 'system', 'content': system})
     messages.append({'role': 'user', 'content': prompt})
-    payload = {'model': cfg['model'], 'messages': messages, 'max_tokens': 1500, 'temperature': 0.8}
+    payload = _llm_payload(cfg['model'], messages)
     headers = {'Content-Type': 'application/json'}
     if cfg['api_key']:
         headers['Authorization'] = 'Bearer ' + cfg['api_key']
@@ -410,19 +491,27 @@ def _cuda_runtime_present():
       1) 先看 ctranslate2 自带的 dll 目录（pip 装了 nvidia-cublas-cu12 就会落在这）；
       2) 再看系统 PATH 里的 CUDA Toolkit。
     两处都没有就老实走 CPU，别让GPU 空转。"""
+    # 探测前先确保 pip 装的 CUDA 库目录已注册进 DLL 搜索路径，
+    # 否则「文件在磁盘上但加载不到」会被误判成不可用，白白放弃 GPU。
+    _ensure_cuda_dll_path()
     import glob
-    import os
+    import site
+    roots = [os.path.dirname(os.path.abspath(__file__))]
     try:
-        import ctranslate2
-        base = os.path.dirname(os.path.abspath(ctranslate2.__file__))
-        for pat in ('**/cublas64_12.dll', '**/cudnn64_9.dll', '**/cublas64_11.dll'):
-            if glob.glob(os.path.join(base, pat), recursive=True):
-                return True
+        roots.extend(site.getsitepackages())
+        roots.append(site.getusersitepackages())
     except Exception:
         pass
+    for root in roots:
+        for pat in ('nvidia/cublas/bin/cublas64_12.dll',
+                    'nvidia/cudnn/bin/cudnn64_9.dll',
+                    'nvidia/cublas/bin/cublas64_11.dll',
+                    '**/cublas64_12.dll', '**/cudnn64_9.dll'):
+            if glob.glob(os.path.join(root, *pat.split('/')), recursive=True):
+                return True
     for name in ('cublas64_12.dll', 'cudnn64_9.dll', 'cublas64_11.dll'):
-        for root in (os.environ.get('PATH') or '').split(os.pathsep):
-            if root and os.path.exists(os.path.join(root, name)):
+        for p in (os.environ.get('PATH') or '').split(os.pathsep):
+            if p and os.path.exists(os.path.join(p, name)):
                 return True
     return False
 

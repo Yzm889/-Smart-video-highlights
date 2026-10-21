@@ -116,3 +116,75 @@ def test_cuda_runtime_present_is_pure_probe():
         assert isinstance(v, bool)
     except Exception as ex:  # pragma: no cover
         pytest.fail('CUDA 运行时探测不应抛异常: %s' % ex)
+
+
+def test_llm_payload_disables_thinking():
+    """D. 请求体必须显式关闭思考。
+
+    Qwen3 默认开 thinking，max_tokens 是思考+正文共享配额。实测 14b-q4_K_M
+    一次简单问答就用掉 492 字思考 token，1500 配额下写解说稿正文直接被挤成
+    空串 → 阶段①「llm_empty」→ 所有段落在编辑台无草稿可编辑。
+    """
+    payload = P._llm_payload('qwen3:14b-q4_K_M', [{'role': 'user', 'content': 'x'}])
+    assert payload['think'] is False, '混合思考模型必须关思考，否则正文被思考 token 挤空'
+    assert payload['model'] == 'qwen3:14b-q4_K_M'
+    assert payload['max_tokens'] > 0
+
+
+def test_drafts_generated_from_asr_text(monkeypatch):
+    """D2. 端到端：给一段台词，_drafts_for_segment 必须产出三版草稿。
+    锁住「草稿不再全灭」这个 P0-1 目标。"""
+    import analyze_pipeline as AP
+
+    def _fake_llm(prompt, system='', timeout=180):
+        return '{"简洁":"画面直给。","悬念":"接下来会发生什么？","口语":"你猜怎么着。"}'
+    monkeypatch.setattr(AP, '_llm_light', _fake_llm)
+    drafts, err = AP._drafts_for_segment('这是一段台词')
+    assert err is None, err
+    assert len(drafts) == 3, '应产出简洁/悬念/口语三版'
+    assert [d['style'] for d in drafts] == ['简洁', '悬念', '口语']
+    assert all(d['text'].strip() for d in drafts)
+
+
+def test_drafts_reports_failure_not_silently(monkeypatch):
+    """D3. LLM 返回空时，必须报 llm_empty 而不是返回空列表装成功。"""
+    import analyze_pipeline as AP
+    monkeypatch.setattr(AP, '_llm_light', lambda *a, **k: '')
+    drafts, err = AP._drafts_for_segment('这是一段台词')
+    assert drafts == []
+    assert err == 'llm_empty', err
+
+
+def test_try_parse_json_handles_multiple_objects():
+    """E. 模型一次输出多个 JSON 对象时，必须救回第一组而不是全丢。
+
+    qwen3 实测会吐 3 组草稿（换行分隔）。旧实现的贪婪正则把它们连成一块
+    非法 JSON → 整段 llm_parse_fail，草稿明明生成了却一个不留。"""
+    import movie_narrator as MN
+    one = '{"简洁":"a","悬念":"b","口语":"c"}'
+    three = '\n'.join([one, '{"简洁":"d","悬念":"e","口语":"f"}',
+                       '{"简洁":"g","悬念":"h","口语":"i"}'])
+    obj = MN._try_parse_json(three)
+    assert isinstance(obj, dict), '多个对象输出时必须救回一组'
+    assert obj['简洁'] == 'a'
+
+
+def test_try_parse_json_edge_cases():
+    """E2. 边界：markdown 围栏 / 前后废话 / 字符串内花括号 / 无法解析。"""
+    import movie_narrator as MN
+    good = '{"简洁":"a","悬念":"b","口语":"c"}'
+    assert MN._try_parse_json('```json\n%s\n```' % good)['简洁'] == 'a'
+    assert MN._try_parse_json('结果如下：\n%s\n以上。' % good)['简洁'] == 'a'
+    # 花括号出现在字符串内部时不得误判边界
+    nested = '{"简洁":"他说{\\"x\\"}了","悬念":"b","口语":"c"}'
+    assert MN._try_parse_json(nested)['简洁'] == '他说{"x"}了'
+    # 无法解析时必须返回 None，不能返回半个对象
+    assert MN._try_parse_json('抱歉我做不到') is None
+    assert MN._try_parse_json('') is None
+    assert MN._try_parse_json('{"简洁":"a"') is None
+
+
+def test_cuda_dll_dirs_returns_list():
+    """F. CUDA 库目录探测不抛异常，非 Windows 返回空列表。"""
+    v = P._cuda_dll_dirs()
+    assert isinstance(v, list)
