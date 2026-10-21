@@ -318,7 +318,12 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
     # 夹到 [0, vdur]，避免分析阶段给出的切点越界导致 ffmpeg 报错
     raw = [(max(0.0, min(vdur, float(a))), max(0.0, min(vdur, float(b))))
            for a, b in (spans or [])]
-    raw = [(a, b) for a, b in raw if b - a > 0.02]
+    # 过短段给最小 0.5s 而不是丢弃：本函数的契约是「段数与输入严格一致」，
+    # 调用方 render_pipeline 用 enumerate(new_spans) 同时索引解说词与段 ID，
+    # 少一段就会让后面所有段整体错位（成片解说词配错画面）。
+    # 只有「输入本身为空」才允许返回空。
+    _MIN_SEG = 0.5
+    raw = [(a, min(vdur, a + _MIN_SEG) if b - a <= 0.02 else b) for a, b in raw]
     if not raw or vdur <= 0:
         return video_path, raw, 0.0
     # 修正重叠段：分析阶段/用户微调可能产生重叠（后段 start < 前段 end），
@@ -333,8 +338,7 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
         # 后面的解说词无对应画面段，配音丢失、字幕错位。
         if b - a <= 0.02:
             b = min(vdur, a + 0.5)
-        if b - a > 0.02:
-            _fixed.append((a, b))
+        _fixed.append((a, b))   # 不过滤：段数必须与输入一致
     raw = _fixed
     if not raw:
         return video_path, raw, 0.0

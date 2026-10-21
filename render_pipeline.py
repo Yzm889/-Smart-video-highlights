@@ -129,6 +129,16 @@ def dispatch_render(req, prog):
         cut_video, new_spans, cut_sec = _cut_video_by_spans(
             src_video, segs, out_dir, prog, skip_no_cut=True)
 
+        # 时间轴与段落数必须严格一致。下游用 enumerate(new_spans) 同时索引
+        # narr[] 与 kept_ids[]：只要少一段，后面所有段的解说词就整体前移一位，
+        # 成片变成「第 3 段的词配第 4 段的画面」，align 表报的段 ID 也全是错的。
+        # 宁可明确报错让用户重来，也不能静默产出一张错位的成片。
+        if len(new_spans) != len(segs):
+            raise RuntimeError(
+                '剪辑后时间轴与段落数不一致（保留 %d 段，剪辑后 %d 段）：'
+                '继续合成会导致解说词与画面错位，已中止。请调整出入点后重试。'
+                % (len(segs), len(new_spans)))
+
         # 3) 配音/字幕对齐到裁剪后的新时间轴
         tts_paths = []
         voice_spans = {}
