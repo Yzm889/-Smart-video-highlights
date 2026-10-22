@@ -621,6 +621,8 @@ function loadTtsLocal(){
       if(!res.edge_installed) parts.push('edge-tts 未安装');
       else if(res.edge_dead) parts.push('edge-tts 暂不可用（' + res.edge_dead.slice(0,60) + '）');
       if(!res.sherpa_model_ready) parts.push('离线模型未下载（' + (res.sherpa_model_label||'') + '）');
+      // [task #22] 引擎降级可见化（textContent 本身即防注入，勿再 escape 以免显示 &amp; 等实体）
+      if(res.degrade_msg) parts.push(res.degrade_msg);
       st.textContent = parts.join(' · ');
     }
     // 解说卡直接显示「这条解说会用哪种声音」，不用跑去 AI 页才知道

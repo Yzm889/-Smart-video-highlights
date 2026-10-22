@@ -906,6 +906,8 @@ class Handler(BaseHTTPRequestHandler):
             'cfg': _w.tts_local_cfg(),
             'label': _w.local_tts_label(),
             'setup': dict(_w.TTS_SETUP),
+            # [task #22] 首选引擎失败后降级到备用引擎的提示（静默质量降级可见化）
+            'degrade_msg': _w.tts_degrade_msg(),
         }).encode('utf-8'), 'application/json')
 
     def _get_local_test(self):

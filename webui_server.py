@@ -49,6 +49,7 @@ _tts_run_banned = tts_engines._tts_run_banned
 _tts_note_fail = tts_engines._tts_note_fail
 _tts_note_ok = tts_engines._tts_note_ok
 _tts_force_downgrade = tts_engines._tts_force_downgrade
+tts_degrade_msg = tts_engines.tts_degrade_msg
 _ping_preferred_engine = tts_engines._ping_preferred_engine
 parse_tts_markup = tts_engines.parse_tts_markup
 markup_to_ssml = tts_engines.markup_to_ssml

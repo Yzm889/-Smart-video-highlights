@@ -587,6 +587,47 @@ def _tts_force_downgrade(eng):
     if fails is not None:
         fails[eng] = fails.get(eng, 0) + 1
 
+
+# ---------------------------------------------------------------------------
+# [task #22] 配音「静默质量降级」可视化
+#
+# local_tts_speak 的契约是「要么出声、要么明确失败」：首选引擎（edge-tts，情感好）
+# 失败后会自动回退到系统 SAPI（机器音），返回值仍是 ok=True——用户只会觉得
+# 「这版配音怎么变难听了」，却完全不知道是引擎降级导致的，也无法自助修复
+# （装 edge-tts / 点重试配音引擎）。这是最典型的一类「不报错但体验劣化」。
+# 这里把「首选 → 实际」的降级记录下来，经 /api/tts/voices 的 degrade_msg 暴露给 UI。
+# ---------------------------------------------------------------------------
+_ENGINE_LABEL = {
+    'edge': 'edge-tts（情感/顿挫最好）',
+    'cosyvoice': 'CosyVoice（克隆音色）',
+    'chattts': 'ChatTTS',
+    'sherpa': '离线模型（断网可用）',
+    'sapi': '系统 SAPI（机器音·音质最差）',
+}
+_TTS_DEGRADE = {'from': None, 'to': None, 'msg': '', 'count': 0}
+_TTS_DEGRADE_LOCK = threading.Lock()
+
+
+def _tts_note_degrade(from_eng, to_eng):
+    """记录一次「首选引擎不可用 → 降级到备用引擎」。"""
+    if not from_eng or not to_eng or from_eng == to_eng:
+        return
+    msg = ('⚠️ 首选配音引擎 %s 不可用，已降级为 %s（音质/情感下降；'
+           '可点「🔄 重试配音引擎」或在「🔊 本地配音引擎」换引擎）'
+           % (_ENGINE_LABEL.get(from_eng, from_eng), _ENGINE_LABEL.get(to_eng, to_eng)))
+    with _TTS_DEGRADE_LOCK:
+        _TTS_DEGRADE['from'] = from_eng
+        _TTS_DEGRADE['to'] = to_eng
+        _TTS_DEGRADE['msg'] = msg
+        _TTS_DEGRADE['count'] = int(_TTS_DEGRADE.get('count', 0)) + 1
+    print('[DIAG] TTS 降级：%s → %s' % (from_eng, to_eng))
+
+
+def tts_degrade_msg():
+    """最近一次配音引擎降级提示；无降级返回 ''（供 /api/tts/voices 暴露给前端）。"""
+    with _TTS_DEGRADE_LOCK:
+        return _TTS_DEGRADE.get('msg') or ''
+
 def _drop_empty(path):
     """删除 0 字节/极小的失败产物（配音文件残留会让用户误以为「有配音没声音」）。"""
     try:
@@ -675,6 +716,18 @@ def local_tts_speak(text, out_path):
         # [2.3] 首选 edge 但已被全局兜底熔断 → 直接排到最后（sherpa/sapi 优先），
         #      避免每段都先白试一次 edge 子进程。
         order = [e for e in order if e != 'edge'] + ['edge']
+    # [task #22] 首选引擎：本轮「最该用上」的那个（已含锁定/降权/熔断重排）。
+    # 实际合成若落到它之后，说明发生了降级——用户必须看到，否则只会觉得「配音变难听」。
+    preferred = order[0] if order else None
+
+    def _ok(eng, path):
+        """成功收尾：锁定引擎 + 记录「首选→实际」的静默质量降级。"""
+        _tts_note_ok(eng)
+        _TLS.tts_engine = eng
+        if eng != preferred:
+            _tts_note_degrade(preferred, eng)
+        return True, eng, path
+
     stem, _ext = os.path.splitext(out_path)
     try:
         speed = 1.0 + (float(str(cfg['rate']).replace('%', '').replace('+', '')) / 100.0)
@@ -732,9 +785,7 @@ def local_tts_speak(text, out_path):
                 if sub_ok and sub_paths:
                     # ffmpeg concat 拼接
                     if _concat_audio_clips(sub_paths, out_path):
-                        _tts_note_ok(eng)
-                        _TLS.tts_engine = eng
-                        return True, eng, out_path
+                        return _ok(eng, out_path)
                     # 拼接失败 → 清理并继续下一引擎
                     _tts_note_fail(eng)
                     for p in sub_paths:
@@ -751,9 +802,7 @@ def local_tts_speak(text, out_path):
                 continue
             clean_text = _strip_tts_markup(text)
             if edge_tts_speak(clean_text, out_path):
-                _tts_note_ok('edge')
-                _TLS.tts_engine = 'edge'      # 锁定：后续段落沿用同一音色
-                return True, 'edge', out_path
+                return _ok('edge', out_path)
             _tts_note_fail('edge')            # [2.1] edge 整轮重试仍失败 → 记录连续失败
             # edge-tts 命令会先建文件再写入，失败时留下 0 字节 mp3 赖在产物目录里，
             # 用户看到「有配音文件却没声音」会摸不着头脑。这里立刻抹掉。
@@ -764,9 +813,7 @@ def local_tts_speak(text, out_path):
             wv = stem + '_cosyvoice.wav'
             clean_text = _strip_tts_markup(text)
             if cosyvoice_speak(clean_text, wv):
-                _tts_note_ok('cosyvoice')
-                _TLS.tts_engine = 'cosyvoice'
-                return True, 'cosyvoice', wv
+                return _ok('cosyvoice', wv)
             _tts_note_fail('cosyvoice')
         elif eng == 'chattts':
             if not chattts_available():
@@ -774,9 +821,7 @@ def local_tts_speak(text, out_path):
             wv = stem + '_chattts.wav'
             clean_text = _strip_tts_markup(text)
             if chattts_speak(clean_text, wv):
-                _tts_note_ok('chattts')
-                _TLS.tts_engine = 'chattts'
-                return True, 'chattts', wv
+                return _ok('chattts', wv)
             _tts_note_fail('chattts')
         elif eng == 'sherpa':
             if not sherpa_tts_available():
@@ -784,17 +829,13 @@ def local_tts_speak(text, out_path):
             wv = stem + '_sherpa.wav'
             clean_text = _strip_tts_markup(text)
             if sherpa_tts_speak(clean_text, wv, speed=speed):
-                _tts_note_ok('sherpa')
-                _TLS.tts_engine = 'sherpa'
-                return True, 'sherpa', wv
+                return _ok('sherpa', wv)
             _tts_note_fail('sherpa')
         else:
             wv = stem + '.wav'
             clean_text = _strip_tts_markup(text)
             if sapi_tts(clean_text, wv):
-                _tts_note_ok('sapi')
-                _TLS.tts_engine = 'sapi'
-                return True, 'sapi', wv
+                return _ok('sapi', wv)
             _tts_note_fail('sapi')
     return False, None, out_path
 
