@@ -99,6 +99,33 @@ MIME = {
 }
 
 
+# ---------------------------------------------------------------------------
+# CSP（内容安全策略）：收紧前端 innerHTML 手拼带来的 XSS 面（task #21）
+#
+# 前端历史包袱是大量 inline onclick / inline style，故 script-src / style-src 必须
+# 放行 'unsafe-inline'（改成 nonce/hash 需全量重写事件绑定，属于待专项重构项）。
+# 真正的收益在：
+#   · connect-src 'self' —— app.js 全部请求都是同源 /api、/media（已核实无任何外部
+#     fetch/XHR/WebSocket），因此堵住「注入脚本把数据外传到外网」这类最实质的危害；
+#   · object-src 'none' / frame-src 'self' / base-uri 'self' / frame-ancestors 'self'
+#     —— 封杀 <object> 插件执行、外部框架嵌套与 base 劫持。
+# style-src / font-src 放行 Google Fonts：index.html 直接引用 fonts.googleapis.com
+# 的样式表与 fonts.gstatic.com 字体文件，收紧会导致字体加载失败（UI 降级）。
+# img/media 放行 data:/blob:：封面预览与本地文件预览用 data URI / ObjectURL。
+# ---------------------------------------------------------------------------
+CSP_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' data: https://fonts.gstatic.com; "
+    "img-src 'self' data: blob:; "
+    "media-src 'self' data: blob:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "frame-src 'self'; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self'"
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -114,6 +141,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache')
         # 禁止 MIME 嗅探：否则上传的 .html 素材被当成 text/html 在同源下执行（存储型 XSS）
         self.send_header('X-Content-Type-Options', 'nosniff')
+        # CSP：收紧 XSS 面（详见上方 CSP_POLICY 说明）。对 /media、JSON 等非文档响应
+        # 浏览器会忽略该头，故统一发送既简洁又无害；生效策略由 HTML 文档响应携带。
+        self.send_header('Content-Security-Policy', CSP_POLICY)
         if extra:
             for k, v in extra.items():
                 self.send_header(k, v)
