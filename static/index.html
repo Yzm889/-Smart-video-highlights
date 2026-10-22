@@ -638,6 +638,8 @@
     <div class="hint" id="movieInfo">未选视频：仅生成解说稿（可在结果区复制）。选了视频：产出带解说配音+字幕的成片。</div>
     <div class="row" style="margin-top:10px;">
       <div class="mode-hint" id="movieModeHint">🤖 <b>自动路径</b>：本地模型免费优先 → 配置了云端 key 时用云端增强 → 都没有时离线切句/模板兜底。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
+      <div class="field"><label for="movieMaxSeg">最大分段(秒)</label>
+        <input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
       <div class="field" style="flex:1"><label for="movieClipRatio">剪辑占比（%）</label>
         <input type="number" id="movieClipRatio" value="75" min="30" max="100" style="width:70px">
         <span style="font-size:11px;color:var(--muted)">值越小剪辑越狠，留更多空白给转场</span></div>
@@ -1274,7 +1276,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=62"></script>
+<script src="/static/app.js?v=63"></script>
 </body>
 </html>
 

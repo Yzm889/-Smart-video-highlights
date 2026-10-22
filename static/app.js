@@ -2676,8 +2676,9 @@ async function buildNarrate(){
                  params:{maxSeg: parseFloat($('narMaxSeg').value)||25, w:1280, h:720, fps:30,
                          name: NAR_VIDEO.name, theme: ($('narTheme') ? $('narTheme').value.trim() : ''),
                          req: ($('narReq') ? $('narReq').value.trim() : ''),
-                         narr_style: ($('narrStyle') ? $('narrStyle').value : 'movie'),
-                         detail_level: ($('detailLevel') ? $('detailLevel').value : 'balanced'),
+                        narr_style: ($('narrStyle') ? $('narrStyle').value : 'movie'),
+                        detail_level: ($('detailLevel') ? $('detailLevel').value : 'balanced'),
+                        genre: ($('narGenre') ? $('narGenre').value : 'auto'),
                          autoCut: $('narAutoCut') ? $('narAutoCut').checked : true,
                          targetSec: parseFloat(($('narTargetSec')||{}).value) || 0,
                          subtitle: getSubtitleStyle(),
@@ -2826,7 +2827,7 @@ async function buildMovieNarrate(){
   $('movieStatus').textContent = '提交任务…';
   gStart('🌐 联网解说生成');
   const body = { movie: name, plot: plot,
-    params: { maxSeg: parseFloat($('movieMaxSeg').value) || 25, w:1280, h:720, fps:30, clipRatio: parseFloat($('movieClipRatio') ? $('movieClipRatio').value : 75) / 100 } };
+    params: { maxSeg: parseFloat(($('movieMaxSeg')||{}).value) || 25, w:1280, h:720, fps:30, clipRatio: parseFloat($('movieClipRatio') ? $('movieClipRatio').value : 75) / 100 } };
   if(MOVIE_VIDEO){ body.video = await videoToBody(MOVIE_VIDEO); }
   if($('movieBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
@@ -5437,6 +5438,17 @@ function saveNarrPrefs(){
       narrStyle: (document.getElementById('narrStyle')||{}).value || 'movie',
       detailLevel: (document.getElementById('detailLevel')||{}).value || 'balanced'
     }));
+  } catch(e){}
+}
+// 题材类型（决定解说模板）——【修复】原先 index.html 的 onchange 调用 saveNarrGenre()，
+// 但本文件从未定义它：每次切题材都抛 ReferenceError，题材也从不落盘、从未传给后端，
+// 于是「题材类型（决定解说模板）」这个控件完全不起作用（用户白选）。
+// 后端 movie_narrator 支持 params.genre（GENRE_TEMPLATES 六套题材模板；auto 时按剧情
+// 轻量判型），前端必须真的把值传下去；存盘键与页面加载时的恢复键一致。
+function saveNarrGenre(){
+  try {
+    const el = $('narGenre');
+    localStorage.setItem('springStudio.narGenre', el ? el.value : 'auto');
   } catch(e){}
 }
 function loadNarrPrefs(){
