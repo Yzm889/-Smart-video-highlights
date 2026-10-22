@@ -26,6 +26,32 @@ class _FakeHandler:
         self.hdrs = {}
         self.wfile = _WFile()
         self.code = None
+        self.headers = {}
+
+    def send_response(self, code):
+        self.code = code
+
+    def send_header(self, k, v):
+        self.hdrs[k] = v
+
+    def end_headers(self):
+        pass
+
+
+class _DocHandler:
+    """真实 Handler 语义的桩：保留 _get_index/_send_file 的**真实实现**，
+    只替换 socket 级方法（send_response/send_header/end_headers/wfile/headers），
+    这样测到的就是真实响应头，而不是又一次测桩。"""
+
+    # 绑定真实方法体（不走 __init__，避免 BaseHTTPRequestHandler 打开 socket）
+    _get_index = H.Handler._get_index
+    _send_file = H.Handler._send_file
+
+    def __init__(self):
+        self.hdrs = {}
+        self.wfile = _WFile()
+        self.code = None
+        self.headers = {}
 
     def send_response(self, code):
         self.code = code
@@ -77,3 +103,21 @@ def test_send_body_intact_and_extra_headers_kept():
     assert h.wfile.buf == b'{"ok":true}'
     assert h.hdrs.get('X-Test') == '1'
     assert h.hdrs.get('Content-Type') == 'application/json'
+
+
+# ---------------------------------------------------------------------------
+# 回归：HTML 文档走的是 _send_file 而不是 _send！
+# 初版只把 CSP 加在 _send 上，单元测试全绿，但真机 HTTP 冒烟发现首页文档**没有** CSP
+# （浏览器只认文档响应的 CSP）→ 策略完全失效。故必须锁 _get_index 这条真实路径。
+# ---------------------------------------------------------------------------
+def test_index_document_carries_csp(monkeypatch):
+    """首页（_get_index → _send_file）必须带 CSP，否则整条策略不生效。
+
+    这里必须用**真实**的 _get_index/_send_file 方法（只替换 socket 级方法），
+    否则等于又在测桩、测不到真实响应头——那正是初版漏掉 CSP 的原因。"""
+    h = _DocHandler()
+    h._get_index()
+    assert h.code == 200, h.hdrs
+    csp = h.hdrs.get('Content-Security-Policy') or ''
+    assert csp, 'HTML 文档响应必须带 Content-Security-Policy（_send_file 路径）'
+    assert "connect-src 'self'" in csp, csp

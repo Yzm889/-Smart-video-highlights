@@ -192,6 +192,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Accept-Ranges', 'bytes')
                 self.send_header('Cache-Control', 'no-cache')
                 self.send_header('X-Content-Type-Options', 'nosniff')
+                # CSP 必须挂在真正承载文档的响应上：首页 index.html 走 _send_file 而非 _send，
+                # 只在 _send 里加则策略根本不会生效（浏览器只认文档响应的 CSP）。
+                self.send_header('Content-Security-Policy', CSP_POLICY)
                 if attachment:
                     self.send_header('Content-Disposition',
                                      _content_disposition(os.path.basename(full)))
@@ -218,6 +221,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Accept-Ranges', 'bytes')
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('X-Content-Type-Options', 'nosniff')
+        # 同上：HTML 文档由 _send_file 发出，CSP 必须在这里也带一份
+        self.send_header('Content-Security-Policy', CSP_POLICY)
         if attachment:
             self.send_header('Content-Disposition',
                              _content_disposition(os.path.basename(full)))
