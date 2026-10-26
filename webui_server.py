@@ -1397,6 +1397,7 @@ def local_pull_async(model=None, force=False):
 FAST_GGUF_SOURCES = {
     'qwen2.5:14b': ('https://hf-mirror.com/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf', 'qwen2.5-14b-instruct-q4_k_m.gguf'),
     'qwen2.5:7b': ('https://hf-mirror.com/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m.gguf'),
+    'qwen2.5:3b': ('https://hf-mirror.com/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf', 'qwen2.5-3b-instruct-q4_k_m.gguf'),
     'qwen3:14b-q4_K_M': ('https://hf-mirror.com/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf', 'Qwen_Qwen3-14B-Q4_K_M.gguf'),
     'qwen3:8b': ('https://hf-mirror.com/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf', 'Qwen_Qwen3-8B-Q4_K_M.gguf'),
 

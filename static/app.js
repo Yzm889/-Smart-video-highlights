@@ -986,9 +986,9 @@ function loadVlmStatus(){
 // minVram = 该模型权重需要的显存(GB)：小于本机显存时**明确标注放不下**，
 //   避免用户照着"推荐"装出一个抢显存、慢到 200 秒/次的组合（2026-10-26 实测教训）。
 const LOCAL_MODEL_CATALOG = [
-  {tag:'qwen3:8b',         label:'⭐ qwen3:8b', desc:'12GB 卡推荐·与看图模型可共存', size:'≈5.2GB', minVram:8},
+  {tag:'qwen3:8b',         label:'⭐ qwen3:8b', desc:'12GB 卡推荐·与看图模型可共存', size:'≈5.0GB', minVram:8},
   {tag:'qwen2.5:7b',      label:'qwen2.5:7b', desc:'8-10GB 卡推荐·稳', size:'≈4.7GB', minVram:8},
-  {tag:'qwen2.5:3b',      label:'qwen2.5:3b', desc:'6GB 卡/纯CPU·速度优先', size:'≈2.0GB', minVram:4},
+  {tag:'qwen2.5:3b',      label:'qwen2.5:3b', desc:'6GB 卡/纯CPU·速度优先', size:'≈1.9GB', minVram:4},
   {tag:'qwen3:14b-q4_K_M', label:'qwen3:14b', desc:'写作更强·**需 ≥16GB 显存**', size:'≈9.3GB', minVram:16},
   {tag:'qwen2.5:14b',      label:'qwen2.5:14b', desc:'稳定基准·**需 ≥16GB 显存**', size:'≈8.4GB', minVram:16},
 ];
