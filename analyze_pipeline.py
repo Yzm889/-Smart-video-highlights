@@ -382,7 +382,20 @@ def dispatch_analyze(req, prog):
         })
 
     # 4. 每段多版草稿（LLM 失败降级）
-    if options.get('draft', True):
+    # 4a. 草稿生成前先做**真实推理探针**：实测本地模型能列出却推理即崩/挂起 200+ 秒，
+    #     不探就等 → 用户跑 20 分钟视频时才发现，本机已被拖死。探针 25 秒内出不来
+    #     就直接跳过草稿阶段并给出可操作提示（而不是整程挂着）。
+    _infer_ok, _infer_msg = True, ''
+    try:
+        from ai_providers import local_llm_infer_probe
+        _infer_ok, _infer_msg = local_llm_infer_probe()
+    except Exception:
+        _infer_ok, _infer_msg = True, ''
+    if options.get('draft', True) and not _infer_ok:
+        warnings.append('本地模型不可用，已跳过草稿生成：%s（可在「🤖 AI 配置 → 测试连接」查看；'
+                        '若为显存不足请换更小的模型）' % _infer_msg[:200])
+
+    if options.get('draft', True) and _infer_ok:
         n = max(1, len(segments))
         # 批量优先：段数多时**一次** LLM 调用产出全部草稿。
         # 旧实现逐段串行 → 20 分钟视频 60 段 = 60 次模型请求（本机单次 47~159 秒

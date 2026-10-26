@@ -922,8 +922,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_local_status(self):
         ok, msg = (_w.local_llm_ping() if _w.local_llm_enabled() else (False, '本地模型未启用'))
+        # 真实推理探针：/models 通 ≠ 能出字。模型起不来时这里会直接给出原因，
+        # 用户在跑 20 分钟视频之前就能看到，不用等整程卡死才发现。
+        infer_ok, infer_msg = (True, '')
+        try:
+            infer_ok, infer_msg = _w.local_llm_infer_probe()
+        except Exception as e:
+            infer_ok, infer_msg = False, str(e)[:160]
         self._send(200, json.dumps({'ok': True, 'enabled': _w.local_llm_enabled(), 'ready': bool(ok),
                                     'message': msg, 'model': _w.local_llm_cfg()['model'],
+                                    'infer_ok': bool(infer_ok), 'infer_msg': infer_msg,
                                     'installed': _w._installed_local_models(),
                                     'pulling': _w.LOCAL_PULL['running'], 'pull_model': _w.LOCAL_PULL['model'],
                                     'pull_ok': _w.LOCAL_PULL['ok'], 'pull_msg': _w.LOCAL_PULL['msg'],

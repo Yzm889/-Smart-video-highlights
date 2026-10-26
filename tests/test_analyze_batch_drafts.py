@@ -106,6 +106,10 @@ def test_batch_parse_failure_is_visible(monkeypatch):
 # 端到端：dispatch_analyze 的调用次数
 # ---------------------------------------------------------------------------
 def _setup_pipeline(monkeypatch, tmp_path, n_segs, llm_impl):
+    import ai_providers as AP
+    # 隔离真实推理探针：本文件测的是「批量/并发」逻辑，探针另有专门用例
+    # （tests/test_local_infer_probe.py）。不隔离会打到真实 Ollama（可能卡 25s）。
+    monkeypatch.setattr(AP, 'local_llm_infer_probe', lambda *a, **k: (True, '推理正常'))
     video = tmp_path / 'src.mp4'
     video.write_bytes(b'0' * 1024)
     segs = [(i * 20.0, (i + 1) * 20.0) for i in range(n_segs)]

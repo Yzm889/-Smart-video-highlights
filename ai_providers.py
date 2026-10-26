@@ -333,6 +333,11 @@ def local_llm_cfg():
 _LOCAL_LLM_FAIL = {'count': 0, 'last_error': '', 'last_model': ''}
 _LOCAL_LLM_FAIL_MAX = 2          # 连续失败 2 次即熔断（再试也大概率同样失败）
 
+# 真实推理探针的状态（与熔断分开：探针只回答「能不能出字」，不参与熔断计数）
+_LOCAL_INFER_PROBE = {'ts': 0.0, 'ok': None, 'msg': ''}
+_LOCAL_INFER_PROBE_TTL = 60.0    # 结果缓存 60 秒
+_LOCAL_INFER_PROBE_TIMEOUT = 25   # 探针超时：卡死的 Ollama 必须快速暴露
+
 
 def _ollama_err_text(body):
     """从 Ollama 错误响应体里取出真正的原因文本。
@@ -373,6 +378,58 @@ def _llm_payload(model, messages, max_tokens=1500, temperature=0.8):
         'temperature': temperature,
         'think': False,
     }
+
+
+def local_llm_infer_probe(timeout=_LOCAL_INFER_PROBE_TIMEOUT, force=False):
+    """**真实推理**探针：发一个极小的生成请求，看本地模型能否真的出字。
+
+    旧 `local_llm_ping` 只探 /models（服务在、模型列表在）→ 「就绪」是假的：
+    实测模型能列出、真推理却要么 llama-server 直接崩（0xe06d7363）、要么请求
+    挂起 200+ 秒无响应；用户在跑 20 分钟视频时才发现，整机已被拖死。
+    这里真打一次极小请求，25 秒内出不来即判不可用，并把真实原因带出去。
+
+    返回 (ok, msg)；结果缓存 60 秒（探针本身要几十秒，不能每次都打）。
+    """
+    import time as _t
+    now = _t.time()
+    if (not force and _LOCAL_INFER_PROBE['ok'] is not None
+            and now - _LOCAL_INFER_PROBE['ts'] < _LOCAL_INFER_PROBE_TTL):
+        return bool(_LOCAL_INFER_PROBE['ok']), _LOCAL_INFER_PROBE['msg']
+    # 探「辅助任务实际会用到的模型」：配了 light_model 就用它，否则用主模型
+    _light = local_llm_light_cfg()
+    cfg = _light if _light else local_llm_cfg()
+    model = (cfg or {}).get('model')
+    if not (cfg or {}).get('base_url') or not model:
+        _LOCAL_INFER_PROBE.update({'ts': now, 'ok': False, 'msg': '本地模型未配置'})
+        return False, '本地模型未配置'
+    import urllib.request, urllib.error, json as _j
+    payload = {'model': model,
+               'messages': [{'role': 'user', 'content': '只回复一个字：好'}],
+               'max_tokens': 16, 'temperature': 0, 'think': False,
+               'options': {'num_predict': 16}}
+    req = urllib.request.Request(cfg['base_url'].rstrip('/') + '/chat/completions',
+                                 data=_j.dumps(payload).encode('utf-8'),
+                                 headers={'Content-Type': 'application/json'})
+    ok, msg = False, ''
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _j.loads(resp.read().decode('utf-8'))
+        out = _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+        ok = bool((out or '').strip())
+        msg = '推理正常' if ok else '推理返回空内容（模型可能崩溃或思考吃满配额）'
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode('utf-8', 'ignore')
+        except Exception:
+            pass
+        msg = '推理失败 HTTP %s：%s' % (e.code, _ollama_err_text(body) or (e.reason or ''))
+    except Exception as e:
+        _s = str(e)
+        msg = '推理无响应（%s）：%s' % ('超时' if ('timed out' in _s.lower() or 'timeout' in _s.lower()) else '异常',
+                                     _s[:140])
+    _LOCAL_INFER_PROBE.update({'ts': now, 'ok': ok, 'msg': msg})
+    return ok, msg
 
 
 def local_llm_chat(prompt, system=None, timeout=180, max_tokens=None):
