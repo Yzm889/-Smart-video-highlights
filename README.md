@@ -286,7 +286,9 @@ $env:SPRING_VIDEO_FONT = "C:/path/to/NotoSansSC-Regular.otf"
 ## 🧪 工程化与质量
 
 - **模块化拆分**：后端从单文件（1.1 万行）按域拆为 `handler / workflows / movie_narrator / video_render / beat_analysis / ffmpeg_utils / cache_utils / ai_providers / tts_engines / text_utils / bili_downloader`；HTTP 端点路由表化（新增端点 = 一个方法 + 登记一行）
-- **回归保障**：全量 **308 个测试 / 0 失败**（覆盖三大创作链路、并发双任务、分片上传、命令注入面、路径安全、断点续跑、磁盘清理等）；`pyflakes webui_server.py tests/` 零告警门禁；GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
+- **回归保障**：全量 **442 个测试 / 0 失败**（覆盖三大创作链路、并发双任务、分片上传、命令注入面、路径安全、断点续跑、磁盘清理等）；`pyflakes webui_server.py tests/` 零告警门禁；GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
+- **一键巡检（替代手工点页面测）**：`python tools/selfcheck.py` —— 静态门禁（枚举/接口/字段对账）+ **真起服务扫描全部 GET 端点**（抓 404/500/非法 JSON）+ 关键 POST 冒烟 + 单元测试，末尾直接给出「已知问题清单」。加 `--fast` 可跳过单元测试
+- **契约门禁（防"两侧各写一份"）**：题材/风格/详略等枚举与后端模板**双向对账**（前端多一个选项、后端少一个 key 都会红）；前端调用的每个 `/api/...` 必须存在于后端路由表（防接口改名/漏接）；前端依赖的关键响应字段必须真返回（防读到 undefined 静默失效）
 - **安全**：路径穿越防护（素材/音乐/媒体目录归属校验）、全项目禁 `shell=True`（模型拉取白名单校验）、前端 XSS 转义、`ai_config.json` 密钥不入库（`.gitignore` 排除）
 - **质量升级（渲染）**：单遍合并编码（剪切+微变速+烧字幕+缩放一次成型）、画质三档（preset+crf / vbr+cq）、BGM 侧链闪避、有限次循环、段落边界 200ms 交叉淡化
 
