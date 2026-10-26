@@ -1176,9 +1176,10 @@ def vlm_chat(image_path, text, system=None, timeout=180):
 
 
 
-def vlm_text(text, system=None, timeout=180):
+def vlm_text(text, system=None, timeout=180, max_tokens=1200):
     """调用本地/云端 VLM 的纯文本能力（不带图）。用于在已有多帧剧情理解后，纯文本生成连贯解说稿，
-    避免逐段重复看图导致的复读。失败抛异常。"""
+    避免逐段重复看图导致的复读。失败抛异常。
+    max_tokens：批量任务需要更大输出预算时可显式指定。"""
     c = vlm_cfg()
     if not c['base_url']:
         raise RuntimeError('VLM 未配置')
@@ -1192,7 +1193,7 @@ def vlm_text(text, system=None, timeout=180):
         url = c['base_url'] + '/api/chat'
     else:
         messages = ([{'role': 'system', 'content': system}] if system else []) + [{'role': 'user', 'content': text}]
-        payload = {'model': c['model'], 'messages': messages, 'max_tokens': 1200, 'temperature': 0.8}
+        payload = {'model': c['model'], 'messages': messages, 'max_tokens': max_tokens, 'temperature': 0.8}
         url = c['base_url'] + '/v1/chat/completions'
     req = urllib.request.Request(url, data=_json.dumps(payload).encode('utf-8'), headers=headers)
 

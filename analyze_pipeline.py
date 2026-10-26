@@ -32,6 +32,155 @@ _log = logging.getLogger('framecut.analyze')
 
 DRAFT_STYLES = ['简洁', '悬念', '口语']
 
+# 批量草稿的最小段数：低于此值仍走逐段路径（行为完全不变、失败粒度更细）
+DRAFT_BATCH_MIN = 6
+
+
+# ---------------------------------------------------------------------------
+# 批量草稿：一次 LLM 调用产出多段（长视频的量级差异就在这里）
+# ---------------------------------------------------------------------------
+def _try_parse_json_array(text):
+    """从模型输出里尽力提取 JSON 数组。返回 list 或 None。
+
+    模型常在数组前后加解释文字或 ```json 围栏，不能直接 json.loads 整段。策略：
+    ① 整体能解析且是 list → 直接用；
+    ② 找第一个 '[' 到配对 ']' 解析；
+    ③ 兜底：逐个提取平衡的 '{...}' 对象（不少模型把数组写成多行对象）。
+    """
+    if not text:
+        return None
+    import json as _j
+    import re as _re
+    t = _re.sub(r'^\s*```(?:json)?\s*|\s*```\s*$', '', text.strip(), flags=_re.S)
+
+    def _balanced(s, open_ch, close_ch):
+        """返回 s 中第一个 open_ch 到配对 close_ch 的片段（含两端）；配不上返回 None。"""
+        start = s.find(open_ch)
+        if start < 0:
+            return None
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(s)):
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == '\\':
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return s[start:i + 1]
+        return None
+
+    try:
+        obj = _j.loads(t)
+        if isinstance(obj, list):
+            return obj
+    except Exception:
+        pass
+    frag = _balanced(t, '[', ']')
+    if frag:
+        try:
+            obj = _j.loads(frag)
+            if isinstance(obj, list):
+                return obj
+        except Exception:
+            pass
+    out = []
+    pos = 0
+    while True:
+        m = _re.search(r'\{', t[pos:])
+        if not m:
+            break
+        pos += m.start()
+        frag = _balanced(t[pos:], '{', '}')
+        if not frag:
+            break
+        pos += len(frag)
+        try:
+            o = _j.loads(frag)
+            if isinstance(o, dict):
+                out.append(o)
+        except Exception:
+            pass
+    return out or None
+
+
+def _drafts_for_segments_batch(items, timeout=300):
+    """一次 LLM 调用产出多段草稿。items=[(seg_index, asr_text), ...]
+
+    【为什么必须批量】旧实现逐段串行调用：20 分钟视频切 60 段 → 60 次模型请求。
+    本机实测单次 47~159 秒（模型 9.28GB 且失败后不驻留，每次要重读权重），
+    60 次 ≈ 47 分钟~2.6 小时，反复重载把磁盘 I/O 打满、16GB 内存页缓存抖动 →
+    整机卡死（用户反馈「网卡都卡掉」）。批量后只 1 次请求。
+
+    返回 ({seg_index: drafts}, err)：解析不到/缺项的段留空，由调用方给出可见告警。
+    """
+    n = len(items)
+    lines = '\n'.join('[%d] %s' % (i, (txt or '').strip()[:300])
+                      for i, (_idx, txt) in enumerate(items))
+    prompt = (
+        '你是影视解说撰稿人。下面是同一部视频的 %d 段台词，请为每段各写 3 个不同风格的解说词草稿。\n'
+        '台词：\n%s\n\n'
+        '要求：\n'
+        '- 每版 1~2 句，口语化，不超过 40 字\n'
+        '- 【简洁】直给说清画面\n'
+        '- 【悬念】留钩子勾人看下一段\n'
+        '- 【口语】像跟朋友聊电影\n'
+        '严格只输出 JSON 数组，共 %d 项，每项形如 {"i":0,"简洁":"...","悬念":"...","口语":"..."}，'
+        'i 是上面台词的编号。' % (n, lines, n)
+    )
+    max_tokens = min(8000, 1200 + 140 * n)
+    raw = _llm_light(prompt, system='你是资深影视解说撰稿人，只输出 JSON 数组。',
+                     timeout=timeout, max_tokens=max_tokens)
+    arr = _try_parse_json_array(raw or '')
+    if not isinstance(arr, list) or not arr:
+        return {}, 'llm_parse_fail'
+    # 先按显式 i 归位；只有当显式编号没能覆盖全部段、且数组长度正好等于段数时，
+    # 才改用位置对应（有的模型会忽略 i 或用 1 起始），否则宁可不猜（错位更糟）。
+    by_idx = {}
+    for k, obj in enumerate(arr):
+        if not isinstance(obj, dict):
+            continue
+        try:
+            idx = int(obj.get('i'))
+        except Exception:
+            idx = None
+        if idx is not None and 0 <= idx < n:
+            by_idx.setdefault(idx, obj)
+    use_positional = (len(by_idx) < n) and (len(arr) == n)
+    out = {}
+    for k, obj in enumerate(arr):
+        if not isinstance(obj, dict):
+            continue
+        if use_positional:
+            idx = k
+        else:
+            try:
+                idx = int(obj.get('i'))
+            except Exception:
+                continue
+            if not (0 <= idx < n):
+                continue
+        seg_idx = items[idx][0]
+        drafts = []
+        for st in DRAFT_STYLES:
+            t = str(obj.get(st) or '').strip()
+            if t:
+                drafts.append({'style': st, 'text': t})
+        if drafts:
+            out[seg_idx] = drafts
+    return out, (None if out else 'llm_parse_fail')
+
 
 # ---------------------------------------------------------------------------
 # 缩略图
@@ -190,11 +339,31 @@ def dispatch_analyze(req, prog):
     run_base = os.path.basename(run_dir)
     prog['phase'] = '抽取缩略图'
     prog['pct'] = 48
+    # 抽帧并发：ffmpeg 是子进程（释放 GIL），线程池有效；封顶 8 路避免抢磁盘。
+    # 旧实现逐段串行，60 段 = 60 次串行 ffmpeg 启动，长视频上是分钟级。
+    thumb_ok = {}
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one_thumb(idx, s, e):
+            jpg = os.path.join(thumb_dir, '%d.jpg' % idx)
+            return idx, _make_thumbnail(video_path, (s + e) / 2.0, jpg)
+        _jobs = [(i, s, e) for i, (s, e) in enumerate(segs)]
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(_jobs)))) as _ex:
+            for _i, _ok in _ex.map(lambda t: _one_thumb(*t), _jobs):
+                thumb_ok[_i] = _ok
+    except Exception as _te:
+        thumb_ok = {}
+        warnings.append('缩略图并发抽取异常（已退回逐段抽取）：%s' % str(_te)[:120])
+        # 真的退回逐段抽取（不能只在告警里说要退、实际却没抽）
+        for _i, (_s, _e) in enumerate(segs):
+            _jpg = os.path.join(thumb_dir, '%d.jpg' % _i)
+            thumb_ok[_i] = _make_thumbnail(video_path, (_s + _e) / 2.0, _jpg)
     segments = []
     for i, (s, e) in enumerate(segs):
         mid = (s + e) / 2.0
         jpg = os.path.join(thumb_dir, '%d.jpg' % i)
-        has_thumb = _make_thumbnail(video_path, mid, jpg)
+        has_thumb = bool(thumb_ok.get(i)) or (os.path.exists(jpg) and os.path.getsize(jpg) > 0)
         asr_text = _asr_text_in(asr, s, e)
         has_speech = bool((asr_text or '').strip())
         segments.append({
@@ -215,15 +384,48 @@ def dispatch_analyze(req, prog):
     # 4. 每段多版草稿（LLM 失败降级）
     if options.get('draft', True):
         n = max(1, len(segments))
-        for i, seg in enumerate(segments):
-            prog['pct'] = 55 + int(30 * i / n)
-            prog['phase'] = '生成解说词草稿 %d/%d' % (i + 1, n)
-            drafts, err = _drafts_for_segment(seg['asr_text'])
-            seg['ai_draft_narrations'] = drafts
-            if err and err != 'no_asr':
-                warnings.append('段%d 草稿生成失败（%s）：可在编辑台手写' % (i, err))
+        # 批量优先：段数多时**一次** LLM 调用产出全部草稿。
+        # 旧实现逐段串行 → 20 分钟视频 60 段 = 60 次模型请求（本机单次 47~159 秒
+        # 且失败后要重读 9.28GB 权重）→ 47 分钟~2.6 小时，并把磁盘/内存打满、整机卡死。
+        speech_idx = [i for i, seg in enumerate(segments) if (seg.get('asr_text') or '').strip()]
+        if len(speech_idx) >= DRAFT_BATCH_MIN:
+            prog['phase'] = '批量生成解说词草稿（%d 段一次请求）' % len(speech_idx)
+            prog['pct'] = 62
+            _items = [(i, segments[i]['asr_text']) for i in speech_idx]
+            try:
+                _got, _err = _drafts_for_segments_batch(_items)
+            except Exception as _ex:
+                _got, _err = {}, 'llm_error: %s' % _ex
+            for i in speech_idx:
+                _d = _got.get(i)
+                if _d:
+                    segments[i]['ai_draft_narrations'] = _d
+            _missing = [i for i in speech_idx if not _got.get(i)]
+            if _err:
+                warnings.append('批量草稿生成失败（%s）：%d 段无草稿，可在编辑台手写'
+                                % (_err, len(_missing)))
+            elif _missing:
+                warnings.append('批量草稿解析不完整：%d/%d 段无草稿（可在编辑台手写）'
+                                % (len(_missing), len(speech_idx)))
+        else:
+            for i, seg in enumerate(segments):
+                prog['pct'] = 55 + int(30 * i / n)
+                prog['phase'] = '生成解说词草稿 %d/%d' % (i + 1, n)
+                drafts, err = _drafts_for_segment(seg['asr_text'])
+                seg['ai_draft_narrations'] = drafts
+                if err and err != 'no_asr':
+                    warnings.append('段%d 草稿生成失败（%s）：可在编辑台手写' % (i, err))
     else:
         warnings.append('草稿生成已按选项关闭（draft=false）')
+
+    # 4b. 本地模型失败原因必须让用户看见（原来被 except: pass 吞掉 → 用户只感到「卡」）
+    try:
+        from ai_providers import local_llm_last_error
+        _lerr = local_llm_last_error()
+    except Exception:
+        _lerr = ''
+    if _lerr and not any('本地模型' in w for w in warnings):
+        warnings.append('本地模型异常：%s' % _lerr[:220])
 
     # 5. 叙事线建议
     prog['phase'] = '生成叙事线建议'

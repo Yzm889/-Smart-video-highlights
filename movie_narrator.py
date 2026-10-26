@@ -1144,32 +1144,46 @@ def _narrate_candidate_shots(video_path, params):
     return segs
 
 
-def _llm_text(prompt, system='', timeout=180):
-    """本地文字模型优先（写稿主力），不可用/失败时回退视觉模型的文字通道；都不可用返回 None。"""
+def _llm_call(fn, prompt, system, timeout, max_tokens):
+    """调用 llm 函数，且**只在显式给了 max_tokens 时才传该参数**。
+
+    兼容旧签名：这些 llm 入口会被测试/扩展用 lambda 替换（形如
+    `lambda prompt, system='', timeout=180: ...`），若无条件多传一个
+    max_tokens 关键字 → TypeError → 静默回退主模型，旧行为被破坏。
+    """
+    if max_tokens is None:
+        return fn(prompt, system=system, timeout=timeout)
+    return fn(prompt, system=system, timeout=timeout, max_tokens=max_tokens)
+
+
+def _llm_text(prompt, system='', timeout=180, max_tokens=None):
+    """本地文字模型优先（写稿主力），不可用/失败时回退视觉模型的文字通道；都不可用返回 None。
+
+    max_tokens：批量任务（一次出多段草稿）需要更大输出预算，可显式指定。"""
     if _local_model_available():
         try:
-            r = local_llm_chat(prompt, system=system, timeout=timeout)
+            r = _llm_call(local_llm_chat, prompt, system, timeout, max_tokens)
             if r and r.strip():
                 return r
         except Exception:
             pass
     try:
-        return _w.vlm_text(prompt, system=system, timeout=timeout)
+        return _llm_call(_w.vlm_text, prompt, system, timeout, max_tokens)
     except Exception:
         return None
 
 
-def _llm_light(prompt, system='', timeout=180):
+def _llm_light(prompt, system='', timeout=180, max_tokens=None):
     # S4: 辅助任务优先走轻量模型（local.light_model）；未配置/失败回退主模型 _llm_text。
     # NARRATE_LIGHT_LLM=0 可整体关闭（辅助任务直接走主模型）。
     if os.environ.get('NARRATE_LIGHT_LLM') != '0':
         try:
-            r = local_llm_light_chat(prompt, system=system, timeout=timeout)
+            r = _llm_call(local_llm_light_chat, prompt, system, timeout, max_tokens)
             if r and r.strip():
                 return r
         except Exception:
             pass
-    return _llm_text(prompt, system=system, timeout=timeout)
+    return _llm_call(_llm_text, prompt, system, timeout, max_tokens)
 
 
 def _asr_text_in(asr, s, e):
