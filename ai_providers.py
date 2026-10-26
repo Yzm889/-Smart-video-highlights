@@ -690,6 +690,77 @@ def _cuda_runtime_present():
                 return True
     return False
 
+_GPU_VRAM_CACHE = {'val': None}
+
+
+def gpu_vram_gb():
+    """本机 NVIDIA 显存（GB，浮点）；探测不到返回 0.0。结果缓存（硬件在进程期内不变）。"""
+    if _GPU_VRAM_CACHE['val'] is not None:
+        return _GPU_VRAM_CACHE['val']
+    val = 0.0
+    try:
+        import subprocess
+        r = subprocess.run(['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            val = round(int(r.stdout.strip().splitlines()[0].strip()) / 1024.0, 1)
+    except Exception:
+        pass
+    _GPU_VRAM_CACHE['val'] = val
+    return val
+
+
+# 文字模型权重占显存（GB，Q4_K_M 实测值）与「与之共存的视觉模型」所需显存。
+#
+# 实测依据（RTX3060 **12GB** + 16GB 内存，Ollama 0.40.11，2026-10-26）：
+#   qwen3:14b-q4_K_M 权重 9.28GB → 12GB 卡只剩 ~2.7GB 给 KV cache 与计算缓冲，
+#   实测单次调用 47~215 秒，且间歇性 llama-server 崩溃（exit 0xe06d7363）；
+#   再叠加 MiniCPM-V 4.5(6.12GB) 合计 15.4GB > 12GB → 两模型互相驱逐 → 每次重读
+#   9.28GB 权重 → 磁盘 I/O 打满 + 16GB 内存页缓存抖动 → 整机卡死。
+#   → 所以 **12GB 档不再推荐 14B**：改成 8B（与视觉模型合计 11.3GB，可共存）。
+TEXT_MODEL_VRAM = {
+    'qwen3:30b-q4_K_M': 24.0,
+    'qwen3:14b-q4_K_M': 16.0,
+    'qwen2.5:14b': 16.0,
+    'qwen3:8b': 8.0,
+    'qwen2.5:7b': 8.0,
+    'qwen2.5:3b': 4.0,
+}
+VLM_MODEL_VRAM = {
+    'qwen3-vl:30b': 20.0,
+    'minicpm-v4.5': 6.5,
+    'qwen3-vl:8b': 6.1,
+    'qwen2.5vl:latest': 5.6,
+    'qwen3-vl:4b': 3.5,
+}
+
+
+def recommend_text_model(vram_gb=None, with_vlm=True):
+    """按显存推荐「写解说稿」用的文字模型。返回 (tag, 说明)。
+
+    关键：文字模型通常要与**视觉模型共存**（一个看图、一个写稿），所以不能只看
+    「模型能不能单独装下」，还要给视觉模型留出显存——否则两个大模型互相驱逐，
+    表现就是「跑长视频时整机卡死」（实测 12GB 卡上 14B + MiniCPM 的真实故障）。
+    """
+    v = gpu_vram_gb() if vram_gb is None else float(vram_gb or 0)
+    if v >= 24:
+        return 'qwen3:30b-q4_K_M', '≥24GB 独显：可跑 30B MoE，写稿最强'
+    if v >= 16:
+        return 'qwen3:14b-q4_K_M', ('≥16GB 独显：14B(约9.3GB) 可用，'
+                                    '与 MiniCPM-V 4.5(约6.1GB) 合计约 15.4GB，刚好共存')
+    if v >= 12:
+        return 'qwen3:8b', ('12GB 独显：推荐 8B(约5.2GB)。**不要用 14B**——权重 9.3GB 会与'
+                            '视觉模型抢显存，实测单次调用 47~215 秒、甚至 llama-server 崩溃')
+    if v >= 10:
+        return 'qwen2.5:7b', '10GB 独显：推荐 7B(约4.7GB)，配 4B 视觉模型'
+    if v >= 8:
+        return 'qwen2.5:3b', '8GB 独显：文字模型用 3B(约2GB) 速度优先；配 4B 视觉模型'
+    if v >= 6:
+        return 'qwen2.5:3b', '6GB 独显：文字模型用 3B(约2GB)，视觉模型用 4B'
+    return 'qwen2.5:3b', ('无独显/纯 CPU：只能跑最小模型，建议改用云端 chat API 写稿，'
+                          '本地模型只做兜底')
+
+
 def _cuda_available():
     """轻量检测 NVIDIA GPU 是否可用于推理：既要有驱动（nvidia-smi / torch），
     也要有 CUDA 运行时库（cublas/cudnn）。两者齐备才算可用。

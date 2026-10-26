@@ -740,10 +740,14 @@ def _model_narr_guide():
         guide['recommend_note'] = '本地文字模型 %s 已就绪，解说稿走它生成，质量最佳。' % guide['local_model']
     else:
         # 有本地视觉模型但缺文字模型 → 引导补装文字模型（写解说稿的主力）
-        guide['recommend'] = 'ollama pull qwen2.5:14b'
+        # 【2026-10-26】按本机显存给推荐：原先固定推 qwen2.5:14b(9.3GB)，在 12GB 卡上
+        # 实测与视觉模型抢显存 → 单次调用 47~215 秒、甚至 llama-server 崩溃 → 整机卡死。
+        _tag, _note = _w.recommend_text_model(_w.gpu_vram_gb(), with_vlm=bool(guide['vlm_model']))
+        guide['recommend'] = 'ollama pull %s' % _tag
         guide['recommend_note'] = ('当前只配置了视觉模型（%s）：它只负责“看懂画面”，写剧情解说词很弱。'
-                                   '请部署一个文字模型（推荐 qwen2.5:14b，写剧情解说更靠谱），'
-                                   '并在「AI 配置 → ③ 本地模型」里把模型填成它。' % guide['vlm_model'])
+                                   '请部署一个文字模型（推荐 %s：%s），'
+                                   '并在「AI 配置 → ③ 本地模型」里把模型填成它。'
+                                   % (guide['vlm_model'], _tag, _note))
     return guide
 
 

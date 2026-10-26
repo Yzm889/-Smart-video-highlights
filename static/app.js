@@ -389,6 +389,8 @@ function saveCleanupMid(){
 // ---- 硬件检测与模型推荐 ----
 function loadHardware(){
   fetch('/api/hardware').then(r=>r.json()).then(h=>{
+    // 全局留存：模型卡片要按本机显存标注「放不下」，不能只在 desc 里写一句"需16GB"
+    window.HW_INFO = h || {};
     const banner = $('hardwareBanner'); if(!banner) return;
     banner.style.display = 'block';
     const info = [];
@@ -981,16 +983,21 @@ function loadVlmStatus(){
 }
 // ---- 本地模型（文字解说）：网页内一键拉取 + 状态轮询 ----
 // 模型选择卡：状态驱动——如实显示 使用中 / 已安装·点击启用 / 未安装·下载中
+// minVram = 该模型权重需要的显存(GB)：小于本机显存时**明确标注放不下**，
+//   避免用户照着"推荐"装出一个抢显存、慢到 200 秒/次的组合（2026-10-26 实测教训）。
 const LOCAL_MODEL_CATALOG = [
-  {tag:'qwen3:14b-q4_K_M', label:'⭐ qwen3:14b', desc:'新一代 · 写作更强', size:'≈9.0GB'},
-  {tag:'qwen2.5:14b',      label:'qwen2.5:14b', desc:'稳定基准（回退选）', size:'≈8.4GB'},
-  {tag:'qwen3:8b',         label:'qwen3:8b', desc:'轻快省显存 · 共存更稳', size:'≈5.2GB'},
+  {tag:'qwen3:8b',         label:'⭐ qwen3:8b', desc:'12GB 卡推荐·与看图模型可共存', size:'≈5.2GB', minVram:8},
+  {tag:'qwen2.5:7b',      label:'qwen2.5:7b', desc:'8-10GB 卡推荐·稳', size:'≈4.7GB', minVram:8},
+  {tag:'qwen2.5:3b',      label:'qwen2.5:3b', desc:'6GB 卡/纯CPU·速度优先', size:'≈2.0GB', minVram:4},
+  {tag:'qwen3:14b-q4_K_M', label:'qwen3:14b', desc:'写作更强·**需 ≥16GB 显存**', size:'≈9.3GB', minVram:16},
+  {tag:'qwen2.5:14b',      label:'qwen2.5:14b', desc:'稳定基准·**需 ≥16GB 显存**', size:'≈8.4GB', minVram:16},
 ];
 const VLM_MODEL_CATALOG = [
-  {tag:'minicpm-v4.5', label:'⭐ MiniCPM-V 4.5', desc:'视频理解专项·96x压缩·同显存多看10倍帧', size:'≈6.5GB'},
-  {tag:'qwen3-vl:8b',      label:'qwen3-vl:8b', desc:'新一代视觉·综合强·剧情理解好', size:'≈6.1GB'},
-  {tag:'qwen3-vl:30b',     label:'qwen3-vl:30b (MoE)', desc:'旗舰·激活3B速度快·需16GB显存', size:'≈20GB'},
-  {tag:'qwen2.5vl:latest', label:'qwen2.5vl', desc:'稳定基准（回退选）', size:'≈5.6GB'},
+  {tag:'minicpm-v4.5', label:'⭐ MiniCPM-V 4.5', desc:'视频理解专项·96x压缩·同显存多看10倍帧', size:'≈6.1GB', minVram:8},
+  {tag:'qwen3-vl:8b',      label:'qwen3-vl:8b', desc:'新一代视觉·综合强·剧情理解好', size:'≈6.1GB', minVram:8},
+  {tag:'qwen3-vl:4b',      label:'qwen3-vl:4b', desc:'轻量视觉·与 3B/7B 文字模型共存更稳', size:'≈3.5GB', minVram:4},
+  {tag:'qwen2.5vl:latest', label:'qwen2.5vl', desc:'稳定基准（回退选）', size:'≈5.6GB', minVram:8},
+  {tag:'qwen3-vl:30b',     label:'qwen3-vl:30b (MoE)', desc:'旗舰·**需 ≥24GB 显存**', size:'≈20GB', minVram:24},
 ];
 
 const WHISPER_MODEL_CATALOG = [
@@ -1004,12 +1011,16 @@ const WHISPER_MODEL_CATALOG = [
 ];
 function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn){
   const box = $(boxId); if(!box) return;
+  const vram = (window.HW_INFO && window.HW_INFO.gpu_vram_gb) || 0;
   box.innerHTML = catalog.map(m=>{
     // 精确匹配，兼容 ollama 自动补的 :latest 后缀；不用前缀匹配（避免 large-v3 误伤 large-v3-turbo）
     const inst = (installed||[]).some(x => x === m.tag || x === m.tag + ':latest' ||
       (m.tag.indexOf(':') < 0 && x.indexOf(':') >= 0 && x.split(':')[0] === m.tag));
     const active = cur === m.tag;
     const pulling = pullingModel === m.tag;
+    // 放不下就明说：这是「不要误导」的关键——不能只在 desc 里写"需16GB"，
+    // 而要在用户自己的卡上直接标红提示"你的 12GB 装不下，且会与看图模型抢显存"。
+    const tooBig = !!(m.minVram && vram && m.minVram > vram);
     let state, btnCls, btn;
     if (pulling){ state = '⏳ 下载中…'; btnCls = 'btn mini'; btn = '下载中'; }
     else if (active && inst){ state = '✅ 使用中'; btnCls = 'btn mini'; btn = '使用中'; }
@@ -1017,9 +1028,13 @@ function _renderModelCards(boxId, catalog, cur, installed, pullingModel, pickFn)
     else if (inst){ state = '✅ 已安装'; btnCls = 'btn mini ghost'; btn = '点击启用'; }
     else { state = '⬜ 未安装'; btnCls = 'btn mini ghost'; btn = '⬇ 下载并启用'; }
     const rmBtn = (inst && !active) ? `<span style="display:inline-block;margin-top:4px;font-size:11px;color:#ef4444;cursor:pointer;text-decoration:underline;" onclick="event.stopPropagation();removeModel('${m.tag}')">卸载</span>` : '';
-    return `<button class="${btnCls}" style="flex:1;min-width:150px;text-align:left;${active?'outline:2px solid #16a34a;':''}" onclick="${pickFn}('${m.tag}',${inst})" ${pulling?'disabled':''}>
+    const vramWarn = tooBig
+      ? `<span style="display:block;font-size:12px;margin-top:2px;color:#ef4444;font-weight:600;">⚠️ 你的 ${vram}GB 装不下（需 ≥${m.minVram}GB），会与看图模型抢显存</span>`
+      : '';
+    return `<button class="${btnCls}" style="flex:1;min-width:150px;text-align:left;${active?'outline:2px solid #16a34a;':''}${tooBig?'opacity:.75;':''}" onclick="${pickFn}('${m.tag}',${inst})" ${pulling?'disabled':''}>
       <span style="display:block;font-weight:600;">${m.label} · ${m.size}</span>
       <span style="display:block;font-size:12px;opacity:.75;">${m.desc}</span>
+      ${vramWarn}
       <span style="display:block;font-size:12px;margin-top:2px;">${state}</span>${rmBtn}</button>`;
   }).join('');
 }
@@ -1501,6 +1516,18 @@ function loadAiStatus(){
 }
 
 // 解说模型引导：提示 qwen2.5vl 的局限 + 引导部署「文字模型」写剧情解说
+// 后端 guide 没给出命令时的兜底：按本机显存挑档位。
+// 不要再硬编码 qwen2.5:14b——12GB 卡上它(9.3GB)会与看图模型(6.1GB)抢显存，
+// 实测单次调用 47~215 秒、llama-server 崩溃 → 跑长视频时整机卡死（2026-10-26）。
+function _fallbackPullCmd(){
+  const h = window.HW_INFO || {};
+  const rec = (h.recommendations && h.recommendations.text) || '';
+  if (rec) return 'ollama pull ' + rec;
+  const v = h.gpu_vram_gb || 0;
+  if (!v || v < 10) return 'ollama pull qwen2.5:3b';
+  if (v < 16) return 'ollama pull qwen3:8b';
+  return 'ollama pull qwen3:14b-q4_K_M';
+}
 function renderNarrGuide(s){
   const ng = $('narrGuide');
   if (!ng) return;
@@ -1514,7 +1541,8 @@ function renderNarrGuide(s){
     ng.className = 'narr-guide warn';
     ng.innerHTML = '⚠️ 当前视觉模型 <b>'+esc(g.vlm_model||'?')+'</b> 是「看图模型」：只负责识别画面，<b>写剧情解说词很弱</b>。'
       + '想要《赌圣》式剧情解说，请部署一个<b>文字模型</b>（写稿主力），并到「🤖 AI 配置 → ③ 本地模型」把模型填成它：'
-      + ' <code>'+(g.recommend||'ollama pull qwen2.5:14b')+'</code>'
+      + ' <code>'+esc(g.recommend || _fallbackPullCmd())+'</code>'
+      + (g.recommend_note ? ' <span class="dim">'+esc(g.recommend_note)+'</span>' : '')
       + (g.installed && g.installed.length ? ' <span class="dim">已装：'+g.installed.join('、')+'</span>' : '');
   } else if (s.vlm_ready || s.local_ready){
     ng.className = 'narr-guide';
@@ -6957,19 +6985,27 @@ function collabPollRender(runid, draft){
 
 
 // ===== 🎯 性能档位四选一 =====
+// 硬件档位 → 模型组合。
+// 【2026-10-26 实测修正】原 g12 档（标着「⭐ 甜点·12G / 3060 12G 默认推荐 / 丝滑」）
+// 给的是 qwen3:14b-q4_K_M(9.28GB) + minicpm-v4.5(6.12GB) = 15.4GB > 12GB 显存：
+// 两模型互相驱逐 → 每次重读 9.28GB 权重 → 磁盘/内存打满 → 跑 20 分钟视频时整机卡死。
+// 现在按「文字模型 + 视觉模型能共存」配，14B 提到 16GB 档。
 const TIER_DEFS = [
   {id:'cpu', icon:'🐌', name:'入门·CPU', hw:'无独显 / 核显',
-   llm:'qwen3:8b', vlm:'qwen3-vl:4b', asr:'base', tts:'piper-huayan', dl:'~3GB', speed:'慢但能用',
-   desc:'老电脑纯 CPU 跑'},
+   llm:'qwen2.5:3b', vlm:'qwen3-vl:4b', asr:'base', tts:'piper-huayan', dl:'~3GB', speed:'慢但能用',
+   desc:'老电脑纯 CPU 跑，建议把写稿交给云端 API'},
   {id:'g6', icon:'🚶', name:'标准·6G', hw:'4-8GB 显存（1660/2060）',
-   llm:'qwen3:8b', vlm:'qwen3-vl:4b', asr:'small', tts:'piper-huayan', dl:'~6GB', speed:'流畅',
-   desc:'4-8GB 显卡'},
-  {id:'g12', icon:'⭐', name:'甜点·12G', hw:'8-12GB 显存（3060 12G）',
-   llm:'qwen3:14b-q4_K_M', vlm:'minicpm-v4.5', asr:'large-v3', tts:'melo-zh', dl:'~11GB', speed:'丝滑',
-   desc:'3060 12G 默认推荐'},
-  {id:'g16', icon:'🚀', name:'宽松·16G+', hw:'16GB+ 显存（4080/3090）',
-   llm:'qwen3:30b-q4_K_M', vlm:'qwen3-vl:30b', asr:'large-v3', tts:'melo-zh', dl:'~25GB', speed:'飞快',
-   desc:'全质量拉满'},
+   llm:'qwen2.5:3b', vlm:'qwen3-vl:4b', asr:'small', tts:'piper-huayan', dl:'~4GB', speed:'流畅',
+   desc:'4-8GB 显卡：3B 写稿 + 4B 看图，两模型共存不抢显存'},
+  {id:'g12', icon:'⭐', name:'甜点·12G', hw:'8-16GB 显存（3060 12G）',
+   llm:'qwen3:8b', vlm:'minicpm-v4.5', asr:'large-v3', tts:'melo-zh', dl:'~9GB', speed:'丝滑',
+   desc:'3060 12G 默认推荐：8B 写稿(5.2GB) + MiniCPM 看图(6.1GB) 合计约 11.3GB 可共存；14B 放不下、会与看图模型抢显存'},
+  {id:'g16', icon:'🚀', name:'宽松·16G+', hw:'16-24GB 显存（4080/3090）',
+   llm:'qwen3:14b-q4_K_M', vlm:'minicpm-v4.5', asr:'large-v3', tts:'melo-zh', dl:'~15GB', speed:'飞快',
+   desc:'16GB 显存：14B 写稿(9.3GB) + MiniCPM 看图(6.1GB) 合计约 15.4GB，刚好共存'},
+  {id:'g24', icon:'👑', name:'旗舰·24G+', hw:'24GB+ 显存（4090/专业卡）',
+   llm:'qwen3:30b-q4_K_M', vlm:'qwen3-vl:30b', asr:'large-v3', tts:'melo-zh', dl:'~25GB', speed:'全质量',
+   desc:'24GB+ 显存：30B MoE 写稿 + 30B 视觉，理解最强'},
 ];
 let tierRecommended = null;
 
@@ -7029,12 +7065,13 @@ function pickTier(id){
     }).catch(e=>console.warn('tier apply',e));
 }
 
-// 根据显存自动推荐档位
+// 根据显存自动推荐档位（与后端 HARDWARE_MODEL_RECS 保持同一分界）
 function recommendTierByVram(vramGb){
   if(!vramGb || vramGb < 4) return 'cpu';
-  if(vramGb < 8) return 'g6';
-  if(vramGb < 14) return 'g12';
-  return 'g16';
+  if(vramGb < 10) return 'g6';
+  if(vramGb < 16) return 'g12';
+  if(vramGb < 24) return 'g16';
+  return 'g24';
 }
 
 // 包装 loadHardware：硬件检测后自动渲染档位

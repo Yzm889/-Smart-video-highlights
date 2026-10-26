@@ -62,7 +62,7 @@ _EMOTION_MAP = tts_engines._EMOTION_MAP
 _EMOTION_VOICES = tts_engines._EMOTION_VOICES
 _CHATTS = tts_engines._CHATTS
 
-from ai_providers import AI_CONFIG_PATH, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, local_llm_infer_probe, local_llm_last_error, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # noqa: F401  # [3.2] 引擎层 re-export
+from ai_providers import AI_CONFIG_PATH, TEXT_MODEL_VRAM, VLM_MODEL_VRAM, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, gpu_vram_gb, load_ai_config, local_llm_cfg, local_llm_chat, local_llm_infer_probe, local_llm_last_error, mirror_cfg, recommend_text_model, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # noqa: F401  # [3.2] 引擎层 re-export
 
 from text_utils import _clamp_line, _clean_caption, _strip_tts_markup  # noqa: F401
 from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \
@@ -1641,18 +1641,28 @@ def extract_segment_frames(video_path, segs, out_dir, max_side=640):
 # ---------------------------------------------------------------------------
 HARDWARE_MODEL_RECS = [
     # (最低显存GB, 档位名, VLM推荐, Whisper推荐, TTS推荐, 文本模型推荐, 说明)
-    (16, '旗舰独显(≥16GB)', 'qwen3-vl:30b', 'large-v3', 'melo-zh', 'qwen3:30b-q4_K_M',
-     '16GB显存+32GB内存可跑30B MoE视觉模型（激活3B，速度快理解强），或Qwen3.8-27B原生多模态；MiniCPM-V4.5(8B)是速度优先的替代，视频token压缩96x适合长视频'),
-    (12, '高端独显(12-16GB)', 'minicpm-v4.5', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
-     '推荐MiniCPM-V4.5（8B，视频理解专项优化，96x token压缩，同显存多看10倍帧）；或qwen3-vl:8b（综合强）；内存≥32GB可尝试qwen3-vl:30b MoE'),
-    (8, '中高端独显(8-12GB)', 'minicpm-v4.5', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
-     'MiniCPM-V4.5（8B，视频理解强，显存占用小）或qwen3-vl:8b，Whisper GPU加速，MeloTTS配音'),
-    (6, '中端独显(6-8GB)', 'qwen3-vl:8b', 'medium', 'melo-zh', 'qwen3:8b',
-     '8B视觉模型可用，Whisper用medium平衡速度精度，MiniCPM-V4.5更省显存'),
-    (4, '入门独显(4-6GB)', 'qwen3-vl:4b', 'small', 'piper-huayan', 'qwen3:8b',
-     '4B视觉模型，Whisper用small，TTS用轻量piper'),
-    (0, '纯CPU/无独显', 'qwen3-vl:4b', 'base', 'piper-huayan', 'qwen3:8b',
-     '无显卡，全部走CPU，选最小模型保证速度'),
+    (24, '旗舰独显(≥24GB)', 'qwen3-vl:30b', 'large-v3', 'melo-zh', 'qwen3:30b-q4_K_M',
+     '24GB+ 显存可跑 30B MoE 视觉/文字模型（激活 3B，速度快理解强），或 Qwen3 原生多模态'),
+    (16, '高端独显(16-24GB)', 'minicpm-v4.5', 'large-v3', 'melo-zh', 'qwen3:14b-q4_K_M',
+     '16GB 显存：14B 文字模型(约9.3GB) + MiniCPM-V 4.5(约6.1GB) 合计约 15.4GB，可共存；'
+     '内存≥32GB 可尝试 qwen3-vl:30b MoE'),
+    # 【2026-10-26 实测修正】12GB 档原推荐 qwen3:14b-q4_K_M（9.28GB 权重）→ 实测在 12GB 卡上
+    # 单次调用 47~215 秒、间歇性 llama-server 崩溃(exit 0xe06d7363)；与 6.12GB 的 MiniCPM-V
+    # 合计 15.4GB > 12GB → 两模型互驱逐 → 每次重读权重 → 磁盘/内存打满 → 整机卡死。
+    # 改成 8B(5.2GB)，与 MiniCPM-V 合计 11.3GB，才真正可共存。
+    (12, '中高端独显(12-16GB)', 'minicpm-v4.5', 'large-v3', 'melo-zh', 'qwen3:8b',
+     '12GB 显存推荐：文字 qwen3:8b(约5.2GB) + 视觉 MiniCPM-V 4.5(约6.1GB) 合计约 11.3GB 可共存；'
+     '**不要用 14B**（9.3GB 权重会与视觉模型抢显存，实测慢到 200 秒/次甚至崩）'),
+    (10, '中端独显(10-12GB)', 'qwen3-vl:4b', 'medium', 'melo-zh', 'qwen2.5:7b',
+     '10GB 显存：文字 7B(约4.7GB) + 视觉 4B(约3.5GB)'),
+    (8, '入门独显(8-10GB)', 'qwen3-vl:4b', 'medium', 'melo-zh', 'qwen2.5:3b',
+     '8GB 显存：文字 3B(约2GB) 速度优先 + 视觉 4B；Whisper 用 medium 平衡速度精度'),
+    (6, '入门独显(6-8GB)', 'qwen3-vl:4b', 'small', 'piper-huayan', 'qwen2.5:3b',
+     '6GB 显存：文字 3B(约2GB) + 视觉 4B(约3.5GB)，TTS 用轻量 piper'),
+    (4, '轻量独显(4-6GB)', 'qwen3-vl:4b', 'small', 'piper-huayan', 'qwen2.5:3b',
+     '4GB 显存：文字 3B + 视觉 4B 偏挤，Whisper 用 small'),
+    (0, '纯CPU/无独显', 'qwen3-vl:4b', 'base', 'piper-huayan', 'qwen2.5:3b',
+     '无显卡全部走 CPU，选最小模型保证速度；写稿建议改用云端 chat API'),
 ]
 
 
@@ -1720,9 +1730,24 @@ def detect_hardware():
     # 可升级项对比
     rec = info['recommendations']
     cur = info['current']
+    # 各候选模型的显存需求（GB）：前端据此在模型卡上标注「你的 12GB 放不下」
+    info['model_vram'] = {'text': dict(TEXT_MODEL_VRAM), 'vlm': dict(VLM_MODEL_VRAM)}
+    info['text_model_vram'] = TEXT_MODEL_VRAM.get(rec.get('text'), 0)
+    info['vlm_model_vram'] = VLM_MODEL_VRAM.get(rec.get('vlm'), 0)
     if rec.get('vlm') and cur.get('vlm') and rec['vlm'] != cur['vlm']:
         info['upgrades'].append({'slot': 'VLM 视觉模型', 'current': cur['vlm'], 'recommend': rec['vlm'],
                                  'reason': '你的显存放得下更大的视觉模型，剧情理解会更强'})
+    # 文字模型对比：12GB 卡上用 14B 会与视觉模型抢显存（实测慢到 200 秒/次、甚至崩），
+    # 必须明确告诉用户「你现在这个不适合你的显存」，否则就是误导。
+    if rec.get('text') and cur.get('text') and rec['text'] != cur['text']:
+        _cur_need = TEXT_MODEL_VRAM.get(cur['text'], 0)
+        _vram = info.get('gpu_vram_gb') or 0
+        _why = ('你的显存 %.0fGB 放不下 %s（需 ≥%.0fGB），它会与视觉模型抢显存：'
+                '实测单次调用 47~215 秒、甚至 llama-server 崩溃，整机被拖死'
+                % (_vram, cur['text'], _cur_need)) if (_cur_need and _vram and _cur_need > _vram) else \
+               ('按你的显存 %s 更合适' % rec['text'])
+        info['upgrades'].append({'slot': '文字模型（写解说稿）', 'current': cur['text'],
+                                 'recommend': rec['text'], 'reason': _why})
     if rec.get('whisper') and cur.get('whisper') and rec['whisper'] != cur['whisper']:
         info['upgrades'].append({'slot': 'Whisper 转写模型', 'current': cur['whisper'], 'recommend': rec['whisper'],
                                  'reason': '大模型转写更准，GPU 加速后速度也快'})

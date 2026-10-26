@@ -21,6 +21,7 @@
     "enabled": false,
     "base_url": "http://localhost:11434/v1",
     "model": "qwen2.5:latest",
+    "light_model": "",
     "api_key": ""
   },
   "whisper": {
