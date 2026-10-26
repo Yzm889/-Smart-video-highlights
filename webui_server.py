@@ -62,7 +62,7 @@ _EMOTION_MAP = tts_engines._EMOTION_MAP
 _EMOTION_VOICES = tts_engines._EMOTION_VOICES
 _CHATTS = tts_engines._CHATTS
 
-from ai_providers import AI_CONFIG_PATH, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # noqa: F401  # [3.2] 引擎层 re-export
+from ai_providers import AI_CONFIG_PATH, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, load_ai_config, local_llm_cfg, local_llm_chat, local_llm_last_error, mirror_cfg, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # noqa: F401  # [3.2] 引擎层 re-export
 
 from text_utils import _clamp_line, _clean_caption, _strip_tts_markup  # noqa: F401
 from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \

@@ -319,6 +319,43 @@ def local_llm_cfg():
         'api_key': cfg.get('api_key') or '',
     }
 
+# ---------------------------------------------------------------------------
+# 本地模型失败状态：可见 + 快速失败（熔断）
+#
+# 实测（RTX3060 12GB + 16GB 内存，Ollama 0.40.11）：配置 qwen3:14b-q4_K_M（9.28GB 权重）
+# 时，单次调用要 47~159 秒，且间歇性 HTTP 500（"llama-server process has terminated:
+# exit status 0xe06d7363"）；换 minicpm-v4.5（6.12GB）同请求 33.5s 正常出文。
+# 关键危害不是慢本身，而是：失败后模型不驻留 → 下一段又要重读 9.28GB 权重 →
+# 磁盘 I/O 打满 + 16GB 内存页缓存抖动 → 整机卡死（用户反馈「网卡都卡掉」）；
+# 而旧代码 `except: pass` 把异常吞光，用户只看到「卡」，看不到原因。
+# 故：连续失败达阈值即熔断（本轮不再重复试），并保留最后错误供 UI 展示。
+# ---------------------------------------------------------------------------
+_LOCAL_LLM_FAIL = {'count': 0, 'last_error': '', 'last_model': ''}
+_LOCAL_LLM_FAIL_MAX = 2          # 连续失败 2 次即熔断（再试也大概率同样失败）
+
+
+def _ollama_err_text(body):
+    """从 Ollama 错误响应体里取出真正的原因文本。
+
+    Ollama 把关键信息放在 body 里（JSON: {"error":{"message":"llama-server process has
+    terminated: exit status 0xe06d7363"}}），只看 HTTP 状态码会丢���全部线索。"""
+    if not body:
+        return ''
+    try:
+        import json as _j
+        d = _j.loads(body)
+        if isinstance(d, dict):
+            err = d.get('error')
+            if isinstance(err, dict):
+                return str(err.get('message') or '')[:300]
+            if isinstance(err, str):
+                return err[:300]
+            return str(d.get('message') or '')[:300]
+    except Exception:
+        pass
+    return str(body)[:200]
+
+
 def _llm_payload(model, messages, max_tokens=1500, temperature=0.8):
     """构造 Ollama 请求体，对混合思考模型（Qwen3 等）显式关闭思考。
 
@@ -338,17 +375,31 @@ def _llm_payload(model, messages, max_tokens=1500, temperature=0.8):
     }
 
 
-def local_llm_chat(prompt, system=None, timeout=180):
-    """调用本地 OpenAI 兼容端点生成文本（Ollama /v1/chat/completions）。失败抛异常。"""
+def local_llm_chat(prompt, system=None, timeout=180, max_tokens=None):
+    """调用本地 OpenAI 兼容端点生成文本（Ollama /v1/chat/completions）。失败抛异常。
+
+    【P0 性能·可见性】本地模型起不来时，Ollama 的真实原因只在 HTTPError 的 body 里
+    （"llama-server process has terminated: exit status 0xe06d7363"），旧实现只把
+    "HTTP Error 500" 抛出去、再被上层 `except: pass` 吞掉 → 用户只看到「卡」，
+    看不到任何原因。
+    另外加**连续失败熔断**：实测本机（3060 12GB + 16GB 内存）配置 qwen3:14b-q4_K_M
+    （9.28GB 权重）时，单次调用要 47~159 秒且间歇性 500；模型每次失败后不驻留，
+    下一段又要重读 9.28GB 权重 → 磁盘 I/O 打满 + 页缓存抖动 → 整机卡死。
+    连续失败达阈值即熔断，本轮不再重复试，把「60 段 × 100s」压成「1 次失败 + 快速跳过」。"""
     cfg = local_llm_cfg()
     if not cfg['base_url']:
         raise RuntimeError('本地模型未配置')
-    import urllib.request, json as _json
+    if _LOCAL_LLM_FAIL['count'] >= _LOCAL_LLM_FAIL_MAX:
+        raise RuntimeError('本地模型 %s 连续失败 %d 次，本轮已跳过重试（最后错误：%s）'
+                           % (cfg['model'], _LOCAL_LLM_FAIL['count'],
+                              _LOCAL_LLM_FAIL['last_error'] or '未知'))
+    import urllib.request, urllib.error, json as _json
     messages = []
     if system:
         messages.append({'role': 'system', 'content': system})
     messages.append({'role': 'user', 'content': prompt})
-    payload = _llm_payload(cfg['model'], messages)
+    payload = _llm_payload(cfg['model'], messages,
+                            max_tokens=(max_tokens or 1500))
     headers = {'Content-Type': 'application/json'}
     if cfg['api_key']:
         headers['Authorization'] = 'Bearer ' + cfg['api_key']
@@ -356,15 +407,54 @@ def local_llm_chat(prompt, system=None, timeout=180):
                                  data=_json.dumps(payload).encode('utf-8'), headers=headers)
 
     def _call():
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = _json.loads(resp.read().decode('utf-8'))
-        return _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = _json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            body = ''
+            try:
+                body = e.read().decode('utf-8', 'ignore')
+            except Exception:
+                pass
+            raise RuntimeError('本地模型 %s 调用失败 HTTP %s：%s'
+                               % (cfg['model'], e.code, _ollama_err_text(body) or (e.reason or '')))
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError('本地模型 %s 调用失败：%s' % (cfg['model'], str(e)[:200]))
+        out = _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+        if not (out or '').strip():
+            raise RuntimeError('本地模型 %s 返回空内容（模型崩溃或思考吃满配额）' % cfg['model'])
+        return out
+
+    def _guarded():
+        """记录失败原因 + 连续失败熔断计数；成功则清零。"""
+        try:
+            out = _call()
+        except RuntimeError as e:
+            _LOCAL_LLM_FAIL['count'] += 1
+            _LOCAL_LLM_FAIL['last_error'] = str(e)[:300]
+            _LOCAL_LLM_FAIL['last_model'] = cfg['model']
+            raise
+        _LOCAL_LLM_FAIL['count'] = 0
+        _LOCAL_LLM_FAIL['last_error'] = ''
+        return out
 
     # S7: 本地推理独占 GPU 槽；远端（云端/远程 Ollama）不加锁
     if _is_local_url(cfg['base_url']):
         with _gpu_slot():
-            return _call()
-    return _call()
+            return _guarded()
+    return _guarded()
+
+
+def local_llm_last_error():
+    """最近一次本地模型失败的原因（供 UI/告警展示）；无失败返回 ''。"""
+    return _LOCAL_LLM_FAIL.get('last_error') or ''
+
+
+def local_llm_fail_count():
+    """本地模型连续失败次数（达到熔断阈值后不再重试）。"""
+    return int(_LOCAL_LLM_FAIL.get('count') or 0)
 
 def local_llm_light_cfg():
     """S4: 轻量辅助模型配置（local.light_model）。辅助任务（判型/详略规划/剧情理解/对齐）
@@ -380,9 +470,11 @@ def local_llm_light_cfg():
     }
 
 
-def local_llm_light_chat(prompt, system=None, timeout=180):
+def local_llm_light_chat(prompt, system=None, timeout=180, max_tokens=None):
     """S4: 轻量辅助模型调用（Ollama /v1/chat/completions）。未配置抛 RuntimeError，
-    由调用方回退主模型；本地端点同样独占 GPU 槽（S7），远端不加锁。"""
+    由调用方回退主模型；本地端点同样独占 GPU 槽（S7），远端不加锁。
+
+    max_tokens：批量任务（一次出多段草稿）需要更大输出预算，可显式指定。"""
     cfg = local_llm_light_cfg()
     if not cfg:
         raise RuntimeError('轻量辅助模型未配置')
@@ -391,7 +483,7 @@ def local_llm_light_chat(prompt, system=None, timeout=180):
     if system:
         messages.append({'role': 'system', 'content': system})
     messages.append({'role': 'user', 'content': prompt})
-    payload = _llm_payload(cfg['model'], messages)
+    payload = _llm_payload(cfg['model'], messages, max_tokens=(max_tokens or 1500))
     headers = {'Content-Type': 'application/json'}
     if cfg['api_key']:
         headers['Authorization'] = 'Bearer ' + cfg['api_key']
