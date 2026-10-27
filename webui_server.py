@@ -1441,14 +1441,16 @@ def _parallel_range_download(url, tgt, total, parts=8, chunk_dir=None, ua=None, 
 
     def _one(i, s, e, path):
         want = e - s + 1
-        for attempt in range(3):
+        # 重试次数放宽到 5：hf-mirror 在多连接下会掐连接（实测 8 并发时偶发分片失败），
+        # 每次重试只补这一段（已完成的段不会重下）
+        for attempt in range(5):
             try:
                 if os.path.exists(path) and os.path.getsize(path) == want:
                     return
                 hdrs = dict(ua or {})
                 hdrs['Range'] = 'bytes=%d-%d' % (s, e)
                 req = _ur.Request(url, headers=hdrs)
-                with _ur.urlopen(req, timeout=120) as resp:
+                with _ur.urlopen(req, timeout=180) as resp:
                     with open(path, 'wb') as f:
                         while True:
                             chunk = resp.read(1 << 20)
@@ -1457,9 +1459,10 @@ def _parallel_range_download(url, tgt, total, parts=8, chunk_dir=None, ua=None, 
                             f.write(chunk)
                 if os.path.getsize(path) == want:
                     return
+                errs.append('分片 %d 大小不符' % i)
             except Exception as e:
                 errs.append(str(e)[:80])
-                time.sleep(2)
+                time.sleep(2 + attempt * 2)   # 退避重试
         raise RuntimeError('分片 %d 下载失败' % i)
 
     ths = []
@@ -1545,12 +1548,17 @@ def _fast_pull_local(model, spec=None, slot=None):
             if total:
                 def _prog(cur):
                     slot['pct'] = min(hi, lo + int(cur * (hi - lo) // max(1, total)))
-                _ok, _msg = _parallel_range_download(u, tgt, total, parts=8,
-                                                      chunk_dir=dl_dir, ua=_HF_UA,
-                                                      on_progress=_prog)
-                if _ok:
-                    return True
-                # 并行失败 → 退回单线程（兜底仍支持断点续传）
+                # 最多试 3 轮：每轮只有「上一轮没下全的段」会重下
+                # （按分片名+大小判定跳过已完成的段）——实测 hf-mirror 在 8 并发下
+                # 会掐连接导致个别分片失败，直接退回单线程会把已下好的 2GB 白重下
+                for _round in range(3):
+                    _ok, _msg = _parallel_range_download(u, tgt, total, parts=8,
+                                                          chunk_dir=dl_dir, ua=_HF_UA,
+                                                          on_progress=_prog)
+                    if _ok:
+                        return True
+                    slot['msg'] = '并行下载第%d轮未完成（%s），只补未完成的分段' % (_round + 1, _msg[:60])
+                # 3 轮仍不行 → 退回单线程（兜底仍支持断点续传）
             # Python urllib 单线程下载（支持断点续传 + 自动重试）
             for attempt in range(3):
                 try:

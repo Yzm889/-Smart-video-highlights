@@ -120,3 +120,33 @@ def test_new_endpoints_have_ui_entry(src):
     html, _js = src
     assert 'fetchDeepSeekPlot' in html, '缺少一键查剧情按钮（nar/movie 两处）'
     assert html.count('fetchDeepSeekPlot') >= 2, 'nar 与 movie 两处都应接入一键查剧情'
+
+
+def test_js_toggled_classes_defined_in_css():
+    """JS 里切换的 class 必须在 style.css 里有定义。
+
+    同类「两边各写一份」风险：改了 CSS 类名忘了改 JS（或反之）→ 样式不生效、
+    页面看着「就是不对」，但没有任何报错。
+    容忍动态前缀（'toast-' 这种拼在后面的后缀式类名不算缺失）。"""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'style.css'), encoding='utf-8') as f:
+        css = f.read()
+    with open(os.path.join(root, 'static', 'app.js'), encoding='utf-8') as f:
+        js = f.read()
+    defined = set(re.findall(r'\.([a-zA-Z][\w-]*)', css))
+    used = set()
+    for pat in (r"classList\.(?:add|remove|toggle)\('([^']+)'\)",
+                r'classList\.(?:add|remove|toggle)\("([^"]+)"\)',
+                r"className\s*=\s*'([^']+)'"):
+        for m in re.finditer(pat, js):
+            used.update(m.group(1).split())
+    missing = []
+    for c in used:
+        if not c or c in defined:
+            continue
+        # 动态前缀：toast-xxx 这类，CSS 里有 toast-ok / toast-warn 即可
+        if any(d.startswith(c) for d in defined):
+            continue
+        missing.append(c)
+    assert not missing, 'JS 切换的 class 在 CSS 里没有定义（样式不生效）：%s' % sorted(missing)
