@@ -1405,6 +1405,97 @@ FAST_GGUF_SOURCES = {
 }
 
 
+def _parallel_range_download(url, tgt, total, parts=8, chunk_dir=None, ua=None, on_progress=None):
+    """多线程 Range 并行下载（无 aria2c 时的加速兜底）。返回 (ok, msg)。
+
+    实测（2026-10-26）：单线程 urllib 从 hf-mirror 拉 5GB 只有 ~0.5MB/s（要 1 小时+），
+    而 aria2c 8 线程能快一个量级——但 aria2c 需要用户自己装。本函数用标准库
+    urllib + Range 头实现同样的效果，**零新增依赖**。
+
+    关键设计：每段先写各自的 .part 分片文件，全部完成后再按序拼接成 tgt。
+    这样既能并行，又不出现「预分配大文件 → 中途失败留下空洞 → 误判已完成」的问题；
+    分片按期望大小判定完成，重跑时自动跳过已下好的段（断点续传）。
+    """
+    import threading as _th
+    import urllib.request as _ur
+    if not total or total <= 0:
+        return False, '未知文件大小，无法并行下载'
+    existing = os.path.getsize(tgt) if os.path.exists(tgt) else 0
+    if existing >= total:
+        return True, '已存在完整文件'
+    cdir = chunk_dir or (os.path.dirname(tgt) or '.')
+    os.makedirs(cdir, exist_ok=True)
+    # 只下载 [existing, total) 区间，切成 parts 段
+    remain = total - existing
+    step = (remain + parts - 1) // parts
+    segs = []
+    for i in range(parts):
+        s = existing + i * step
+        e = min(total, s + step) - 1
+        if s > e:
+            break
+        # 分片名**必须带区间**：否则目标文件被删、分片残留时，
+        # 上一轮区间(例如从 1.7GB 开始)的分片会被当成本轮结果拼进去 → 成品损坏
+        segs.append((i, s, e, os.path.join(cdir, '%s.part%d-%d' % (os.path.basename(tgt), s, e))))
+    errs = []
+
+    def _one(i, s, e, path):
+        want = e - s + 1
+        for attempt in range(3):
+            try:
+                if os.path.exists(path) and os.path.getsize(path) == want:
+                    return
+                hdrs = dict(ua or {})
+                hdrs['Range'] = 'bytes=%d-%d' % (s, e)
+                req = _ur.Request(url, headers=hdrs)
+                with _ur.urlopen(req, timeout=120) as resp:
+                    with open(path, 'wb') as f:
+                        while True:
+                            chunk = resp.read(1 << 20)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                if os.path.getsize(path) == want:
+                    return
+            except Exception as e:
+                errs.append(str(e)[:80])
+                time.sleep(2)
+        raise RuntimeError('分片 %d 下载失败' % i)
+
+    ths = []
+    for (i, s, e, path) in segs:
+        th = _th.Thread(target=_one, args=(i, s, e, path), daemon=True)
+        th.start()
+        ths.append(th)
+    while any(t.is_alive() for t in ths):
+        time.sleep(1)
+        if on_progress:
+            try:
+                done = sum(os.path.getsize(p) for _i, _s, _e, p in segs
+                           if os.path.exists(p))
+                on_progress(existing + done)
+            except Exception:
+                pass
+    for t in ths:
+        t.join(timeout=1)
+    # 全部就位才拼接
+    try:
+        for _i, _s, _e, path in segs:
+            if not os.path.exists(path) or os.path.getsize(path) != (_e - _s + 1):
+                return False, '分片不完整（%s）' % (errs[-1] if errs else '未知原因')
+        with open(tgt, 'ab') as out:
+            for _i, _s, _e, path in segs:
+                with open(path, 'rb') as f:
+                    shutil.copyfileobj(f, out, 1 << 20)
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+        return True, '并行下载完成'
+    except Exception as e:
+        return False, '拼接失败：%s' % str(e)[:100]
+
+
 def _fast_pull_local(model, spec=None, slot=None):
     """加速通道：下载单文件 GGUF（可含 mmproj 视觉投影）+ aria2c 多线程 + ollama create 导入。
     spec: (url, 文件名) 或 (url, 文件名, mmproj_url, mmproj文件名)；缺省查 FAST_GGUF_SOURCES。
@@ -1450,7 +1541,17 @@ def _fast_pull_local(model, spec=None, slot=None):
                 _t.sleep(1)
             return pp.returncode == 0
         else:
-            # 无 aria2c → Python urllib 单线程下载（支持断点续传 + 自动重试）
+            # 无 aria2c → **多线程 Range 并行**（实测单线程只有 ~0.5MB/s，5GB 要 1 小时+）
+            if total:
+                def _prog(cur):
+                    slot['pct'] = min(hi, lo + int(cur * (hi - lo) // max(1, total)))
+                _ok, _msg = _parallel_range_download(u, tgt, total, parts=8,
+                                                      chunk_dir=dl_dir, ua=_HF_UA,
+                                                      on_progress=_prog)
+                if _ok:
+                    return True
+                # 并行失败 → 退回单线程（兜底仍支持断点续传）
+            # Python urllib 单线程下载（支持断点续传 + 自动重试）
             for attempt in range(3):
                 try:
                     existing = os.path.getsize(tgt) if os.path.exists(tgt) else 0
@@ -2672,9 +2773,14 @@ def add_history(entry):
             if load_ai_config().get('cleanup_mid', True):
                 rel = entry.get('file')
                 if rel:
-                    fp = os.path.join(OUTDIR, rel) if not os.path.isabs(rel) else rel
-                    if os.path.isfile(fp) and os.path.getsize(fp) > 1024:
-                        cleanup_run_mid(os.path.dirname(fp))
+                    # 同 _remove_history_file：只清理 OUTDIR 内的产物，
+                    # 绝不接受绝对路径指向别处（否则会去删别人的目录）
+                    _out_abs = os.path.abspath(OUTDIR)
+                    _fp = (os.path.abspath(rel) if os.path.isabs(str(rel))
+                           else os.path.abspath(os.path.join(_out_abs, rel)))
+                    if os.path.commonpath([_out_abs, _fp]) == _out_abs:
+                        if os.path.isfile(_fp) and os.path.getsize(_fp) > 1024:
+                            cleanup_run_mid(os.path.dirname(_fp))
         except Exception:
             pass
     except Exception:
@@ -2683,11 +2789,21 @@ def add_history(entry):
 
 def _remove_history_file(rel):
     """删除一条历史对应的成片文件及其所在 run_dir（若存在）。失败静默。
-    history 中的 file 路径相对 OUTDIR（如 'run-X/final.mp4'），故以 OUTDIR 为基准解析。"""
+    history 中的 file 路径相对 OUTDIR（如 'run-X/final.mp4'），故以 OUTDIR 为基准解析。
+
+    【纵深防御】原实现写成 `os.path.join(OUTDIR, rel) if not os.path.isabs(rel) else rel`
+    ——绝对路径会被**直接采用**，等于留了一个"删任意文件"的口子（当前调用方
+    delete_history 会先查历史列表、匹配不到就不删，所以暂时不可利用；但这是
+    潜伏原语：将来只要有人把用户可控的 file 写进 history.json 就会中招）。
+    现在统一要求解析后的路径必须落在 OUTDIR 内，否则一律拒绝。"""
     if not rel:
         return
     try:
-        fp = os.path.join(OUTDIR, rel) if not os.path.isabs(rel) else rel
+        out_abs = os.path.abspath(OUTDIR)
+        fp = os.path.abspath(rel) if os.path.isabs(str(rel)) else os.path.abspath(os.path.join(out_abs, rel))
+        # 必须落在 OUTDIR 内（含 OUTDIR 本身）
+        if os.path.commonpath([out_abs, fp]) != out_abs:
+            return
         if os.path.isfile(fp):
             os.remove(fp)
             # 一并清理同目录（独立 run_dir）下的中间产物。
@@ -2695,7 +2811,6 @@ def _remove_history_file(rel):
             # ② 该目录下若还有其他记录仍在使用，只删当前文件，不动目录。
             parent = os.path.dirname(fp)
             parent_abs = os.path.abspath(parent) if parent else ''
-            out_abs = os.path.abspath(OUTDIR)
             if (parent_abs and os.path.isdir(parent) and parent_abs != out_abs
                     and parent_abs.startswith(out_abs)
                     and not _dir_still_referenced(parent_abs)):
