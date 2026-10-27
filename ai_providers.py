@@ -217,6 +217,127 @@ def _load_wav_as_float32(wav_path, chunk_frames=1 << 20):
     return out[:read]
 
 
+def _sec_to_float(t):
+    """'00:01:02,500' / '00:01:02.500' / '01:02.5' → 秒。"""
+    t = (t or '').strip().replace(',', '.')
+    parts = t.split(':')
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        return float(parts[0])
+    except Exception:
+        return 0.0
+
+
+def parse_subtitle_file(path):
+    """解析字幕文件 → [{start,end,text}]。支持 SRT / VTT / ASS / SSA。解析不了返回 []。
+
+    供两条路径复用：① 容器内字幕轨抽取出来的 .srt；② 外挂字幕文件（同目录同名）。
+    """
+    import re as _re
+    segs = []
+    try:
+        with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+            lines = f.read().splitlines()
+    except Exception:
+        return []
+    # ASS/SSA：Dialogue: 起始,结束,...,文本
+    if any(l.strip().startswith('Dialogue:') for l in lines[:60]):
+        for l in lines:
+            if not l.strip().startswith('Dialogue:'):
+                continue
+            body = l.strip()[len('Dialogue:'):]
+            parts = body.split(',', 9)
+            # ASS 标准字段序：Layer, Start, End, Style, Name, ML, MR, MV, Effect, Text
+            # （Start/End 在索引 1/2，Text 在最后一个）
+            if len(parts) < 10:
+                continue
+            try:
+                st = _sec_to_float(parts[1].strip())
+                en = _sec_to_float(parts[2].strip())
+            except Exception:
+                continue
+            txt = parts[9].replace('\\N', ' ').replace('\\n', ' ').strip()
+            if txt and en > st:
+                segs.append({'start': st, 'end': en, 'text': txt})
+        return segs
+    # SRT / VTT
+    cur_start = cur_end = None
+    buf = []
+    for line in lines:
+        line = (line or '').rstrip('\n').strip()
+        if line.startswith('WEBVTT') or line.startswith('NOTE') or line.startswith('STYLE'):
+            continue
+        if '-->' in line:
+            if cur_start is not None and buf:
+                segs.append({'start': cur_start, 'end': cur_end, 'text': ' '.join(buf).strip()})
+            buf = []
+            left, _, right = line.partition('-->')
+            # 右半段 = 「结束时间」[+ 行尾文字]（畸形但常见的写法，别把文字丢了）
+            m = _re.match(r'\s*([0-9:.,]+)\s*(.*)$', right or '')
+            end_ts = m.group(1) if m else (right or '')
+            tail = (m.group(2) if m else '').strip()
+            cur_start, cur_end = _sec_to_float(left), _sec_to_float(end_ts)
+            if tail:
+                buf.append(tail)
+        elif line and not line.isdigit():
+            buf.append(line)
+    if cur_start is not None and buf:
+        segs.append({'start': cur_start, 'end': cur_end, 'text': ' '.join(buf).strip()})
+    return [s for s in segs if s['text']]
+
+
+def _external_subtitle_segments(video_path):
+    """查找视频同目录的**外挂字幕文件**并解析 → [{start,end,text}]；没有返回 None。
+
+    国内剧集/影视资源最常见的形态就是「视频 + 同名字幕文件」，字幕是人工校对的原文，
+    比语音识别准得多——能找到就该直接用（比 ASR 快、还不占 GPU）。
+    依次找：完全同名 → 同名带语言后缀（xxx.zh.srt / xxx.chs.srt / xxx.简中.srt 等）。
+    """
+    base = os.path.splitext(video_path)[0]
+    exts = ('.srt', '.ass', '.vtt', '.ssa')
+    for ext in exts:
+        p = base + ext
+        if os.path.isfile(p) and os.path.getsize(p) > 16:
+            segs = parse_subtitle_file(p)
+            if segs:
+                return segs
+    # 同名 + 语言后缀（.zh.srt / .chs.srt / .简体.srt …）
+    # 只认**语言标签白名单**里的后缀：否则同目录下「第01集第2集.srt」这种也会
+    # startswith 命中 → 拿错集的字幕，比识别错更坑。
+    _LANGS = {'zh', 'zhs', 'chs', 'ch', 'sc', 'tc', 'tw', 'hk', 'cn', 'en', 'eng',
+              'jp', 'ja', 'jpn', 'kr', 'ko', 'kor', 'zh-cn', 'zh-hans', 'zh-tw',
+              'zh-hant', 'zh_cn', 'zh_tw', 'en-us', '简体', '繁體', '简中', '繁中',
+              '中文', '英文', '日语', '韩语', '简体字幕', '繁體字幕'}
+    d = os.path.dirname(os.path.abspath(video_path))
+    stem = os.path.basename(base).lower()
+    try:
+        for fn in sorted(os.listdir(d)):
+            low = fn.lower()
+            if not low.endswith(exts):
+                continue
+            if not low.startswith(stem):
+                continue
+            rest = low[len(stem):-len(os.path.splitext(low)[1])]  # 去掉前缀与扩展名
+            tag = rest.strip('._- ')
+            if tag and tag not in _LANGS:
+                continue
+            p = os.path.join(d, fn)
+            try:
+                if os.path.getsize(p) <= 16:
+                    continue
+            except OSError:
+                continue
+            segs = parse_subtitle_file(p)
+            if segs:
+                return segs
+    except Exception:
+        pass
+    return None
+
+
 def _subtitle_streams(video_path):
     """探测视频里的字幕轨（返回 (数量, 首个轨索引)）。用 ffmpeg -i 解析 stderr，不依赖 ffprobe。
 
@@ -316,7 +437,7 @@ def asr_segments(video_path, progress=None, pct_range=None):
     progress / pct_range：可选。传了就逐段推进进度并响应取消——
     旧实现一次性消费 transcribe 的生成器，长视频（十几分钟）转写期间进度条
     长时间停在同一个百分比，观感与「卡死」无异，且中途无法取消。"""
-    # ① 字幕轨优先
+    # ① 字幕轨优先（顺序：容器内字幕轨 → 外挂字幕文件 → 语音识别）
     try:
         _subs = _subtitle_segments(video_path)
     except Exception:
@@ -324,6 +445,13 @@ def asr_segments(video_path, progress=None, pct_range=None):
     if _subs:
         _note_progress_warning('台词来源：视频内嵌字幕轨（%d 条，比语音识别更准）' % len(_subs))
         return _subs
+    try:
+        _ext = _external_subtitle_segments(video_path)
+    except Exception:
+        _ext = None
+    if _ext:
+        _note_progress_warning('台词来源：同目录外挂字幕文件（%d 条，比语音识别更准）' % len(_ext))
+        return _ext
     try:
         from faster_whisper import WhisperModel
     except Exception:
@@ -384,6 +512,8 @@ def asr_segments(video_path, progress=None, pct_range=None):
                     progress['pct'] = int(lo + (hi - lo) * frac)
                     progress['phase'] = ('识别台词 %s / %s' % (_fmt_hms(s.end), _fmt_hms(total))
                                          if total > 0 else '识别台词…')
+            if segs:
+                _note_progress_warning('台词来源：语音识别（视频没有可用的字幕轨/外挂字幕）')
             return segs
 
         # GPU 推理失败（显存不足 / cuBLAS 缺库 / 驱动抽风）时降级 CPU 重跑一次，

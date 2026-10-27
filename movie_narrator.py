@@ -81,7 +81,9 @@ def _plot_brief(frames, per_seg, params):
               '2) 如果明显来自某部影视作品，请点出片名与年代背景；无法确定时务必写明“无法确认片名”，不要编造；\n'
               '3) 重点：结合台词与画面，把这段讲的具体剧情事件写清楚——人物是谁、身在何处、在做什么、'
               '台词里透露了哪些冲突或信息（例如借钱/赶路/争吵/求助等），结果如何；\n'
-              '4) 最后用 4~6 句话完整概括这段视频的剧情（供后续解说使用）。\n')
+              '4) 如果画面上有字幕（烧在画面里的文字，如底部白字/对话气泡），'
+              '请把字幕文字也抄出来——硬字幕的片子只能靠它拿台词；\n'
+              '5) 最后用 4~6 句话完整概括这段视频的剧情（供后续解说使用）。\n')
     if name:
         prompt += '\n视频文件名：' + name
     if theme:
@@ -386,6 +388,52 @@ def _map_lines_to_segs(lines, n):
     for i in range(n):
         out.append(sents[i % len(sents)])
     return out
+
+
+def _read_onscreen_subtitles(frames, per_seg, max_seg=12):
+    """让 VLM 读出画面里**烧录的字幕文字** → {段下标: 字幕文本}。失败返回 {}。
+
+    【解决硬字幕】字幕烧进画面像素后无法提取（要 OCR），而这类片子常常**没有可识别的
+    语音**（原声/音乐/外语），于是 ASR 空 → 剧情理解与写稿都失去台词依据。
+    但 VLM 本来就在看这些帧，顺带读一下画面上的字几乎零额外成本。
+
+    【为什么不引入 OCR】OCR 引擎（paddleocr/easyocr）要带几百 MB 模型与额外依赖，
+    且对影视字幕这种艺术字识别率并不比多模态模型高；这里用已有的 VLM 更划算。
+    """
+    import re as _re
+    n = len(per_seg)
+    if not frames or n == 0:
+        return {}
+    idxs = [i for i in range(n) if frames.get(i)]
+    if not idxs:
+        return {}
+    if len(idxs) > max_seg:
+        step = (len(idxs) - 1) / float(max_seg - 1)
+        idxs = sorted(set(idxs[int(i * step)] for i in range(max_seg)))
+    img_list = [frames[i] for i in idxs]
+    sys_ = '你是视频字幕识别助手，只抄录画面里出现的字幕文字。'
+    prompt = ('下面是同一段视频按时间顺序抽取的画面（第1张对应第1段，依此类推）。\n'
+              '请逐段抄录画面里出现的**字幕文字**（底部/中间的白色描边字、对话气泡等）。\n'
+              '严格按顺序每段一行，格式严格为「第k段: 字幕文字」，k 从 1 开始递增。\n'
+              '该段没有字幕就写「第k段: (无字幕)」；不要描述画面、不要推测台词。')
+    try:
+        out = vlm_chat_multi(img_list, prompt, system=sys_, timeout=240) or ''
+    except Exception:
+        return {}
+    got = {}
+    for l in out.splitlines():
+        m = _re.match(r'^第(\d+)段[:：]\s*(.+)$', l.strip())
+        if not m:
+            continue
+        k = int(m.group(1))
+        if not (1 <= k <= len(idxs)):
+            continue
+        txt = m.group(2).strip()
+        if txt and txt not in ('(无字幕)', '（无字幕）', '无字幕'):
+            got[idxs[k - 1]] = txt
+    if got:
+        _note_progress_warning('已从画面字幕读出 %d 段台词（硬字幕无法直接提取，由视觉模型读出）' % len(got))
+    return got
 
 
 def _seg_visual_captions(frames, per_seg, params, max_seg=14, progress=None):
@@ -1158,6 +1206,18 @@ def _condense_segs(fine_segs, asr, params, plot=None, beat_plan=None, frames=Non
     has_dlg = [bool(_asr_text_in(asr, s, e).strip()) for (s, e) in fine_segs]
     if beat_plan is None and (_local_model_available() or _w.vlm_enabled()):
         per_seg = [(s0, s1, _asr_text_in(asr, s0, s1)) for (s0, s1) in fine_segs]
+        # 硬字幕兜底：ASR 台词覆盖不足一半时（常见于字幕烧进画面、语音不可识别），
+        # 让 VLM 从画面里读字幕补进台词轨——否则剧情理解与写稿都缺台词依据（=乱剪）。
+        if frames:
+            _with_dlg = sum(1 for t in per_seg if (t[2] or '').strip())
+            if _with_dlg * 2 < len(per_seg):
+                try:
+                    _subs = _read_onscreen_subtitles(frames, per_seg)
+                except Exception:
+                    _subs = {}
+                if _subs:
+                    per_seg = [(s0, s1, (t or '').strip() or _subs.get(i, ''))
+                               for i, (s0, s1, t) in enumerate(per_seg)]
         if plot is None and frames:
             plot = _plot_brief(frames, per_seg, params)
         beat_plan = _beat_plan(per_seg, plot, params)

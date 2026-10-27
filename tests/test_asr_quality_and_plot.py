@@ -214,6 +214,64 @@ def test_frontend_shows_plot_brief():
     assert js.count('_showPlotBrief(p)') >= 2, '生成中与完成后都要展示剧情'
 
 
+def test_external_subtitle_file_is_used(tmp_path, monkeypatch):
+    """**外挂字幕文件**（视频同目录同名 .srt）→ 直接用（国内剧集最常见形态）。"""
+    vid = tmp_path / 'movie.mp4'
+    vid.write_bytes(b'0' * 100)
+    (tmp_path / 'movie.srt').write_text(
+        '1\n00:00:02,000 --> 00:00:05,000\n你终于回来了\n\n'
+        '2\n00:00:06,000 --> 00:00:09,500我等了你很久\n',
+        encoding='utf-8')
+    monkeypatch.setattr(A, '_subtitle_segments', lambda p: None)   # 容器内没有字幕轨
+    monkeypatch.setattr(A, '_note_progress_warning', lambda m: None)
+    seen = []
+    monkeypatch.setattr(A, '_load_wav_as_float32', lambda p: (_ for _ in ()).throw(
+        AssertionError('有外挂字幕时不该走 ASR')))
+    segs = A.asr_segments(str(vid))
+    assert segs and len(segs) == 2, segs
+    assert segs[0]['text'] == '你终于回来了'
+    assert abs(segs[1]['start'] - 6.0) < 0.01
+
+
+def test_external_subtitle_with_language_suffix(tmp_path):
+    """同目录 xxx.zh.srt / xxx.chs.srt 这类带语言后缀的也要认。"""
+    vid = tmp_path / 'ep01.mp4'
+    vid.write_bytes(b'0' * 100)
+    (tmp_path / 'ep01.zh.srt').write_text(
+        '1\n00:00:01,000 --> 00:00:03,000\n第一句中文\n', encoding='utf-8')
+    segs = A._external_subtitle_segments(str(vid))
+    assert segs and segs[0]['text'] == '第一句中文', segs
+
+
+def test_parse_subtitle_file_handles_ass_and_vtt(tmp_path):
+    """ASS/SSA 与 VTT 也要能解析（外挂字幕常见格式）。"""
+    ass = tmp_path / 'a.ass'
+    ass.write_text('[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
+                   'Dialogue: 0,0:00:02.00,0:00:05.00,Default,,0,0,0,,你好世界\n', encoding='utf-8')
+    segs = A.parse_subtitle_file(str(ass))
+    assert segs and segs[0]['text'] == '你好世界', segs
+    assert abs(segs[0]['start'] - 2.0) < 0.01 and abs(segs[0]['end'] - 5.0) < 0.01
+    vtt = tmp_path / 'a.vtt'
+    vtt.write_text('WEBVTT\n\n00:00:02.000 --> 00:00:04.000\nVTT 字幕\n', encoding='utf-8')
+    segs2 = A.parse_subtitle_file(str(vtt))
+    assert segs2 and segs2[0]['text'] == 'VTT 字幕', segs2
+
+
+def test_vlm_reads_onscreen_subtitles(monkeypatch):
+    """硬字幕：VLM 从画面里读出字幕文字（无 OCR 依赖）。"""
+    warned = []
+    monkeypatch.setattr(MN, '_note_progress_warning', lambda m: warned.append(m))
+    monkeypatch.setattr(MN, 'vlm_chat_multi',
+                        lambda imgs, p, system=None, timeout=240:
+                        '第1段: 你终于回来了\n第2段: (无字幕)\n第3段: 我等了你很久')
+    per_seg = [(0.0, 5.0, ''), (5.0, 10.0, ''), (10.0, 15.0, '')]
+    got = MN._read_onscreen_subtitles({0: b'a', 1: b'b', 2: b'c'}, per_seg)
+    assert got.get(0) == '你终于回来了', got
+    assert got.get(2) == '我等了你很久', got
+    assert 1 not in got, '「(无字幕)」不该被当成台词'
+    assert any('硬字幕' in w for w in warned), warned
+
+
 # ---------------------------------------------------------------------------
 # ③ 失败任务回收
 # ---------------------------------------------------------------------------
