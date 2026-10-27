@@ -86,7 +86,8 @@ def test_circuit_breaker_stops_repeated_calls(monkeypatch):
 def test_empty_content_is_treated_as_failure(monkeypatch):
     """模型返回空内容（如思考吃满配额）必须算失败，不能静默当成功。"""
     _reset()
-    payload = json.dumps({'choices': [{'message': {'content': ''}}]}).encode('utf-8')
+    payload = json.dumps({'choices': [{'message': {'content': ''}}],
+                           'message': {'content': ''}}).encode('utf-8')
 
     class _R:
         def __enter__(self):
@@ -106,7 +107,8 @@ def test_empty_content_is_treated_as_failure(monkeypatch):
 def test_success_resets_fail_counter(monkeypatch):
     """成功一次即清零计数（偶发失败不该永久熔断）。"""
     _reset()
-    payload = json.dumps({'choices': [{'message': {'content': '你好'}}]}).encode('utf-8')
+    payload = json.dumps({'choices': [{'message': {'content': '你好'}}],
+                           'message': {'content': '你好'}}).encode('utf-8')
 
     class _R:
         def __enter__(self):

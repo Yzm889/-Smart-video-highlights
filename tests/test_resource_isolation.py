@@ -91,7 +91,9 @@ def test_is_local_url():
 def test_local_llm_chat_uses_gpu_slot_local(monkeypatch):
     monkeypatch.setattr(A, 'local_llm_cfg', lambda: {
         'enabled': True, 'base_url': 'http://localhost:11434/v1', 'model': 'qwen', 'api_key': ''})
-    _install_urlopen(monkeypatch, '{"choices":[{"message":{"content":"ok"}}]}')
+    # 同时给两种响应格式：本机 Ollama 走原生 /api/chat（{"message":{...}}），
+    # 远程/兼容端点走 {"choices":[...]}（2026-10-27 起本机改走原生端点）
+    _install_urlopen(monkeypatch, '{"choices":[{"message":{"content":"ok"}}],"message":{"content":"ok"}}')
     entered = _gpu_spy(monkeypatch)
     assert A.local_llm_chat('hi') == 'ok'
     assert entered == [1], '本地 LLM 必须进入 GPU 槽'
@@ -100,7 +102,9 @@ def test_local_llm_chat_uses_gpu_slot_local(monkeypatch):
 def test_local_llm_chat_skips_gpu_slot_remote(monkeypatch):
     monkeypatch.setattr(A, 'local_llm_cfg', lambda: {
         'enabled': True, 'base_url': 'http://remote-host:11434/v1', 'model': 'qwen', 'api_key': ''})
-    _install_urlopen(monkeypatch, '{"choices":[{"message":{"content":"ok"}}]}')
+    # 同时给两种响应格式：本机 Ollama 走原生 /api/chat（{"message":{...}}），
+    # 远程/兼容端点走 {"choices":[...]}（2026-10-27 起本机改走原生端点）
+    _install_urlopen(monkeypatch, '{"choices":[{"message":{"content":"ok"}}],"message":{"content":"ok"}}')
     entered = _gpu_spy(monkeypatch)
     assert A.local_llm_chat('hi') == 'ok'
     assert entered == [], '远程端点不应占用本地 GPU 槽'

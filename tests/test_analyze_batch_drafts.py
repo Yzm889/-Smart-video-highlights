@@ -130,22 +130,60 @@ def _setup_pipeline(monkeypatch, tmp_path, n_segs, llm_impl):
     return video, prog
 
 
-def test_dispatch_many_segments_uses_single_llm_call(monkeypatch, tmp_path):
-    """核心锁定：10 段（≥批量阈值）只发 1 次**草稿**请求（末尾另有 1 次叙事线建议，属正常）。"""
-    calls = {'draft': 0, 'other': 0}
+def test_dispatch_many_segments_uses_chunked_llm_calls(monkeypatch, tmp_path):
+    """核心锁定：批量路径**按块**请求（不再逐段 60 次），且每段都拿到草稿。
+
+    一次请求 60 段会有两个问题：max_tokens 封顶导致 JSON 数组尾部被截断；
+    模型一次处理 60 段容易"偷懒只写一条"。所以按 DRAFT_BATCH_CHUNK 分块。"""
+    calls = {'draft': 0}
 
     def _llm(prompt, system='', timeout=180, max_tokens=None):
         if '同一部视频的' in prompt:
             calls['draft'] += 1
-        else:
-            calls['other'] += 1
         return _batch_json(10)
     video, prog = _setup_pipeline(monkeypatch, tmp_path, 10, _llm)
     A.dispatch_analyze({'video_path': str(video), 'options': {'draft': True}}, prog)
-    assert calls['draft'] == 1, '批量路径应只调用 1 次草稿生成，实际 %d 次' % calls['draft']
+    import math
+    expect = math.ceil(10 / A.DRAFT_BATCH_CHUNK)
+    assert calls['draft'] == expect, '应分 %d 块请求，实际 %d 次' % (expect, calls['draft'])
     res = prog.get('analyze_result')
     assert res and len(res['segments']) == 10
     assert all(len(s['ai_draft_narrations']) == 3 for s in res['segments']), '每段都应有 3 版草稿'
+
+
+def test_batch_chunks_large_batch(monkeypatch):
+    """大批量必须切成多块（控制输出长度，避免 JSON 数组被截断）。"""
+    calls = {'n': 0, 'sizes': []}
+
+    def _llm(prompt, system='', timeout=180, max_tokens=None):
+        calls['n'] += 1
+        n = prompt.count('\n[')
+        calls['sizes'].append(n)
+        return _batch_json(n)
+    monkeypatch.setattr(A, '_llm_light', _llm)
+    items = [(i, '台词%d' % i) for i in range(20)]
+    got, err = A._drafts_for_segments_batch(items)
+    assert err is None, err
+    assert calls['n'] == 3, '20 段应切 3 块，实际 %d 块' % calls['n']
+    assert all(s <= A.DRAFT_BATCH_CHUNK for s in calls['sizes']), calls['sizes']
+    assert len(got) == 20, '应有 20 段草稿，实际 %d' % len(got)
+
+
+def test_batch_retries_missing_segments(monkeypatch):
+    """模型漏写（只吐 1 条）时，应自动补跑缺的段，而不是直接放弃。"""
+    state = {'first': True}
+
+    def _llm(prompt, system='', timeout=180, max_tokens=None):
+        n = prompt.count('\n[')
+        if state['first']:
+            state['first'] = False
+            return json.dumps([{'i': 0, '简洁': 'a', '悬念': 'b', '口语': 'c'}], ensure_ascii=False)
+        return _batch_json(n)
+    monkeypatch.setattr(A, '_llm_light', _llm)
+    items = [(i, '台词%d' % i) for i in range(5)]
+    got, err = A._drafts_for_segments_batch(items)
+    assert err is None, err
+    assert len(got) == 5, '补跑后应覆盖 5 段，实际 %d' % len(got)
 
 
 def test_dispatch_few_segments_keeps_per_segment_path(monkeypatch, tmp_path):

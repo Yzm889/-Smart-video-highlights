@@ -34,6 +34,10 @@ DRAFT_STYLES = ['简洁', '悬念', '口语']
 
 # 批量草稿的最小段数：低于此值仍走逐段路径（行为完全不变、失败粒度更细）
 DRAFT_BATCH_MIN = 6
+# 每次请求最多几段：① 控制输出长度，避免 JSON 数组被 max_tokens 截断（60 段时
+#   max_tokens 会封顶 8000 → 数组尾部被截断 → 整批解析失败）；
+#   ② 提高每条草稿的质量（模型一次要处理 60 段时容易"偷懒只写一条总结"）。
+DRAFT_BATCH_CHUNK = 8
 
 
 # ---------------------------------------------------------------------------
@@ -115,16 +119,8 @@ def _try_parse_json_array(text):
     return out or None
 
 
-def _drafts_for_segments_batch(items, timeout=300):
-    """一次 LLM 调用产出多段草稿。items=[(seg_index, asr_text), ...]
-
-    【为什么必须批量】旧实现逐段串行调用：20 分钟视频切 60 段 → 60 次模型请求。
-    本机实测单次 47~159 秒（模型 9.28GB 且失败后不驻留，每次要重读权重），
-    60 次 ≈ 47 分钟~2.6 小时，反复重载把磁盘 I/O 打满、16GB 内存页缓存抖动 →
-    整机卡死（用户反馈「网卡都卡掉」）。批量后只 1 次请求。
-
-    返回 ({seg_index: drafts}, err)：解析不到/缺项的段留空，由调用方给出可见告警。
-    """
+def _drafts_batch_one(items, timeout=300):
+    """一次请求产出这批段的草稿。返回 ({seg_index: drafts}, err)。"""
     n = len(items)
     lines = '\n'.join('[%d] %s' % (i, (txt or '').strip()[:300])
                       for i, (_idx, txt) in enumerate(items))
@@ -136,10 +132,11 @@ def _drafts_for_segments_batch(items, timeout=300):
         '- 【简洁】直给说清画面\n'
         '- 【悬念】留钩子勾人看下一段\n'
         '- 【口语】像跟朋友聊电影\n'
+        '- **必须为上面每一段各写一条**（共 %d 项）；即使多段台词内容相似，也要分别写。\n'
         '严格只输出 JSON 数组，共 %d 项，每项形如 {"i":0,"简洁":"...","悬念":"...","口语":"..."}，'
-        'i 是上面台词的编号。' % (n, lines, n)
+        'i 是上面台词的编号。' % (n, lines, n, n)
     )
-    max_tokens = min(8000, 1200 + 140 * n)
+    max_tokens = min(4000, 900 + 140 * n)
     raw = _llm_light(prompt, system='你是资深影视解说撰稿人，只输出 JSON 数组。',
                      timeout=timeout, max_tokens=max_tokens)
     arr = _try_parse_json_array(raw or '')
@@ -180,6 +177,37 @@ def _drafts_for_segments_batch(items, timeout=300):
         if drafts:
             out[seg_idx] = drafts
     return out, (None if out else 'llm_parse_fail')
+
+
+def _drafts_for_segments_batch(items, timeout=300, chunk=DRAFT_BATCH_CHUNK):
+    """批量生成草稿：分块请求 + 缺项补跑。返回 ({seg_index: drafts}, err)。
+
+    【为什么分块】一次请求 60 段时：① max_tokens 会封顶 → JSON 数组尾部被截断 →
+    整批解析失败；② 模型一次要处理 60 段容易"偷懒只写一条总结"（实测 7 段雷同台词
+    时真实发生过：只吐 1 个对象 → 6/7 段无草稿）。分块后每块 ≤8 段，两种问题都消失。
+    【为什么补跑】仍缺的段再单独请求一次（模型偶发漏写时不至于让用户白等一轮）。
+
+    旧实现逐段串行调用：20 分钟视频切 60 段 → 60 次模型请求（本机单次 47~215 秒，
+    失败后不驻留、每次重读 9.28GB 权重 → 磁盘/内存打满、整机卡死）。现在按块请求。
+    """
+    if not items:
+        return {}, None
+    out = {}
+    err = None
+    chunks = [items[i:i + chunk] for i in range(0, len(items), chunk)] or [items]
+    for ch in chunks:
+        got, e = _drafts_batch_one(ch, timeout=timeout)
+        out.update(got)
+        if e:
+            err = e
+    # 补跑：模型漏写的段再请求一次（只在确有缺失且不是全批失败时才补，避免无谓重试）
+    missing = [(i, t) for i, t in items if i not in out]
+    if missing and len(missing) < len(items):
+        got2, _e2 = _drafts_batch_one(missing, timeout=timeout)
+        out.update(got2)
+    if not out and err is None:
+        err = 'llm_parse_fail'
+    return out, err
 
 
 # ---------------------------------------------------------------------------

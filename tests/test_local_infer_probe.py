@@ -41,7 +41,8 @@ class _Resp:
 
 def test_probe_success(monkeypatch):
     _reset_probe()
-    payload = json.dumps({'choices': [{'message': {'content': '好'}}]})
+    payload = json.dumps({'choices': [{'message': {'content': '好'}}],
+                           'message': {'content': '好'}})
     monkeypatch.setattr(urllib.request, 'urlopen',
                         lambda req, timeout=0: _Resp(payload))
     ok, msg = A.local_llm_infer_probe()
@@ -76,7 +77,8 @@ def test_probe_timeout_is_reported(monkeypatch):
 
 def test_probe_empty_content_is_failure(monkeypatch):
     _reset_probe()
-    payload = json.dumps({'choices': [{'message': {'content': ''}}]})
+    payload = json.dumps({'choices': [{'message': {'content': ''}}],
+                           'message': {'content': ''}})
     monkeypatch.setattr(urllib.request, 'urlopen', lambda req, timeout=0: _Resp(payload))
     ok, msg = A.local_llm_infer_probe()
     assert ok is False
@@ -87,7 +89,8 @@ def test_probe_result_is_cached(monkeypatch):
     """探针要花钱（几十秒），60 秒内必须复用，不能每次都打。"""
     _reset_probe()
     calls = {'n': 0}
-    payload = json.dumps({'choices': [{'message': {'content': '好'}}]})
+    payload = json.dumps({'choices': [{'message': {'content': '好'}}],
+                           'message': {'content': '好'}})
 
     def _ok(req, timeout=0):
         calls['n'] += 1

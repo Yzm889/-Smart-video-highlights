@@ -403,18 +403,24 @@ def local_llm_infer_probe(timeout=_LOCAL_INFER_PROBE_TIMEOUT, force=False):
         _LOCAL_INFER_PROBE.update({'ts': now, 'ok': False, 'msg': '本地模型未配置'})
         return False, '本地模型未配置'
     import urllib.request, urllib.error, json as _j
-    payload = {'model': model,
-               'messages': [{'role': 'user', 'content': '只回复一个字：好'}],
-               'max_tokens': 16, 'temperature': 0, 'think': False,
-               'options': {'num_predict': 16}}
-    req = urllib.request.Request(cfg['base_url'].rstrip('/') + '/chat/completions',
-                                 data=_j.dumps(payload).encode('utf-8'),
-                                 headers={'Content-Type': 'application/json'})
     ok, msg = False, ''
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = _j.loads(resp.read().decode('utf-8'))
-        out = _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+        if _is_local_ollama((cfg or {}).get('base_url')):
+            # 本机 Ollama → 原生端点：兼容端点不认 think:false，思考会吃光这 16 token
+            # 预算 → 正文空 → 探针误判「模型不可用」→ 整个草稿阶段被跳过（实测 48 段 0 段草稿）
+            out = _ollama_native_chat(cfg, [{'role': 'user', 'content': '只回复一个字：好'}],
+                                     16, 0, timeout)
+        else:
+            payload = {'model': model,
+                       'messages': [{'role': 'user', 'content': '只回复一个字：好'}],
+                       'max_tokens': 16, 'temperature': 0, 'think': False,
+                       'options': {'num_predict': 16}}
+            req = urllib.request.Request(cfg['base_url'].rstrip('/') + '/chat/completions',
+                                         data=_j.dumps(payload).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = _j.loads(resp.read().decode('utf-8'))
+            out = _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
         ok = bool((out or '').strip())
         msg = '推理正常' if ok else '推理返回空内容（模型可能崩溃或思考吃满配额）'
     except urllib.error.HTTPError as e:
@@ -424,12 +430,66 @@ def local_llm_infer_probe(timeout=_LOCAL_INFER_PROBE_TIMEOUT, force=False):
         except Exception:
             pass
         msg = '推理失败 HTTP %s：%s' % (e.code, _ollama_err_text(body) or (e.reason or ''))
+    except RuntimeError as e:
+        _s = str(e)
+        # 原生端点把超时包成 RuntimeError，这里还原成「无响应」语义（便于前端区分
+        # 「模型崩了」与「模型没响应」）
+        if 'timed out' in _s.lower() or 'timeout' in _s.lower():
+            msg = '推理无响应（超时）：%s' % _s[:140]
+        else:
+            msg = _s[:220]
     except Exception as e:
         _s = str(e)
         msg = '推理无响应（%s）：%s' % ('超时' if ('timed out' in _s.lower() or 'timeout' in _s.lower()) else '异常',
                                      _s[:140])
     _LOCAL_INFER_PROBE.update({'ts': now, 'ok': ok, 'msg': msg})
     return ok, msg
+
+
+def _is_local_ollama(base_url):
+    """base_url 是否指向**本机** Ollama（形如 http://localhost:11434/v1）。"""
+    if not base_url:
+        return False
+    u = str(base_url).lower()
+    return ('localhost' in u or '127.0.0.1' in u) and '11434' in u
+
+
+def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
+    """走 Ollama **原生** /api/chat 端点（仅本机 Ollama）。
+
+    【为什么必须用原生端点——2026-10-27 实测】
+    Ollama 0.40.11 的 OpenAI 兼容端点（/v1/chat/completions）**完全忽略**
+    `think:false` 与 `chat_template_kwargs.enable_thinking` → 混合思考模型（Qwen3）
+    照跑思考，把 max_tokens 吃光 → 正文返回空串。实测同一请求：
+      · 兼容端点 max_tokens=16 → 正文 0 字、思考 22 字（正文被思考吃光）
+      · 原生端点 think:false  → 正文「好」1 字、思考 0 字、1.1s（热调用 0.1s）
+    真实后果：16 token 的健康探针误判「模型不可用」→ **阶段①整个草稿阶段被跳过**
+    （48 段 0 段有草稿），而且每次调用白白多花 21+ token 思考时间。
+    远程 Ollama / 云端 OpenAI 兼容服务仍走原路径（它们没有 /api/chat）。
+    """
+    import urllib.request, urllib.error, json as _j, re as _re
+    root = _re.sub(r'/v1/?$', '', str(cfg['base_url']).rstrip('/'))
+    url = root + '/api/chat'
+    payload = {'model': cfg['model'], 'messages': messages, 'stream': False,
+               'think': False,
+               'options': {'num_predict': int(max_tokens or 1500),
+                           'temperature': temperature}}
+    req = urllib.request.Request(url, data=_j.dumps(payload).encode('utf-8'),
+                                 headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _j.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode('utf-8', 'ignore')
+        except Exception:
+            pass
+        raise RuntimeError('本地模型 %s 调用失败 HTTP %s：%s'
+                           % (cfg['model'], e.code, _ollama_err_text(body) or (e.reason or '')))
+    except Exception as e:
+        raise RuntimeError('本地模型 %s 调用失败：%s' % (cfg['model'], str(e)[:200]))
+    return _strip_think((data.get('message') or {}).get('content', ''))
 
 
 def local_llm_chat(prompt, system=None, timeout=180, max_tokens=None):
@@ -464,22 +524,27 @@ def local_llm_chat(prompt, system=None, timeout=180, max_tokens=None):
                                  data=_json.dumps(payload).encode('utf-8'), headers=headers)
 
     def _call():
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = _json.loads(resp.read().decode('utf-8'))
-        except urllib.error.HTTPError as e:
-            body = ''
+        if _is_local_ollama(cfg['base_url']):
+            # 本机 Ollama → 原生 /api/chat（think:false 真正生效，见 _ollama_native_chat 说明）
+            out = _ollama_native_chat(cfg, messages, (max_tokens or 1500), 0.8, timeout)
+        else:
             try:
-                body = e.read().decode('utf-8', 'ignore')
-            except Exception:
-                pass
-            raise RuntimeError('本地模型 %s 调用失败 HTTP %s：%s'
-                               % (cfg['model'], e.code, _ollama_err_text(body) or (e.reason or '')))
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError('本地模型 %s 调用失败：%s' % (cfg['model'], str(e)[:200]))
-        out = _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = _json.loads(resp.read().decode('utf-8'))
+            except urllib.error.HTTPError as e:
+                body = ''
+                try:
+                    body = e.read().decode('utf-8', 'ignore')
+                except Exception:
+                    pass
+                raise RuntimeError('本地模型 %s 调用失败 HTTP %s：%s'
+                                   % (cfg['model'], e.code, _ollama_err_text(body) or (e.reason or '')))
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError('本地模型 %s 调用失败：%s' % (cfg['model'], str(e)[:200]))
+            out = _strip_think((data.get('choices') or [{}])[0].get('message', {}).get('content', ''))
+        # 空内容必须算失败（两条路径都要判）：否则上层拿到空串会静默当成功
         if not (out or '').strip():
             raise RuntimeError('本地模型 %s 返回空内容（模型崩溃或思考吃满配额）' % cfg['model'])
         return out
