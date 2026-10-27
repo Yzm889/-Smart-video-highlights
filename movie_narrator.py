@@ -792,6 +792,11 @@ def _segment_timeline(video_path, max_seg=25.0, seg_cap=60):
     # 长视频段数硬顶：超出后贪心合并最短相邻段，保证阶段①可用。
     if seg_cap and len(segs) > seg_cap:
         segs = _enforce_seg_cap(segs, seg_cap)
+    # 有效但极短的视频（如 0.3s 片段）：上面按「≥1.5s」过滤会切出 0 段 →
+    # 阶段①会报「镜头切分失败或视频时长为 0」，但时长明明不是 0（文案误导）。
+    # 这里给一段覆盖全片：文件是好的就该有结果，不该整段报错。
+    if not segs and vdur > 0:
+        segs = [(0.0, vdur)]
     return segs
 
 

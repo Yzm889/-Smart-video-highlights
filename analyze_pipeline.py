@@ -317,7 +317,10 @@ def dispatch_analyze(req, prog):
     vdur = probe_audio_len(video_path) or 0.0
     if not segs or vdur <= 0:
         prog['done'] = True
-        prog['error'] = '镜头切分失败或视频时长为 0'
+        if vdur <= 0:
+            prog['error'] = '镜头切分失败或视频时长为 0（文件可能损坏、不是视频，或 ffmpeg 无法解析其容器）'
+        else:
+            prog['error'] = '镜头切分失败：视频时长 %.2f 秒但未能切出任何分段（素材过短或异常）' % vdur
         return
 
     # 2. ASR（faster-whisper 未装/失败 → 返回 []，降级不崩）
@@ -347,7 +350,11 @@ def dispatch_analyze(req, prog):
 
         def _one_thumb(idx, s, e):
             jpg = os.path.join(thumb_dir, '%d.jpg' % idx)
-            return idx, _make_thumbnail(video_path, (s + e) / 2.0, jpg)
+            try:
+                return idx, _make_thumbnail(video_path, (s + e) / 2.0, jpg)
+            except Exception:
+                # 单段失败（磁盘满/无权限等）只算这段没有缩略图，不能让整个分析崩掉
+                return idx, False
         _jobs = [(i, s, e) for i, (s, e) in enumerate(segs)]
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(_jobs)))) as _ex:
             for _i, _ok in _ex.map(lambda t: _one_thumb(*t), _jobs):
@@ -355,15 +362,25 @@ def dispatch_analyze(req, prog):
     except Exception as _te:
         thumb_ok = {}
         warnings.append('缩略图并发抽取异常（已退回逐段抽取）：%s' % str(_te)[:120])
-        # 真的退回逐段抽取（不能只在告警里说要退、实际却没抽）
+        # 真的退回逐段抽取（不能只在告警里说要退、实际却没抽）；
+        # 且逐段也必须逐段兜住异常——兜底路径绝不能成为新的崩溃点。
         for _i, (_s, _e) in enumerate(segs):
             _jpg = os.path.join(thumb_dir, '%d.jpg' % _i)
-            thumb_ok[_i] = _make_thumbnail(video_path, (_s + _e) / 2.0, _jpg)
+            try:
+                thumb_ok[_i] = _make_thumbnail(video_path, (_s + _e) / 2.0, _jpg)
+            except Exception:
+                thumb_ok[_i] = False
     segments = []
+    _thumb_fail = 0
     for i, (s, e) in enumerate(segs):
         mid = (s + e) / 2.0
         jpg = os.path.join(thumb_dir, '%d.jpg' % i)
-        has_thumb = bool(thumb_ok.get(i)) or (os.path.exists(jpg) and os.path.getsize(jpg) > 0)
+        try:
+            has_thumb = bool(thumb_ok.get(i)) or (os.path.exists(jpg) and os.path.getsize(jpg) > 0)
+        except Exception:
+            has_thumb = False   # 磁盘满/权限异常时也不能崩
+        if not has_thumb:
+            _thumb_fail += 1
         asr_text = _asr_text_in(asr, s, e)
         has_speech = bool((asr_text or '').strip())
         segments.append({
@@ -380,6 +397,16 @@ def dispatch_analyze(req, prog):
             'default_keep': has_speech,
             'ai_draft_narrations': [],
         })
+
+    # 3b. 缩略图全失败/大面积失败必须可见：否则磁盘满、目录权限、素材损坏时，
+    #     用户只看到「编辑台一片空白缩略图」，完全不知道原因（静默失败）。
+    if segs and _thumb_fail:
+        if _thumb_fail == len(segs):
+            warnings.append('全部 %d 段缩略图抽取失败（可能是磁盘空间不足、目录无写权限或视频文件损坏）'
+                            % _thumb_fail)
+        elif _thumb_fail * 2 >= len(segs):
+            warnings.append('%d/%d 段缩略图抽取失败（可能是磁盘空间不足或素材损坏）'
+                            % (_thumb_fail, len(segs)))
 
     # 4. 每段多版草稿（LLM 失败降级）
     # 4a. 草稿生成前先做**真实推理探针**：实测本地模型能列出却推理即崩/挂起 200+ 秒，
