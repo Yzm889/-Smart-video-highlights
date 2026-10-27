@@ -329,6 +329,13 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     _w._clear_active_task()   # 任务结束，清除活动状态
                     _w._TASK_SEM.release()   # 无论成功/失败/取消都必须归还名额
+                    # 失败/取消的任务：回收 run_dir 里的源片副本与中间物
+                    # （实测 20 分钟视频的 src 副本 816MB，失败后没人回收 → 越攒越多）
+                    if prog.get('error') or prog.get('aborted'):
+                        try:
+                            _w.cleanup_failed_run(run_dir)
+                        except Exception:
+                            pass
                     # 启动排队中的下一个任务
                     _w._start_next_queued()
 

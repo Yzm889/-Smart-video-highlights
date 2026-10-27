@@ -7,7 +7,7 @@
 """
 import logging, os, sys, json, math, random, re, shutil, subprocess, threading, time, base64, itertools, tempfile
 
-from ai_providers import (load_ai_config, _aborted, asr_segments,
+from ai_providers import (load_ai_config, _aborted, _note_progress_warning, asr_segments,
     local_llm_cfg, local_llm_chat, local_llm_light_chat, vlm_cfg, vlm_chat_multi,
     whisper_model_name)
 from cache_utils import (ANALYSIS_VERSION, _file_fp, _analysis_cache_load, _analysis_cache_save,
@@ -89,9 +89,74 @@ def _plot_brief(frames, per_seg, params):
     prompt += '\n\n各时段台词：\n' + '\n'.join(dlg)
     try:
         out = vlm_chat_multi(picked, prompt, system=sys, timeout=300)
+    except Exception as ex:
+        _note_progress_warning('视觉剧情理解失败（%s: %s），正在改用台词重建剧情'
+                               % (type(ex).__name__, str(ex)[:120]))
+        # 自动补救①：只用台词（文字）重建剧情。文字模型比多模态稳得多，
+        # 且台词本身就是剧情最可靠的线索——宁可剧情粗一点，也别没有剧情（没有剧情就只剩模板=乱剪）。
+        return _plot_brief_from_text(per_seg, params, sys, prompt)
+    out = (out or '').strip()
+    if not out:
+        _note_progress_warning('视觉剧情理解返回空内容，正在改用台词重建剧情')
+        return _plot_brief_from_text(per_seg, params, sys, prompt)
+    # 让"AI 到底理解成了什么剧情"可见：用户要能核对，否则无法判断剪得对不对
+    _prog = params.get('_progress') if isinstance(params, dict) else None
+    if isinstance(_prog, dict):
+        _prog['plot_brief'] = out[:800]
+        _prog['plot_source'] = '视觉理解'
+    return out[:1200]
+
+
+def _plot_brief_from_text(per_seg, params, sys_prompt=None, prompt_full=None):
+    """台词版剧情重建（不依赖视觉模型）。
+
+    视觉模型不可用/失败时的**自动补救**：把各时段台词喂给文字模型（qwen3 等），
+    让它重构剧情。台词有识别误差，但仍比"没有剧情"强得多——
+    没有剧情时后续只能套通用模板（等于乱剪），这是用户明确反馈的问题。
+    """
+    if not per_seg:
+        return None
+    try:
+        texts = [((t or '').strip()) for _s0, _s1, t in per_seg]
+        spoken = [(i, t) for i, t in enumerate(texts) if t]
+        if len(spoken) < 2:
+            _note_progress_warning('台词太少，无法重建剧情（本次按通用模板生成，剧情走向可能不准）')
+            return None
+        # 均匀采样最多 24 段台词，覆盖全片
+        if len(spoken) > 24:
+            step = (len(spoken) - 1) / 23.0
+            spoken = [spoken[int(i * step)] for i in range(24)]
+        lines = '\n'.join('%s. %s' % (i + 1, t[:120]) for i, t in spoken)
+        name = (params.get('name') or '').strip()
+        theme = (params.get('theme') or '').strip()
+        p = ('以下是同一部视频按时间先后排列的台词（由语音识别得到，可能有少量错字）。\n'
+             '请据此重构这段视频的剧情：人物是谁、在哪里、发生了什么、冲突是什么、结果如何。\n'
+             '最后用 4~6 句话完整概括剧情（供后续写解说词用）。\n'
+             '不确定的地方要写明"无法确认"，不要编造。\n')
+        if name:
+            p += '\n视频名：' + name
+        if theme:
+            p += '\n用户给的主题：' + theme
+        p += '\n\n台词：\n' + lines
+        try:
+            out = local_llm_chat(p, system=sys_prompt or '你是资深影视解说编辑，擅长从台词重构剧情。',
+                                 timeout=300)
+        except Exception as ex:
+            _note_progress_warning('台词重建剧情失败（%s: %s）；本次按通用模板生成，剧情走向可能不准'
+                                   % (type(ex).__name__, str(ex)[:120]))
+            return None
+        out = (out or '').strip()
+        if not out:
+            _note_progress_warning('台词重建剧情返回空内容；本次按通用模板生成，剧情走向可能不准')
+            return None
+        _note_progress_warning('已用台词重建剧情（视觉模型不可用），解说稿基于台词理解生成')
+        _prog = params.get('_progress') if isinstance(params, dict) else None
+        if isinstance(_prog, dict):
+            _prog['plot_brief'] = out[:800]
+            _prog['plot_source'] = '台词重建'
+        return out[:1200]
     except Exception:
         return None
-    return (out or '').strip()[:1200] or None
 
 
 def _try_parse_json(text):

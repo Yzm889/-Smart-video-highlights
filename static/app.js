@@ -1528,6 +1528,21 @@ function _fallbackPullCmd(){
   if (v < 16) return 'ollama pull qwen3:8b';
   return 'ollama pull qwen3:14b-q4_K_M';
 }
+// 展示「AI 理解的剧情」——用户必须能核对 AI 到底看懂了什么，
+// 否则剧情没懂就往下剪（=乱剪），用户完全没有察觉的机会。
+function _showPlotBrief(p){
+  const pb = $('moviePlotBrief');
+  if(!pb) return;
+  if(p && p.plot_brief){
+    pb.style.display='block';
+    pb.dataset.done='1';
+    pb.innerHTML = '<b>🧠 AI 理解的剧情</b>（来源：'+escapeHtml(p.plot_source||'视觉理解')+'）'
+      + '<div style="margin-top:4px;white-space:pre-wrap;">'+escapeHtml(p.plot_brief)+'</div>';
+  } else if(pb.dataset.done === '1'){
+    pb.style.display='none';
+  }
+}
+
 function renderNarrGuide(s){
   const ng = $('narrGuide');
   if (!ng) return;
@@ -2884,6 +2899,8 @@ function pollMovie(runid){
         if(p.done){
           clearInterval(iv); $('movieBar').style.display = 'none';
           _currentRunid=null; _stopFlag=false; if(cb) cb.style.display='';
+          // 「AI 理解的剧情」要能看见：否则用户无法判断剪得对不对（剧情没懂就等于乱剪）
+          _showPlotBrief(p);
           if(p.error){ renderPartial('moviePartial', p.partial); showTaskError($('movieStatus'), p.error, p); gErr(p.error); resolve(); return; }
           if(p.tts_list && p.tts_list.length){
             $('movieStatus').textContent = '🎙️ 配音已生成（'+p.tts_list.length+'段）→ 请到「⑥ 手动调整」试听确认后点「合成视频」出片';
@@ -2928,6 +2945,8 @@ function pollMovie(runid){
           resolve(); return;
         }
         if(!_stopFlag) $('movieStatus').textContent = (p.phase || '处理中') + '… ' + (p.pct || 0) + '%'+_formatETA(Math.round((Date.now()-_movieT0)/1000), p.pct);
+        // 生成过程中就把「AI 理解的剧情」亮出来：用户能立刻发现 AI 没看懂（而不是等出片后才发现乱剪）
+        _showPlotBrief(p);
       }).catch(() => { if(++_errs>=8){ clearInterval(iv); $('movieBar').style.display = 'none'; _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('movieStatus').textContent = '❌ 与服务失去连接（服务可能已重启），请重新发起'; gErr('与服务失去连接'); resolve(); } });
     }, 400);
     setTimeout(() => { clearInterval(iv); _currentRunid=null; _stopFlag=false; if(cb) cb.style.display=''; $('movieStatus').textContent = '⚠️ 等待超时已停止刷新（任务可能仍在后台进行），请稍后到「⑨记录」查看结果'; gErr('等待超时'); resolve(); }, 1800000);

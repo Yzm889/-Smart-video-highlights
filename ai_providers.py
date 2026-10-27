@@ -217,13 +217,113 @@ def _load_wav_as_float32(wav_path, chunk_frames=1 << 20):
     return out[:read]
 
 
+def _subtitle_streams(video_path):
+    """探测视频里的字幕轨（返回 (数量, 首个轨索引)）。用 ffmpeg -i 解析 stderr，不依赖 ffprobe。
+
+    注意：ffmpeg_run 返回的 stderr 是 **bytes**（项目惯例见 ffmpeg_utils._parse_duration），
+    必须先 decode——单测用 str mock 看不出来，真机第一次跑就 TypeError。"""
+    import re as _re
+    try:
+        rc, o, e = ffmpeg_run(['-hide_banner', '-i', video_path])
+    except Exception:
+        return 0, None
+    if not e:
+        return 0, None
+    if isinstance(e, (bytes, bytearray)):
+        e = e.decode('utf-8', 'ignore')
+    elif not isinstance(e, str):
+        e = str(e)
+    idx = None
+    n = 0
+    for m in _re.finditer(r'Stream #\d+:\d+(?:\[[^\]]*\])?(?:\([^)]*\))?:\s*Subtitle:\s*(\w+)', e):
+        n += 1
+        if idx is None:
+            # 从 "Stream #0:2" 里取轨序号
+            sm = _re.search(r'Stream #\d+:(\d+)', e[m.start():m.start() + 40])
+            idx = int(sm.group(1)) if sm else 0
+    return n, idx
+
+
+def _subtitle_segments(video_path):
+    """抽取视频内嵌字幕轨 → [{start,end,text}]。没有字幕轨返回 None。
+
+    【为什么要字幕轨优先】很多影视/网盘视频自带字幕轨（srt/ass）。字幕是**人工校对过的
+    原文**，比语音识别准得多；而 ASR 在背景音、音乐、多人抢白、音效下会明显出错
+    （用户反馈「识别字幕也不对，识别语音也不对」）。有字幕轨就用它，一条都不用 ASR。
+    """
+    n, idx = _subtitle_streams(video_path)
+    if not n or idx is None:
+        return None
+    tmp = None
+    try:
+        tmp = os.path.join(WORKDIR, 'sub_%d.srt' % int(time.time() * 1000))
+        os.makedirs(WORKDIR, exist_ok=True)
+        rc, o, e = ffmpeg_run(['-y', '-i', video_path, '-map', '0:%d' % idx, '-f', 'srt', tmp])
+        if rc != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 16:
+            return None
+        import re as _re
+        segs = []
+        cur_start = cur_end = None
+        buf = []
+
+        def _sec(t):
+            t = (t or '').strip().replace(',', '.')
+            parts = t.split(':')
+            try:
+                if len(parts) == 3:
+                    return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                if len(parts) == 2:
+                    return int(parts[0]) * 60 + float(parts[1])
+                return float(parts[0])
+            except Exception:
+                return 0.0
+
+        with open(tmp, 'r', encoding='utf-8-sig', errors='ignore') as f:
+            for line in f:
+                line = (line or '').rstrip('\n').strip()
+                if '-->' in line:
+                    if cur_start is not None and buf:
+                        segs.append({'start': cur_start, 'end': cur_end,
+                                     'text': ' '.join(buf).strip()})
+                    buf = []
+                    left, _, right = line.partition('-->')
+                    # 右半段 = 「结束时间」[+ 行尾文字]（畸形但常见的写法，别把文字丢了）
+                    m = _re.match(r'\s*([0-9:.,]+)\s*(.*)$', right or '')
+                    end_ts = m.group(1) if m else (right or '')
+                    tail = (m.group(2) if m else '').strip()
+                    cur_start, cur_end = _sec(left), _sec(end_ts)
+                    if tail:
+                        buf.append(tail)
+                elif line and not line.isdigit():
+                    buf.append(line)
+        if cur_start is not None and buf:
+            segs.append({'start': cur_start, 'end': cur_end, 'text': ' '.join(buf).strip()})
+        segs = [s for s in segs if s['text']]
+        return segs or None
+    except Exception:
+        return None
+    finally:
+        _silent_remove(tmp)
+
+
 def asr_segments(video_path, progress=None, pct_range=None):
-    """faster-whisper 本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
+    """本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
     自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
+
+    **优先用视频内嵌字幕轨**（人工校对，比 ASR 准）；没有字幕轨才走语音识别。
+    用了哪种来源会写进当前任务的 warnings，用户在结果里能直接看到。
 
     progress / pct_range：可选。传了就逐段推进进度并响应取消——
     旧实现一次性消费 transcribe 的生成器，长视频（十几分钟）转写期间进度条
     长时间停在同一个百分比，观感与「卡死」无异，且中途无法取消。"""
+    # ① 字幕轨优先
+    try:
+        _subs = _subtitle_segments(video_path)
+    except Exception:
+        _subs = None
+    if _subs:
+        _note_progress_warning('台词来源：视频内嵌字幕轨（%d 条，比语音识别更准）' % len(_subs))
+        return _subs
     try:
         from faster_whisper import WhisperModel
     except Exception:
@@ -244,8 +344,25 @@ def asr_segments(video_path, progress=None, pct_range=None):
             model = WhisperModel(_whisper_load_path(whisper_model_name()),
                                  device=dev or device, compute_type=ctype_ or ctype,
                                  download_root=whisper_models_dir())
-            segments, info = model.transcribe(_load_wav_as_float32(wav), language='zh', vad_filter=True,
-                                              initial_prompt='以下是普通话的句子。')
+            # 参数说明（都是「让结果更准/更稳」，实测影响很大）：
+            #  condition_on_previous_text=False —— **最关键**：默认 True 会让模型把上一句
+            #    当上下文，一旦某句识别错，后面会顺着错下去、反复复读同一句直到结尾
+            #    （用户反馈「识别语音也对不上」的典型成因）。关掉后每段独立识别。
+            #  temperature=0 —— 贪心解码，结果稳定可复现（默认会采样，同一视频两次结果不同）。
+            #  beam_size=5 —— 比贪心更准一点。
+            #  compression_ratio_threshold / log_prob_threshold / no_speech_threshold
+            #    —— 标准抗幻觉阈值：模型对某段"没把握"时宁可标成静音也不硬编台词。
+            #  language —— 硬编码 'zh' 会把英文/中英混说判错；配置成 'auto' 则自动判别。
+            _lang = (whisper_language() or 'zh')
+            segments, info = model.transcribe(
+                _load_wav_as_float32(wav), language=_lang, vad_filter=True,
+                initial_prompt='以下是普通话的句子。',
+                condition_on_previous_text=False,
+                temperature=0.0,
+                beam_size=5,
+                compression_ratio_threshold=2.4,
+                log_prob_threshold=-1.0,
+                no_speech_threshold=0.6)
             total = 0.0
             try:
                 total = float(getattr(info, 'duration', 0) or 0)
@@ -702,6 +819,18 @@ def whisper_model_name():
     cfg = load_ai_config().get('whisper') or {}
     m = (cfg.get('model') or 'distil-large-v3')
     return m if m in _WHISPER_MODELS else 'base'
+
+
+def whisper_language():
+    """读取配置的识别语言（默认 zh）。'auto' = 自动判别。
+
+    硬编码 'zh' 会把纯英文/中英混说的片子判错（用户反馈「识别语音也对不上」的成因之一）。
+    配置位置：ai_config.json → whisper.language = "auto"（或 "en"/"ja" 等）。"""
+    cfg = load_ai_config().get('whisper') or {}
+    lang = str(cfg.get('language') or 'zh').strip().lower()
+    if not lang:
+        return 'zh'
+    return lang
 
 def whisper_models_dir():
     """faster-whisper 模型权重统一缓存到项目 models/whisper，方便引导用户管理/查看。"""

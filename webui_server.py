@@ -2827,6 +2827,49 @@ def _remove_history_file(rel):
         pass
 
 
+def cleanup_failed_run(run_dir):
+    """任务失败/取消后回收 run_dir 里的「大件」中间物（源片副本 + 可再生中间产物）。
+
+    【为什么必须做】实测：上传一个 20 分钟视频会在 run_dir 里落一份 **816MB 的 src 副本**，
+    任务失败后没有任何人回收它 → 每跑一次失败任务就白占 816MB。用户反馈「清理上一个
+    视频产生的缓存和中间物」——根因就在这里（实测两个失败任务堆了 1.6GB）。
+
+    保留：analyze_result.json（结果页要显示错误与分段）、thumbnails/（编辑台缩略图很小）、
+    cover/poster（封面）。删除：src.*（源片副本，用户本地还有原件）、narr*/frame*/cut*/
+    bc*/vsub*/*.srt/*.concat.txt/cover_cand/（全部可再生）。
+    """
+    if not run_dir or not os.path.isdir(run_dir):
+        return 0
+    freed = 0
+    keep_names = ('analyze_result.json',)
+    keep_dirs = ('thumbnails',)
+    try:
+        for name in os.listdir(run_dir):
+            p = os.path.join(run_dir, name)
+            if name in keep_names or name in keep_dirs:
+                continue
+            try:
+                if os.path.isdir(p):
+                    if name == 'cover_cand':
+                        freed += _storage_dir_size(p)
+                        shutil.rmtree(p, ignore_errors=True)
+                    continue
+                low = name.lower()
+                # 源片副本（最大头）：用户本地还有原件，失败任务的副本一律回收
+                if low.startswith('src') or low.startswith('narr') or low.startswith('frame_') \
+                        or low.startswith('cut') or low.startswith('bc') or low.startswith('vsub') \
+                        or low.endswith('.srt') or low.endswith('.concat.txt') or low.endswith('.wav') \
+                        or low.endswith('.mp3'):
+                    sz = os.path.getsize(p)
+                    os.remove(p)
+                    freed += sz
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return freed
+
+
 def cleanup_run_mid(run_dir):
     """任务成功后清理 run_dir 下可再生成的中间产物，保留 final.mp4 / src 源视频 / cover 封面 / 音乐 mp3。
     避免 webui_output 无限膨胀（之前手动清过 3GB）。失败静默。"""
