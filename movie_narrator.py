@@ -44,12 +44,152 @@ def _host():
 
 _w = _host()
 
+# 单次喂给视觉模型的帧数。不是越大越好：每张图都要编码成 vision token，
+# 12GB 显存下一次 8~10 张是安全区；再多既挤爆上下文，模型也会「忘记」中间的图。
+VLM_BATCH_FRAMES = 8
+
+# 剧情理解最多参考的段数上限（防止 2 小时视频把文字模型上下文撑爆）。
+PLOT_SCAN_MAX_SEG = 120
+
+
+def _scan_full_visual(frames, per_seg, params, progress=None):
+    """全段画面扫描（事实层）：把**每一段**的中间帧按时间顺序分批交给视觉模型，
+    逐段输出「画面里实际可见的内容」。返回 {段下标: 描述}；视觉模型不可用返回 {}。
+
+    【为什么必须全扫——这是「AI 理解不够」的根因】
+    旧实现在剧情理解时只用 8 帧代表全片：20 分钟视频切成 48 段时，等于
+    **每 171 秒才看 1 帧**，画面信息利用率仅 17%，83% 的画面被丢掉。
+    而「剧情」恰恰是全片最高层的理解任务，喂给它的信息反而最少——
+    甚至低于它下属的逐段描述（14 帧）。这种**信息倒挂**使模型无法从事实里
+    归纳出剧情，只能靠语言先验去「编」（幻觉）。参数怎么调都救不了，
+    因为输入的信息量本身就不够。
+
+    分工修正：
+      · 视觉模型 → 只做它擅长的事：**描述看见了什么**（低幻觉、可在这一帧里验证）
+      · 文字模型 → 做它擅长的事：**按时间顺序把事实串成因果剧情**（长文本推理）
+
+    这样画面利用率从 17% 提到 100%，且剧情每一步都有画面/台词事实作依据。
+    """
+    idxs = [i for i in sorted(frames.keys()) if frames.get(i)]
+    if not idxs:
+        return {}
+    n = len(idxs)
+    if n > PLOT_SCAN_MAX_SEG:
+        # 超长视频再均匀抽一次（此时每段已很短，抽掉一半损失可控）
+        keep = [idxs[int(i * (n - 1) / (PLOT_SCAN_MAX_SEG - 1))] for i in range(PLOT_SCAN_MAX_SEG)]
+        idxs = sorted(set(keep))
+    caps = {}
+    batches = [idxs[i:i + VLM_BATCH_FRAMES] for i in range(0, len(idxs), VLM_BATCH_FRAMES)]
+    import re as _re
+    for bi, batch in enumerate(batches):
+        if progress is not None:
+            try:
+                progress['phase'] = ('画面全扫 %d/%d 批（看懂每一段，不再只看片头片尾）'
+                                     % (bi + 1, len(batches)))
+            except Exception:
+                pass
+        sys_ = '你是视频画面描述助手，只描述画面里实际可见的内容。'
+        prompt = ('下面是同一段视频按时间顺序抽取的各镜头画面：第1张对应第1段，第2张对应第2段……依此类推。\n'
+                  '请严格按顺序逐段输出每段画面里实际可见的内容（人物/动作/场景/画面上的文字）。\n'
+                  '每段一行，格式严格为「第k段: 画面内容」，k 从 1 开始递增。\n'
+                  '只描述看到的，不要推测剧情、不要总结、不要遗漏任何一段。')
+        if bi > 0:
+            # 跨批 continuity：告诉模型这只是接在前面的后续镜头，别当成新片子的开头
+            prompt = '下面接的是上一个视频片段的后续镜头（时间上承前一批）。\n' + prompt
+        try:
+            out = vlm_chat_multi([frames[i] for i in batch], prompt, system=sys_, timeout=300) or ''
+        except Exception as ex:
+            if bi == 0:
+                # 第一批就失败 = 视觉模型整体不可用，交给调用方走台词路线
+                raise
+            _note_progress_warning('画面全扫第%d批失败（%s），已跳过后续批次'
+                                   % (bi + 1, str(ex)[:80]))
+            break
+        for l in out.splitlines():
+            m = _re.match(r'^\s*第(\d+)段[:：]\s*(.+?)\s*$', l.strip())
+            if not m:
+                continue
+            k = int(m.group(1)) - 1
+            if 0 <= k < len(batch):
+                caps[batch[k]] = m.group(2)
+        if progress is not None:
+            try:
+                progress['pct'] = int(30 + 25 * (bi + 1) / max(1, len(batches)))
+            except Exception:
+                pass
+    return caps
+
+
+def _plot_brief_from_scan(caps, per_seg, params, sys_prompt=None):
+    """基于「全段画面描述 + 全段台词」重建剧情（文字模型）。
+
+    这是剧情理解的主力路径：画面事实由视觉模型逐段扫出来（见 _scan_full_visual），
+    这里只做因果串联与概括。相比让视觉模型直接从稀疏抽帧猜剧情，这条路
+    有事实依据、可回溯、幻觉显著更少。
+    """
+    lines = []
+    for i, (s0, s1, txt) in enumerate(per_seg):
+        cap = (caps.get(i) or '').strip()
+        dlg = (txt or '').strip()
+        if not cap and not dlg:
+            continue
+        piece = '%d分%02d秒-%d分%02d秒' % (int(s0) // 60, int(s0) % 60, int(s1) // 60, int(s1) % 60)
+        if cap:
+            piece += '【画面】' + cap[:180]
+        if dlg:
+            piece += '【台词】' + dlg[:180]
+        lines.append(piece)
+    if not lines:
+        return None
+    theme = (params.get('theme') or '').strip()
+    name = (params.get('name') or '').strip()
+    prompt = ('下面是同一段视频按时间先后排列的逐段记录（画面内容已由视觉识别得出，台词可能含识别误差）。\n'
+              '请据此重构这段视频的完整剧情，回答：\n'
+              '1) 这是一段什么内容（影视剧片段 / 纪录片 / 口播 / 风光等）；\n'
+              '2) 若明显来自某部影视作品，点出片名与年代背景；不确定就写「无法确认片名」，不要编造；\n'
+              '3) 按时间顺序讲清楚剧情：人物是谁、身在何处、发生了什么冲突、结果如何；\n'
+              '4) 最后用 4~6 句话概括剧情（供后续解说使用）。\n'
+              '要求：只依据上面给的记录推理，不要补充画面与台词之外的情节。\n')
+    if name:
+        prompt += '\n视频文件名：' + name
+    if theme:
+        prompt += '\n用户提供的主题/梗概：' + theme
+    prompt += '\n\n逐段记录：\n' + '\n'.join(lines)
+    sys = sys_prompt or '你是资深影视解说编辑，擅长依据画面与台词记录还原完整剧情。'
+    # 剧情串写交给文字模型：它不是生成"看见什么"，而是推理因果，
+    # 文字模型处理长文本与保持时序一致性明显强于多模态。
+    try:
+        if _local_model_available():
+            out = local_llm_chat(prompt, system=sys, timeout=420, max_tokens=1500)
+        else:
+            out = _w.vlm_text(prompt, system=sys, timeout=420)
+    except Exception:
+        return None
+    return (out or '').strip()[:1400] or None
+
+
 def _plot_brief(frames, per_seg, params):
     """剧情理解（阶段一）：把整片关键帧（按时间顺序）+ 各段台词一次性喂给 VLM，
     判断片段类型 / 识别影视作品 / **结合台词重构具体剧情事件**，返回剧情梗概文本。失败返回 None。
     这是「剧情解说」与「画面描述」的分水岭：先让模型看懂整个故事，再写旁白。"""
     if not frames:
         return None
+    _prog = params.get('_progress') if isinstance(params, dict) else None
+    # —— 首选：全段画面扫描 → 文字模型串剧情（有全片事实依据，幻觉最少）——
+    try:
+        _caps = _scan_full_visual(frames, per_seg, params, progress=_prog)
+    except Exception:
+        _caps = {}
+    if _caps:
+        _note_progress_warning('已逐段扫描全部画面（%d 段），剧情基于全片事实重建' % len(_caps))
+        _out = _plot_brief_from_scan(_caps, per_seg, params)
+        if _out:
+            if isinstance(_prog, dict):
+                _prog['plot_brief'] = _out[:800]
+                _prog['plot_source'] = '全段画面理解'
+            return _out
+        _note_progress_warning('剧情串写失败，改用视觉模型直接概览')
+    # —— 兜底：视觉模型直接概览全片（信息稀疏，但总比没有剧情强）——
     idxs = sorted(frames.keys())
     # 均匀采样 8 帧：首尾必采、中间等距，确保长视频后面的画面也被模型看到
     # （旧实现 idxs[::step][:8] 只取前 8 个采样点，长视频末尾 10%+ 的画面完全缺失）

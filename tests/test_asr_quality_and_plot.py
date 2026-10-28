@@ -273,6 +273,71 @@ def test_vlm_reads_onscreen_subtitles(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# ④ 画面理解质量（2026-10-28：用户反馈「理解还不够」的根因修复）
+# ---------------------------------------------------------------------------
+
+def test_vlm_call_must_disable_thinking(monkeypatch, tmp_path):
+    """本机 Ollama 的 VLM 调用必须显式关思考。
+
+    实测 minicpm-v4.5：不关思考时 thinking 141 字、正文只剩 41 字（残缺）且慢 4 倍；
+    关掉后正文完整、1.2s。这条不严一下，画面理解会拿到被思考挤占的残缺内容，
+    而且症状是「结果很空却没有任何报错」——最难查的那类问题。
+    """
+    import ai_providers as AP
+    captured = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"message":{"content":"ok"}}'
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _fake_urlopen(req, timeout=None):
+        import json as _j
+        captured['payload'] = _j.loads(req.data.decode('utf-8'))
+        captured['url'] = req.full_url
+        return _Resp()
+
+    monkeypatch.setattr(AP, 'vlm_cfg', lambda: {
+        'model': 'minicpm-v4.5', 'mode': 'ollama', 'base_url': 'http://localhost:11434',
+        'api_key': '', 'timeout': 30})
+    monkeypatch.setattr('urllib.request.urlopen', _fake_urlopen)
+    img = tmp_path / 'f.jpg'
+    img.write_bytes(b'\xff\xd8\xff\xe0' + b'0' * 64)   # 最小 JPEG 头，够 base64 编码
+    AP.vlm_chat_multi([str(img)], '描述这张图', system='你是画面描述助手', timeout=30)
+    payload = captured['payload']
+    assert payload.get('think') is False, 'VLM 必须关思考，否则正文被 thinking 挤占：%s' % payload
+    assert (payload.get('options') or {}).get('num_predict'), '应显式给出 num_predict'
+    assert captured['url'].endswith('/api/chat')
+
+
+def test_scan_full_visual_covers_every_segment(monkeypatch):
+    """剧情理解必须看到**每一段**，不能退化成稀疏抽帧。
+
+    旧实现只从全片取 8 帧：20 分钟视频切成 48 段时等于每 171 秒才看 1 帧，
+    画面利用率 17%。而「剧情」恰恰是最高层的理解任务——信息倒挂导致模型只能编。
+    """
+    import movie_narrator as MN
+    n = 30  # 明显多于单批 8 帧
+    frames = {i: 'C:/fake/f%02d.jpg' % i for i in range(n)}
+    per_seg = [(i * 8.0, (i + 1) * 8.0, '') for i in range(n)]
+    seen = []
+
+    def _fake_vlm(imgs, prompt, system=None, timeout=240, max_tokens=None):
+        seen.append(list(imgs))
+        # 模拟「逐段输出」：返回本次批次每一段的描述
+        return '\n'.join('第%d段: 描述%d' % (k + 1, k + 1) for k in range(len(imgs)))
+
+    monkeypatch.setattr(MN, 'vlm_chat_multi', _fake_vlm)
+    caps = MN._scan_full_visual(frames, per_seg, {'theme': '', 'name': ''})
+    assert len(caps) == n, '应覆盖全部 %d 段，实际 %d 段' % (n, len(caps))
+    assert all(k in caps for k in range(n)), '不能有段被跳过'
+    # 必须分批（一次塞 30 张会挤爆上下文），且每批不超过上限
+    assert len(seen) > 1, '应分批调用，不能一次塞全部帧'
+    assert all(len(b) <= MN.VLM_BATCH_FRAMES for b in seen), seen
+
+
+# ---------------------------------------------------------------------------
 # ③ 失败任务回收
 # ---------------------------------------------------------------------------
 def test_cleanup_failed_run_removes_src_copy_keeps_result(tmp_path, monkeypatch):

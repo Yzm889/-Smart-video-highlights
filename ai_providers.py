@@ -893,9 +893,17 @@ def vlm_cfg():
         'api_key': cfg.get('api_key') or '',
     }
 
-def vlm_chat_multi(image_paths, text, system=None, timeout=240):
+# VLM 采样温度：画面描述/剧情理解要的是「转述看到的」，不是创意发挥，
+# 取低温让同一次分析可复现（同一段视频两次跑出的画面描述一致，便于对照问题）。
+_VLM_TEMPERATURE = 0.3
+
+
+def vlm_chat_multi(image_paths, text, system=None, timeout=240, max_tokens=None):
     """调用本地/云端 VLM：一次传入多张图（按时间先后顺序），返回模型文本回复。失败抛异常。
-    用于「剧情理解」：把整片关键帧一起看，判断作品/人物/剧情，而不是逐帧孤岛描述。"""
+    用于「剧情理解」：把整片关键帧一起看，判断作品/人物/剧情，而不是逐帧孤岛描述。
+
+    max_tokens：ollama 原生端点下对应 num_predict（默认 1500）。画面理解类任务
+    一次要输出 N 段描述，提示词长时 1500 会被截断——需要更大值就显式传入。"""
     c = vlm_cfg()
     if not c['base_url']:
         raise RuntimeError('VLM 未配置')
@@ -910,7 +918,13 @@ def vlm_chat_multi(image_paths, text, system=None, timeout=240):
                 imgs.append(_b64.b64encode(f.read()).decode('ascii'))
         msg = {'role': 'user', 'content': text, 'images': imgs}
         messages = ([{'role': 'system', 'content': system}] if system else []) + [msg]
-        payload = {'model': c['model'], 'messages': messages, 'stream': False}
+        # 【实测 minicpm-v4.5 / 2026-10-28】必须显式关思考，否则输出会被严重挤占：
+        #   不关思考 → 思考 141 字、正文只有 41 字（残缺）、4.8s
+        #   关掉思考 → 思考 0 字、正文 76 字且完整、1.2s（又快又准）
+        # 多模态模型同样有 thinking 通道，Multi-image 时思考更长 → 正文可被挤到空。
+        payload = {'model': c['model'], 'messages': messages, 'stream': False,
+                   'think': False, 'options': {'num_predict': max_tokens or 1500,
+                                               'temperature': _VLM_TEMPERATURE}}
         url = c['base_url'] + '/api/chat'
     else:
         content = []
@@ -928,7 +942,14 @@ def vlm_chat_multi(image_paths, text, system=None, timeout=240):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = _json.loads(resp.read().decode('utf-8'))
         if c['mode'] == 'ollama':
-            return (data.get('message') or {}).get('content', '')
+            msg = data.get('message') or {}
+            out = (msg.get('content') or '').strip()
+            if not out:
+                # 兜底：个别模型/老版本对 think 参数兼容不佳时正文仍可能为空，
+                # 此时退回思考内容（剥离 <think> 标签）——宁可是推理草稿，
+                # 也别让「画面理解/剧情理解」整条链路静默拿到空串。
+                out = _strip_think(msg.get('thinking') or '').strip()
+            return out
         return (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
 
     # S7: 本地 ollama 推理独占 GPU 槽；openai 模式（可能云端）与远程不加锁
