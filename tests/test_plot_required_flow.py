@@ -123,6 +123,34 @@ def test_no_stale_ai_recognize_flow_wording(front):
             '发现过时的流程描述「%s」：它描述的是已被删除的「AI 识别画面」流程。'
             '现在是剧情驱动，文案必须同步。' % stale)
 
+
+def test_narrate_has_own_movie_name_input(front):
+    """解说页必须有**独立的片名输入框**，「一键查剧情」必须读它。
+
+    原实现复用 narTheme（主题/梗概框）当片名：那个框填的是「春天樱花树下散步」
+    这类描述，拿它当片名去搜索必然搜不到 —— 用户只会觉得「一键查剧情是坏的」。
+    """
+    html, js = front
+    assert 'id="narMovieName"' in html, '解说页缺少独立的片名输入框'
+    i = js.find('async function fetchDeepSeekPlot')
+    body = js[i:i + 900]
+    assert "$('narMovieName')" in body, (
+        '一键查剧情必须读独立的片名框（narMovieName），不能拿主题/梗概框当片名')
+
+
+def test_two_tabs_state_their_difference(front):
+    """两个标签页必须讲清差别——否则新用户不知道该进哪个。
+
+    真实差异（已核对后端）：剪成片必须有视频；只要解说稿可以只给片名/剧情。
+    两者引擎相同（都走 _narrate_by_plot），所以区别真的只有「要不要传视频」。
+    """
+    html, _js = front
+    for tab, must in (('nar', '要传视频'), ('movie', '可不传视频')):
+        m = re.search(r'<button[^>]*data-subtab="%s"[^>]*>(.*?)</button>' % tab, html, re.S)
+        assert m, '找不到 %s 标签页' % tab
+        assert must in m.group(1), (
+            '标签页 %s 未说明「%s」—— 用户无法判断该进哪个' % (tab, must))
+
 def _free_port():
     s = socket.socket()
     s.bind(('127.0.0.1', 0))

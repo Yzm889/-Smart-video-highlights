@@ -2698,13 +2698,18 @@ function openDeepSeek(which){
 // ---- 🔎 一键查剧情：直接调后端 /api/deepseek_plot（DeepSeek 等 chat API），回填剧情框 ----
 async function fetchDeepSeekPlot(which){
   const isMovie = (which === 'movie');
-  const nameEl = isMovie ? $('movieName') : $('narTheme');
+  // 解说页必须用**独立的片名框**（narMovieName）。
+  // 原先复用 narTheme（主题/梗概框）——那框填的是「春天樱花树下散步」这类描述，
+  // 拿它当片名去搜必然搜不到，用户只会觉得「一键查剧情没用」。
+  const nameEl = isMovie ? $('movieName') : $('narMovieName');
   const boxEl  = isMovie ? $('moviePlot') : $('narPlot');
   const hintEl = $(isMovie ? 'movieDsHint' : 'narDsHint');
   const btn    = $(isMovie ? 'movieDsBtn' : 'narDsBtn');
   const title  = ((nameEl && nameEl.value) || '').trim();
   if(!title){
-    if(hintEl) hintEl.innerHTML = '⚠️ 先在片名/主题框填片名，或直接在剧情框写一段描述再点「一键查剧情」。';
+    if(hintEl) hintEl.innerHTML = isMovie
+      ? '⚠️ 先在上方「片名」框填片名，或直接在左侧剧情框粘贴一段简介。'
+      : '⚠️ 先在右侧「片名（用于查剧情）」框填片名；不想查就直接在上边写剧情。';
     return;
   }
   const old = btn ? btn.textContent : '';
