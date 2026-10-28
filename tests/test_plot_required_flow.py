@@ -151,6 +151,58 @@ def test_two_tabs_state_their_difference(front):
         assert must in m.group(1), (
             '标签页 %s 未说明「%s」—— 用户无法判断该进哪个' % (tab, must))
 
+
+# ---------------------------------------------------------------------------
+# ④ 参数区「常用 / 高级」分组：首屏不要被七八个名词砸懵
+# ---------------------------------------------------------------------------
+
+# 常用项：对成片影响明显，必须一眼看到（不能藏进折叠区）
+_COMMON_FIELDS = ('narrStyle', 'narReq')
+# 高级项：不常用，必须收进高级设置
+_ADVANCED_FIELDS = ('narGenre', 'narMaxSeg', 'detailLevel', 'narTheme',
+                    'subFontSize', 'exportResolution')
+
+
+def _advanced_span(html):
+    """返回高级设置 details 的 (起, 止) 字符区间。内部已无嵌套 details，
+    所以从 <details class="nar-advanced"> 到下一个 </details> 即为该区间。"""
+    m = re.search(r'<details class="nar-advanced"', html)
+    assert m, '找不到「高级设置」折叠区'
+    end = html.find('</details>', m.start())
+    assert end > 0, '「高级设置」折叠区未闭合'
+    return m.start(), end
+
+
+def test_common_params_are_visible_without_expanding(front):
+    """常用参数必须直接可见——不能藏在折叠面板里。"""
+    html, _js = front
+    a, b = _advanced_span(html)
+    for fid in _COMMON_FIELDS:
+        pos = html.find('id="%s"' % fid)
+        assert pos > 0, '缺少常用参数 %s' % fid
+        assert not (a < pos < b), (
+            '常用参数 %s 被塞进了高级设置里 —— 常用的东西不该要人展开' % fid)
+
+
+def test_advanced_params_are_tucked_away(front):
+    """高级参数必须收起来，否则首屏信息过载。"""
+    html, _js = front
+    a, b = _advanced_span(html)
+    for fid in _ADVANCED_FIELDS:
+        pos = html.find('id="%s"' % fid)
+        assert pos > 0, '缺少高级参数 %s' % fid
+        assert a < pos < b, (
+            '高级参数 %s 没在高级设置里 —— 首屏会被这些细节撑爆' % fid)
+
+
+def test_plot_box_comes_before_advanced(front):
+    """流程顺序：先写剧情（第 1 步），再谈高级设置。顺序反了会显得剧情不重要。"""
+    html, _js = front
+    a, _b = _advanced_span(html)
+    pos = html.find('id="narPlotBox"')
+    assert pos > 0
+    assert pos < a, '剧情框必须排在高级设置之前——它是第一步，不能落到后面去'
+
 def _free_port():
     s = socket.socket()
     s.bind(('127.0.0.1', 0))
