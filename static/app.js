@@ -1543,6 +1543,32 @@ function _showPlotBrief(p){
   }
 }
 
+// 剧情输入框的实时反馈：非专业用户最大的卡点是「不知道写没写够」。
+// 与其事后报错，不如边写边告诉他够不够——这样第一次用的人不会卡在这一步。
+function updatePlotHint(){
+  const el = document.getElementById('narPlot');
+  const box = document.getElementById('plotLenHint');
+  if(!el || !box) return;
+  const n = (el.value || '').trim().length;
+  if(n === 0){
+    box.className = 'plot-len warn';
+    box.textContent = '还没写剧情 —— 这一步是必填的，AI 靠它决定怎么剪。';
+  }else if(n < 60){
+    box.className = 'plot-len warn';
+    box.textContent = '已写 ' + n + ' 字，偏少：至少写到 100 字 / 3~5 句，不然解说只能出三句。';
+  }else if(n < 150){
+    box.className = 'plot-len ok';
+    box.textContent = '已写 ' + n + ' 字 ✓ 够用了。想让解说更有画面感，可以继续补细节。';
+  }else{
+    box.className = 'plot-len ok';
+    box.textContent = '已写 ' + n + ' 字 ✓ 很充分，解说会更有内容。';
+  }
+}
+// 一键查剧情回填后也要同步刷新提示
+if(typeof window !== 'undefined'){
+  window.addEventListener('DOMContentLoaded', function(){ updatePlotHint(); });
+}
+
 function renderNarrGuide(s){
   const ng = $('narrGuide');
   if (!ng) return;
@@ -2689,6 +2715,7 @@ async function fetchDeepSeekPlot(which){
     const j = await r.json();
     if(j.ok){
       boxEl.value = j.plot;
+      updatePlotHint();   // 回填后同步刷新「写够了吗」提示
       if(hintEl) hintEl.innerHTML = '✅ 已填入剧情摘要，可直接编辑后再生成解说。';
     }else{
       if(hintEl) hintEl.innerHTML = '⚠️ ' + escapeHtml(j.error || '查询失败') + '（也可点右侧「🌐 打开 DeepSeek」手动查询）';

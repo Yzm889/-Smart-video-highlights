@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=19">
+<link rel="stylesheet" href="/static/style.css?v=20">
 </head>
 <body>
 <header>
@@ -25,19 +25,19 @@
 <nav class="flow-nav" id="flowNav" aria-label="创作流程">
   <div class="flow-steps">
     <button class="flow-step active" data-flow="1" data-step="start" onclick="goFlowStep(1)">
-      <span class="flow-num">1</span><span class="flow-label">开始</span>
+      <span class="flow-num">1</span><span class="flow-label">准备</span>
     </button>
     <div class="flow-line"></div>
     <button class="flow-step" data-flow="2" data-step="narrate" onclick="goFlowStep(2)">
-      <span class="flow-num">2</span><span class="flow-label">解说/素材</span>
+      <span class="flow-num">2</span><span class="flow-label">写剧情·选视频</span>
     </button>
     <div class="flow-line"></div>
     <button class="flow-step" data-flow="3" data-step="adjust" onclick="goFlowStep(3)">
-      <span class="flow-num">3</span><span class="flow-label">调整</span>
+      <span class="flow-num">3</span><span class="flow-label">校订解说</span>
     </button>
     <div class="flow-line"></div>
     <button class="flow-step" data-flow="4" data-step="build" onclick="goFlowStep(4)">
-      <span class="flow-num">4</span><span class="flow-label">合成</span>
+      <span class="flow-num">4</span><span class="flow-label">出片</span>
     </button>
   </div>
   <div class="flow-more">
@@ -104,7 +104,16 @@
       <details class="guide-collapse">
         <summary>📖 新手引导 <span class="gc-toggle">点击标题可整体收起/展开，下方每步也可单独点开</span></summary>
         <div class="gc-body">
-          <p class="hint">本工具两种用法，<b>都不强制花钱</b>。下面每步可点开/收起，按顺序做即可。</p>
+          <div style="border:1px solid #7fd69a;border-radius:10px;padding:11px 13px;background:rgba(127,214,154,0.07);margin-bottom:12px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px;">🎯 就三步，照着做就行</div>
+            <p class="hint" style="margin:0 0 6px;">
+              <b>① 写剧情</b>　告诉 AI 这片子讲了什么（开头 → 冲突 → 结局，100 字就够。不知道就点「🔎 一键查剧情」自动拉取）<br>
+              <b>② 传视频</b>　把片子拖进去，点「🎙 生成配音并调整」<br>
+              <b>③ 校订出片</b>　在编辑台改解说词、勾选要保留的片段，然后合成
+            </p>
+            <p class="hint" style="margin:0;color:#a35;"><b>最关键的是第 ① 步</b>：AI 不知道剧情就只能瞎剪。写清楚，后面全对。</p>
+          </div>
+          <p class="hint">下面是模型与功能说明，<b>两种用法都不强制花钱</b>。每步可点开/收起。</p>
           <div class="quick-nav">
             <span class="qn-label">⚡ 快速跳转：</span>
             <button class="btn mini ghost" onclick="jumpToAISection('local')">🖥 配置本地模型</button>
@@ -482,10 +491,10 @@
     <div id="narrGuide" class="narr-guide"></div>
     <div id="narDrop" class="musdrop">🎞️ 拖入一段电影/动漫/短片片段</div>
     <input type="file" id="narInput" accept="video/*" style="display:none">
-    <div class="hint">自动<b>分段</b> → 识别<b>台词</b>（本地 Whisper）→ 生成<b>剧情解说稿</b> → 按时间轴<b>配音</b>（默认系统免费中文配音）+ <b>字幕</b> → 出片。</div>
+    <div class="hint">按<b>你写的剧情</b>写解说稿 → 按每句解说去原片里<b>挑有内容的画面</b> → 按时间轴<b>配音</b>（默认系统免费中文配音）+ <b>字幕</b> → 出片。过场空镜会被跳过，成片比原片短。</div>
     <div class="hint" id="narInfo">还没有选择视频。</div>
     <div class="row" style="margin-top:10px;">
-      <div class="mode-hint" id="narModeHint">🤖 <b>自动路径</b>：本地模型免费优先（看画面 + 写稿）→ 配置了云端 key 时用云端增强 → 都没有时用台词/模板兜底。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
+      <div class="mode-hint" id="narModeHint">🤖 <b>写稿</b>由本地文字模型负责（免费）；剧情已由你提供，所以<b>不靠 AI 猜画面</b>。需要识别台词时才用 Whisper。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
       <div class="hint" id="narVoiceInfo" style="width:100%; margin-top:4px;">🔊 配音：读取中…</div>
       <div class="field"><label for="narGenre">题材类型（决定解说模板）</label>
         <select id="narGenre" onchange="saveNarrGenre()">
@@ -523,8 +532,15 @@
     <details class="bubble plot-box" style="margin-top:10px;" id="narPlotBox" open>
       <summary>🎭 第 1 步：写剧情<span style="font-weight:400;color:var(--muted);">（必填 · AI 靠它决定怎么剪）</span></summary>
       <div class="bubble-body">
+        <!-- 上手引导：非专业用户最大的卡点是「不知道该写什么、写多少」 -->
+        <div class="plot-guide">
+          <div class="pg-row"><span class="pg-k">写什么</span><span class="pg-v">三件事就够：<b>开头发生了什么</b> → <b>中间冲突是什么</b> → <b>结局如何</b>。像跟朋友讲这片子讲了啥，不用文绉绉。</span></div>
+          <div class="pg-row"><span class="pg-k">写多少</span><span class="pg-v">至少 <b>100 字 / 3~5 句</b>。写得多细，解说就有多具体；只写三行梗概，出来就只有三句解说。</span></div>
+          <div class="pg-row"><span class="pg-k">不会写</span><span class="pg-v">点右侧「🔎 一键查剧情」自动拉取；或去豆瓣复制简介直接粘进去 —— 不用自己组织语言。</span></div>
+        </div>
         <div class="plot-edit">
-          <textarea id="narPlot" rows="14" placeholder="例：&#10;1. 灾变前的最后时光&#10;故事开始时，副警长瑞克和搭档肖恩在巡逻车里聊天，随后瑞克中枪昏迷。&#10;&#10;2. 末日后苏醒&#10;瑞克在医院中醒来，发现医院空无一人，世界已变。&#10;&#10;3. 初识丧尸与幸存者&#10;瑞克回到家，开枪打死第一个行尸，被摩根父子所救。"></textarea>
+          <textarea id="narPlot" rows="14" placeholder="例：&#10;1. 灾变前的最后时光&#10;故事开始时，副警长瑞克和搭档肖恩在巡逻车里聊天，随后瑞克中枪昏迷。&#10;&#10;2. 末日后苏醒&#10;瑞克在医院中醒来，发现医院空无一人，世界已变。&#10;&#10;3. 初识丧尸与幸存者&#10;瑞克回到家，开枪打死第一个行尸，被摩根父子所救。"
+            oninput="updatePlotHint()" onpaste="setTimeout(updatePlotHint,0)"></textarea>
           <div class="plot-side">
             <button class="btn mini" id="narDsBtn" onclick="fetchDeepSeekPlot('nar')">🔎 一键查剧情</button>
             <a class="btn mini ghost" style="text-align:center;" href="https://chat.deepseek.com/" target="_blank" rel="noopener">🌐 打开 DeepSeek</a>
@@ -539,7 +555,8 @@
             <div class="hint" id="narDsHint">点「🔎 一键查剧情」会用你配置的 DeepSeek/通义等云端 Key <b>直接拉取剧情摘要并回填左侧</b>（无需手动复制）。未配 Key 或失败时会提示，可用右侧「🌐 打开 DeepSeek」手动查询。</div>
           </div>
         </div>
-        <div class="hint" style="margin-top:6px;">这是<b>唯一流程的起点</b>：先按你的剧情写出完整解说稿（开场钩子 → 情节推进 → 结尾升华），再按每句话的字数去原片里<b>挑有内容的画面</b>——解说讲不完的过场空镜会被跳过，成片因此比原片短。<b>剧情写得越具体，解说越像样；只写三行梗概就只能出三句。</b></div>
+        <div id="plotLenHint" class="plot-len"></div>
+        <div class="hint" style="margin-top:6px;">这是<b>唯一流程的起点</b>：先按你的剧情写出完整解说稿（开场钩子 → 情节推进 → 结尾升华），再按每句话的字数去原片里<b>挑有内容的画面</b>——解说讲不完的过场空镜会被跳过，成片因此比原片短。</div>
         <div class="hint" style="margin-top:6px;color:#a35;"><b>为什么不能留空：过去不填剧情时，AI 会退化成「直接识别画面」模式——它不知道这片子讲什么，只能按模板把视频均匀切段，结果就是解说和画面对不上。所以现在必须先写剧情。</b></div>
       </div>
     </details>
@@ -1284,7 +1301,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=68"></script>
+<script src="/static/app.js?v=69"></script>
 </body>
 </html>
 

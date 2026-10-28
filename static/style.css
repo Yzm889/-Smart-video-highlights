@@ -1848,3 +1848,12 @@ select option { background: var(--fc-surface-2); color: var(--fc-text); }
 .tier-card .t-dl{margin-top:6px;padding-top:6px;border-top:1px solid var(--line);font-size:11px;color:#2e7d32;}
 .tier-card .t-reco{position:absolute;top:-8px;right:8px;background:#2e7d32;color:#fff;font-size:10px;padding:2px 8px;border-radius:8px;}
 .tier-card{position:relative;}
+
+/* ---- 剧情框上手引导（2026-10-29）：非专业用户最大的卡点是「不知道写什么、写多少」---- */
+.plot-guide{background:rgba(127,214,154,0.07);border:1px solid var(--border,rgba(0,0,0,.12));border-radius:8px;padding:9px 11px;margin-bottom:9px;font-size:12px;line-height:1.75;}
+.plot-guide .pg-row{display:flex;gap:9px;padding:1px 0;}
+.plot-guide .pg-k{flex:0 0 44px;font-weight:600;color:#3d6a5c;}
+.plot-guide .pg-v{flex:1;color:var(--muted,#64748b);}
+.plot-len{margin-top:7px;font-size:12px;padding:6px 9px;border-radius:6px;background:rgba(0,0,0,.03);}
+.plot-len.warn{color:#a35;background:rgba(200,60,60,.06);}
+.plot-len.ok{color:#2e7d32;background:rgba(46,125,50,.07);}

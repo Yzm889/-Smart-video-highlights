@@ -80,8 +80,48 @@ def test_build_narrate_requires_plot(front):
 
 
 # ---------------------------------------------------------------------------
-# ② 后端 HTTP 层真的会拒绝无剧情请求
+# ③ 上手引导：第一次用的人必须知道「写什么、写多少、写没写够」
 # ---------------------------------------------------------------------------
+
+def test_plot_box_open_by_default(front):
+    """剧情框必须默认展开——藏在折叠面板里的话，新用户根本不会发现这步是必填的。"""
+    html, _js = front
+    m = re.search(r'<details[^>]*id="narPlotBox"[^>]*>', html)
+    assert m, '找不到剧情框 narPlotBox'
+    assert ' open' in m.group(0), '剧情框不应默认折叠：这是流程第一步，必须一眼看到'
+
+
+def test_plot_guide_tells_what_and_how_much(front):
+    """必须明确告诉用户「写什么」和「写多少」——非专业用户最大的卡点就在这里。"""
+    html, _js = front
+    i = html.find('id="narPlot"')
+    assert i > 0
+    near = html[max(0, i - 1200):i + 200]      # 剧情框附近
+    assert '写什么' in near, '缺少「写什么」的指引'
+    assert '写多少' in near, '缺少「写多少」的指引（不给量化标准，用户只能猜）'
+    assert '100 字' in near, '「写多少」必须给具体字数门槛'
+
+
+def test_plot_length_feedback_exists(front):
+    """边写边反馈「写够了吗」，比事后报错友好得多。"""
+    html, js = front
+    assert 'id="plotLenHint"' in html, '缺少字数反馈提示位'
+    assert 'function updatePlotHint' in js, '缺少 updatePlotHint 实现'
+    assert 'oninput="updatePlotHint()"' in html, 'textarea 未绑定输入事件'
+    assert '.plot-len' in _read('static/style.css'), '字数提示缺少样式定义'
+
+
+def test_no_stale_ai_recognize_flow_wording(front):
+    """不得再出现描述「AI 自动识别画面」这类被删除流程的文案。
+
+    流程收敛后仍在 narCard 顶部留着「自动分段 → 识别台词」等描述，
+    对第一次用的人是最直接的误导——他会以为 AI 会自己看懂。
+    """
+    html, _js = front
+    for stale in ('自动<b>分段</b>', '看画面 + 写稿'):
+        assert stale not in html, (
+            '发现过时的流程描述「%s」：它描述的是已被删除的「AI 识别画面」流程。'
+            '现在是剧情驱动，文案必须同步。' % stale)
 
 def _free_port():
     s = socket.socket()
