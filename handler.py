@@ -1745,6 +1745,18 @@ class Handler(BaseHTTPRequestHandler):
             if req is None:
                 self._send(200, json.dumps({'ok': False, 'error': '请求过大(>300MB)或读取失败'}).encode('utf-8'), 'application/json')
                 return
+            # 【流程收敛 2026-10-29】解说类任务必须带剧情，否则一律拒绝。
+            # 过去的做法：plot 留空时退化成「AI 识别画面」模式——AI 不知道这片子讲什么，
+            # 只能按模板把视频均匀切段，用户看到的就是「解说和画面对不上」的乱剪。
+            # 现在唯一流程是「先写剧情 → AI 按剧情剪」，所以这里必须写剧情才放行。
+            # 注意：卡点（beatcut）是音乐节奏驱动，本来就不依赖剧情，不受此限制。
+            if (req.get('type') or 'beatcut') == 'narrate' and not (req.get('plot') or '').strip():
+                self._send(200, json.dumps({
+                    'ok': False,
+                    'error': '请先提供剧情（plot）再开始剪辑。'
+                             '不告诉 AI 这片子讲了什么，它只能靠猜画面，剪出来的必然对不上。'})
+                    .encode('utf-8'), 'application/json')
+                return
             runid = self._spawn(_w._analyze_plan_job, req)
             self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'), 'application/json')
         except Exception as e:

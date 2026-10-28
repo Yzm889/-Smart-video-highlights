@@ -2712,8 +2712,21 @@ async function buildNarrate(){
     const req = ($('narReq') ? $('narReq').value.trim() : '');
     if(theme || req){ plot = (theme ? '主题：'+theme+'\n' : '') + (req ? '要求：'+req : ''); }
   }
-  $('narStatus').textContent = plot ? '🎭 剧情驱动剪辑中（按你的剧情剪分镜+写解说）…' : '上传视频…';
-  gStart(plot ? '🎭 剧情驱动剪辑' : '🎬 生成短片解说');
+  // 【流程收敛 2026-10-29】剧情必填。
+  // 过去剧情留空时会退化成「AI 识别画面」模式：AI 不知道这片子讲什么，只能凭画面瞎猜，
+  // 于是按模板均匀分段——这正是用户看到的「乱剪」。现在只有一条流程：先写剧情再剪辑。
+  if(!plot){
+    go.disabled=false;
+    const pb=$('narPlotBox');
+    if(pb){ pb.open=true; pb.classList.add('shake'); setTimeout(()=>pb.classList.remove('shake'),600); }
+    const el=$('narPlot'); if(el) el.focus();
+    $('narStatus').innerHTML = '❌ <b>请先写剧情</b>再开始：不告诉 AI 这片子讲了什么，'
+      + '它就只能靠猜画面，剪出来的必然对不上。<br>不知道剧情？点「🔎 一键查剧情」自动拉取，'
+      + '或先在上面填一句「主题」（如：末日丧尸片开场）。';
+    return;
+  }
+  $('narStatus').textContent = '🎭 剧情驱动剪辑中（按你的剧情剪分镜+写解说）…';
+  gStart('🎭 剧情驱动剪辑');
   const videoObj = NAR_VIDEO.mlib ? {name: NAR_VIDEO.name, mlib: NAR_VIDEO.mlib} : await videoToBody(NAR_VIDEO);
   const body = { video: videoObj,
                  params:{maxSeg: parseFloat($('narMaxSeg').value)||25, w:1280, h:720, fps:30,
@@ -6653,42 +6666,15 @@ function collabClearFile(){
   document.getElementById('collabVideo').value='demo.mp4';
 }
 
+// 流程收敛（2026-10-29）：原「协同编辑台直接开始 AI 分析」已移除。
+// 过去这条路径不填任何剧情就把整片丢给 AI 盲猜画面 —— 正是「AI 不知道片子讲什么、
+// 于是乱剪」的来源。现在只有一条流程：先写剧情 → AI 按剧情剪 → 编辑台校订。
+// 保留此函数仅为兜住任何残留调用（旧缓存页面/书签），它不再执行分析。
 async function collabStartAnalyze(){
-  const btn=document.getElementById('collabGoBtn');
-  if(collabAnalyzing){return;}   // 分析进行中：锁定，禁止重复提交（旧版可重复点，第二次用同一上传源会失败）
-  const path=document.getElementById('collabVideo').value.trim();
-  if(collabLocalFile && !collabVideoBody){alert('视频还在上传中，请稍候…');return;}
-  let body;
-  if(collabVideoBody){
-    // 前端预校验：video 对象必须含有效 data 或 upload_id，否则到后端必然报「未收到视频」
-    const v=collabVideoBody;
-    if(!(v.data||v.upload_id)){alert('视频没有准备好，请重新选择视频文件');collabVideoBody=null;return;}
-    body={video:v, options:{max_seg:25}};
-  }
-  else if(path){ body={video_path:path, options:{max_seg:25}}; }
-  else { alert('请先导入视频或填写本地路径'); return; }
-  btn.disabled=true; btn.textContent='分析中…';
-  collabAnalyzing=true;
-  try{
-    const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(body)}).then(r=>r.json());
-    if(!r.ok){throw new Error(r.error||'启动失败');}
-    collabTaskId=r.task_id;
-    document.getElementById('collabProgress').style.display='block';
-    document.getElementById('collabBar').style.width='0%';
-    document.getElementById('collabSegments').innerHTML='';
-    document.getElementById('collabRenderBtns').style.display='none';
-    document.getElementById('collabRenderProgress').style.display='none';
-    document.getElementById('collabResult').style.display='none';
-    document.getElementById('collabDraftResult').style.display='none';
-    document.getElementById('collabAlignSummary').style.display='none';
-    collabPollTimer=setInterval(collabPoll,1200);
-    // 按钮保持「分析中…」禁用，直到 collabPoll 进入终态（analyzed/failed）才恢复
-  }catch(e){
-    alert('分析失败：'+e.message);
-    collabAnalyzing=false;
-    btn.disabled=false; btn.textContent='▶ 开始 AI 分析';
-  }
+  alert('流程已更新：请先写剧情，再开始剪辑。\n\n' +
+        '过去的「直接 AI 分析」已移除——不告诉 AI 这片子讲了什么，它只能靠猜，\n' +
+        '剪出来的必然对不上。请在「🎬 电影解说」里填写剧情后再回来校订。');
+  goStep('narCard');
 }
 
 // 分析进入终态（成功/失败）后统一解锁按钮
