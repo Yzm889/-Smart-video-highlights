@@ -4592,7 +4592,7 @@ def tts_model_download_async(model_key=None):
             TTS_SETUP.update(pct=70, msg='下载完成，正在解压…')
             os.replace(tmp, arch)
             with tarfile.open(arch, 'r:bz2') as tf:
-                tf.extractall(tts_models_dir())
+                tf.extractall(tts_models_dir(), filter='data')
             os.unlink(arch)
             # 发行包内目录名可能与模型名不同 → 归一到 <name>
             if not os.path.isdir(dest):
