@@ -4542,13 +4542,41 @@ def tts_model_download_async(model_key=None):
                 candidates.append('https://gh-proxy.com/' + m['url'])
             _downloaded = False
             _last_err = ''
+            _start_all = time.time()
             for _cand in candidates:
+                _host = urllib.parse.urlparse(_cand).netloc
                 try:
-                    TTS_SETUP.update(msg='正在下载离线配音模型（%s）…' % m['label'])
-                    def _hook(block_num, block_size, total_size):
-                        if total_size and total_size > 0:
-                            TTS_SETUP.update(pct=min(65, int(65 * block_num * block_size / total_size)))
-                    _u.urlretrieve(_cand, tmp, _hook)
+                    TTS_SETUP.update(pct=2, msg='正在连接 %s …（最多等 30 秒）' % _host)
+                    _req = _u.Request(_cand, headers={'User-Agent': 'Mozilla/5.0'})
+                    # 连接/读取超时 30s：连不上或卡死会在 30 秒内失败 → 自动切镜像，不会无限转圈
+                    _resp = _u.urlopen(_req, timeout=30)
+                    _total = int(_resp.headers.get('Content-Length') or 0)
+                    TTS_SETUP.update(pct=5, msg='✅ 已连上 %s，开始下载…' % _host)
+                    _t0 = time.time()
+                    _got = 0
+                    _last_t = _t0
+                    with open(tmp, 'wb') as _f:
+                        while True:
+                            _buf = _resp.read(256 * 1024)  # 256KB/块
+                            if not _buf:
+                                break
+                            _f.write(_buf)
+                            _got += len(_buf)
+                            _now = time.time()
+                            # 每 ~1 秒刷新一次网速/进度；总大小未知时也按已下字节显示，绝不空转
+                            if _now - _last_t >= 1.0 or _total == 0:
+                                _elapsed = max(_now - _t0, 0.1)
+                                _speed = (_got / (1024 * 1024)) / _elapsed
+                                if _total > 0:
+                                    _pct = min(65, int(65 * _got / _total))
+                                    TTS_SETUP.update(
+                                        pct=_pct,
+                                        msg='下载中 %.1f / %.1f MB（%.2f MB/s）' % (_got / 1048576, _total / 1048576, _speed))
+                                else:
+                                    TTS_SETUP.update(
+                                        pct=min(60, int(_got / 1048576)),
+                                        msg='已下载 %.1f MB（%.2f MB/s，总大小未知）' % (_got / 1048576, _speed))
+                                _last_t = _now
                     _downloaded = True
                     break
                 except Exception as _e:
@@ -4556,6 +4584,9 @@ def tts_model_download_async(model_key=None):
                     if os.path.exists(tmp):
                         try: os.unlink(tmp)
                         except OSError: pass
+                    # 还有备用源就提示正在切换，避免用户以为卡死
+                    if _cand != candidates[-1]:
+                        TTS_SETUP.update(msg='⚠️ 连接 %s 失败（%s），切换镜像重试…' % (_host, _last_err[:60]))
             if not _downloaded:
                 raise RuntimeError(_last_err or '所有下载源均失败')
             TTS_SETUP.update(pct=70, msg='下载完成，正在解压…')
