@@ -2772,6 +2772,49 @@ def _score_segments(segs, scene_descs, narr_map, asr=None, scene_alignment=None)
         scored.append((s, (a, b)))
     return scored
 
+def _imp_rank(imp):
+    """剧情重要度排序：key(3) > advance(2) > transition(0)，复用 _IMP_ORDER。"""
+    return _IMP_ORDER.get(str(imp or 'advance'), 2)
+
+
+def _decide_keep_beats(beat_imp, beat_dur, target_sec, vdur):
+    """【剧情驱动·留/剪决策】给定每节拍重要度与时长，按目标时长决定保留哪些节拍。
+
+    返回 set(beat_index)。规则：
+      - 目标时长≈全片（或无效）→ 全保留（与旧默认行为一致，不破坏现有成片）；
+      - 否则进入「精剪」：按 key>advance>transition 保高光、丢填充，凑到目标时长；
+        同重要度内短节拍优先（保更多样），至少留一半节拍防剪太狠。
+    纯函数，不触碰任何模型/IO，便于单测。"""
+    if not beat_imp:
+        return set()
+    if not (0 < (target_sec or 0) < 0.98 * vdur):
+        return set(range(len(beat_imp)))
+    _budget = float(target_sec)
+    _order = sorted(beat_dur.keys(),
+                    key=lambda j: (_imp_rank(beat_imp[j] if 0 <= j < len(beat_imp) else 'advance'),
+                                   -beat_dur[j]),
+                    reverse=True)
+    _kept = set()
+    _acc = 0.0
+    # 保底：至少留 key 关键节拍 + 少量（约 35%），避免目标过短把故事剪得支离破碎；
+    # 但不过度（旧版 50% 会让「约 1 分钟」实际变成 3~4 分钟，违背目标时长本意）。
+    _min = max(2, int(0.35 * len(beat_dur)))
+    for _j in _order:
+        _imp = beat_imp[_j] if 0 <= _j < len(beat_imp) else 'advance'
+        if _acc >= _budget and _imp_rank(_imp) < 3:
+            if _imp_rank(_imp) == 2 and _acc < _budget * 1.1:
+                _kept.add(_j); _acc += beat_dur[_j]; continue
+            break
+        _kept.add(_j); _acc += beat_dur[_j]
+    if len(_kept) < _min:
+        for _j in _order:
+            if _j not in _kept:
+                _kept.add(_j)
+                if len(_kept) >= _min:
+                    break
+    return _kept
+
+
 def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
 
@@ -3369,54 +3412,62 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if not segs:
         raise RuntimeError('画面分配失败（视频可能过短）')
 
-    # 【智能剪辑】仅当铺设率>98%（几乎全覆盖无空隙）时才轻度精简，默认保留90%
-    # 过于激进的删减会丢掉重要剧情片段，质量下降比多几秒冗余更严重
-    _clip_ratio = float(params.get('clipRatio', 0.90))
-    _total_cov = sum(b-a for a,b in segs)
-    if _total_cov > 0.98 * vdur and _clip_ratio < 0.98:
-        _target_dur = vdur * _clip_ratio
-        _scored = _score_segments(segs, scene_descs, narr_map, asr, scene_alignment=scene_alignment)
-        _scored.sort(key=lambda x: x[0], reverse=True)  # 按信息密度降序
-        _kept = []
-        _acc = 0.0
-        _min_keep = max(1, int(len(segs) * 0.8))  # 至少保留80%的片段
-        for _info, _seg in _scored:
-            if len(_kept) >= _min_keep and _acc >= _target_dur * 0.95:
-                break
-            if _acc + (_seg[1]-_seg[0]) <= _target_dur or len(_kept) < _min_keep:
-                _kept.append(_seg)
-                _acc += (_seg[1]-_seg[0])
-        if _kept and len(_kept) < len(segs):
-            _removed_by_clip = [s for s in segs if s not in _kept]  # 被智能剪辑剔除的段（透明化用）
-            _kept.sort(key=lambda s: s[0])  # 按时间排序
-            segs = _kept
-            _log.info(f'[DIAG] 智能剪辑: {len(segs)}/{len(segs)+len(_kept)}段精选铺设{_acc:.0f}s/{vdur:.0f}s ({_clip_ratio:.0%})')
-    else:
-        _removed_by_clip = []
+    # =====================================================================
+    # 【剧情驱动·自动留/剪】把 LLM 给每个节拍标的剧情重要度（key/advance/transition）
+    # 真正接进「保留/剪除」决策。目标时长明显短于全片时按重要度保高光、丢填充；
+    # 目标时长≈全片则保留全部（不破坏现有成片）。后端不直接删段——只把低重要度段
+    # 的 keep 标 False，渲染按用户开关默认剪、用户可在预览勾回，既自动又可控。
+    # =====================================================================
+    # 1) 每个解说节拍的重要度（与 texts 顺序严格对齐：hook + beats + outro）
+    _beat_imp = []
+    if script.get('hook'):
+        _beat_imp.append('key')
+    for _b in (script.get('beats') or []):
+        if str(_b.get('text') or '').strip():
+            _beat_imp.append(str(_b.get('importance') or 'advance'))
+    if script.get('outro'):
+        _beat_imp.append('key')
 
-    # ---- 剪辑方案 cut_plan 落盘（剧情驱动：解说词 ↔ 画面区间的对照表）----
-    # 每段保留画面带「对应的解说词」（narr_map），前端据此检查解说与画面是否对得上；
-    # 被剪段（keep=False）也列出，用户能看到智能剪辑删掉了哪些画面、为什么。
+    # 2) 每个 span 所属节拍 + 时长聚合，然后做留/剪决策
+    _beat_dur = {}
+    for _k, (_a, _b) in enumerate(segs):
+        _j = narr_map[_k] if _k < len(narr_map) else -1
+        if _j < 0:
+            continue
+        _beat_dur[_j] = _beat_dur.get(_j, 0.0) + (_b - _a)
+    _kept_beats = _decide_keep_beats(_beat_imp, _beat_dur, target_sec, vdur)
+
+    # 3) 生成每个 span 的 keep / importance + 透明化 cut_plan（后端不删段，渲染按开关处理）
+    def _strip(t):
+        import re as _re
+        return _re.sub(r'[\[\]][a-zA-Z0-9_,;:（）()\u4e00-\u9fa5]*[\[\]]', '', (t or '')).strip()
     try:
-        def _strip(t):
-            import re as _re
-            return _re.sub(r'[\[\]][a-zA-Z0-9_,;:（）()\u4e00-\u9fa5]*[\[\]]', '', (t or '')).strip()
+        _outline = []
         _cp2 = []
+        _kept_sec = 0.0
         for _k, (_s0, _s1) in enumerate(segs):
-            _bi = narr_map[_k] if _k < len(narr_map) else min(_k, len(texts) - 1)
+            _j = narr_map[_k] if _k < len(narr_map) else -1
+            _imp = _beat_imp[_j] if 0 <= _j < len(_beat_imp) else 'advance'
+            _keep = True if _j < 0 else (_j in _kept_beats)
+            if _keep:
+                _kept_sec += (_s1 - _s0)
+            _bi = _j if 0 <= _j < len(texts) else min(_k, len(texts) - 1)
             _cap = texts[_bi] if 0 <= _bi < len(texts) else ''
+            if _keep:
+                _why = ('剧情关键镜头（必留）' if _imp == 'key'
+                        else '剧情推进镜头' if _imp == 'advance'
+                        else '过渡/氛围镜头（精剪保留）')
+            else:
+                _why = '剧情重要度低（%s），精剪精简' % ('过渡' if _imp == 'transition' else '次要')
+            _outline.append({'start': round(float(_s0), 2), 'end': round(float(_s1), 2),
+                             'importance': _imp, 'keep': _keep})
             _cp2.append({'i': len(_cp2), 'start': round(float(_s0), 2), 'end': round(float(_s1), 2),
-                         'keep': True, 'importance': 'advance',
-                         'reason': '解说词对应画面',
+                         'keep': _keep, 'importance': _imp, 'reason': _why,
                          'caption': _strip(_cap)[:120], 'asr': ''})
-        for (_s0, _s1) in _removed_by_clip:
-            _cp2.append({'i': len(_cp2), 'start': round(float(_s0), 2), 'end': round(float(_s1), 2),
-                         'keep': False, 'importance': 'transition',
-                         'reason': '信息密度较低，智能剪辑精简（保留%d%%）' % int(_clip_ratio * 100),
-                         'caption': '', 'asr': ''})
         _cp2.sort(key=lambda x: x['start'])
-        _cov2 = (sum(b - a for a, b in segs) / vdur) if vdur else 0.0
-        if progress:
+        _cov2 = (_kept_sec / vdur) if vdur else 0.0
+        if progress is not None:
+            progress['outline'] = _outline
             progress['cut_plan'] = {
                 'src_dur': round(vdur, 2),
                 'coverage': round(_cov2 * 100, 1),
@@ -3425,6 +3476,9 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                 'removed_sec': round(sum((x['end'] - x['start']) for x in _cp2 if not x['keep']), 1),
                 'segments': _cp2,
             }
+            _log.info('[DIAG] 剧情留/剪: 目标%.0fs 实际保留%.0fs(%.0f%%) 保留%d/剪除%d段'
+                      % (target_sec if target_sec else vdur, _kept_sec, _cov2 * 100,
+                         sum(1 for x in _cp2 if x['keep']), sum(1 for x in _cp2 if not x['keep'])))
     except Exception as _e2:
         _log.info(f'[DIAG] 剧情 cut_plan 构建失败(不影响主流程): {_e2}')
 

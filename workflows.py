@@ -322,6 +322,8 @@ def _plan_to_ui(plan, run_dir):
                                'thumb': rel(plan.get('thumbs', {}).get(i)),
                                'importance': o.get('importance', 'advance'),
                                'keep': o.get('keep', True)})
+        if plan.get('cut_plan'):
+            ui['cut_plan'] = plan['cut_plan']
     return ui
 
 
@@ -360,11 +362,11 @@ def _analyze_plan_job(req, prog):
                 diag = {'segments': len(segs), 'asr_lines': len(asr),
                         'narration': narr, 'plot_driven': True, 'events': len(events)}
                 mode = 'movie'
-                # 剧情驱动没有「主线浓缩」这一步，也就没有 _condense_segs 产出的 outline；
-                # 但预览面板与渲染阶段都按 outline 取每段的保留标记，这里补一份全保留的默认值
-                # （历史 bug：此分支漏赋值 outline → 组合 plan 时 UnboundLocalError）
-                outline = [{'start': s0, 'end': s1, 'importance': 'advance', 'keep': True}
-                           for (s0, s1) in segs]
+                # 剧情驱动：重要度驱动的留/剪方案由 _narrate_by_plot 写入 prog['outline']
+                # （低重要度段 keep=False，渲染按开关默认剪、用户可在预览勾回）；
+                # 兜底仍全保留，确保 outline 永远存在（历史 bug：漏赋值 → UnboundLocalError）。
+                outline = prog.get('outline') or [{'start': s0, 'end': s1, 'importance': 'advance', 'keep': True}
+                                                 for (s0, s1) in segs]
             else:
                 segs, narr, asr, diag, mode, outline = _w._analyze_narrate(vp, params, run_dir, prog)
             music_path = _w._resolve_music(req.get('music'))
@@ -374,6 +376,7 @@ def _analyze_plan_job(req, prog):
             plan = {'type': 'narrate', 'video': vp, 'segs': segs, 'narr': narr,
                     'shots': shots, 'asr': asr, 'run_dir': run_dir, 'outline': outline,
                     'params': params, 'music': music_path, 'diag': diag, 'mode': mode,
+                    'cut_plan': prog.get('cut_plan'),
                     'thumbs': _w._plan_thumbs(vp, segs, run_dir)}
         else:
             raise RuntimeError('未知分析类型: ' + str(ptype))
