@@ -4446,15 +4446,19 @@ def tts_install_async(pkg='edge-tts'):
 
     def _run():
         try:
-            r = subprocess.run(
-                [sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
-                 '--no-input', pkg],
-                capture_output=True, timeout=600)
-            if r.returncode == 0:
+            # 国内直连官方 PyPI 极易超时/失败，统一走阿里云镜像（与 CosyVoice 安装保持一致）。
+            # 走 _run_pip 自动加 --timeout/--retries，并把失败 stderr 回传给前端提示。
+            MIRROR = ['-i', 'https://mirrors.aliyun.com/pypi/simple/', '--trusted-host', 'mirrors.aliyun.com']
+            rc, err = _run_pip(
+                sys.executable,
+                ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input',
+                 '--timeout', '30', '--retries', '5', pkg] + MIRROR,
+                timeout=600, label='pip:%s' % pkg)
+            if rc == 0:
                 TTS_SETUP.update(ok=True, pct=100, msg='✅ %s 安装完成（点「🧪 试听」验证）' % pkg)
             else:
                 TTS_SETUP.update(ok=False, pct=100,
-                                 msg='❌ 安装失败：' + (r.stderr or b'').decode('utf-8', 'ignore')[-300:])
+                                 msg='❌ 安装失败：' + (err or '未知错误（请检查网络/镜像）')[-300:])
         except Exception as e:
             TTS_SETUP.update(ok=False, pct=100, msg='❌ 安装异常：' + str(e)[-300:])
         finally:
@@ -4485,9 +4489,17 @@ def tts_install_chattts_async():
                             'https://download.pytorch.org/whl/cu121'],
                            cwd=HERE, capture_output=True, timeout=1800)
             TTS_SETUP.update(pct=80, msg='安装 ChatTTS…')
+            # 国内直连官方 PyPI 易失败，ChatTTS/soundfile/numpy 走阿里云镜像
             subprocess.run(['uv', 'pip', 'install', '--python', venv_py,
-                            'ChatTTS', 'soundfile', 'numpy'],
+                            'ChatTTS', 'soundfile', 'numpy',
+                            '--index-url', 'https://mirrors.aliyun.com/pypi/simple/'],
                            cwd=HERE, capture_output=True, timeout=600)
+            # uv 镜像失败时回退默认源再试一次，避免单次网络抖动直接判失败
+            if not _chattts_venv_python() or subprocess.run(
+                    [venv_py, '-c', 'import ChatTTS'], capture_output=True, timeout=30).returncode != 0:
+                subprocess.run(['uv', 'pip', 'install', '--python', venv_py,
+                                'ChatTTS', 'soundfile', 'numpy'],
+                               cwd=HERE, capture_output=True, timeout=600)
             TTS_SETUP.update(ok=True, pct=100, msg='✅ ChatTTS 安装完成（点「🧪 试听」验证）')
         except Exception as e:
             TTS_SETUP.update(ok=False, pct=100, msg='❌ 安装异常：' + str(e)[-300:])
@@ -4524,7 +4536,28 @@ def tts_model_download_async(model_key=None):
         try:
             os.makedirs(tts_models_dir(), exist_ok=True)
             tmp = arch + '.part'
-            _u.urlretrieve(m['url'], tmp)
+            # GitHub 发布资产国内常不通：主源失败自动切 gh-proxy 镜像（与 ollama 下载同源策略）
+            candidates = [m['url']]
+            if 'github.com' in m['url']:
+                candidates.append('https://gh-proxy.com/' + m['url'])
+            _downloaded = False
+            _last_err = ''
+            for _cand in candidates:
+                try:
+                    TTS_SETUP.update(msg='正在下载离线配音模型（%s）…' % m['label'])
+                    def _hook(block_num, block_size, total_size):
+                        if total_size and total_size > 0:
+                            TTS_SETUP.update(pct=min(65, int(65 * block_num * block_size / total_size)))
+                    _u.urlretrieve(_cand, tmp, _hook)
+                    _downloaded = True
+                    break
+                except Exception as _e:
+                    _last_err = str(_e)[:200]
+                    if os.path.exists(tmp):
+                        try: os.unlink(tmp)
+                        except OSError: pass
+            if not _downloaded:
+                raise RuntimeError(_last_err or '所有下载源均失败')
             TTS_SETUP.update(pct=70, msg='下载完成，正在解压…')
             os.replace(tmp, arch)
             with tarfile.open(arch, 'r:bz2') as tf:

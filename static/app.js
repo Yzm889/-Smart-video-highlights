@@ -674,6 +674,11 @@ function _ttsSetupPoll(){
     }
     if(!s.running){
       clearInterval(_ttsSetupTimer); _ttsSetupTimer = null;
+      // 安装/下载刚结束：把成功或失败原因明确提示出来，否则会被 loadTtsLocal 覆盖而“感觉点了没反应”
+      if(s.ok === true || s.ok === false){
+        if(st && s.msg) st.textContent = s.msg;
+        toast(s.msg || (s.ok ? '安装完成' : '安装失败'), s.ok ? 'success' : 'error');
+      }
       loadTtsLocal();
     }
   }).catch(()=>{});
@@ -684,7 +689,7 @@ function installTtsPkg(pkg){
   fetch('/api/tts/install', {method:'POST', headers:{'Content-Type':'application/json'},
                              body: JSON.stringify({pkg: pkg})})
     .then(r=>r.json()).then(res=>{
-      if(!res.ok && st) st.textContent = '❌ ' + (res.error || res.message || '安装失败');
+      if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || res.error || (res.ok ? '已开始安装，下方看进度' : '安装失败'));
     }).catch(e=>{ if(st) st.textContent = '❌ 安装请求失败：' + e.message; });
   if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 1500);
 }
@@ -728,7 +733,7 @@ function downloadTtsModel(){
   fetch('/api/tts/model/download', {method:'POST', headers:{'Content-Type':'application/json'},
                                     body: JSON.stringify({model: model})})
     .then(r=>r.json()).then(res=>{
-      if(!res.ok && st) st.textContent = '❌ ' + (res.error || res.message || '下载失败');
+      if(st) st.textContent = (res.ok ? '✅ ' : '❌ ') + (res.message || res.error || (res.ok ? '已开始下载，下方看进度' : '下载失败'));
     }).catch(e=>{ if(st) st.textContent = '❌ 下载请求失败：' + e.message; });
   if(!_ttsSetupTimer) _ttsSetupTimer = setInterval(_ttsSetupPoll, 2000);
 }
