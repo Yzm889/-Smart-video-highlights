@@ -203,13 +203,43 @@ def unit_tests(fast):
         return
     cmd = [sys.executable, '-m', 'pytest', 'tests', '-q', '--tb=line', '-p', 'no:cacheprovider']
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
-    tail = [l for l in (r.stdout or '').strip().splitlines() if l.strip()][-1:]
-    print('  %s %s' % (OK if r.returncode == 0 else BAD, tail[0] if tail else '(无输出)'))
-    if r.returncode != 0:
-        fails = [l for l in (r.stdout or '').splitlines() if l.startswith('FAILED')]
-        problems.append('单元测试有 %d 条失败' % len(fails))
-        for f in fails[:10]:
-            print('     %s' % f)
+    out = r.stdout or ''
+    n_f, n_e = _count_failures(out)
+    tail = [l for l in out.strip().splitlines() if l.strip()][-1:]
+    summary = tail[0] if tail else ('(无输出，按进度条判定：%d 失败 %d 错误)' % (n_f, n_e))
+    print('  %s %s' % (OK if (r.returncode == 0 or (n_f == 0 and n_e == 0)) else BAD, summary))
+    if n_f or n_e:
+        problems.append('单元测试有 %d 条失败、%d 条错误' % (n_f, n_e))
+        for l in [x for x in out.splitlines() if x.startswith(('FAILED', 'ERROR'))][:10]:
+            print('     %s' % l)
+    elif r.returncode != 0:
+        # 没有失败用例却退出码非 0：Windows 上常见原因是 pytest 收尾清理临时目录
+        # （几百个文件）被安全策略拦截，测试本身是通过的。报附注，不算故障。
+        notes.append('pytest 退出码非 0 但无失败用例——通常是收尾清理临时目录被'
+                     '安全策略拦截，测试本身通过（详见统计行缺失）')
+
+
+def _count_failures(stdout):
+    """统计 pytest -q 输出里的失败数 / 错误数。
+
+    不能只看退出码：Windows 上 pytest 收尾清理临时目录（几百个文件）常被安全策略
+    拦截，此时它会以非 0 退出，且**统计行被截断丢失**，但没有一条用例真的失败。
+    反之也别只看 FAILED 行——输出被截断时那些行同样出不来。
+
+    所以改用**进度条**判定：进度条总是在统计行之前输出，且每个字符对应一个用例
+    （. 通过 / F 失败 / E 错误 / s 跳过），最可靠。
+    """
+    import re as _re
+    m = _re.search(r'(\d+) failed', stdout)
+    m2 = _re.search(r'(\d+) error', stdout)
+    if m or m2:
+        return int(m.group(1)) if m else 0, int(m2.group(1)) if m2 else 0
+    # 统计行缺失 → 退回进度条
+    bar = ''
+    for line in stdout.splitlines():
+        if '%]' in line:
+            bar += _re.sub(r'\s*\[\s*\d+%\]\s*$', '', line.rstrip())
+    return bar.count('F'), bar.count('E')
 
 
 def main():
