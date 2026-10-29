@@ -54,15 +54,18 @@ def test_no_direct_ai_analyze_button(front):
     assert 'id="collabGoBtn"' not in html, '找到了已删除的分析启动按钮容器'
 
 
-def test_collab_analyze_function_no_longer_runs_analysis(front):
-    """collabStartAnalyze 不得再真的发起分析——只能指引用户去写剧情。"""
-    _html, js = front
-    i = js.find('async function collabStartAnalyze')
-    assert i >= 0, '找不到 collabStartAnalyze（若已整体删除，请同步更新本断言）'
-    end = js.find('\n}', i)          # 截到本函数闭合，别把下一个函数也算进来
-    body = js[i:end if end > 0 else i + 800]
-    assert '/api/analyze' not in body, (
-        'collabStartAnalyze 仍在调用 /api/analyze —— 这是无需剧情的直接分析，违反流程约束')
+def test_collab_editor_fully_removed(front):
+    """协同编辑台应彻底移除——它不是删个按钮就够的。
+
+    原本它是「不填剧情 → 直接 AI 分析 → 人工校订」的旧路径。只删「开始 AI 分析」
+    按钮后，整张卡其实还留着：校订区依赖被删掉的轮询，永远拿不到数据；
+    而剪成片路径自带完整校订能力（openPlanEditor 支持勾选保留 / 真的剪掉），
+    所以留着它只会让人以为存在第二个工作台，还多一处传视频入口（重复且误导）。
+    """
+    html, js = front
+    assert 'collabCard' not in html, '协同编辑台卡片应已移除'
+    n = js.count('collab')
+    assert n == 0, 'app.js 仍有 %d 处 collab 残留 —— 会访问已删除的 DOM 而抛 TypeError' % n
 
 
 def test_build_narrate_requires_plot(front):

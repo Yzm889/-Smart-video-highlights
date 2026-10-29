@@ -47,7 +47,6 @@
       <button onclick="goStep('beatcutCard');toggleFlowMore()">🎯 卡点</button>
       <button onclick="goStep('aiCard');toggleFlowMore()">🤖 AI配置</button>
       <button onclick="goStep('outCard');toggleFlowMore()">⚙️ 输出设置</button>
-      <button onclick="goStep('collabCard');toggleFlowMore()">🤝 协同编辑台</button>
       <button onclick="goStep('tasksCard');toggleFlowMore()">📋 任务</button>
       <button onclick="goStep('histCard');toggleFlowMore()">🕘 记录</button>
       <button onclick="goStep('storageCard');toggleFlowMore()">🧹 存储</button>
@@ -241,75 +240,6 @@
     </div>
 
 <!-- 🤝 人机协同 · 两段式编辑台（新架构） -->
-<div class="card" id="collabCard" style="border:2px solid #7fd69a; margin-bottom:18px; box-shadow:0 0 18px rgba(120,200,140,0.15);">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-    <h2 style="margin:0;">🤝 人机协同编辑台</h2>
-    <span style="font-size:12px;color:#7fd69a;background:rgba(120,200,140,0.12);padding:3px 10px;border-radius:12px;border:1px solid rgba(120,200,140,0.3);">两段式 · 新架构</span>
-  </div>
-  <div class="hint" style="margin-bottom:12px;">编辑台用于<b>人工校订</b>：AI 按你写的剧情剪好后，在这里定稿解说词、勾选保留片段、调出入点出点，再合成。</div>
-
-  <div id="collabDrop" class="musdrop" onclick="document.getElementById('collabInput').click()" style="min-height:72px;display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;margin-bottom:8px;">
-    🎬 拖入视频文件，或点此选择（用于预览画面、定位入点/出点）
-  </div>
-  <input type="file" id="collabInput" accept="video/*" style="display:none" onchange="if(this.files[0])collabHandleFile(this.files[0]);this.value='';">
-  <div id="collabVideoInfo" style="display:none;margin-bottom:8px;align-items:center;justify-content:space-between;font-size:13px;"></div>
-  <details style="margin-bottom:10px;">
-    <summary style="cursor:pointer;font-size:12px;color:var(--muted);">或直接填服务器本地视频路径（高级）</summary>
-    <input id="collabVideo" placeholder="视频路径（默认 demo.mp4）" value="demo.mp4"
-           style="width:100%;margin-top:6px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--input);color:var(--text);box-sizing:border-box;">
-  </details>
-
-  <!-- 原来的「▶ 开始 AI 分析」按钮已移除：见下方流程收敛说明 -->
-  <div style="border:1px dashed #7fd69a; border-radius:10px; padding:14px 16px; background:rgba(127,214,154,0.06);">
-    <div style="font-size:13px; font-weight:600; margin-bottom:6px;">🎭 请先写剧情，再回来校订</div>
-    <p class="hint" style="margin:0 0 10px;">本项目只有一条流程：<b>先告诉 AI 这片子讲了什么 → 它按剧情剪 → 你在这里校订</b>。
-      过去的「直接 AI 分析」已移除——不写剧情时 AI 只能靠猜，剪出来的必然对不上。</p>
-    <button class="btn" onclick="goStep('narCard')" style="width:100%;padding:11px;">✍ 去写剧情并开始剪辑</button>
-  </div>
-
-  <video id="collabPlayer" controls preload="metadata" style="display:none;width:100%;margin-top:12px;border-radius:8px;background:#000;"></video>
-
-  <div id="collabProgress" style="display:none;margin:12px 0;">
-    <div id="collabPhase" style="font-size:13px;margin-bottom:6px;color:var(--muted);">准备中…</div>
-    <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
-      <div id="collabBar" style="height:100%;width:0;background:var(--accent);transition:width .3s;"></div>
-    </div>
-  </div>
-
-  <div id="collabNarrative" class="collab-narrative" style="display:none;"></div>
-  <div id="collabWarnings" class="warnbox" style="display:none;"></div>
-  <div id="collabAlignSummary" style="display:none;margin:10px 0 2px;padding:9px 12px;border-radius:8px;font-size:13px;line-height:1.6;"></div>
-  <div id="collabSegments" class="collab-segs"></div>
-
-  <!-- 阶段②合成进度 -->
-  <div id="collabRenderProgress" style="display:none;margin:14px 0;">
-    <div id="collabRenderPhase" style="font-size:13px;margin-bottom:6px;color:var(--muted);">合成中…</div>
-    <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
-      <div id="collabRenderBar" style="height:100%;width:0;background:#7fd69a;transition:width .3s;"></div>
-    </div>
-  </div>
-
-  <!-- 快速草稿结果（低清·核对对齐用） -->
-  <div id="collabDraftResult" style="display:none;margin-top:14px;padding:12px;border-radius:10px;border:1px solid rgba(232,183,102,0.4);background:rgba(232,183,102,0.06);">
-    <div style="font-size:14px;margin-bottom:6px;color:#e8b766;font-weight:600;">⚡ 快速草稿（480p，仅用于核对，非正式画质）</div>
-    <video id="collabDraftPlayer" controls style="width:100%;border-radius:8px;background:#000;"></video>
-    <div id="collabAlignTable" style="margin-top:10px;font-size:12.5px;line-height:1.6;"></div>
-    <div style="font-size:12.5px;color:var(--muted);margin-top:8px;">重点看：每段配音在不在、念的是不是这段画面、有没有被截断。确认对齐后，再点下方「🎬 正式高清合成」。</div>
-  </div>
-
-  <div id="collabResult" style="display:none;margin-top:14px;">
-    <div style="font-size:14px;margin-bottom:6px;color:#7fd69a;font-weight:600;">✅ 成片已生成（可直接预览/下载）</div>
-    <video id="collabResultPlayer" controls style="width:100%;border-radius:8px;background:#000;"></video>
-    <a id="collabResultLink" class="btn" download style="display:inline-block;margin-top:8px;text-decoration:none;">⬇ 下载成片</a>
-  </div>
-
-  <div id="collabRenderBtns" style="display:none;margin-top:14px;gap:10px;flex-wrap:wrap;">
-    <button id="collabDraftBtn" class="btn" style="flex:1;min-width:200px;padding:12px;background:transparent;color:#e8b766;border:1px solid #e8b766;font-weight:600;"
-            onclick="collabRender(true)">⚡ 先出快速草稿（480p·几十秒）</button>
-    <button id="collabRenderBtn" class="btn" style="flex:1.4;min-width:240px;padding:12px;background:#7fd69a;color:#1a1a1a;font-weight:600;"
-            onclick="collabRender(false)">🎬 正式高清合成</button>
-  </div>
-</div>
 
     <!-- 一键智能模式 -->
     <div class="card start-tab-content" id="smartCard" data-step="start" data-subtab="smart">
@@ -1320,7 +1250,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=73"></script>
+<script src="/static/app.js?v=74"></script>
 </body>
 </html>
 
