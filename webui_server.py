@@ -4531,6 +4531,8 @@ def tts_model_download_async(model_key=None):
     def _run():
         import tarfile
         import urllib.request as _u
+        # 国内直连官方 PyPI 易失败：sherpa-onnx 运行包安装统一走阿里云镜像
+        MIRROR = ['-i', 'https://mirrors.aliyun.com/pypi/simple/', '--trusted-host', 'mirrors.aliyun.com']
         # 文件名带模型 key：两个模型可以同时/先后下载，互不覆盖
         arch = os.path.join(tts_models_dir(), '_dl_%s.tar.bz2' % key)
         try:
@@ -4602,9 +4604,27 @@ def tts_model_download_async(model_key=None):
                         os.replace(p, dest)
                         break
             ok = _sherpa_ready(key)
-            TTS_SETUP.update(ok=ok, pct=100,
-                             msg='✅ %s 就绪' % m['label'] if ok
-                             else '❌ 解压后未找到模型文件，请重试')
+            if ok:
+                # 离线模型需要 sherpa-onnx 运行包才能真正跑起来；未装则一并安装（阿里云镜像）。
+                # 否则「下了模型却判不可用」，用户白等。仅在确实缺包时才装，避免每次都重装。
+                try:
+                    import importlib.util as _ilu
+                    _have = _ilu.find_spec('sherpa_onnx') is not None
+                except Exception:
+                    _have = False
+                if not _have:
+                    TTS_SETUP.update(pct=85, msg='安装离线配音运行包 sherpa-onnx（约 30MB，国内镜像）…')
+                    _rc, _err = _run_pip(
+                        sys.executable,
+                        ['-m', 'pip', 'install', '--no-input', '--timeout', '30', '--retries', '5',
+                         'sherpa-onnx'] + MIRROR, timeout=600, label='sherpa-onnx')
+                    if _rc != 0:
+                        TTS_SETUP.update(ok=False, pct=100,
+                                         msg='❌ 模型已下载，但运行包 sherpa-onnx 安装失败：' + _err[-200:])
+                        return
+                TTS_SETUP.update(ok=True, pct=100, msg='✅ %s 就绪（点「🧪 试听」验证）' % m['label'])
+            else:
+                TTS_SETUP.update(ok=False, pct=100, msg='❌ 解压后未找到模型文件，请重试')
         except Exception as e:
             TTS_SETUP.update(ok=False, pct=100, msg='❌ 下载失败：' + str(e)[-300:])
         finally:

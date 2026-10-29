@@ -12,6 +12,7 @@
 
 真机下载请跑 test_http_smoke / 真机手动验证；本文件只守「代码逻辑」不被回归。
 """
+import importlib.machinery
 import io
 import tarfile
 import time
@@ -74,6 +75,14 @@ def _wait_done(timeout=15):
 def patched_env(monkeypatch, tmp_path):
     monkeypatch.setattr(w, 'tts_models_dir', lambda: str(tmp_path))
     monkeypatch.setattr(T, 'tts_models_dir', lambda: str(tmp_path))
+    # 让下载函数在测试里不要真的去 pip 安装 sherpa-onnx（环境是否已装无所谓，跳过即可）
+    import importlib.util as _iu
+    _real = _iu.find_spec
+    def _fake_find(name, *a, **k):
+        if name == 'sherpa_onnx':
+            return importlib.machinery.ModuleSpec(name, None)
+        return _real(name, *a, **k)
+    monkeypatch.setattr(_iu, 'find_spec', _fake_find)
     yield tmp_path
 
 
