@@ -5395,14 +5395,14 @@ const BUILTIN_TEMPLATES = {
     desc: '搞笑吐槽风格，黄色字幕，精简概括',
     tts: {engine:'edge', voice:'zh-CN-XiaoyiNeural', rate:'+10%'},
     maxSeg: 20, bgm: true, clipRatio: 0.95, autoCut: true,
-    narrStyle: 'funny', detailLevel: 'concise', targetSec: '3',
+    narrStyle: 'funny', detailLevel: 'concise', targetSec: '180',
     subtitle: {fontSize: 24, color: '#FBBF24', outlineColor: '#000000', outlineWidth: 3, alignment: 2, marginV: 60}
   },
   '⭐ 悬疑解读': {
     desc: '悬疑烧脑风格，红色字幕，详细展开',
     tts: {engine:'edge', voice:'zh-CN-YunyangNeural', rate:'-5%'},
     maxSeg: 25, bgm: true, clipRatio: 0.75, autoCut: true,
-    narrStyle: 'suspense', detailLevel: 'detailed', targetSec: '5',
+    narrStyle: 'suspense', detailLevel: 'detailed', targetSec: '300',
     subtitle: {fontSize: 22, color: '#F87171', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 极简旁白（保留全片）': {
@@ -5416,7 +5416,7 @@ const BUILTIN_TEMPLATES = {
     desc: '抖音/短视频风格，精简到1分钟，大字幕',
     tts: {engine:'edge', voice:'zh-CN-XiaoxiaoNeural', rate:'+15%'},
     maxSeg: 15, bgm: true, clipRatio: 0.75, autoCut: true,
-    narrStyle: 'movie', detailLevel: 'concise', targetSec: '1',
+    narrStyle: 'movie', detailLevel: 'concise', targetSec: '60',
     subtitle: {fontSize: 28, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 3, alignment: 2, marginV: 80}
   }
 };
