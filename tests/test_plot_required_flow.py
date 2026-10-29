@@ -203,6 +203,35 @@ def test_plot_box_comes_before_advanced(front):
     assert pos > 0
     assert pos < a, '剧情框必须排在高级设置之前——它是第一步，不能落到后面去'
 
+
+def test_movie_page_also_groups_params(front):
+    """「只要解说稿」页同样要分组：加配乐常用可见，分段/剪辑占比/预设收进高级。"""
+    html, _js = front
+    m = re.search(r'<details class="movie-advanced"', html)
+    assert m, '「只要解说稿」页缺少高级设置折叠区'
+    end = html.find('</details>', m.start())
+    for fid in ('movieMaxSeg', 'movieClipRatio', 'presetSelect'):
+        pos = html.find('id="%s"' % fid)
+        assert pos > 0, '缺少控件 %s' % fid
+        assert m.start() < pos < end, '控件 %s 应收进高级设置，不该平铺' % fid
+    # 加配乐是常用项，留在外面
+    pos = html.find('id="movieBgm"')
+    assert pos > 0
+    assert not (m.start() < pos < end), '加配乐是常用项，不该藏进高级设置'
+
+
+def test_movie_page_shows_numbered_steps(front):
+    """「只要解说稿」页必须给出①②③步骤标记——否则用户不知从哪下手。"""
+    html, _js = front
+    i = html.find('id="movieCard"')
+    assert i > 0
+    seg = html[i:i + 3000]
+    for tag in ('①', '②', '③'):
+        assert tag in seg, '缺少步骤标记 %s' % tag
+    # 顺序要对：片名 → 剧情 → 视频
+    assert seg.find('id="movieName"') < seg.find('id="moviePlot"') < seg.find('id="movieDrop"'), (
+        '步骤顺序应为 片名 → 剧情 → 视频')
+
 def _free_port():
     s = socket.socket()
     s.bind(('127.0.0.1', 0))

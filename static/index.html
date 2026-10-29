@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=20">
+<link rel="stylesheet" href="/static/style.css?v=21">
 </head>
 <body>
 <header>
@@ -512,7 +512,7 @@
     </div>
 
     <details class="bubble plot-box" style="margin-top:10px;" id="narPlotBox" open>
-      <summary>🎭 第 1 步：写剧情<span style="font-weight:400;color:var(--muted);">（必填 · AI 靠它决定怎么剪）</span></summary>
+      <summary><span class="step-tag">1</span> 写剧情　<span style="font-weight:400;color:var(--muted);">必填 · AI 靠它决定怎么剪，这是全流程最关键的一步</span></summary>
       <div class="bubble-body">
         <!-- 上手引导：非专业用户最大的卡点是「不知道该写什么、写多少」 -->
         <div class="plot-guide">
@@ -657,11 +657,12 @@
   <div class="card narr-tab-content" id="movieCard" data-step="narrate" data-subtab="movie" style="display:none">
     <h2>📝 只要解说稿（按片名搜索，可以不传视频）</h2>
     <div class="hint">想先看看解说稿写得怎么样？这里<b>不用传视频</b>——填个片名，联网搜到剧情就能出解说稿；没网就直接粘贴豆瓣简介。<br><b>要出成片的话去左边「🎬 剪成片」</b>（那儿必须传视频，会按剧情真的剪出视频）。</div>
-    <div class="row" style="margin-top:10px;">
+    <div class="step-line"><span class="step-tag">①</span> 填片名</div>
+    <div class="row" style="margin-top:6px;">
       <input type="text" id="movieName" placeholder="电影/动漫名，如：盗梦空间" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
       <button class="btn ghost" onclick="fillMovieNameFromBraces()">从《》提取</button>
     </div>
-    <div class="hint" style="margin-top:6px;">可选：粘贴剧情梗概（联网失败/不想联网时用，质量更稳定）</div>
+    <div class="step-line" style="margin-top:10px;"><span class="step-tag">②</span> 剧情<span style="font-weight:400;color:var(--muted);">（留空会自动联网搜；有简介就直接粘进来，更准）</span></div>
     <div class="plot-edit" style="margin-top:6px;">
       <textarea id="moviePlot" rows="8" placeholder="可直接粘贴豆瓣简介/剧情分幕…留空则自动联网搜索"></textarea>
       <div class="plot-side">
@@ -670,25 +671,30 @@
         <div class="hint" id="movieDsHint">点「🔎 一键查剧情」用云端 Key 直接拉取剧情摘要并回填左侧；未配 Key 或失败时用右侧「🌐 打开 DeepSeek」手动查询。</div>
       </div>
     </div>
-    <div id="movieDrop" class="musdrop" style="margin-top:10px;">🎞️ （可选）拖入正片/片段，自动按剧情对齐生成解说视频</div>
+    <div class="step-line" style="margin-top:10px;"><span class="step-tag">③</span> 传视频<span style="font-weight:400;color:var(--muted);">（<b>可不传</b>——不传就只出解说稿，传了就顺带剪出成片）</span></div>
+    <div id="movieDrop" class="musdrop" style="margin-top:6px;">🎞️ 拖入正片/片段（可选）</div>
     <input type="file" id="movieInput" accept="video/*" style="display:none">
     <div class="hint" id="movieInfo">未选视频：仅生成解说稿（可在结果区复制）。选了视频：产出带解说配音+字幕的成片。</div>
     <div class="row" style="margin-top:10px;">
-      <div class="mode-hint" id="movieModeHint">🤖 <b>自动路径</b>：本地模型免费优先 → 配置了云端 key 时用云端增强 → 都没有时离线切句/模板兜底。 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('local')">⚙️ 去管理模型</a></div>
-      <div class="field"><label for="movieMaxSeg">最大分段(秒)</label>
-        <input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
-      <div class="field" style="flex:1"><label for="movieClipRatio">剪辑占比（%）</label>
-        <input type="number" id="movieClipRatio" value="75" min="30" max="100" style="width:70px">
-        <span style="font-size:11px;color:var(--muted)">值越小剪辑越狠，留更多空白给转场</span></div>
       <label style="align-self:center;"><input type="checkbox" id="movieBgm" style="width:auto"> 加配乐</label>
     </div>
-    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
-      <select id="presetSelect" style="width:140px" onchange="applyPreset(this.value)">
-        <option value="">📋 预设模板…</option>
-      </select>
-      <button class="btn-secondary" style="padding:6px 12px;font-size:12px" onclick="savePreset()">💾 保存当前</button>
-      <button class="btn-secondary" style="padding:6px 12px;font-size:12px" onclick="deletePreset()">🗑 删除</button>
-    </div>
+    <details class="movie-advanced" style="margin-top:8px;">
+      <summary style="cursor:pointer;font-size:13px;color:var(--muted)">⚙️ 高级设置（分段 / 剪辑占比 / 预设模板）　<span style="font-weight:400;">一般不用改</span></summary>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px">
+        <div class="field"><label for="movieMaxSeg">最大分段(秒)</label>
+          <input type="number" id="movieMaxSeg" value="25" min="8" max="120" style="width:90px"></div>
+        <div class="field" style="flex:1"><label for="movieClipRatio">剪辑占比（%）</label>
+          <input type="number" id="movieClipRatio" value="75" min="30" max="100" style="width:70px">
+          <span style="font-size:11px;color:var(--muted)">值越小剪辑越狠，留更多空白给转场</span></div>
+      </div>
+      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+        <select id="presetSelect" style="width:140px" onchange="applyPreset(this.value)">
+          <option value="">📋 预设模板…</option>
+        </select>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:12px" onclick="savePreset()">💾 保存当前</button>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:12px" onclick="deletePreset()">🗑 删除</button>
+      </div>
+    </details>
     <div id="presetHint" style="font-size:12px;color:#10b981;margin-top:6px;min-height:16px"></div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="movieGo" onclick="buildMovieNarrate()" title="Ctrl+Enter 快速生成">🎬 生成（联网）解说</button>
@@ -1314,7 +1320,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=71"></script>
+<script src="/static/app.js?v=72"></script>
 </body>
 </html>
 

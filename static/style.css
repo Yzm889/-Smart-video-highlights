@@ -1857,3 +1857,7 @@ select option { background: var(--fc-surface-2); color: var(--fc-text); }
 .plot-len{margin-top:7px;font-size:12px;padding:6px 9px;border-radius:6px;background:rgba(0,0,0,.03);}
 .plot-len.warn{color:#a35;background:rgba(200,60,60,.06);}
 .plot-len.ok{color:#2e7d32;background:rgba(46,125,50,.07);}
+
+/* ---- 步骤标记（2026-10-29）：让流程「看得见顺序」，不用读文字才懂 ---- */
+.step-line{font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;}
+.step-tag{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;border-radius:50%;background:#2e7d32;color:#fff;font-size:11px;font-weight:600;flex:0 0 19px;}
