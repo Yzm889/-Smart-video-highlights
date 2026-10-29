@@ -2564,7 +2564,7 @@ def _llm_align_beats_to_scenes(beats, scenes, movie_name='', scene_story=None):
     # 优先本地LLM
     try:
         if _w.local_llm_enabled() and _w.local_llm_ping()[0]:
-            resp = _llm_light(prompt, timeout=120)
+            resp = _llm_light(prompt, timeout=240)
             obj = _extract_json_obj(resp) or {}
             alignment = _parse_alignment_obj(obj, scenes)
             return _align_from_story_fill(beats, scenes, alignment, scene_story)
@@ -2703,7 +2703,7 @@ def _llm_align_and_refine(beats, scenes, scene_story, asr, movie_name=''):
         if _w.local_llm_enabled() and _w.local_llm_ping()[0]:
             resp = local_llm_chat(prompt,
                                   system='你是影视剪辑师，擅长解说词与画面的语义对齐与贴合润色，只输出JSON。',
-                                  timeout=180)
+                                  timeout=300)
         else:
             return None
     except Exception as e:

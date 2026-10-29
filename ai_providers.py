@@ -923,7 +923,8 @@ def vlm_chat_multi(image_paths, text, system=None, timeout=240, max_tokens=None)
         #   关掉思考 → 思考 0 字、正文 76 字且完整、1.2s（又快又准）
         # 多模态模型同样有 thinking 通道，Multi-image 时思考更长 → 正文可被挤到空。
         payload = {'model': c['model'], 'messages': messages, 'stream': False,
-                   'think': False, 'options': {'num_predict': max_tokens or 1500,
+                   'think': False, 'keep_alive': 0,
+                   'options': {'num_predict': max_tokens or 1500,
                                                'temperature': _VLM_TEMPERATURE}}
         url = c['base_url'] + '/api/chat'
     else:
