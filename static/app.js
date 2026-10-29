@@ -1510,6 +1510,17 @@ function loadAiStatus(){
     const wsp = $('aiWhisper');
     if (wsp){ wsp.className = 'aichip ' + (s.whisper_ready ? 'ok' : 'no');
       wsp.textContent = s.whisper_ready ? ('🎙 Whisper ' + s.whisper_model) : ('🎙 Whisper ' + s.whisper_model + ' 未下载'); }
+    // 「一键查剧情」依赖云端 Key：加载时就讲清楚能不能用。
+    // 否则用户按引导点了按钮才发现请求失败——正是「照着做却没反应」的糟糕体验。
+    const dsh = $('narDsHint'), mdsh = $('movieDsHint');
+    if (dsh || mdsh){
+      const t = s.chat
+        ? '点「🔎 按片名查剧情」自动拉取剧情摘要并回填。'
+        : '⚠️ 未配置云端 Key，「一键查剧情」暂不可用 → <b>直接去豆瓣复制简介粘进左边最快</b>；'
+          + '想用自动查询则 <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'cloud\')">先去配 Key</a>。';
+      if (dsh) dsh.innerHTML = t;
+      if (mdsh) mdsh.innerHTML = t;
+    }
     renderNarrGuide(s);
     loadLocalStatus(); loadVlmStatus();
   }).catch(e=>console.warn('加载 AI 就绪状态失败', e));
