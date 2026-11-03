@@ -2123,6 +2123,35 @@ def _beat_sim(a, b):
     return len(ga & gb) / float(len(ga | gb))
 
 
+def _beat_contain(a, b):
+    """bigram 包含度 = 交集 / 较短那句的 bigram 数。
+
+    【为什么 Jaccard 不够】同一件事换个说法，Jaccard 会掉到 0.1 以下：
+      「肖恩虚弱地躺在病床上，身体几乎无法动弹」vs「他不知道自己仍虚弱地躺在病床上，
+        连呼吸都显得吃力」——Jaccard 0.186，包含度 0.333。
+    实测重复对包含度 0.25~0.60，独立句对 ≤0.08，用包含度好判断得多。
+    """
+    try:
+        ga, gb = _char_bigrams(a), _char_bigrams(b)
+    except Exception:
+        return 0.0
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / float(min(len(ga), len(gb)))
+
+
+def _beat_dup(a, b, jac_th=0.52, con_th=0.45):
+    """b 是否与已保留的 a 在讲同一件事。
+
+    - 几乎同文：Jaccard ≥ 0.52（换几个字的重复）
+    - 紧挨着的下句把上句重新说一遍：bigram 包含度 ≥ 0.45
+    【注意】包含度只能用来比「相邻两句」。放到全篇两两比会把正常解说全吃掉：
+      中文短句之间共享「他/的/着/，」等 bigram，实测 62 句会被误删到 12 句。
+    """
+    return _beat_sim(a, b) >= jac_th or _beat_contain(a, b) >= con_th
+
+
+
 def _beats_scrub(beats, dup_th=0.52, min_len=10):
     """对写完的节拍做确定性清洗：去原声台词 → 去猜测定语 → 去重复事件。
 
@@ -2145,8 +2174,10 @@ def _beats_scrub(beats, dup_th=0.52, min_len=10):
         t = _drop_speculation(t)
         if len(re.sub(r'\{[^}]*\}', '', t)) < min_len:
             continue          # 清洗后没内容了，丢掉（比留一句废话好）
+        if out and _beat_dup(t, out[-1].get('text') or '', jac_th=dup_th):
+            continue          # 同一事件重复（相邻两句）
         if any(_beat_sim(t, o.get('text') or '') >= dup_th for o in out):
-            continue          # 同一事件重复
+            continue          # 换几个字的重复（全篇比对）
         nb = dict(b)
         nb['text'] = t
         out.append(nb)
