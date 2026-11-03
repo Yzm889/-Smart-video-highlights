@@ -46,6 +46,7 @@ class Env:
         self.calls = 0
         self.abort_at = None
         self.fail_at = None
+        self.fail_from = None
         self.saved = []
         self.abort_now = False
         self.asr = [{'start': 0.0, 'end': VDUR, 'text': '全片都有台词'}]
@@ -56,6 +57,7 @@ class Env:
         self.calls = 0
         self.abort_at = None
         self.fail_at = None
+        self.fail_from = None
         self.saved = []
         self.abort_now = False
 
@@ -65,10 +67,13 @@ class Env:
         self.abort_now = bool(on)
 
     # --- 假 VLM ---
-    def _chat_multi(self, frames, prompt, system=None, timeout=30):
+    # **kw：真实调用会带 keep_alive / max_tokens 等参数，mock 必须透传容忍
+    def _chat_multi(self, frames, prompt, system=None, timeout=30, **_kw):
         self.calls += 1
         if self.fail_at is not None and self.calls == self.fail_at:
             raise RuntimeError('模拟VLM调用失败')
+        if self.fail_from is not None and self.calls >= self.fail_from:
+            raise RuntimeError('模拟VLM持续不可用')
         if self.abort_at is not None and self.calls >= self.abort_at:
             self.set_abort(True)           # 模拟用户在第 N 批点了「停止」
         parts = [json.dumps({'location': '地点%d' % self.calls, 'characters': '人物%d' % k,
@@ -76,16 +81,21 @@ class Env:
                             ensure_ascii=False) for k, _f in enumerate(frames)]
         return '\n---\n'.join(parts)
 
-    def _chat_one(self, image_path, text, system=None, timeout=20):
+    def _chat_one(self, image_path, text, system=None, timeout=20, **_kw):
         self.calls += 1
         if self.fail_at is not None and self.calls == self.fail_at:
             raise RuntimeError('模拟VLM调用失败')
+        if self.fail_from is not None and self.calls >= self.fail_from:
+            raise RuntimeError('模拟VLM持续不可用')
         return json.dumps({'location': '单帧地点', 'characters': '人物', 'event': '事件',
                            'dialogue': '台词', 'summary': '单帧概要'}, ensure_ascii=False)
 
     def run(self, progress=None):
+        # quality=False 显式走「稀疏+台词过滤」旧策略：本文件锁定的是断点续跑机制，
+        # 不随画面覆盖策略（质量模式下全片覆盖、间隔更低）变化。
         return W._vlm_sample_timeline('fake.mp4', VDUR, self.asr, self.run_dir,
-                                      progress=progress if progress is not None else {})
+                                      progress=progress if progress is not None else {},
+                                      quality=False)
 
     def load_progress(self):
         return json.load(open(self.prog_file, encoding='utf-8'))
@@ -211,14 +221,18 @@ def test_stale_progress_ignored(env):
 
 
 def test_failed_batch_retried(env):
-    """整批失败不记为完成，下次续跑会重试。"""
+    """整批失败不记为完成，下次续跑会重试。
+
+    失败必须是「持续性」的：单次偶发失败现在会被逐帧重试救回来（这是预期改进），
+    本用例锁定的是「VLM 真的不可用 → 该批不落盘 → 下次续跑重试」。
+    """
     env.reset()
-    env.fail_at = 2
+    env.fail_from = 2                       # 第 2 次调用起全部失败（模拟 VLM 挂掉）
     env.run()
     pf = env.load_progress()
     assert len(pf['results']) < N_SAMPLES, '失败批次被错误记为完成'
     calls_before = env.calls
-    env.fail_at = None
+    env.fail_from = None
     env.run()
     assert env.calls - calls_before > 0, '下次续跑没有重试失败的场景'
     assert not os.path.exists(env.prog_file), '重试完成后进度文件未被清理'

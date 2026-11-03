@@ -1137,8 +1137,9 @@ def vlm_ping():
     except Exception as e:
         return False, str(e)[:200]
 
-def vlm_chat(image_path, text, system=None, timeout=180):
-    """调用本地/云端 VLM：传入一张图 + 文本，返回模型文本回复。失败抛异常。"""
+def vlm_chat(image_path, text, system=None, timeout=180, keep_alive=None):
+    """调用本地/云端 VLM：传入一张图 + 文本，返回模型文本回复。失败抛异常。
+    keep_alive：ollama 原生驻留时长；批量场景分析务必传常驻值，否则每次调用重载权重。"""
     c = vlm_cfg()
     if not c['base_url']:
         raise RuntimeError('VLM 未配置')
@@ -1152,6 +1153,8 @@ def vlm_chat(image_path, text, system=None, timeout=180):
         msg = {'role': 'user', 'content': text, 'images': [b64]}
         messages = ([{'role': 'system', 'content': system}] if system else []) + [msg]
         payload = {'model': c['model'], 'messages': messages, 'stream': False}
+        if keep_alive is not None:
+            payload['keep_alive'] = keep_alive
         url = c['base_url'] + '/api/chat'
     else:
         content = [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + b64}},

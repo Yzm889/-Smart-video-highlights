@@ -427,6 +427,66 @@ def _subtitle_segments(video_path):
         _silent_remove(tmp)
 
 
+def _asr_collapse_token_runs(text, min_total=4):
+    """折叠单个片段内部的复读（『no, no, no…』×44、『shh, shh…』×70）。
+
+    段间折叠管不到这种情况：它们是一条长片段里的同一个词反复出现，
+    原片只有一声「no」，转写却被填成一长串。这些串留在台词里会
+    稀释真正有信息量的对白（实测出事现场那段几乎全是 no/sh sh）。
+    min_total=4 表示同一个词至少连续出现 4 次才折叠，保留「好，好」这类正常强调。
+    """
+    import re as _re
+    if not text:
+        return text
+    s = str(text)
+    # 英文/数字词：允许词间夹逗号句号空格
+    pat_word = _re.compile(r'\b(\w{1,12})\b(?:[\s,，、。.!?！？;；]*\1\b){%d,}' % (min_total - 1),
+                           _re.IGNORECASE)
+    prev = None
+    while prev != s:                     # 反复折叠，处理「a a a a b b b b」这类多段
+        prev = s
+        s = pat_word.sub(r'\1', s)
+    # 中日韩单字复读：「哈哈哈哈」「闪闪闪」——中文没有词边界，单独处理
+    s = _re.sub(r'([\u4e00-\u9fa5])\1{3,}', r'\1\1', s)
+    return s
+
+
+def _asr_collapse_repeats(segs, min_run=2):
+    """折叠 ASR 的连续重复幻觉，返回新的 [{start,end,text}]。
+
+    【为什么必须做】实测英文片被强制按中文转写时，模型在音乐/噪音段会复读同一句
+    十几次（『我跟他们说』×12、『林顿省警察受伤』×4）。这些行原片里并不存在，
+    却会被下游当成「此处有台词」的证据，把剧情理解和解说词都拉到无意义的重复上。
+    规则：连续 >=min_run 行文本相同（忽略标点空白）时只保留第一行，
+    时间区间延长到最后一行的结束，保持时间轴连续、不出现空洞。
+    """
+    if not segs:
+        return []
+    import re as _re
+
+    def norm(t):
+        return _re.sub(r'[\s，。！？、,.!?;；:："\'“”‘’…—\-]+', '', str(t or ''))
+
+    out = []
+    i, n = 0, len(segs)
+    while i < n:
+        cur = segs[i]
+        key = norm(cur.get('text'))
+        j = i + 1
+        while j < n and norm(segs[j].get('text')) == key:
+            j += 1
+        if key and (j - i) >= min_run:
+            out.append({'start': float(cur.get('start', 0) or 0),
+                        'end': float(segs[j - 1].get('end', cur.get('end', 0)) or 0),
+                        'text': _asr_collapse_token_runs(str(cur.get('text') or '').strip())})
+        else:
+            for _sg in segs[i:j]:
+                out.append({'start': _sg.get('start', 0), 'end': _sg.get('end', 0),
+                            'text': _asr_collapse_token_runs(str(_sg.get('text') or '').strip())})
+        i = j
+    return out
+
+
 def asr_segments(video_path, progress=None, pct_range=None):
     """本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
     自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
@@ -480,17 +540,33 @@ def asr_segments(video_path, progress=None, pct_range=None):
             #  beam_size=5 —— 比贪心更准一点。
             #  compression_ratio_threshold / log_prob_threshold / no_speech_threshold
             #    —— 标准抗幻觉阈值：模型对某段"没把握"时宁可标成静音也不硬编台词。
-            #  language —— 硬编码 'zh' 会把英文/中英混说判错；配置成 'auto' 则自动判别。
-            _lang = (whisper_language() or 'zh')
+            #  language —— 配置值 'auto' 必须真的交给模型自动判别（传 None），
+            #    而不是退化成 'zh'。把英文片硬按中文解，模型会「照着中文往下猜」，
+            #    输出的是一串翻译腔幻觉（实测：英文对白被转成『我跟他们说』×12、
+            #    『林顿省警察受伤』×4 这类重复垃圾），而下游剧情理解/语义对齐
+            #    会把这些垃圾当台词证据，解说质量从源头就歪了。
+            _lang = whisper_language()
+            _auto = (_lang in ('', 'auto', None))
+            _eff_lang = None if _auto else _lang
+            # initial_prompt 只对中文有效：给英文音频塞『以下是普通话的句子』
+            # 等于主动把解码器推向中文输出。
+            _prompt = '以下是普通话的句子。' if (not _auto and str(_eff_lang).startswith('zh')) else None
             segments, info = model.transcribe(
-                _load_wav_as_float32(wav), language=_lang, vad_filter=True,
-                initial_prompt='以下是普通话的句子。',
+                _load_wav_as_float32(wav), language=_eff_lang, vad_filter=True,
+                initial_prompt=_prompt,
                 condition_on_previous_text=False,
                 temperature=0.0,
                 beam_size=5,
                 compression_ratio_threshold=2.4,
                 log_prob_threshold=-1.0,
                 no_speech_threshold=0.6)
+            try:
+                _det = str(getattr(info, 'language', '') or '')
+                if _det:
+                    _note_progress_warning('识别语言：%s（%s）' % (
+                        _det, '自动判别' if _auto else '按配置指定'))
+            except Exception:
+                pass
             total = 0.0
             try:
                 total = float(getattr(info, 'duration', 0) or 0)
@@ -514,7 +590,7 @@ def asr_segments(video_path, progress=None, pct_range=None):
                                          if total > 0 else '识别台词…')
             if segs:
                 _note_progress_warning('台词来源：语音识别（视频没有可用的字幕轨/外挂字幕）')
-            return segs
+            return _asr_collapse_repeats(segs)
 
         # GPU 推理失败（显存不足 / cuBLAS 缺库 / 驱动抽风）时降级 CPU 重跑一次，
         # 而不是让整条 ASR 直接报废——CPU 慢但一定能出结果，好过一句「没识别出台词」。
@@ -739,6 +815,31 @@ def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
     return _strip_think((data.get('message') or {}).get('content', ''))
 
 
+def vlm_unload():
+    """显式让本地 VLM 退出显存，返回是否已发出卸载请求。失败不抛异常。
+
+    【为什么需要】质量模式下画面理解会让 VLM 常驻（keep_alive='30m'），把每批
+    40s+ 的权重加载省掉，110 个抽样点从「112 分钟且全部超时」降到 5 分钟。
+    但 12GB 卡上 VLM(6.1GB) 与文本模型(5.0GB) 同时驻留会超出可用显存，
+    所以画面理解一结束就主动卸载，把显存让给写稿/对齐/润色用的文本模型。
+    """
+    try:
+        c = vlm_cfg()
+        if c.get('mode') != 'ollama' or not c.get('base_url'):
+            return False
+        import urllib.request, json as _j, re as _re
+        root = _re.sub(r'/v1/?$', '', str(c['base_url']).rstrip('/'))
+        req = urllib.request.Request(
+            root + '/api/generate',
+            data=_j.dumps({'model': c['model'], 'keep_alive': 0}).encode('utf-8'),
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+        return True
+    except Exception:
+        return False
+
+
 def local_llm_chat(prompt, system=None, timeout=180, max_tokens=None):
     """调用本地 OpenAI 兼容端点生成文本（Ollama /v1/chat/completions）。失败抛异常。
 
@@ -898,12 +999,17 @@ def vlm_cfg():
 _VLM_TEMPERATURE = 0.3
 
 
-def vlm_chat_multi(image_paths, text, system=None, timeout=240, max_tokens=None):
+def vlm_chat_multi(image_paths, text, system=None, timeout=240, max_tokens=None, keep_alive=0):
     """调用本地/云端 VLM：一次传入多张图（按时间先后顺序），返回模型文本回复。失败抛异常。
     用于「剧情理解」：把整片关键帧一起看，判断作品/人物/剧情，而不是逐帧孤岛描述。
 
     max_tokens：ollama 原生端点下对应 num_predict（默认 1500）。画面理解类任务
-    一次要输出 N 段描述，提示词长时 1500 会被截断——需要更大值就显式传入。"""
+    一次要输出 N 段描述，提示词长时 1500 会被截断——需要更大值就显式传入。
+
+    keep_alive：模型在显存里的驻留时长（ollama 原生参数）。默认 0 = 调用完立即卸载，
+    适合「偶发单次调用」省显存；但批量场景分析是连续几十次调用，0 会让每次调用都
+    重新从磁盘加载 6GB 权重（实测单批 >80s 不返回 → 全部超时 → 场景描述大面积缺失）。
+    批量分析必须传 keep_alive='30m' 之类的常驻值，任务结束再显式卸载。"""
     c = vlm_cfg()
     if not c['base_url']:
         raise RuntimeError('VLM 未配置')
@@ -923,7 +1029,7 @@ def vlm_chat_multi(image_paths, text, system=None, timeout=240, max_tokens=None)
         #   关掉思考 → 思考 0 字、正文 76 字且完整、1.2s（又快又准）
         # 多模态模型同样有 thinking 通道，Multi-image 时思考更长 → 正文可被挤到空。
         payload = {'model': c['model'], 'messages': messages, 'stream': False,
-                   'think': False, 'keep_alive': 0,
+                   'think': False, 'keep_alive': keep_alive,
                    'options': {'num_predict': max_tokens or 1500,
                                                'temperature': _VLM_TEMPERATURE}}
         url = c['base_url'] + '/api/chat'
@@ -974,14 +1080,17 @@ def whisper_model_name():
 
 
 def whisper_language():
-    """读取配置的识别语言（默认 zh）。'auto' = 自动判别。
+    """读取识别语言，默认 'auto'（由模型自动判别）。
 
-    硬编码 'zh' 会把纯英文/中英混说的片子判错（用户反馈「识别语音也对不上」的成因之一）。
-    配置位置：ai_config.json → whisper.language = "auto"（或 "en"/"ja" 等）。"""
+    【为什么默认 auto】旧默认是 'zh'：英文/日文片会被硬按中文解码，模型「顺着中文
+    往下猜」，输出成串翻译腔幻觉（实测『我跟他们说』×12、『林顿省警察受伤』×4），
+    再被剧情理解层当台词证据 → 解说从源头就歪。影视解说的片源语言本来就杂，
+    默认交给模型判别更稳；判别结果会写进 warnings，用户看得到。
+    要固定语言就配 ai_config.json → whisper.language = "zh" / "en" / "ja" …"""
     cfg = load_ai_config().get('whisper') or {}
-    lang = str(cfg.get('language') or 'zh').strip().lower()
+    lang = str(cfg.get('language') or 'auto').strip().lower()
     if not lang:
-        return 'zh'
+        return 'auto'
     return lang
 
 def whisper_models_dir():

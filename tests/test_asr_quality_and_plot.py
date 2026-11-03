@@ -149,11 +149,18 @@ def test_asr_falls_back_to_speech_when_no_subtitle(tmp_path, monkeypatch):
 
 
 def test_whisper_language_configurable(monkeypatch):
-    """语言可配：默认 zh，配置 auto 则自动判别（纯英文片不再被判成中文）。"""
+    """语言可配：默认 auto（模型自动判别），显式配置则按配置走。
+
+    旧默认是 'zh'，把英文片硬按中文解码 → 输出成串翻译腔幻觉（实测
+    『我跟他们说』×12、『林顿省警察受伤』×4），再被剧情理解层当台词证据。
+    详见 tests/test_asr_language.py。
+    """
     monkeypatch.setattr(A, 'load_ai_config', lambda: {'whisper': {'language': 'auto'}})
     assert A.whisper_language() == 'auto'
     monkeypatch.setattr(A, 'load_ai_config', lambda: {'whisper': {}})
-    assert A.whisper_language() == 'zh'
+    assert A.whisper_language() == 'auto', '未配置时应自动判别，而不是假定中文'
+    monkeypatch.setattr(A, 'load_ai_config', lambda: {'whisper': {'language': 'zh'}})
+    assert A.whisper_language() == 'zh', '显式配置的中文必须被尊重（中文片精度依赖它）'
 
 
 # ---------------------------------------------------------------------------
