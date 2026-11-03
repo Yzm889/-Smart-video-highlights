@@ -746,10 +746,16 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         np_, od, oe, _ov = _tt_span(item)
         inputs += ['-i', np_]
         if oe is not None and oe > od:
-            # 限制配音时长不超过本镜头段，杜绝「这段解说拖到下一段画面」的重叠
+            # 限制配音时长不超过本镜头段，杜绝「这段解说拖到下一段画面」的重叠。
+            # 【顺序极其重要】必须先 atrim 再 adelay：
+            #   adelay=3000 + atrim=0:2 会保留「延迟后」流的 [0,2] 秒——而这段全是静音，
+            #   等于把整句配音删掉。实测只有首段（od=0）能出声，第二句起全哑，
+            #   成片表现就是「配了第一句之后就没有声音」。
             dmax = max(0.05, oe - od)
-            fparts.append(f'[{next_idx + k2}:a]aresample=44100,adelay={int(od * 1000)}|{int(od * 1000)},'
-                          f'atrim=0:{dmax:.2f},apad=whole_dur={vdur:.2f}[t{k2}]')
+            fparts.append(f'[{next_idx + k2}:a]aresample=44100,'
+                          f'atrim=start=0:end={dmax:.2f},'
+                          f'adelay={int(od * 1000)}|{int(od * 1000)},'
+                          f'apad=whole_dur={vdur:.2f}[t{k2}]')
         else:
             fparts.append(f'[{next_idx + k2}:a]aresample=44100,adelay={int(od * 1000)}|{int(od * 1000)},'
                           f'apad=whole_dur={vdur:.2f}[t{k2}]')

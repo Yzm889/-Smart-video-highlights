@@ -526,7 +526,11 @@ def test_compose_clips_tts_to_segment(monkeypatch, tmp_path):
     S._compose_narration_video(
         'x.mp4', [(0.0, 5.0)], ['解说词'], [('fake.wav', 0.0, 5.0)], str(tmp_path), {}, music_path=None)
     joined = ' '.join(' '.join(c) for c in calls)
-    assert 'atrim=0:5.00' in joined, '应裁剪配音时长到镜头段长度：%s' % joined
+    assert 'atrim=start=0:end=5.00' in joined, '应裁剪配音时长到镜头段长度：%s' % joined
+    # 裁剪必须排在 adelay 之前：反序会把「已延迟到 od 秒」的流裁成 [0,dmax]，
+    # 而那段全是静音，等于把配音删掉（实测只有第一句能出声）。
+    assert joined.index('atrim=start=0:end=5.00') < joined.index('adelay=0|0'), \
+        'atrim 必须在 adelay 之前：%s' % joined
 
 
 def test_compose_supports_two_tuple_tts(monkeypatch, tmp_path):
