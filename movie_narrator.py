@@ -9,7 +9,7 @@ import logging, os, sys, json, math, random, re, shutil, subprocess, threading, 
 
 from ai_providers import (load_ai_config, _aborted, _note_progress_warning, asr_segments,
     local_llm_cfg, local_llm_chat, local_llm_light_chat, vlm_cfg, vlm_chat_multi,
-    whisper_model_name)
+    vlm_unload, whisper_model_name, whisper_language)
 from cache_utils import (ANALYSIS_VERSION, _file_fp, _analysis_cache_load, _analysis_cache_save,
     _cache_load, _cache_save, _video_cache_key,
     _sample_frame_cache_dir, _sample_frame_cache_mark, _sample_frame_cache_ready,
@@ -22,7 +22,7 @@ from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
 from beat_analysis import _cached_scene_cuts
 from tts_engines import (local_tts_speak, edge_tts_speak, edge_tts_available,
     edge_tts_dead_reason,
-    _edge_internal, has_tts_markup, _enhance_tts_markup)
+    _edge_internal, has_tts_markup, _enhance_tts_markup, strip_tts_markup)
 
 _log = logging.getLogger('framecut.narrator')
 
@@ -1493,6 +1493,79 @@ def _algo_align_shots(shots, lines):
     return bounds
 
 
+def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None):
+    """算法语义对齐（不调模型）：用 VLM 场景描述/台词/剧情理解与解说词的字符 bigram
+    重叠度，在「保持时间顺序」的前提下为每句解说挑最相关的连续场景，并跳过无关填充段。
+
+    返回 {beat_idx: [scene_idx, ...]}，格式与 LLM 对齐结果一致，可直接喂给
+    _allocate_script_spans。这是 LLM 对齐失败/超时时的保底通道——保证声画不会退化成
+    「按字数平均切时间线」的盲切（解说词是改写过的剧情，与原始台词重合度低，
+    只按台词密度分配必然「讲 A 放 B」）。
+    """
+    n, m = len(beats or []), len(scenes or [])
+    if n <= 0 or m <= 0:
+        return {}
+    if n > m:
+        # 句子比场景多：按比例共享场景（保证每句都有画面，且顺序不倒退）
+        return {i: [min(m - 1, int(i * m / float(n)))] for i in range(n)}
+
+    def _bg(s):
+        s = str(s or '')
+        return set(s[i:i + 2] for i in range(len(s) - 1) if s[i:i + 2].strip())
+
+    scene_bg = []
+    for j, sc in enumerate(scenes):
+        parts = [_scene_describe(sc)]
+        st = (scene_story or {}).get(j) or {}
+        if st.get('story'):
+            parts.append(str(st['story']))
+        if st.get('keywords'):
+            parts.append(''.join(str(k) for k in st['keywords']))
+        if asr:
+            try:
+                parts.append(_asr_text_in(asr, float(sc.get('start', 0) or 0),
+                                          float(sc.get('end', 0) or 0)))
+            except Exception:
+                pass
+        scene_bg.append(_bg(' '.join(p for p in parts if p)))
+    beat_bg = [_bg(b) for b in beats]
+
+    def _score(i, j):
+        q, s = beat_bg[i], scene_bg[j]
+        if not q or not s:
+            return 0.0
+        # 以解说词 bigram 数为分母：长句不会因为场景描述长而占便宜
+        return len(q & s) / (len(q) ** 0.5)
+
+    out = {}
+    pos = 0
+    for i in range(n):
+        end = m - (n - i - 1)          # 至少给后面每句留 1 个场景，避免前面吃光
+        if pos > end - 1:
+            pos = end - 1
+        lo = max(0, pos)
+        best_j, best_s = lo, -1.0
+        for j in range(lo, end):
+            s = _score(i, j)
+            if s > best_s:
+                best_j, best_s = j, s
+        if best_s <= 0:
+            # 完全没有词面重合：退回「按比例落在时间线对应位置」，仍保持顺序
+            best_j = min(end - 1, max(lo, int(round(i * m / float(n)))))
+        group = [best_j]
+        # 相关度接近的后续场景一并纳入（一句解说常跨 2~3 个连续镜头）
+        while len(group) < 3 and group[-1] + 1 < end:
+            j2 = group[-1] + 1
+            s2 = _score(i, j2)
+            if best_s > 0 and s2 >= best_s * 0.5:
+                group.append(j2)
+            else:
+                break
+        out[i] = group
+        pos = group[-1] + 1
+    return out
+
+
 def _model_align_shots(shots, lines, asr=None, params=None):
     """让模型按解说词语义把镜头分配给各句（asr 仅作语义依据，可缺省）。
     返回 bounds(list[int])；失败/结果不合法返回 None，由调用方回退到 _algo_align_shots。"""
@@ -1837,20 +1910,23 @@ SCRIPT_STYLE_MOVIE = (
     '- 人物第一次出现要带上姓名与身份，例如「副警长瑞克」「搭档肖恩」。\n'
     '- 用口语衔接词推进节奏：没想到、就在这时、结果、也正是这时、可他不知道的是。\n'
     '- 每节末尾留一点钩子，让观众想继续看。\n\n'
-    '【配音标记】在 text 中适当插入以下标记，让配音有情感起伏和顿挫（不要每句都加，只在关键处）：\n'
-    '- {情绪:欢快}...{/情绪}  激动、兴奋、反转成功时\n'
-    '- {情绪:悲伤}...{/情绪}  悲剧、牺牲、感人时刻\n'
-    '- {情绪:严肃}...{/情绪}  重要设定、悬念、危险降临\n'
-    '- {情绪:紧张}...{/情绪}  追逐、打斗、千钧一发\n'
-    '- {情绪:温柔}...{/情绪}  温情、回忆、感情戏\n'
-    '- {停顿:0.5}  短句后短暂停顿（0.3-1.0秒），{停顿:1.0} 长停顿用于强调\n'
-    '- {慢}...{/慢}  重要信息放慢说，{快}...{/快}  紧张节奏加快\n'
-    '示例：1990年一部名为《赌圣》的电影横空出世{停顿:0.8}{情绪:激动}它不仅斩获4132万港币票房{/情绪}{停顿:0.5}更让跑龙套的星仔正式加冕为星爷{停顿:1.0}\n\n'
+    # 【坑】这里绝对不能出现「...」占位符：旧版写成 {情绪:欢快}...{/情绪}，
+    # 模型会把省略号当正文原样抄成 {情绪:紧张}…{/情绪}，配音时会念出省略号。
+    # 同理不能出现任何真实片名/人名/数字（旧版是《赌圣》4132万港币，被抄进 hook）。
+    '【配音标记】可选，每节最多 1-2 处，只在关键处用；必须是成对或单点的标签：\n'
+    '- 情绪：把要念的话包在 {情绪:XX} 与 {/情绪} 之间，XX 取 欢快/悲伤/严肃/紧张/温柔。\n'
+    '- 停顿：在句中写 {停顿:0.5}（0.3-1.0 秒），它是单个标记，没有闭合标签。\n'
+    '- 语速：包在 {慢} 与 {/慢} 之间放慢，包在 {快} 与 {/快} 之间加快。\n'
+    '- 标签内部必须是真正要念出来的台词，不得只放标点或占位符；拿不准就整节不加标记。\n\n'
     '【禁止】编号、引号、括号注释、markdown、代码块、任何解释性文字。\n\n'
     '只输出如下 JSON：\n'
     '{"title":"片名","hook":"开场白","beats":[{"text":"第1节解说词",'
     '"keywords":["关键词1","关键词2"],"importance":"key|advance|transition"}],"outro":"结尾"}\n\n'
     'importance：key＝主线关键情节点，advance＝一般推进，transition＝过渡铺垫。\n'
+    '大致比例 key 三成、advance 五成、transition 两成，不要全标 key。\n'
+    '【最重要】素材没写到的事一律不许写：角色的死亡、生死结局、婚姻最终结果、身世秘密、'
+    '追悼会或任何「后来怎样」的结论。素材停在哪儿，稿子就停在哪儿，'
+    '宁可用「情况不明」「没人知道接下来会怎样」收尾，也不要替观众编一个结局。\n'
 )
 
 
@@ -1878,6 +1954,227 @@ def _script_from_obj(obj, movie_name=''):
             'hook': str(obj.get('hook') or '').strip(),
             'beats': beats,
             'outro': str(obj.get('outro') or '').strip()}
+
+
+# ============================================================================
+# 稿件「去镜头化」后处理
+# ----------------------------------------------------------------------------
+# 实测（RTX 3060 12GB + qwen3:8b，同一部 22 分钟片）写出来的稿子通篇是：
+#   8. 警察仔细检查事故现场，每一处细节都不放过，眼神专注，仿佛遗漏一个细节…
+#  10. 男子在停车场手持红色油桶，步伐坚定，神情似乎藏着某种目的，令人不禁猜测…
+#  25. 警车在乡村公路上疾驰，远处山丘隐约可见，无线电里传来「Highway 18 eastbound,
+#      GTA ADW 217-243. Advise extreme caution.」
+# 三种毛病：① 复述画面而不是讲事；② 用「仿佛/似乎/令人」补空，信息量为零；
+# ③ 把 ASR 原声（尤其英文与无线电代码）直接抄进中文旁白。
+# 提示词只能减弱、不能消除，所以这里再做一层确定性清洗——不依赖模型。
+# ============================================================================
+_SPEC_CLUES = ('仿佛', '似乎', '好像', '像是', '好似', '如同',
+               '令人', '让人', '不禁', '或许', '也许', '无疑是')
+
+# 英文单词串：两个及以上连续词元（含 GTA ADW 217-243 这类呼号），允许空格/逗号分隔
+_ASCII_RUN = re.compile(r"[A-Za-z][A-Za-z'\-]*"
+                        r"(?:[\s,]+[A-Za-z0-9][A-Za-z0-9'\-]*)+")
+# 夹在中文里的单个英文词（Shane？/Win 这种抄台词残留）
+_ASCII_SOLO = re.compile(r"(?<=[\u4e00-\u9fff，。！？；：、])\s*[A-Za-z][A-Za-z'\-]{2,}"
+                         r"(?=[\u4e00-\u9fff，。！？；：、{])")
+# 包住英文的引号/书名号整体
+_QUOTED = re.compile(r"['\"“”‘’「」『』]([^'\"“”‘’「」『』]{1,80})['\"“”‘’「」『』]")
+
+_QUOTE_PAIRS = {'‘': '’', '“': '”', '「': '」', '『': '』', '（': '）', '(': ')'}
+
+
+def _split_clauses(text):
+    """按标点切分句，但不动 {} 配音标记与引号内部的标点。
+
+    【为什么要在意引号】「无线电里传来‘高度戒备，Proceed with extreme caution.’」
+    若在引号内的逗号处切开，后半截就变成一段孤立的英文，既删不干净也留残句。
+    返回 [(分句, 尾随标点), ...]。
+    """
+    out, buf, depth, quote = [], [], 0, ''
+    for ch in str(text or ''):
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth = max(0, depth - 1)
+        if quote:
+            if ch == _QUOTE_PAIRS.get(quote):
+                quote = ''
+            buf.append(ch)
+            continue
+        if ch in _QUOTE_PAIRS:
+            quote = ch
+            buf.append(ch)
+            continue
+        if depth == 0 and ch in '，,。；;！!？?':
+            out.append((''.join(buf), ch))
+            buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        out.append((''.join(buf), ''))
+    return out
+
+
+def _tidy_tail(body):
+    """收尾标点整理：删句后留下的「，」「，{停顿:0.3}」统一补成句号。"""
+    if not body:
+        return body
+    body = re.sub(r'([，,；;、])((?:\{[^}]*\})*)\s*$', r'。\2', body)
+    # 删词后可能留下「？？」「，。」，折叠掉
+    body = re.sub(r'([，。！？；：])\1+', r'\1', body)
+    body = re.sub(r'[，、；]\s*(?=[。！？])', '', body)
+    return body.strip()
+
+
+
+def _drop_speculation(text):
+    """删掉纯猜测的分句（「仿佛…」「似乎…」「令人不禁…」），只留能确定的事实。
+
+    只在一句话还有 ≥2 个分句时才删，避免删空；带 {} 标记的分句只有在
+    「去掉标记后本身就是在猜」时才删（否则会破坏 {情绪:xx}…{/情绪} 的配对）。
+    收尾标点会从逗号补成句号。
+    """
+    if not text or not any(w in text for w in _SPEC_CLUES):
+        return text
+    parts = _split_clauses(text)
+    if len(parts) < 3:
+        return text
+    kept = []
+    for cl, sp in parts:
+        core = re.sub(r'\{[^}]*\}', '', cl).strip()
+        if core and any(w in core for w in _SPEC_CLUES):
+            # 整个分句就是在猜（「仿佛每一句话都藏着秘密」「似乎已经逃离」）→ 删。
+            # 但若这句的主语就在这个分句里（「他像是被什么触动」），删掉会变成
+            # 「突然，猛地冲向走廊尽头」——主语没了。这种保留原句。
+            if core.startswith(('他', '她', '它')):
+                kept.append((cl, sp))
+                continue
+            if len(core) <= 16 or core.startswith(tuple(_SPEC_CLUES)):
+                continue
+        if not core and kept:
+            # 纯标记分句（删掉上半句后剩下的 {/情绪}）跟着一起丢
+            if cl.strip().startswith('{/'):
+                continue
+        kept.append((cl, sp))
+    if len(kept) < 2 or len(kept) == len(parts):
+        return text
+    body = ''.join(cl + sp for cl, sp in kept).strip()
+    return _tidy_tail(body)
+
+
+# 只剩半句的尾巴：「无线电里传来」「牌子上写着」——英文台词被删后就成这种残句
+_DANGLING_TAIL = re.compile(r'(传来|写着|喊道|叫着|念着|说道|听到|听见|播报|重复着|'
+                            r'说了一句|报出)\s*[：:，,、]?\s*[。！？]?$')
+
+
+def _strip_foreign_clause(cl):
+    """去掉分句里的英文/外语原声，返回清洗后的分句。"""
+    s = _QUOTED.sub(lambda m: '' if len(re.findall(r'[A-Za-z]', m.group(1))) >= 3 else m.group(0), cl)
+    s = _ASCII_RUN.sub('', s)
+    s = _ASCII_SOLO.sub('', s)
+    s = re.sub(r'\s{2,}', ' ', s)
+    s = re.sub(r'([，,。；;])\s*(?=[，,。；;])', '', s)
+    s = re.sub(r'([！？!?])\1+', r'\1', s)
+    s = re.sub(r'^[，,。；;、\s]+', '', s).strip()
+    return s
+
+
+def _strip_foreign(text):
+    """去掉抄进来的原声台词（英文原文、无线电代码），只保留中文叙述。
+
+    分句粒度处理：某个分句的英文被删掉后只剩半句（「无线电里传来」「牌子上写着」），
+    整句丢弃——留着比删掉更破坏听感。
+    【只在中文旁白里做】判断依据是汉字比字母多：英文片/英文稿原样返回，
+    否则会把整段英文解说清空。
+    """
+    if not text or not re.search(r'[A-Za-z]', text):
+        return text
+    _cjk = len(re.findall(r'[\u4e00-\u9fff]', text))
+    if _cjk < 2:
+        return text                      # 这段本来就是英文/代码，别动它
+    parts = _split_clauses(text)
+    kept = []
+    for cl, sp in parts:
+        cl2 = _strip_foreign_clause(cl)
+        if cl2 != cl:
+            core = re.sub(r'\{[^}]*\}', '', cl2).strip()
+            # 整句是外语 → 丢；删完只剩残句（「无线电里传来」）→ 丢
+            if len(core) < 8 or _DANGLING_TAIL.search(core):
+                continue
+        kept.append((cl2, sp))
+    if not kept:
+        return ''
+    body = ''.join(c + s for c, s in kept).strip()
+    # 兜底：仍夹在中文里的零散英文词（Shane）也去掉——中文旁白里不该出现
+    body = re.sub(r"(?<![\u4e00-\u9fff])[A-Za-z][A-Za-z'\-]{1,}(?![\u4e00-\u9fff])", '', body)
+    return _tidy_tail(body)
+
+
+
+
+def _beat_sim(a, b):
+    """两句的字符 bigram Jaccard 相似度，用来判断「同一件事是不是写了两遍」。"""
+    try:
+        ga, gb = _char_bigrams(a), _char_bigrams(b)
+    except Exception:
+        return 0.0
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / float(len(ga | gb))
+
+
+def _beats_scrub(beats, dup_th=0.52, min_len=10):
+    """对写完的节拍做确定性清洗：去原声台词 → 去猜测定语 → 去重复事件。
+
+    去重实测依据：素材里「他从医院走出」在不同时间窗被描述了 4 次，稿子就跟着写了
+    4 节（55/57/59），观众听感是「卡带」。同一事件只讲一次。
+    另：整稿以中文为主时，整句英文的节拍直接丢弃（那是抄来的台词，不是旁白）；
+    英文稿不受影响。
+    """
+    beats = list(beats or [])
+    # 判断这份稿子是不是中文稿：中文节拍占七成以上才做「整句英文丢弃」
+    _n_cn = sum(1 for b in beats
+                if len(re.findall(r'[\u4e00-\u9fff]', str(b.get('text') or ''))) >= 2)
+    _zh_script = bool(beats) and _n_cn >= max(1, int(len(beats) * 0.7))
+    out = []
+    for b in beats:
+        raw = str(b.get('text') or '').strip()
+        if _zh_script and len(re.findall(r'[\u4e00-\u9fff]', raw)) < 2:
+            continue
+        t = _strip_foreign(raw)
+        t = _drop_speculation(t)
+        if len(re.sub(r'\{[^}]*\}', '', t)) < min_len:
+            continue          # 清洗后没内容了，丢掉（比留一句废话好）
+        if any(_beat_sim(t, o.get('text') or '') >= dup_th for o in out):
+            continue          # 同一事件重复
+        nb = dict(b)
+        nb['text'] = t
+        out.append(nb)
+    return out
+
+
+def _scrub_texts(texts):
+    """终稿清洗：只改写、不删句。
+
+    【为什么不能删】texts 的下标与 narr_map、节拍重要度严格对齐，删一句会让
+    后面的解说词全部配错画面。所以这里只做「就地改写」，改空了就退回原句。
+    【为什么要在终稿再洗一遍】实测润色环节会把写稿时已经清掉的毛病重新写回来：
+    22 分钟片润色后出现 6 处「仿佛」+ 3 段夹着英文原声（"Okay, shh"、
+    "I hope you left with that spoon collection."）。写稿时洗一次不够。
+    """
+    out, changed = [], 0
+    for t in (texts or []):
+        raw = str(t or '')
+        try:
+            new = _tidy_tail(_drop_speculation(_strip_foreign(raw)))
+        except Exception:
+            new = raw
+        if not re.sub(r'\{[^}]*\}', '', new).strip():
+            new = raw                     # 洗空了就保原句，索引不能断
+        if new != raw:
+            changed += 1
+        out.append(new)
+    return out, changed
 
 
 def _extract_json_obj(content):
@@ -1973,12 +2270,14 @@ def _load_json_file(path):
         return None
 
 
-def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0, cancel_check=None):
+def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0,
+                         cancel_check=None, quality=None):
     """时间轴驱动：均匀抽样建立画面索引，跳过场景检测。
 
-    每interval秒抽1帧，±12秒内有台词才跑VLM，3帧批量调用。
+    【质量模式·默认】全片覆盖：每个抽样点都送 VLM（台词只作为附加信息，不再是
+    「要不要看这一帧」的开关），间隔收紧到 ≥12s，模型常驻显存。
+    【快速模式】NARRATE_FAST=1：仅分析 ±12 秒内有台词的抽样点，间隔 ≥15s。
     返回格式与 _vlm_describe_scenes 完全一致，下游无需改动。
-    1小时视频：~120个抽样点 -> 有台词的约60个 -> 批量VLM约20次。
 
     【断点续跑】每批分析完立即原子写入 run_dir/vlm_progress.json；
     重新开始时按「视频指纹+模型+抽样间隔」校验后跳过已完成的场景，
@@ -1996,9 +2295,22 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     if run_dir and not os.path.isabs(run_dir):
         run_dir = os.path.join(_w.OUTDIR, run_dir)
 
-    # [P0-1 低风险优化] 抽样间隔按时长自适应 # 原值 interval=28.0（固定）
-    # vdur/60 => 1小时视频约60个抽样点（封顶）；短视频最低15s间隔防止过密
-    interval = max(15.0, float(vdur) / 60.0)
+    # 质量模式判定：默认质量；NARRATE_FAST=1 才走旧的「稀疏 + 台词过滤」。
+    if quality is None:
+        quality = (os.environ.get('NARRATE_FAST') != '1')
+
+    # 抽样间隔
+    #  质量模式：全片覆盖优先。≥12s，同时按总点数封顶 300 点（2 小时片 ≈ 24s/点），
+    #            避免超长片把 VLM 阶段拖到不可接受。
+    #  快速模式：旧策略，1 小时约 60 点。
+    if quality:
+        interval = max(12.0, float(vdur) / 300.0)
+        # 短片段保护：interval 大于片长会让抽样点数为 0，画面理解直接空手而归。
+        # 5 秒素材按 12s 间隔抽不到任何帧，这里退化为「至少 4 个点」。
+        if interval >= float(vdur):
+            interval = max(1.0, float(vdur) / 4.0)
+    else:
+        interval = max(15.0, float(vdur) / 60.0)
 
     # 缓存检查
     try:
@@ -2094,9 +2406,14 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         _sample_frame_cache_mark(frame_dir, total_samples)
         _sample_frame_cache_trim()
 
-    # 台词过滤：±12秒窗口内有台词才进 need_vlm（帧文件已由单管道生成或命中缓存）
+    # 台词过滤：
+    #   质量模式 → 不做过滤，每个抽样点都进 need_vlm（台词仅随 prompt 附带）。
+    #              理由：动作戏/空镜/表情特写往往没有台词，但恰恰是解说最需要讲的部分；
+    #              以「有没有台词」决定「要不要看画面」，会让全片一半以上的画面从未被理解。
+    #   快速模式 → 保留旧行为，仅分析 ±12 秒内有台词的抽样点。
     for idx, ts in enumerate(sample_times):
-        if not _near_dialogue(ts):
+        _has_dlg = bool(_near_dialogue(ts))
+        if not _has_dlg and not quality:
             skip_count += 1
             results.append({'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
                             'location': '', 'characters': '', 'event': '',
@@ -2144,12 +2461,40 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
 
     _key_of_idx = {idx: _start_key_of(ts) for idx, ts in enumerate(sample_times)}
 
-    # 第二遍：批量VLM调用，6帧一次（VLM调用次数降5/6）
+    # 第二遍：批量VLM调用
+    #  质量模式：4帧/批（单批输出更短、更稳），模型常驻显存 30 分钟，超时给足。
+    #            keep_alive 是这里的命门——之前每次调用 keep_alive=0 会把 6GB 权重卸掉，
+    #            下一批重新加载 >80s，而超时只有 30s，于是「几乎每批必失败」。
+    #  快速模式：沿用 8 帧/批，但超时从 30s 提到 90s（30s 对 8 帧在 3060 上本就不现实）。
     vlm_count = 0
-    batch_size = 8  # [S5 低风险优化] 原值 3→6→8，qwen3-vl 多图能力足够，批量调用次数再减 25%
-    batch_prompt = ('你是影视场景分析助手。以下按时间顺序给出%d张画面帧。'
-                    '请对每张帧分别用JSON描述，帧之间用---分隔。'
-                    '每个JSON字段：location/characters/event/dialogue/summary。只输出JSON和---分隔符。' % batch_size)
+    batch_size = 4 if quality else 8
+    _VLM_KEEP = '30m' if quality else 0
+    _VLM_TO_MULTI = 300 if quality else 90
+    _VLM_TO_SINGLE = 180 if quality else 60
+
+    def _batch_prompt(n):
+        return ('你是影视场景分析助手。以下按时间顺序给出%d张画面帧。'
+                '请对每张帧分别用JSON描述，帧之间用---分隔。'
+                '每个JSON字段：location/characters/event/dialogue/summary。'
+                '无台词的帧 dialogue 留空字符串，但仍须描述画面正在发生什么。'
+                '只输出JSON和---分隔符。' % n)
+
+    def _call_frames(_frames):
+        """对一组帧发起一次 VLM 调用，返回与 _frames 等长的 dict 列表；失败抛异常。"""
+        if len(_frames) == 1:
+            r = _w.vlm_chat(_frames[0],
+                            '请用JSON描述这个画面：location/characters/event/dialogue/summary',
+                            system=sys_prompt, timeout=_VLM_TO_SINGLE, keep_alive=_VLM_KEEP)
+            return [_extract_json_obj(r) or {}]
+        r = vlm_chat_multi(_frames, _batch_prompt(len(_frames)), system=sys_prompt,
+                           timeout=_VLM_TO_MULTI, keep_alive=_VLM_KEEP,
+                           max_tokens=max(600, 220 * len(_frames)))
+        parts = (r or '').split('---')
+        objs = [_extract_json_obj(p) or {} for p in parts[:len(_frames)]]
+        while len(objs) < len(_frames):
+            objs.append({})
+        return objs
+
     progress_file = os.path.join(run_dir, 'vlm_progress.json') if run_dir else None
     _analyzed = {}   # start_key -> result_fields（不含start/end）
     _failed = set()  # 本轮调用抛异常的帧：不落进度文件，下次续跑会重试
@@ -2178,6 +2523,10 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     total_key = len(_key_frames)
     _resume_tag = ('（断点续跑，已完成%d）' % _resumed) if _resumed else ''
     _all_done = True
+    # 熔断：连续 2 批全失败说明 VLM 已不可用（OOM / 服务挂掉 / 网络断）。
+    # 此时必须放弃逐帧重试，否则每批再多跑 8 次 180s 超时，整任务会被拖成几小时。
+    _consec_fail = 0
+    _RETRY_MAX_CONSEC = 2
     for bi in range(0, len(_pending_frames), batch_size):
         # 协作式取消：用户点「停止」时立即退出，已分析的部分保留在进度文件里
         if _aborted():
@@ -2201,21 +2550,43 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             progress['pct'] = 44 + int(6 * len(_analyzed) / max(1, total_key))
         frames = [b[2] for b in batch]
         vlm_count += 1
+        objs = None
         try:
-            if len(frames) == 1:
-                resp = _w.vlm_chat(frames[0], '请用JSON描述这个画面：location/characters/event/dialogue/summary',
-                                system=sys_prompt, timeout=20)
-                objs = [_extract_json_obj(resp) or {}]
-            else:
-                resp = vlm_chat_multi(frames, batch_prompt, system=sys_prompt, timeout=30)
-                parts = resp.split('---')
+            objs = _call_frames(frames)
+            _consec_fail = 0
+        except Exception as _e1:
+            _log.info('[DIAG] VLM批量失败(%d帧): %s' % (len(frames), _e1))
+            _consec_fail += 1
+            # 批次失败降级：逐帧重试。单帧 prompt 更短、显存压力更小，
+            # 常能在批调用超时的情况下拿到结果；仍失败的帧记为 None 交给 _failed。
+            # 但连续多批全失败说明 VLM 已不可用，此时不再逐帧重试（否则每批多跑
+            # len(frames) 次超时，任务会被拖成几小时）。
+            if len(frames) > 1 and not _aborted() and _consec_fail <= _RETRY_MAX_CONSEC:
                 objs = []
-                for part in parts[:len(frames)]:
-                    objs.append(_extract_json_obj(part) or {})
-                while len(objs) < len(frames):
-                    objs.append({})
+                for _f in frames:
+                    if _aborted():
+                        objs.extend([None] * (len(frames) - len(objs)))
+                        break
+                    try:
+                        objs.extend(_call_frames([_f]))
+                    except Exception as _e2:
+                        _log.info('[DIAG] VLM单帧重试失败: %s' % _e2)
+                        objs.append(None)
+                _n_ok = sum(1 for o in objs if o)
+                _log.info('[DIAG] VLM逐帧重试: %d/%d 成功' % (_n_ok, len(frames)))
+                if _n_ok:
+                    _consec_fail = 0
+            else:
+                if _consec_fail == _RETRY_MAX_CONSEC + 1:
+                    _log.info('[DIAG] VLM 连续%d批不可用，后续失败批次不再逐帧重试' % _consec_fail)
+                objs = [None] * len(frames)
+        if objs:
             for j, (idx, ts, fp) in enumerate(batch):
-                obj = objs[j] if j < len(objs) else {}
+                obj = objs[j] if j < len(objs) else None
+                if not obj:
+                    # 失败或空结果：不写入 _analyzed，下次续跑会重试
+                    _failed.add(_key_of_idx[idx])
+                    continue
                 _analyzed[_key_of_idx[idx]] = {
                     'location': str(obj.get('location', '')).strip()[:50],
                     'characters': str(obj.get('characters', '')).strip()[:80],
@@ -2223,10 +2594,6 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                     'dialogue': str(obj.get('dialogue', '')).strip()[:100],
                     'summary': str(obj.get('summary', '')).strip()[:60],
                 }
-        except Exception:
-            # 整批失败：不写入 _analyzed，因此不会落进度文件，下次续跑会重试
-            for idx, ts, fp in batch:
-                _failed.add(_key_of_idx[idx])
         # 每批分析完立即原子落盘，中途取消 / 崩溃都不丢已分析结果
         if progress_file:
             _atomic_json_dump(progress_file, {
@@ -2393,10 +2760,12 @@ def _scene_dialogue_of(sc, asr):
     return _scene_dialogue(asr, st0, st1)
 
 
-def _infer_scene_story(scenes, asr=None, movie_name='', progress=None, window=10):
+def _infer_scene_story(scenes, asr=None, movie_name='', progress=None, window=10, plot=''):
     """剧情理解层核心：按时间窗把「有内容的场景」分批让 LLM 推断叙事含义。
 
     只推断 VLM 真实分析过（有画面内容）的场景窗；『无台词区间』等占位窗跳过。
+    plot：可选的剧情资料。有它时模型知道人物是谁、主线是什么，推断出来的是
+      「这段在剧情里起什么作用」，而不是「这段画面里有什么」——这正是写稿最需要的。
     返回 {scene_idx: {story, who, act, keywords}}；模型不可用/输出不可解析时返回 {}。
     """
     if not scenes:
@@ -2450,9 +2819,14 @@ def _infer_scene_story(scenes, asr=None, movie_name='', progress=None, window=10
                 ' "act": "本段对故事的作用，只能取：铺垫/发展/冲突/转折/高潮/结局/过场/闪回/引入/收束之一",'
                 ' "keywords": ["2-4个剧情关键词"]}\n'
                 '要求：1)判断依据只能是画面与台词证据，不确定就保守概括，禁止编造画面里没有的情节；'
-                '2)关键词应选能代表这段剧情、便于与解说词比对的实词。\n')
+                '2)关键词应选能代表这段剧情、便于与解说词比对的实词；'
+                '3)story 要写「谁做了什么、结果如何」，不要写「气氛紧张」「仿佛藏着秘密」这类空话，'
+                '也不要出现「画面」「镜头」。\n')
         if movie_name:
             head = '电影片名：《%s》\n' % movie_name + head
+        _plot_ctx = str(plot or '').strip()
+        if _plot_ctx:
+            head += '【已知剧情资料（用于确认人物身份，不足处按画面推断）】\n%s\n' % _plot_ctx[:1500]
         if prev_summary:
             head += '【已发生的前情】\n' + prev_summary + '\n'
         prompt = head + '\n【场景记录】\n' + '\n'.join(lines)
@@ -2693,8 +3067,11 @@ def _llm_align_and_refine(beats, scenes, scene_story, asr, movie_name=''):
               '1) 把每段解说词对齐到最相关的场景序号（可多选，按相关度排序；对不上就空数组）；\n'
               '2) 根据对应场景的画面与台词，把每段解说词润色得更贴合画面——不改变剧情主线与因果关系，'
               '不添加画面里没有的情节，保持口语化解说风格，每段30-60字。\n'
-              '只输出JSON：{"对齐":[{"解说词":0,"场景":[1,2]},...], "润色":["第0段润色后",...]}\n'
-              '润色数组与解说词顺序一一对应。\n\n')
+              # 【坑】不要给「第0段润色后」这种字面样例：模型会原样当台词返回。
+              '只输出JSON，两个键：'
+              '"对齐" 是数组，每项 {"解说词": 解说词序号, "场景": [场景序号,...]}；'
+              '"润色" 是字符串数组，与解说词顺序一一对应，每项是润色后的完整解说词正文'
+              '（必须是真台词内容，不能是「第N段」这类占位文字）。\n\n')
     if movie_name:
         prompt += '电影：%s\n\n' % movie_name
     prompt += '【场景列表】\n' + '\n'.join(scene_lines[:80])
@@ -2729,6 +3106,208 @@ def _llm_align_and_refine(beats, scenes, scene_story, asr, movie_name=''):
         _log.info('[DIAG] S3合并对齐+润色: 对齐%d节, 润色%d段' %
                   (len(alignment or {}), len(refined)))
     return alignment, refined
+
+
+def _cloud_chat_text(prompt, system='', timeout=120):
+    """云端 chat（仅当配置了云端模型）。润色优先走云端：不占显存、文案上限更高。
+    未配置或失败返回 None，由调用方回退本地模型。"""
+    try:
+        if not _w.ai_enabled('chat'):
+            return None
+        cfg = _w.chat_cfg() or {}
+        if not cfg.get('base_url') or not cfg.get('model'):
+            return None
+        import urllib.request
+        import json as _json
+        msgs = []
+        if system:
+            msgs.append({'role': 'system', 'content': system})
+        msgs.append({'role': 'user', 'content': prompt})
+        payload = {'model': cfg.get('model'), 'messages': msgs, 'temperature': 0.6}
+        req = urllib.request.Request(
+            (cfg.get('base_url') or '').rstrip('/') + '/chat/completions',
+            data=_json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json',
+                     'Authorization': 'Bearer ' + (cfg.get('api_key') or '')})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = _json.loads(r.read().decode('utf-8'))
+        return ((data.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+    except Exception as e:
+        _log.info('[DIAG] 云端调用失败（回退本地）: %s' % e)
+        return None
+
+
+def _llm_align_batched(beats, scenes, base=None, scene_story=None, asr=None,
+                       movie_name='', batch=6, timeout=150, progress=None,
+                       use_cloud=None, max_tokens=700):
+    """分批语义对齐：每批只让模型处理 batch 句，输出短、成功率高。
+    失败的批次保留 base（调用方传入的算法对齐结果）→ 任何情况下都不会比算法对齐更差。
+    返回合并后的 {beat_idx: [scene_idx, ...]}。"""
+    base = dict(base or {})
+    n = len(beats or [])
+    if n == 0 or not scenes:
+        return base
+    if use_cloud is None:
+        use_cloud = bool(_w.ai_enabled('chat'))
+    _local_ok = False
+    try:
+        _local_ok = bool(_w.local_llm_enabled()) and bool(_w.local_llm_ping()[0])
+    except Exception:
+        _local_ok = False
+    scene_lines = []
+    for i, sc in enumerate(scenes):
+        st = (scene_story or {}).get(i) or {}
+        if st.get('story'):
+            line = str(st['story'])
+            if st.get('who'):
+                line += '；人物:' + str(st['who'])
+        else:
+            line = _scene_describe(sc)
+        scene_lines.append('场景%d(%.0f-%.0fs): %s' % (
+            i, float(sc.get('start', 0) or 0), float(sc.get('end', 0) or 0), line))
+    scene_block = '\n'.join(scene_lines[:80])
+    for start in range(0, n, batch):
+        if _aborted():
+            raise AbortError('用户取消了任务')
+        idxs = list(range(start, min(n, start + batch)))
+        beat_block = '\n'.join('解说词%d: %s' % (i, str(beats[i])[:120]) for i in idxs)
+        prompt = ('你是影视剪辑师。根据场景描述，把下面这些解说词各自对齐到最相关的场景序号。\n'
+                  '要求：按剧情时间顺序；同一句可对齐 1~3 个连续场景；对不上就给空数组。\n'
+                  '只输出 JSON：{"对齐":[{"解说词":<编号>,"场景":[<场景序号>...]},...]}\n'
+                  '注意：解说词编号必须使用【原文给出的绝对编号】，不要重新从 0 开始编号。\n\n')
+        if movie_name:
+            prompt += '电影：%s\n\n' % movie_name
+        prompt += '【场景列表】\n' + scene_block + '\n\n【本批解说词】\n' + beat_block
+        resp = None
+        if use_cloud:
+            resp = _cloud_chat_text(prompt, system='你是影视剪辑师，只输出JSON。', timeout=timeout)
+        if not resp and _local_ok:
+            try:
+                resp = _llm_light(prompt, system='你是影视剪辑师，只输出JSON。',
+                                  timeout=timeout, max_tokens=max_tokens)
+            except Exception as e:
+                _log.info('[DIAG] 对齐第 %d-%d 句失败: %s' % (idxs[0], idxs[-1], e))
+                resp = None
+        al = _parse_alignment_obj(_extract_json_obj(resp or '') or {}, scenes) or {}
+        _hit = 0
+        for k, v in al.items():
+            if not v:
+                continue
+            if k in idxs:
+                base[k] = v
+                _hit += 1
+            elif 0 <= k < len(idxs):
+                base[idxs[k]] = v
+                _hit += 1
+        _log.info('[DIAG] 对齐批次 %d-%d: %d/%d 句命中' % (idxs[0], idxs[-1], _hit, len(idxs)))
+        if progress is not None:
+            progress['phase'] = '语义对齐（%d/%d 句）' % (idxs[-1] + 1, n)
+    return base
+
+
+def _looks_like_placeholder(text):
+    """判断一段文本是不是「提示词里的结构样例」而不是真台词。
+
+    实测模型会把润色提示词里的样例原样返回（『第4段润色后』），
+    这类文本一旦进入配音就会被当场念出来。宁可保留原稿，也不能念占位符。
+    """
+    s = str(text or '').strip()
+    if not s:
+        return True
+    # 整段就是一个「第N段…」的结构样例
+    if re.match(r'^第\s*\d+\s*段\s*(?:润色|改写|优化|输出|结果|内容)?\s*(?:后|之后)?\s*$', s):
+        return True
+    if len(s) <= 24 and '润色后' in s and not re.search(r'[，。！？；：]', s):
+        return True
+    # 整段被尖括号/方括号/书名号包住（如 <润色结果>、【】）
+    if re.match(r'^[<【\[][^<【\[\]>】\]]{0,16}[>】\]]$', s):
+        return True
+    # 去掉标点/符号后几乎没有实际文字（如「…」「---」）
+    # 阈值取 2：只拦空壳，不拦「改写一」这类短句——短句该由长度要求去管，
+    # 占位符守卫误杀真台词比漏放更糟。
+    core = re.sub(r'[\s\W_]+', '', s, flags=re.UNICODE)
+    return len(core) < 2
+
+
+def _refine_batched(beats, alignment, scenes, scene_story=None, asr=None,
+                    movie_name='', batch=4, timeout=150, progress=None,
+                    use_cloud=None, max_tokens=900):
+    """分批润色：每批 3~5 段，只带该段对齐到的画面描述与台词，输出短、必成功。
+    失败的批次保留原稿。返回与 beats 等长的列表（绝不丢段、绝不空段）。"""
+    out = list(beats or [])
+    n = len(out)
+    if n == 0 or not scenes:
+        return out
+    if use_cloud is None:
+        use_cloud = bool(_w.ai_enabled('chat'))
+    _local_ok = False
+    try:
+        _local_ok = bool(_w.local_llm_enabled()) and bool(_w.local_llm_ping()[0])
+    except Exception:
+        _local_ok = False
+    for start in range(0, n, batch):
+        if _aborted():
+            raise AbortError('用户取消了任务')
+        idxs = list(range(start, min(n, start + batch)))
+        parts = []
+        for i in idxs:
+            scs = [scenes[j] for j in (alignment.get(i) or []) if 0 <= j < len(scenes)]
+            desc = ' / '.join(_scene_describe(sc) for sc in scs) or '（未对齐到具体画面）'
+            line = '解说词%d: %s\n对应画面: %s' % (i, str(beats[i])[:200], desc)
+            if asr and scs:
+                try:
+                    t = ' '.join(_asr_text_in(asr, float(sc.get('start', 0) or 0),
+                                              float(sc.get('end', 0) or 0)) for sc in scs).strip()
+                except Exception:
+                    t = ''
+                if t:
+                    line += '\n画面台词: ' + t[:160]
+            parts.append(line)
+        prompt = ('你是影视解说文案编辑。下面每段解说词后面是它在成片里对应的画面描述与台词。\n'
+                  '请把每段润色得更贴合画面、更口语、更有画面感：\n'
+                  '- 不改变剧情主线与因果关系，不添加画面里没有的情节/人物/数字；\n'
+                  '- 保持解说口吻，每段 30~60 字；\n'
+                  '- 不许添加猜测词（仿佛、似乎、好像、像是、令人、不禁）；\n'
+                  '- 不许把画面台词原文抄进解说词：外语台词用一句中文说清它讲了什么，'
+                  '旁白里不出现英文单词、无线电呼号；\n'
+                  '- 输出顺序必须与输入一一对应。\n'
+                  # 【坑】这里绝不能写「第%d段润色后」这类字面占位——实测会被模型
+                  # 原样当成台词返回，成片里会念出「第4段润色后」。只描述结构，不给样例文本。
+                  '只输出 JSON 对象：键名固定为 "润色"，值是一个字符串数组，'
+                  '长度必须正好 %d；数组第 i 个元素是第 i 段润色后的完整解说词，'
+                  '必须是真的台词内容，不能是「第N段」这类占位文字。\n\n'
+                  % len(idxs))
+        if movie_name:
+            prompt += '电影：%s\n\n' % movie_name
+        prompt += '\n\n'.join(parts)
+        resp = None
+        if use_cloud:
+            resp = _cloud_chat_text(prompt, system='你是影视解说文案编辑，只输出JSON。', timeout=timeout)
+        if not resp and _local_ok:
+            try:
+                resp = _llm_light(prompt, system='你是影视解说文案编辑，只输出JSON。',
+                                  timeout=timeout, max_tokens=max_tokens)
+            except Exception as e:
+                _log.info('[DIAG] 润色第 %d-%d 段失败: %s' % (idxs[0], idxs[-1], e))
+                resp = None
+        obj = _extract_json_obj(resp or '') or {}
+        lines_raw = obj.get('润色') or obj.get('refined') or []
+        if isinstance(lines_raw, list) and len(lines_raw) == len(idxs):
+            _ok_n = 0
+            for k, i in enumerate(idxs):
+                t = str(lines_raw[k] or '').strip()
+                # 占位符拒收：模型偶尔把提示词里的结构样例当台词返回
+                # （实测产出过「第4段润色后」，会被直接念出来）。这类结果一律丢弃，
+                # 保留该段原稿——少一点润色远好过念一段占位符。
+                if t and not _looks_like_placeholder(t):
+                    out[i] = t
+                    _ok_n += 1
+            _log.info('[DIAG] 润色批次 %d-%d: %d/%d 段成功' % (idxs[0], idxs[-1], _ok_n, len(idxs)))
+        else:
+            _log.info('[DIAG] 润色批次 %d-%d 失败/长度不符，保留原稿' % (idxs[0], idxs[-1]))
+        if progress is not None:
+            progress['phase'] = '润色（%d/%d 段）' % (idxs[-1] + 1, n)
+    return out
 
 
 def _score_segments(segs, scene_descs, narr_map, asr=None, scene_alignment=None):
@@ -3014,12 +3593,217 @@ def _fallback_full_script(movie_name, plot_text, target_sec=None):
             'outro': ''}
 
 
-def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None, style='movie'):
+def _llm_script_sectioned(movie_name, plot_text, n_beats, material=None, style='movie',
+                          batch=6):
+    """分批写解说稿：① 出纲要 → ② 按批写正文 → ③ 补开场钩子与结尾。失败返回 None。
+
+    【为什么必须分批 —— 实测依据（RTX 3060 Laptop 12GB + qwen3:8b）】
+      要求一次写 60 节时，模型写到 2956 字就被 num_predict=1500 截断，JSON 不闭合，
+      _extract_json_obj 解析失败 → 三层兜底一路降到「把剧情原文切句」。
+      也就是说：**长稿从来没有真正写成过**，用户看到的「解说」一直是剧情原文拼接，
+      没有钩子、没有因果推进、没有悬念——这正是「不像市面解说」的根因。
+    分批之后每次只输出 6 节的短 JSON（约 700 字），必可解析；某批失败只少这几节。
+    """
+    src = (material or plot_text or '').strip()
+    if not src:
+        return None
+    n_beats = max(4, int(n_beats))
+
+    # ① 纲要：按时间顺序把素材拆成「谁+做了什么+结果」的推进点
+    out_prompt = (
+        '你是影视解说编剧。下面是【素材】，请按剧情时间顺序拆出「推进点」，供后面逐节写解说词。\n'
+        '要求：\n'
+        '- 每个推进点单独一行，18-35 字，写成「谁 + 做了什么 + 结果」，'
+        '要有事件和因果，不要写「气氛紧张」「仿佛藏着秘密」这类空话。\n'
+        '- 一条推进点可以覆盖素材里的多段画面：把连续发生的同一件事合并成一条，'
+        '不要一段画面写一条（那样稿子会变成镜头清单）。\n'
+        '- 素材里大量是「谁走进走廊」「谁拿起东西」「谁看了谁一眼」这类只有动作、没有事件推进的'
+        '画面描述：连续几段这种内容就合并成一条概括，或者直接跳过不写。'
+        '宁可只写 20 条真有事的推进点，也不要写 60 条流水账。\n'
+        '- 同一件事在素材里出现多次（同一个人在同一地点做同一动作），只留一条。\n'
+        '- 禁止描述镜头本身：不要出现「画面中」「镜头里」「我们看到」。\n'
+        '- 禁止用猜测词补空：仿佛、似乎、好像、像是、令人、让人、不禁。\n'
+        '- 只写素材里确实有的内容，不得编造人物、情节、结局；也不要把英文台词、'
+        '无线电代码当成情节点。\n'
+        '- 素材能支撑几点就写几点，最多 %d 点；不够就少写，绝不凑数。\n'
+        '- 不要开场白、不要结尾升华、不要编号或项目符号。\n\n'
+        '【素材】\n%s\n' % (n_beats, src[:7000]))
+    try:
+        raw = _llm_light(out_prompt, '你是影视剧情拆解师，只输出推进点清单。',
+                         timeout=180, max_tokens=1200)
+    except Exception:
+        return None
+    points = []
+    for line in str(raw or '').splitlines():
+        t = re.sub(r'^\s*[\-\*\d\.、\)）]+\s*', '', line).strip()
+        if t and len(t) >= 4:
+            points.append(t[:40])
+    if len(points) < 3:
+        return None
+    points = points[:n_beats]
+
+    # ② 分批写正文：每批 6 节，带前情，顺序锁定在纲要上
+    beats = []
+    for bi in range(0, len(points), batch):
+        if _aborted():
+            raise AbortError('用户取消了任务')
+        chunk = points[bi:bi + batch]
+        numbering = '\n'.join('%d. %s' % (bi + k + 1, p) for k, p in enumerate(chunk))
+        prev = ''
+        if beats:
+            prev = '【前情】上一节讲到：%s\n' % (beats[-1].get('text') or '')[:120]
+        prompt = (
+            '你在写一部影视解说稿的第 %d-%d 节（全稿共 %d 节）。\n'
+            '这是给观众口播的解说词，不是剧情简介。\n\n'
+            '【本节要讲的剧情推进点，必须按顺序一一对应】\n%s\n\n'
+            '%s'
+            '【写法】\n'
+            '- 每节 40-90 字，口语化，讲清「谁 + 做了什么 + 为什么」，不要描写画面。\n'
+            '- 用衔接词推进节奏：没想到、就在这时、结果、可他不知道的是。\n'
+            '- 每节末尾留一点钩子，让人想继续看。\n\n'
+            '【硬约束，违反就整篇作废】\n'
+            '- 每节只能写上面那个推进点里已经写明的人物和动作，不得新增任何情节。\n'
+            '- 严禁写素材里没有的：角色死亡、重伤不治、临终遗言、婚姻结局、身世秘密、追悼会、'
+            '「后来怎样」的结论。素材停在哪儿，稿子就停在哪儿。\n'
+            '- 不许用猜测词：仿佛、似乎、好像、像是、令人、让人、不禁、或许。'
+            '只看得出「他站在那儿」，就写他站在那儿，不要替他补心情和动机。\n'
+            '- 不许照抄台词：旁白是转述，不是念台词。禁止出现英文单词、无线电呼号、'
+            '警用电台代码；台词是外语时，用一句中文说清它讲了什么。\n'
+            '- 同一件事只讲一次：素材里同一件事被多次描述（同一个人在同一地点做同一动作），'
+            '合并进第一次出现的那一节，后面不许再讲一遍。\n'
+            '- 不许出现「画面」「镜头」「我们看到」「观众」「这一幕」。\n'
+            '- 配音标记每节最多 1 处，写成 {情绪:紧张}要念出来的那句话{/情绪}；'
+            '标签里必须是台词本身，不能只放省略号或占位符。整批可以完全不用标记。\n'
+            '- importance 大致 key 三成、advance 五成、transition 两成，不要全标 key。\n\n'
+            '只输出 JSON：{"beats":[{"text":"解说词","keywords":["2-3个关键词"],'
+            '"importance":"key|advance|transition"}]}\n'
+            '本批必须正好 %d 节。' % (bi + 1, bi + len(chunk), len(points), numbering,
+                                    prev, len(chunk)))
+        try:
+            resp = _llm_light(prompt, '你是资深影视解说博主，只输出 JSON。',
+                              timeout=240, max_tokens=1500)
+            obj = _extract_json_obj(resp)
+        except AbortError:
+            raise
+        except Exception:
+            obj = None
+        got = _script_from_obj(obj, movie_name) if obj else None
+        if not got or not got.get('beats'):
+            # 某一批失败：跳过，不硬凑（后续节数变少，但整篇仍可用）
+            _log.info('[DIAG] 写稿第 %d-%d 节失败，跳过' % (bi + 1, bi + len(chunk)))
+            continue
+        beats.extend(got['beats'][:len(chunk)])
+    if not beats:
+        return None
+
+    # 写完之后再清洗一遍（模型只能减弱这几种毛病，不能消除）：
+    #   去英文台词/无线电代码 → 去「仿佛/似乎」类猜测定语 → 同事件去重
+    n_before = len(beats)
+    beats = _beats_scrub(beats)
+    if not beats:
+        return None
+    if len(beats) != n_before:
+        _log.info('[DIAG] 稿件清洗: %d 节 → %d 节（去重复/去猜测定语/去英文台词）'
+                  % (n_before, len(beats)))
+
+    # ③ 开场钩子与结尾：短调用，允许失败（没有钩子也能出片）
+    hook, outro, title = '', '', (movie_name or '')
+    try:
+        head = ' '.join(beats[0].get('text', '') for _ in [0])[:200]
+        tail = (beats[-1].get('text') or '')[:200]
+        hp = ('这是一部影视解说稿的开头和结尾，正文已经写好。请补写开场和结尾。\n\n'
+              '【片名】%s\n【正文第一段】%s\n【正文最后一段】%s\n\n'
+              '要求：\n'
+              '- hook：1-2 句，抛出全片最抓人的悬念或反差，不要剧透结局，不要照抄示例。\n'
+              '- outro：1-2 句，点题或升华，给观众回味。\n'
+              '- 只用上面出现过的信息，不得编造。\n'
+              '- 不要写「画面里」「镜头中」「我们看到」。\n\n'
+              '只输出 JSON：{"title":"片名","hook":"开场白","outro":"结尾"}'
+              % (movie_name or '（未提供）', head, tail))
+        hobj = _extract_json_obj(_llm_light(hp, '你是资深影视解说博主，只输出 JSON。',
+                                            timeout=180, max_tokens=600))
+        if hobj:
+            hook = str(hobj.get('hook') or '').strip()
+            outro = str(hobj.get('outro') or '').strip()
+            title = str(hobj.get('title') or title).strip()
+    except AbortError:
+        raise
+    except Exception:
+        pass
+
+    # 开场/结尾同样过一遍清洗（英文台词、猜测定语在 hook 里更刺眼）
+    hook = _drop_speculation(_strip_foreign(hook)) if hook else hook
+    outro = _drop_speculation(_strip_foreign(outro)) if outro else outro
+
+    _log.info('[DIAG] 分批写稿完成: 纲要%d点 → 正文%d节 + hook%d字/outro%d字'
+              % (len(points), len(beats), len(hook), len(outro)))
+    return {'title': title, 'hook': hook, 'beats': beats, 'outro': outro}
+
+
+def _script_material(plot, scene_story=None, scenes=None, max_chars=6500):
+    """拼写稿素材：用户/搜索来的剧情资料 + 逐场画面理解要点（带时间戳）。
+
+    【为什么要把画面理解塞进写稿】只给片名和剧情简介时，模型只能写「通用影评」，
+    跟片子画面对不上；把「第 3 分 20 秒这里在发生什么」按时间顺序给它，
+    解说词才有具体的落点，也才谈得上剧情驱动。
+    """
+    parts = []
+    plot_txt = str(plot or '').strip()
+    if plot_txt:
+        parts.append('【剧情资料】\n' + plot_txt)
+    lines = []
+    if scene_story and scenes:
+        items = []
+        for i in sorted(scene_story.keys()):
+            try:
+                idx = int(i)
+            except (TypeError, ValueError):
+                continue
+            st = scene_story[i] or {}
+            story = str(st.get('story') or '').strip()
+            if not story:
+                continue
+            sc = scenes[idx] if 0 <= idx < len(scenes) else {}
+            try:
+                t = int(float(sc.get('start') or 0))
+            except (TypeError, ValueError):
+                t = 0
+            items.append((t, story, str(st.get('who') or '').strip(),
+                          str(st.get('act') or '').strip()))
+        # 【聚合】逐镜给 110 条，写稿就会写成镜头清单（实测通篇「警察翻动碎片」
+        # 「男子手持油桶」）。按时间窗合并成不超过 40 条，一条对应一段连续剧情，
+        # 写稿才有机会提炼事件与因果，而不是复述每一帧画面。
+        if items:
+            step = max(1, int(math.ceil(len(items) / 40.0)))
+            for k in range(0, len(items), step):
+                group = items[k:k + step]
+                t = group[0][0]
+                stories = []
+                for _t, _s, _w, _a in group:
+                    if _s not in stories:
+                        stories.append(_s)
+                line = '[%02d:%02d] %s' % (t // 60, t % 60, '；'.join(stories[:3]))
+                who = group[0][2]
+                act = group[0][3]
+                if who:
+                    line += '（%s）' % who
+                if act:
+                    line += '·%s' % act
+                lines.append(line)
+    if lines:
+        parts.append('【画面逐场理解（按时间顺序，来自全片画面分析）】\n' + '\n'.join(lines))
+    return '\n\n'.join(parts)[:max_chars]
+
+
+def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None, style='movie',
+                          material=None):
     """生成完整影视解说稿（解说驱动剪辑的起点）。
 
     返回 {title, hook, beats:[{text, keywords, importance}], outro}；三层兜底保证绝不空返回：
       云端/本地 LLM → 剧情切句合并 → 片名模板。
-    target_sec：期望成片时长，用来估算该写多少节（节数 = 时长×语速÷每节字数）。"""
+    target_sec：期望成片时长，用来估算该写多少节（节数 = 时长×语速÷每节字数）。
+    material：优先使用的素材文本（通常是「剧情资料 + 逐场画面剧情要点」）。
+      给定时优先于 plot_text——写成什么样，取决于素材有多具体，而不是片名。"""
     n_beats = None
     if target_sec:
         try:
@@ -3039,12 +3823,27 @@ def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None,
     if _w.local_llm_enabled() and not economy:
         try:
             if _w.local_llm_ping()[0]:
-                brief = ((movie_name or '') + '\n' + (plot_text or ''))[:8000]
+                # 【质量模式】长稿必须分批写：
+                #   实测（3060 12GB + qwen3:8b）要求 60 节时，模型输出 2956 字就被
+                #   num_predict=1500 截断 → JSON 不闭合 → 解析失败 → 一路降级到
+                #   「剧情原文切句」兜底。这正是「解说不像解说」的根因：从没写成功过。
+                #   改法：先出纲要（短输出、必成功），再按批写正文（每批 6 节），
+                #   每批输出短且可独立解析，任一批失败只少几节，不会整篇报废。
+                if n_beats and n_beats >= 12:
+                    sc = _llm_script_sectioned(movie_name, plot_text, n_beats,
+                                               material=material, style=style)
+                    if sc and sc.get('beats'):
+                        return sc
+                brief = ((movie_name or '') + '\n' + (material or plot_text or ''))[:8000]
                 prompt = SCRIPT_STYLE_MOVIE + want + strict + '\n\n【片名与剧情资料】\n' + brief
-                obj = _extract_json_obj(local_llm_chat(prompt, timeout=180))
+                # 输出预算按节数给足：每节约 150 token（含标记/关键词/JSON 结构）
+                _budget = 1500 if not n_beats else min(6000, max(1500, int(n_beats * 150) + 600))
+                obj = _extract_json_obj(local_llm_chat(prompt, timeout=300, max_tokens=_budget))
                 sc = _script_from_obj(obj, movie_name)
                 if sc and sc['beats']:
-                    return sc
+                    sc['beats'] = _beats_scrub(sc['beats'])
+                    if sc['beats']:
+                        return sc
         except Exception:
             pass
     # ② 云端 chat
@@ -3052,7 +3851,7 @@ def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None,
         try:
             import urllib.request
             import json as _json
-            brief = ((movie_name or '') + '\n' + (plot_text or ''))[:8000]
+            brief = ((movie_name or '') + '\n' + (material or plot_text or ''))[:8000]
             prompt = SCRIPT_STYLE_MOVIE + want + strict + '\n\n【片名与剧情资料】\n' + brief
             cfg = _w.chat_cfg()
             payload = {'model': cfg.get('model'),
@@ -3068,7 +3867,9 @@ def llm_movie_full_script(movie_name, plot_text, economy=False, target_sec=None,
             content = data['choices'][0]['message']['content']
             sc = _script_from_obj(_extract_json_obj(content), movie_name)
             if sc and sc['beats']:
-                return sc
+                sc['beats'] = _beats_scrub(sc['beats'])
+                if sc['beats']:
+                    return sc
         except Exception:
             pass
     # ③ 离线兜底：剧情切句（整句保留，不再 30 字截断）
@@ -3293,7 +4094,11 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         pass
     # ASR缓存：同视频同模型不重复转写
     whisper_model = whisper_model_name()
-    asr_cache_key = _video_cache_key(video_path, f'asr_{whisper_model}')
+    # 缓存键必须带上「识别语言」与版本：旧键只有模型名，改了语言策略后仍会命中
+    # 之前用错误语言转写出来的脏台词（实测：默认 zh 时代把英文片转成中文乱码，
+    # 修好语言后依然命中旧缓存，等于修复不生效）。asr2 = 转写策略版本号。
+    _asr_lang = whisper_language()
+    asr_cache_key = _video_cache_key(video_path, f'asr2_{whisper_model}_{_asr_lang}')
     asr = _cache_load(asr_cache_key)
     if asr:
         _log.info(f'[DIAG] ASR命中缓存: {len(asr)}段台词')
@@ -3313,7 +4118,12 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     up('建立画面索引（均匀抽样）', 44)
     # VLM缓存：同视频同模型不重复分析（最耗时的步骤，1小时视频约20分钟）
     vlm_model = (load_ai_config().get('vlm') or {}).get('model', 'default')
-    vlm_cache_key = _video_cache_key(video_path, f'vlm_{vlm_model}')
+    # 质量模式判定提前到缓存之前：画面理解的「覆盖策略」变了（全片覆盖 vs 台词过滤），
+    # 旧缓存是缺一半画面的脏数据，必须换 key，否则改良后的分析会被旧缓存短路。
+    _q_param = params.get('fast', params.get('fast_mode', params.get('fastMode')))
+    _quality_mode = (os.environ.get('NARRATE_FAST') != '1') if _q_param is None else (not bool(_q_param))
+    vlm_cache_key = _video_cache_key(
+        video_path, 'vlm_%s_%s' % (vlm_model, 'q2' if _quality_mode else 'f2'))
     scene_descs = _cache_load(vlm_cache_key)
     if scene_descs:
         _log.info(f'[DIAG] VLM命中缓存: {len(scene_descs)}个时间点')
@@ -3321,7 +4131,12 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
             progress['phase'] = '画面索引（缓存命中）'
             progress['pct'] = 46
     else:
-        scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=progress)
+        scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir,
+                                           progress=progress, quality=_quality_mode)
+        # 画面理解结束后立刻卸载 VLM：12GB 卡放不下 VLM(6.1GB) + 文本模型(5.0GB)，
+        # 不让位会让后续写稿/对齐/润色每次调用都触发换入换出。
+        if vlm_unload():
+            _log.info('[DIAG] 画面理解完成，已释放 VLM 显存（让位给文本模型）')
         if scene_descs:
             _cache_save(vlm_cache_key, scene_descs)
             _log.info(f'[DIAG] 画面索引: {len(scene_descs)}个时间点已建立并缓存')
@@ -3333,6 +4148,26 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                      ensure_ascii=False, indent=1)
         except Exception:
             pass
+
+    # =====================================================================
+    # 【质量路线·顺序修正】必须先看懂、再写稿。
+    # 旧顺序是「写稿 → 剧情理解 → 对齐」，写稿时手里只有片名和剧情简介，
+    # 画面里真实发生的事一点没用上，写出来的自然是通用影评而不是这部片的解说。
+    # 现在把剧情理解层提到写稿之前，逐场剧情要点直接作为写稿素材。
+    # =====================================================================
+    scene_story = {}
+    if _quality_mode and scene_descs and any(s.get('event') or s.get('location')
+                                             for s in scene_descs):
+        up('剧情理解（推断每段画面在讲什么）', 43)
+        try:
+            scene_story = _infer_scene_story(scene_descs, asr=asr, movie_name=movie_name,
+                                             progress=progress, plot=plot)
+            _log.info('[DIAG] 剧情理解: %d 个场景拿到剧情含义' % len(scene_story))
+        except AbortError:
+            raise
+        except Exception as e:
+            _log.info('[DIAG] 剧情理解层失败(不影响出片): %s' % e)
+            scene_story = {}
 
     up('写完整解说稿', 42)
     target_sec = params.get('targetSec')
@@ -3347,7 +4182,12 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     # economy=False：本地模型是免费的，必须让它先写稿；云端用不用由 _w.ai_enabled('chat') 决定。
     # （历史坑：这里曾传 economy=not _w.ai_enabled('chat')，未配云端时 economy=True 会直接跳过
     #   本地模型走切句兜底，产出的是「剧情原文拼接」而不是解说稿——正是解说不像解说的原因。）
-    script = llm_movie_full_script(movie_name, plot, economy=False, target_sec=target_sec)
+    # material：剧情资料 + 逐场画面理解要点（有画面理解时写稿才有具体落点）
+    _material = _script_material(plot, scene_story, scene_descs)
+    _log.info('[DIAG] 写稿素材: %d 字（剧情 + %d 个场景理解）'
+              % (len(_material), len(scene_story)))
+    script = llm_movie_full_script(movie_name, plot, economy=False, target_sec=target_sec,
+                                   material=_material)
     if not script or not script.get('beats'):
         raise RuntimeError('无法从剧情生成解说稿（请检查剧情文本或本地模型）')
 
@@ -3371,60 +4211,66 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if _aborted():
         raise AbortError('用户取消了任务')
 
-    # 【快速出片模式】默认开启（NARRATE_FAST=0 或 params.fast=false 可关）
-    # 根因：12GB 显卡上 VLM(minicpm-v4.5) 与本地 LLM(qwen3:8b) 互挤显存，单次 LLM
-    # 调用常 3 分钟并超时；「剧情理解层 + 语义对齐 + 润色」三步会把整条链卡死，
-    # 分析永不完成 → 永远出不了片。快速模式跳过这三步，直接按台词匹配分配画面
-    # （剧本已在上一步生成，不影响出片，只少一点「贴合画面」的润色）。
+    # 【质量模式·默认】质量优先、不限时间；NARRATE_FAST=1 或 params.fast=true 可切快速。
+    # 设计要点：不是「砍掉理解环节」，而是把「一次长调用」拆成「多次短调用」——
+    # 12GB 卡上让 8B 一次吐「对齐 + 15 段润色」的长 JSON 要 3 分钟以上并超时；拆成每批
+    # 4~6 句后每次输出短、必成功。任何一批失败都保留算法对齐/原稿，所以质量模式同样能出片。
     _fast_param = params.get('fast', params.get('fast_mode', params.get('fastMode')))
-    if _fast_param is None:
-        # 自动判定：仅「只配了本地 LLM、没有云端 chat」时默认快速出片（本地 LLM 与
-        # VLM 抢显存是出不了片的根因）；配了云端则默认全质量。NARRATE_FAST=0 可强制关。
-        try:
-            _local_only = bool(_w.local_llm_enabled()) and not bool(_w.ai_enabled('chat'))
-        except Exception:
-            _local_only = True
-        _fast = _local_only and (os.environ.get('NARRATE_FAST', '1') != '0')
-    else:
-        _fast = bool(_fast_param)
+    _fast = (os.environ.get('NARRATE_FAST') == '1') if _fast_param is None else bool(_fast_param)
 
-    scene_story = {}
     scene_alignment = {}
-    refined_texts = None
+    # ① 算法语义对齐（两种模式都做）：用 VLM 描述/台词/实体与解说词做 bigram 重叠，
+    #    在时间顺序约束下为每句挑最相关场景。这是「LLM 失败也不会声画错位」的保底通道。
+    if scene_descs:
+        scene_alignment = _algo_align_beats_to_scenes(texts, scene_descs, asr=asr)
+        _log.info('[DIAG] 算法语义对齐(保底): %d/%d 句' % (len(scene_alignment), len(texts)))
+
     if _fast:
-        up('快速出片（跳过 AI 剧情理解/润色，保证出片）', 46)
-        _log.info('[DIAG] 快速出片模式：跳过剧情理解/语义对齐/润色（保证出片）')
+        up('快速出片（仅算法对齐，不调模型）', 46)
+        _log.info('[DIAG] 快速模式：跳过 LLM 语义对齐/润色（算法对齐与剧情理解仍生效）')
     else:
-        # 阶段1.5：剧情理解层 —— 先让LLM推断每段画面在剧情里的含义（story/who/act/keywords）
-        if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
-            scene_story = _infer_scene_story(scene_descs, asr=asr, movie_name=movie_name, progress=progress)
-        # 阶段2+2.5：LLM语义对齐 + 剧情润色 合并为一次调用（S3 合并轮次，省一次完整推理）
-        _merge_llm = os.environ.get('NARRATE_MERGE_LLM') != '0'
-        if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
-            up('解说词-场景对齐与润色', 48)
-            if _merge_llm:
-                try:
-                    _merged = _llm_align_and_refine(texts, scene_descs, scene_story, asr, movie_name=movie_name)
-                except Exception as e:
-                    _log.info('[DIAG] S3合并轮次异常，回退分步: %s' % e)
-                    _merged = None
-                if _merged:
-                    scene_alignment, refined_texts = _merged
-                    if scene_alignment:
-                        _log.info(f'[DIAG] S3合并对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
-            # 降级1：合并未给出对齐 → 回退独立对齐轮（其内部含云端兜底）
-            if not scene_alignment:
-                scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name, scene_story=scene_story)
-                if scene_alignment:
-                    _log.info(f'[DIAG] LLM语义对齐(回退): {len(scene_alignment)}/{len(texts)}节已对齐')
-        # 阶段2.5：剧情润色（合并未给出 → 回退独立润色轮；可选，默认开启）
+        # ② 剧情理解层已在写稿之前跑完（见上方「顺序修正」），这里直接复用 scene_story。
+        # ③ 分批语义对齐：每批 6 句，LLM 成功则覆盖算法结果，失败保留算法结果
+        if scene_descs and any(s.get('event') or s.get('location') for s in scene_descs):
+            up('解说词-场景语义对齐', 49)
+            try:
+                scene_alignment = _llm_align_batched(
+                    texts, scene_descs, base=scene_alignment, scene_story=scene_story,
+                    asr=asr, movie_name=movie_name, batch=6,
+                    timeout=int(params.get('align_timeout') or 150), progress=progress,
+                    use_cloud=bool(params.get('align_cloud', False)))
+                _log.info('[DIAG] 分批语义对齐完成: %d/%d 句' % (len(scene_alignment), len(texts)))
+            except AbortError:
+                raise
+            except Exception as e:
+                _log.info('[DIAG] 分批对齐异常(保留算法对齐): %s' % e)
+        # ④ 分批润色：每批 4 段，只带该段对齐到的画面与台词；失败保留原稿
         if params.get('plotRefine', params.get('plot_refine', True)) and scene_alignment and scene_descs:
-            if refined_texts is None:
-                up('剧情理解润色（让解说贴合画面）', 50)
-                refined_texts = _llm_refine_beats_with_scenes(texts, scene_descs, scene_alignment, asr, movie_name=movie_name)
-            if refined_texts and len(refined_texts) == len(texts):
-                texts = refined_texts
-                texts = _enhance_tts_markup(texts)
+            up('剧情润色（让解说贴合画面）', 52)
+            try:
+                _refined = _refine_batched(
+                    texts, scene_alignment, scene_descs, scene_story=scene_story,
+                    asr=asr, movie_name=movie_name, batch=4,
+                    timeout=int(params.get('refine_timeout') or 150), progress=progress,
+                    use_cloud=bool(params.get('refine_cloud', True)))
+                if _refined and len(_refined) == len(texts):
+                    texts = _enhance_tts_markup(_refined)
+                    _log.info('[DIAG] 分批润色完成: %d/%d 段' % (len(_refined), len(texts)))
+            except AbortError:
+                raise
+            except Exception as e:
+                _log.info('[DIAG] 分批润色异常(保留原稿): %s' % e)
+
+    # ⑤ 终稿清洗（必做）：润色/对齐会把英文原声与「仿佛/似乎」类猜测定语重新写回来，
+    #    写稿阶段的清洗不覆盖这里。只改写不删句，索引不变。
+    try:
+        texts, _n_fix = _scrub_texts(texts)
+        if _n_fix:
+            _log.info('[DIAG] 终稿清洗: 改写 %d/%d 句（去英文台词/去猜测定语）'
+                      % (_n_fix, len(texts)))
+    except Exception as e:
+        _log.info('[DIAG] 终稿清洗异常(保留原稿): %s' % e)
+
     # 阶段3：在对齐的场景内选片段（_allocate_script_spans 内部处理），
     # 对齐失败时自动退回台词bigram匹配保底
     up('按解说分配画面', 52)
@@ -3958,7 +4804,10 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
     _log.info('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))
     up('混音+烧字幕+配乐', 80)
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
+    # 字幕必须去掉 TTS 标记：narr 里带 {情绪:紧张}/{停顿:0.5}，直接烧进字幕
+    # 会在画面里显示成「{/情绪}{/停顿}」（实测成片即如此）。
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)')
+                else _clean_caption(strip_tts_markup(t)) for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:
@@ -4126,7 +4975,10 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
     _log.info(f'[DIAG] TTS并行完成: {len(tts_paths)}/{len(narr)}段配音成功')
     up('混音+烧字幕+配乐', 70)
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t) for t in narr]
+    # 字幕必须去掉 TTS 标记：narr 里带 {情绪:紧张}/{停顿:0.5}，直接烧进字幕
+    # 会在画面里显示成「{/情绪}{/停顿}」（实测成片即如此）。
+    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)')
+                else _clean_caption(strip_tts_markup(t)) for t in narr]
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:

@@ -1132,6 +1132,38 @@ _EMOTION_KEYWORDS = {
 }
 _SLOW_KEYWORDS = ['年', '万', '亿', '%', '第', '首次', '唯一', '最', '纪录', '票房', '冠军']
 
+_PAUSE_RUN = re.compile(r'(?:\{停顿\s*:\s*[0-9.]+\}\s*){2,}')
+_DUP_CLOSER = re.compile(r'(\{/(?:情绪|慢|快|高音|低音|大声|小声)\})(?:\s*\1)+')
+
+
+def _normalize_markup(t):
+    """规范化模型给出的标记，去掉会被念出来 / 让停顿失控的写法。
+
+    实测模型会输出三类坏标记：
+      · {停顿:0.3}{/停顿}  —— 停顿是单点标记，模型自行加了闭合标签，念稿会出现异常停顿
+      · {停顿:0.3}{停顿:0.3}{/停顿}{/停顿} —— 重复叠放，停顿时长失控
+      · {情绪:紧张}{/情绪}{/情绪} —— 重复闭合
+    """
+    if not t:
+        return t
+    s = str(t)
+    # 停顿没有闭合标签：一律删掉 {/停顿}
+    s = re.sub(r'\{/\s*停顿\s*\}', '', s)
+
+    # 连续多个停顿合并成一个（取最大值，封顶 2 秒，避免空转）
+    def _merge_pauses(m):
+        try:
+            v = max(float(x) for x in re.findall(r'[0-9.]+', m.group(0)))
+        except (ValueError, TypeError):
+            v = 0.5
+        return '{停顿:%.1f}' % min(2.0, v)
+
+    s = _PAUSE_RUN.sub(_merge_pauses, s)
+    # 重复闭合标签只留一个
+    s = _DUP_CLOSER.sub(r'\1', s)
+    return s
+
+
 def _enhance_tts_markup(texts):
     """TTS 标记后处理：检查 LLM 生成的解说词标记是否完整合理，自动补全/修正。
     - 修复未闭合的 {情绪:xx}/{慢} 等标签
@@ -1147,7 +1179,8 @@ def _enhance_tts_markup(texts):
             result.append(text)
             continue
 
-        t = text.strip()
+        # 0. 先规范化模型给的原标记（坏闭合标签/重复停顿会直接影响念稿效果）
+        t = _normalize_markup(text.strip())
         has_markup = has_tts_markup(t)
 
         # 1. 修复未闭合标签
@@ -1216,11 +1249,15 @@ def _enhance_tts_markup(texts):
     return result
 
 def strip_tts_markup(text):
-    """去除文案中的 TTS 标记（用于字幕显示）。"""
+    """去除文案中的 TTS 标记（用于字幕显示）。
+
+    必须同时认 {/停顿}：个别模型会给单点标记补闭合标签，
+    漏掉就会让字幕里原样出现「{/停顿}」。
+    """
     if not text:
         return text
     text = re.sub(r'\{/?(情绪|慢|快|高音|低音|大声|小声)(?::[^}]*)?\}', '', text)
-    text = re.sub(r'\{停顿:[^}]*\}', '', text)
+    text = re.sub(r'\{/?停顿(?::[^}]*)?\}', '', text)
     return text.strip()
 
 
@@ -1264,19 +1301,38 @@ def _tts_available():
 
 _OPEN_TAG_RE = re.compile(r'\{(\w+)(?::[^}]*)?\}')
 _CLOSE_TAG_RE = re.compile(r'\{/(\w+)\}')
+# 需要成对闭合的标记；{停顿:x} 是单点标记，不在其中
+_PAIRED_TAGS = {'情绪', '慢', '快', '高音', '低音', '大声', '小声'}
 
 def _fix_unclosed_tags(text):
-    """修复未闭合的 TTS 标记：{情绪:xx} 必须有 {/情绪}，{慢} 必须有 {/慢}。"""
+    """修复未闭合的 TTS 标记：{情绪:xx} 必须有 {/情绪}，{慢} 必须有 {/慢}。
+
+    【坑】{停顿:x} 是单点标记，没有闭合标签。旧实现把它也当成「需要闭合」，
+    于是每段带停顿的稿子都会被追加一个 {/停顿}，stdout 可见
+    「{停顿:0.3}{/停顿}」这种畸形标记，配音时会产生多余停顿。
+    """
     counts = {}
     for m in _OPEN_TAG_RE.finditer(text):
         tag = m.group(1)
+        if tag not in _PAIRED_TAGS:
+            continue                      # 停顿等单点标记不参与配对
         counts[tag] = counts.get(tag, 0) + 1
     for m in _CLOSE_TAG_RE.finditer(text):
         tag = m.group(1)
+        if tag not in _PAIRED_TAGS:
+            continue
         counts[tag] = counts.get(tag, 0) - 1
     for tag, n in counts.items():
         if n > 0:
             text += ('{/%s}' % tag) * n
+        elif n < 0:
+            # 孤儿闭合标签：稿子在清洗阶段删掉了带 {情绪:xx} 开标签的分句，
+            # 只剩 {/情绪}。留着会让配音引擎找不到配对开标签（部分地区直接报错），
+            # 字幕里也会冒出花括号。从后往前删掉多余的闭合标签。
+            _cl = '{/%s}' % tag
+            _idxs = [m.start() for m in re.finditer(re.escape(_cl), text)]
+            for i in reversed(_idxs[n:]):
+                text = text[:i] + text[i + len(_cl):]
     return text
 
 
