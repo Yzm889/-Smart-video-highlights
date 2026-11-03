@@ -3371,39 +3371,60 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     if _aborted():
         raise AbortError('用户取消了任务')
 
-    # 阶段1.5：剧情理解层 —— 先让LLM推断每段画面在剧情里的含义（story/who/act/keywords）
+    # 【快速出片模式】默认开启（NARRATE_FAST=0 或 params.fast=false 可关）
+    # 根因：12GB 显卡上 VLM(minicpm-v4.5) 与本地 LLM(qwen3:8b) 互挤显存，单次 LLM
+    # 调用常 3 分钟并超时；「剧情理解层 + 语义对齐 + 润色」三步会把整条链卡死，
+    # 分析永不完成 → 永远出不了片。快速模式跳过这三步，直接按台词匹配分配画面
+    # （剧本已在上一步生成，不影响出片，只少一点「贴合画面」的润色）。
+    _fast_param = params.get('fast', params.get('fast_mode', params.get('fastMode')))
+    if _fast_param is None:
+        # 自动判定：仅「只配了本地 LLM、没有云端 chat」时默认快速出片（本地 LLM 与
+        # VLM 抢显存是出不了片的根因）；配了云端则默认全质量。NARRATE_FAST=0 可强制关。
+        try:
+            _local_only = bool(_w.local_llm_enabled()) and not bool(_w.ai_enabled('chat'))
+        except Exception:
+            _local_only = True
+        _fast = _local_only and (os.environ.get('NARRATE_FAST', '1') != '0')
+    else:
+        _fast = bool(_fast_param)
+
     scene_story = {}
-    if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
-        scene_story = _infer_scene_story(scene_descs, asr=asr, movie_name=movie_name, progress=progress)
-    # 阶段2+2.5：LLM语义对齐 + 剧情润色 合并为一次调用（S3 合并轮次，省一次完整推理）
     scene_alignment = {}
     refined_texts = None
-    _merge_llm = os.environ.get('NARRATE_MERGE_LLM') != '0'
-    if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
-        up('解说词-场景对齐与润色', 48)
-        if _merge_llm:
-            try:
-                _merged = _llm_align_and_refine(texts, scene_descs, scene_story, asr, movie_name=movie_name)
-            except Exception as e:
-                _log.info('[DIAG] S3合并轮次异常，回退分步: %s' % e)
-                _merged = None
-            if _merged:
-                scene_alignment, refined_texts = _merged
+    if _fast:
+        up('快速出片（跳过 AI 剧情理解/润色，保证出片）', 46)
+        _log.info('[DIAG] 快速出片模式：跳过剧情理解/语义对齐/润色（保证出片）')
+    else:
+        # 阶段1.5：剧情理解层 —— 先让LLM推断每段画面在剧情里的含义（story/who/act/keywords）
+        if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
+            scene_story = _infer_scene_story(scene_descs, asr=asr, movie_name=movie_name, progress=progress)
+        # 阶段2+2.5：LLM语义对齐 + 剧情润色 合并为一次调用（S3 合并轮次，省一次完整推理）
+        _merge_llm = os.environ.get('NARRATE_MERGE_LLM') != '0'
+        if scene_descs and any(s['event'] or s['location'] for s in scene_descs):
+            up('解说词-场景对齐与润色', 48)
+            if _merge_llm:
+                try:
+                    _merged = _llm_align_and_refine(texts, scene_descs, scene_story, asr, movie_name=movie_name)
+                except Exception as e:
+                    _log.info('[DIAG] S3合并轮次异常，回退分步: %s' % e)
+                    _merged = None
+                if _merged:
+                    scene_alignment, refined_texts = _merged
+                    if scene_alignment:
+                        _log.info(f'[DIAG] S3合并对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
+            # 降级1：合并未给出对齐 → 回退独立对齐轮（其内部含云端兜底）
+            if not scene_alignment:
+                scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name, scene_story=scene_story)
                 if scene_alignment:
-                    _log.info(f'[DIAG] S3合并对齐: {len(scene_alignment)}/{len(texts)}节已对齐')
-        # 降级1：合并未给出对齐 → 回退独立对齐轮（其内部含云端兜底）
-        if not scene_alignment:
-            scene_alignment = _llm_align_beats_to_scenes(texts, scene_descs, movie_name=movie_name, scene_story=scene_story)
-            if scene_alignment:
-                _log.info(f'[DIAG] LLM语义对齐(回退): {len(scene_alignment)}/{len(texts)}节已对齐')
-    # 阶段2.5：剧情润色（合并未给出 → 回退独立润色轮；可选，默认开启）
-    if params.get('plotRefine', params.get('plot_refine', True)) and scene_alignment and scene_descs:
-        if refined_texts is None:
-            up('剧情理解润色（让解说贴合画面）', 50)
-            refined_texts = _llm_refine_beats_with_scenes(texts, scene_descs, scene_alignment, asr, movie_name=movie_name)
-        if refined_texts and len(refined_texts) == len(texts):
-            texts = refined_texts
-            texts = _enhance_tts_markup(texts)
+                    _log.info(f'[DIAG] LLM语义对齐(回退): {len(scene_alignment)}/{len(texts)}节已对齐')
+        # 阶段2.5：剧情润色（合并未给出 → 回退独立润色轮；可选，默认开启）
+        if params.get('plotRefine', params.get('plot_refine', True)) and scene_alignment and scene_descs:
+            if refined_texts is None:
+                up('剧情理解润色（让解说贴合画面）', 50)
+                refined_texts = _llm_refine_beats_with_scenes(texts, scene_descs, scene_alignment, asr, movie_name=movie_name)
+            if refined_texts and len(refined_texts) == len(texts):
+                texts = refined_texts
+                texts = _enhance_tts_markup(texts)
     # 阶段3：在对齐的场景内选片段（_allocate_script_spans 内部处理），
     # 对齐失败时自动退回台词bigram匹配保底
     up('按解说分配画面', 52)
