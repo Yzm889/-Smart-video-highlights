@@ -393,7 +393,12 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
         concat_txt = os.path.join(cut_dir, 'concat.txt')
         with open(concat_txt, 'w', encoding='utf-8') as f:
             for p in pieces:
-                f.write("file '%s'\n" % p.replace('\\', '/').replace("'", "'\\''"))
+                # 【必须绝对路径】concat 分离器把清单里的相对路径按「清单所在目录」解析，
+                # 若 run_dir 本身是相对路径，就会拼成 cuts/webui_output/.../cuts/cut000.mp4
+                # （路径重复两遍）→ 拼接必然失败 → 静默回退原片 → 成片根本没剪。
+                # 实测：22 分钟片 105 段全部按上述方式失败，成片时长仍等于原片。
+                _ap = os.path.abspath(p)
+                f.write("file '%s'\n" % _ap.replace('\\', '/').replace("'", "'\\''"))
         up('拼接保留片段', 56)
         rc, _o, e = ffmpeg_run(['-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
                                 '-c', 'copy', '-movflags', '+faststart', out])
