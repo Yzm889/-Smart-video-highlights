@@ -511,6 +511,9 @@ def dispatch_narrate(req, prog):
         vp = _w._resolve_upload_video(req.get('video'), run_dir, 'src')
         if not vp:
             raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
+        # 用户自带字幕 → 落成与视频同名的字幕文件，让「字幕优先于 ASR」的既有
+        # 逻辑自动接管（见 _save_user_subtitle 的说明）。
+        _w._save_user_subtitle(req.get('subtitle_file'), vp)
         music_path = _w._resolve_music(req.get('music'))
         music_path = _w._resolve_music(req.get('music'))
         final, diag = _w.narrate_video(vp, req.get('params', {}), run_dir, prog, music_path=music_path)
@@ -536,6 +539,7 @@ def dispatch_movie(req, prog):
         vp = _w._resolve_upload_video(req.get('video'), run_dir, 'src')
         if vp is None and req.get('video'):
             raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
+        _w._save_user_subtitle(req.get('subtitle_file'), vp)
         music_path = _w._resolve_music(req.get('music'))
         final, diag = _w.narrate_movie(req.get('movie', ''), req.get('plot', ''), vp,
                                     req.get('params', {}), run_dir, prog, music_path=music_path)
@@ -575,6 +579,7 @@ def dispatch_movie_tts(req, prog):
         vp = _w._resolve_upload_video(req.get('video'), run_dir, 'src')
         if vp is None and req.get('video'):
             raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
+        _w._save_user_subtitle(req.get('subtitle_file'), vp)
         _final, diag = _w.narrate_movie(req.get('movie', ''), req.get('plot', ''), vp,
                                      _merge_user_script(req.get('params', {}), req.get('script')),
                                      run_dir, prog,

@@ -2684,6 +2684,7 @@ function pollBeatCut(runid){
 
 // ---- 🎬 电影解说 ----
 let NAR_VIDEO = null;
+let NAR_SUB = null;   // 用户导入的字幕 {name, text}；null = 没有（退回 Whisper 听写）
 (function(){
   const nd = $('narDrop'), ni = $('narInput');
   nd.addEventListener('click', () => ni.click());
@@ -2691,7 +2692,38 @@ let NAR_VIDEO = null;
   nd.addEventListener('dragover', e => { e.preventDefault(); nd.classList.add('over'); });
   nd.addEventListener('dragleave', () => nd.classList.remove('over'));
   nd.addEventListener('drop', e => { e.preventDefault(); nd.classList.remove('over'); if(e.dataTransfer.files.length) setNarVideo(e.dataTransfer.files[0]); });
+  // 字幕导入：读成文本随请求一起提交（srt 很小，不值得单独走分片上传）
+  const sb = $('narSubBtn'), si = $('narSubInput');
+  if (sb && si) {
+    sb.addEventListener('click', () => si.click());
+    si.addEventListener('change', e => {
+      if (si.files.length) readNarSubtitle(si.files[0]);
+      si.value = '';
+    });
+  }
 })();
+
+function readNarSubtitle(file){
+  const ok = /\.(srt|ass|ssa|vtt)$/i.test(file.name || '');
+  if (!ok) { $('narSubInfo').textContent = '❌ 只支持 .srt / .ass / .ssa / .vtt'; return; }
+  const reader = new FileReader();
+  // 不指定编码交给浏览器猜：它会把 GBK 的字幕也正确读成中文（指定 utf-8 反而变乱码）
+  reader.onload = () => {
+    const text = String(reader.result || '');
+    const n = (text.match(/-->/g) || []).length;
+    if (!n) {
+      NAR_SUB = null;
+      $('narSubInfo').textContent = '❌ 这个文件里没找到字幕时间轴（可能是纯文本），已忽略';
+      return;
+    }
+    NAR_SUB = { name: file.name, text: text };
+    $('narSubInfo').innerHTML = '✅ 已导入 <b>' + esc(file.name) + '</b>（' + n + ' 条台词）—— 将用它的时间轴对齐画面、代替 Whisper 听写';
+    $('narSubBtn').textContent = '📄 换一个字幕';
+  };
+  reader.onerror = () => { $('narSubInfo').textContent = '❌ 读取失败，请重试'; };
+  reader.readAsText(file, 'utf-8');
+}
+
 function setNarVideo(file, fromGlobal){
   if(!file.type.startsWith('video/')){ $('narInfo').textContent='❌ 只支持视频'; return; }
   NAR_VIDEO = file;
@@ -2820,6 +2852,9 @@ async function buildNarrate(){
                          transition: ($('exportTransition')||{}).value || 'hard'} };
   if(userScript){ body.script = userScript; }  // 用户稿子：后端跳过写稿/润色，直接按句切
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
+  // 导入的字幕：后端会落成与视频同名的 .srt，让「字幕优先于 ASR」的既有链路接管，
+  // 同时台词时间轴会被用来决定画面抽样落点（VLM 才不会一直看空镜）
+  if(NAR_SUB && NAR_SUB.text){ body.subtitle_file = { name: NAR_SUB.name, text: NAR_SUB.text }; }
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
     else { body.music = await musicToBody(MUSIC.file); }

@@ -2736,6 +2736,75 @@ def _upload_final_path(upload_id, name):
     return fp if os.path.isfile(fp) else None
 
 
+def _save_user_subtitle(sub_obj, video_path):
+    """把用户上传的字幕存成「与视频同名的字幕文件」，返回落盘路径或 None。
+
+    【为什么这样就够了】ai_providers._external_subtitle_segments 本来就会在视频同目录
+    找同名 .srt/.ass/.vtt，找到就用它代替语音识别。所以这里只要落成 src.srt，
+    下游「字幕优先于 ASR」的既有逻辑零改动生效——不用改配音、对齐、写稿任何一环。
+
+    接受三种形态（越大越优先，避免整体重传）：
+      · {name, data}     base64，小字幕（<1MB 的 srt 走这条最省事）
+      · {name, text}     直接文本（前端读文件后原样上传）
+      · {upload_id,name} 复用现有分片上传会话（大 ass 或用户复用了视频的上传通道）
+    解析后若一条有效台词都没有，删掉落盘文件并返回 None：宁可退回 ASR，
+    也不要让一个坏字幕把整条台词轨变成空的。"""
+    if not sub_obj or not video_path:
+        return None
+    base = os.path.splitext(video_path)[0]
+    name = str(sub_obj.get('name') or 'subtitle.srt')
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in ('.srt', '.ass', '.ssa', '.vtt'):
+        ext = '.srt'                     # 后缀不认识时按 srt 试解析（内容才是真的）
+    raw = None
+    try:
+        if sub_obj.get('text'):
+            raw = str(sub_obj.get('text')).encode('utf-8')
+        elif sub_obj.get('data'):
+            raw = base64.b64decode(sub_obj.get('data') or '')
+        else:
+            src = _upload_final_path(sub_obj.get('upload_id'), name)
+            if src:
+                with open(src, 'rb') as f:
+                    raw = f.read()
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    # 编码兜底：国内字幕大量是 GBK/GB18030，直接当 utf-8 读会全是乱码（等于没有字幕）
+    for enc in ('utf-8-sig', 'utf-8', 'gb18030', 'big5'):
+        try:
+            txt = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        return None
+    dst = base + ext
+    try:
+        with open(dst, 'w', encoding='utf-8') as f:
+            f.write(txt)
+        segs = _parse_subtitle_quick(dst)
+    except Exception:
+        segs = []
+    if not segs:
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+        return None
+    return dst
+
+
+def _parse_subtitle_quick(path):
+    """订阅字幕校验：复用 ai_providers 的解析器，失败返回 []。"""
+    try:
+        import ai_providers as _ai
+        return _ai.parse_subtitle_file(path) or []
+    except Exception:
+        return []
+
+
 def _resolve_upload_video(vobj, run_dir, prefix='src'):
     """视频对象统一落盘到 run_dir，两种形态并存：
     {name, data(base64)} 旧路径（小文件）；{name, upload_id} 分片上传（大文件——

@@ -2528,9 +2528,82 @@ def _load_json_file(path):
         return None
 
 
+def _dialogue_anchor_times(asr, vdur, interval, quality):
+    """把固定网格的抽样点**吸附到台词起点**，让 VLM 永远看到「剧情在推进」的那一刻。
+
+    【为什么这是突破点】旧抽样是纯网格（每 interval 秒一个点），网格与剧情毫无因果
+    关系：抽到黑屏、过场、空镜就是「空无一人」，抽到长静默就是「无台词区间」。
+    VLM 拿这些当素材写出来的剧情必然对不上。而字幕/ASR 的 start 起点，恰好是
+    「有人开口、剧情推进」的时刻——同样多的帧，看的地方完全不一样。
+
+    【为什么是「吸附」而不是「加密」】最初的写法是「每个台词起点都抽一帧」，
+    真机一测就废：台词密集时点数暴涨（VLM 阶段从 3 分钟变 20 分钟），而台词稀疏
+    （一条字幕覆盖全片）时点数反而掉到个位数，**覆盖率比原来还差**。
+    吸附法两个毛病都没有：
+      - 点数与网格完全相同 → VLM 成本不变、耗时不变；
+      - 每个点只在 ±0.45*interval 内移动 → **最大空档与网格一致，覆盖率不倒退**；
+      - 落点却从「随机位置」变成「有人说话的时刻」→ 画面信息量本质提升。
+
+    返回 (times, tag)。无台词 / 无有效起点时返回 ([], '')，调用方退回纯网格。
+    """
+    if not asr:
+        return [], ''
+    starts = []
+    for seg in asr:
+        try:
+            st = float(seg.get('start', 0) or 0)
+            txt = str(seg.get('text', '') or '').strip()
+        except (ValueError, TypeError):
+            continue
+        if txt and 0 <= st < vdur:
+            starts.append(st)
+    if not starts:
+        return [], ''
+    starts.sort()
+
+    grid = []
+    t = interval / 2.0
+    while t < vdur:
+        grid.append(t)
+        t += interval
+    if not grid:
+        # 极短素材（interval > vdur）：网格为空就没得吸附。
+        # 退回调用方的短片段保护逻辑（会按 vdur/4 重新算间隔），不在这里硬造点。
+        return [], ''
+
+    # 吸附半径：半个网格的 90%。留 10% 余量，避免两个相邻点抢同一个台词起点。
+    rad = interval * 0.45
+    min_gap = max(1.0, interval * 0.5)
+    taken = set()
+    out = []
+    for g in grid:
+        cand = [s for s in starts if abs(s - g) <= rad]
+        pick = None
+        for s in sorted(cand, key=lambda x: abs(x - g)):
+            # +0.4s：台词起点那一帧往往还是上一个镜头，稍等让画面切过去
+            ts = round(min(float(vdur) - 0.05, s + 0.4), 3)
+            if ts in taken:
+                continue
+            pick = ts
+            break
+        if pick is None:
+            pick = round(g, 3)          # 附近没人说话 → 留在网格原位（空镜也得看）
+        if out and (pick - out[-1]) < min_gap:
+            pick = round(g, 3)          # 吸附后与上一点太近 → 退回网格，保证间距
+        if out and (pick - out[-1]) < min_gap:
+            continue                    # 仍太近（网格本身很密）→ 丢弃，宁可少不可叠
+        out.append(pick)
+        taken.add(pick)
+    return [x for x in out if 0 < x < vdur], 'snap'
+
+
 def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0,
                          cancel_check=None, quality=None):
-    """时间轴驱动：均匀抽样建立画面索引，跳过场景检测。
+    """时间轴驱动建立画面索引，跳过场景检测。
+
+    【抽样策略】有台词时间轴时**按台词驱动**（见 _dialogue_anchor_times）：
+    每个说话时刻都看一眼，长静默补点。没有台词时退回旧的固定网格。
+    这样「画面理解」看到的是「剧情正在推进的瞬间」，而不是随机网格上的空镜。
 
     【质量模式·默认】全片覆盖：每个抽样点都送 VLM（台词只作为附加信息，不再是
     「要不要看这一帧」的开关），间隔收紧到 ≥12s，模型常驻显存。
@@ -2570,12 +2643,30 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     else:
         interval = max(15.0, float(vdur) / 60.0)
 
+    # 抽样点规划必须**早于缓存检查**：抽样策略本身（台词吸附 vs 固定网格）
+    # 决定产出结构，缓存键要带上它，否则换了策略仍会命中旧缓存、改动等于没做。
+    # 吸附法点数与网格一致（见 _dialogue_anchor_times 的说明），无需再封顶抽稀。
+    sample_times, _anchor_tag = _dialogue_anchor_times(asr, vdur, interval, quality)
+    _anchor_mode = bool(sample_times)
+    if not _anchor_mode:
+        t = interval / 2.0  # 从中间开始，避免片头黑屏
+        while t < vdur:
+            sample_times.append(t)
+            t += interval
+    else:
+        _log.info('[DIAG] 台词吸附抽样: %d个时间点（来源=%s）'
+                  % (len(sample_times), _anchor_tag))
+
     # 缓存检查
     try:
         vlm_model = vlm_cfg().get('model', 'default')
     except Exception:
         vlm_model = 'default'
-    cache_key = _video_cache_key(video_path, f'vlm_sample_{vlm_model}_{int(interval)}')
+    # 键里必须带抽样策略：'grid' 与 'sub' 产出的时间点集合完全不同，
+    # 共用键会让「改用台词对齐」这个改动被旧缓存整个短路掉。
+    _plan_tag = 'sub' if _anchor_mode else 'grid'
+    cache_key = _video_cache_key(
+        video_path, f'vlm_sample_{vlm_model}_{int(interval)}_{_plan_tag}')
     cached = _cache_load(cache_key)
     if cached:
         _log.info(f'[DIAG] VLM抽样命中缓存: {len(cached)}个时间点')
@@ -2593,12 +2684,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                   'dialogue(这段台词的核心内容，没有则留空)，'
                   'summary(画面整体概括，不超过30字)。只输出JSON。')
 
-    # 生成抽样时间点
-    sample_times = []
-    t = interval / 2.0  # 从中间开始，避免片头黑屏
-    while t < vdur:
-        sample_times.append(t)
-        t += interval
+    # 抽样点已在缓存检查前规划完毕（见上方 sample_times / _anchor_mode）。
 
     # 预计算每个抽样点附近是否有台词（±12秒窗口）
     def _near_dialogue(ts):
@@ -2621,16 +2707,22 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     total_samples = len(sample_times)
 
     if progress:
-        progress['phase'] = '抽取画面帧（单次管道，共%d点）' % total_samples
+        _ph = ('抽取画面帧（按台词对齐，共%d点）' % total_samples) if _anchor_mode \
+            else ('抽取画面帧（单次管道，共%d点）' % total_samples)
+        progress['phase'] = _ph
         progress['pct'] = 40
     if _sample_frame_cache_ready(frame_dir, total_samples):
         # [P0-1 方案1.5] 抽帧产物缓存命中：直接复用帧文件，免 ffmpeg
         _log.info(f'[DIAG] 抽帧产物缓存命中: {total_samples}帧直接复用(免ffmpeg)')
     else:
         # [P0-1 方案1.1] 原实现为每个有台词抽样点独立 ffmpeg -ss -frames:v 1（约60次子进程）；
-        # 现改为一次 `fps=1/interval` 连续抽帧。从 interval/2 起按网格输出，
+        # 后改为一次 `fps=1/interval` 连续抽帧。从 interval/2 起按网格输出，
         # 第 k 帧对应 t=interval/2+k*interval 即 sample_times[k]（与原抽样点集合一致）。
         # VFR 时间戳偏差 ≤0.5s，台词窗口±12s（_near_dialogue）可完全容忍。
+        #
+        # 【台词驱动时不能用 fps 网格】锚点时间不均匀（台词密集处间隔 1.6s、静默处
+        # 30s+），fps 网格抽出来的帧和 sample_times 对不上，VLM 会把 A 镜头的话
+        # 安到 B 镜头上——比不抽更糟。此时走逐点 seek 抽帧（点数已封顶，代价可控）。
         if os.path.isdir(frame_dir):
             for _fn in os.listdir(frame_dir):
                 try:
@@ -2638,12 +2730,22 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                 except OSError:
                     pass
         os.makedirs(frame_dir, exist_ok=True)
-        rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % (interval / 2.0), '-i', video_path,
-                                 '-vf', 'fps=1/%.6f,scale=min(iw\\,640):-2' % interval,
-                                 '-q:v', '4', '-an', '-start_number', '0',
-                                 os.path.join(frame_dir, 'sample_%04d.jpg')])
-        n_got = sum(1 for i in range(total_samples)
-                    if os.path.exists(os.path.join(frame_dir, 'sample_%04d.jpg' % i)))
+        if _anchor_mode:
+            for idx, ts in enumerate(sample_times):
+                fp = os.path.join(frame_dir, 'sample_%04d.jpg' % idx)
+                ffmpeg_run(['-y', '-ss', '%.3f' % ts, '-i', video_path,
+                            '-frames:v', '1', '-vf', 'scale=min(iw\\,640):-2',
+                            '-q:v', '4', '-an', fp])
+            n_got = sum(1 for i in range(total_samples)
+                        if os.path.exists(os.path.join(frame_dir, 'sample_%04d.jpg' % i)))
+            rc = 0 if n_got == total_samples else 1
+        else:
+            rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % (interval / 2.0), '-i', video_path,
+                                     '-vf', 'fps=1/%.6f,scale=min(iw\\,640):-2' % interval,
+                                     '-q:v', '4', '-an', '-start_number', '0',
+                                     os.path.join(frame_dir, 'sample_%04d.jpg')])
+            n_got = sum(1 for i in range(total_samples)
+                        if os.path.exists(os.path.join(frame_dir, 'sample_%04d.jpg' % i)))
         # 清理末尾多余帧（fps 网格若在片尾多输出一帧，从 0..N-1 之外移除，保持帧集与抽样点一一对应）
         for i in range(total_samples, total_samples + 8):
             _extra = os.path.join(frame_dir, 'sample_%04d.jpg' % i)
@@ -2664,6 +2766,17 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         _sample_frame_cache_mark(frame_dir, total_samples)
         _sample_frame_cache_trim()
 
+    # 时间窗：网格模式保持旧公式（ts ± interval/2），锚点模式取相邻采样点的中点，
+    # 保证区间首尾相接、不重叠也不错位（重叠会让同一句台词被两段"看见"，
+    # 空隙会让中间的剧情从未被描述）。
+    def _win(ts, idx):
+        if not _anchor_mode:
+            return max(0, ts - interval / 2), min(vdur, ts + interval / 2)
+        lo = (sample_times[idx - 1] + ts) / 2.0 if idx > 0 else max(0.0, ts - interval / 2)
+        hi = (ts + sample_times[idx + 1]) / 2.0 if idx + 1 < len(sample_times) \
+            else min(float(vdur), ts + interval / 2)
+        return max(0.0, lo), min(float(vdur), hi)
+
     # 台词过滤：
     #   质量模式 → 不做过滤，每个抽样点都进 need_vlm（台词仅随 prompt 附带）。
     #              理由：动作戏/空镜/表情特写往往没有台词，但恰恰是解说最需要讲的部分；
@@ -2673,7 +2786,8 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         _has_dlg = bool(_near_dialogue(ts))
         if not _has_dlg and not quality:
             skip_count += 1
-            results.append({'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
+            _ws, _we = _win(ts, idx)
+            results.append({'start': _ws, 'end': _we,
                             'location': '', 'characters': '', 'event': '',
                             'dialogue': '', 'summary': '无台词区间'})
         else:
@@ -2681,7 +2795,8 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             if os.path.exists(fp):
                 need_vlm.append((idx, ts, fp))
             else:
-                results.append({'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
+                _ws, _we = _win(ts, idx)
+                results.append({'start': _ws, 'end': _we,
                                 'location': '', 'characters': '', 'event': '',
                                 'dialogue': '', 'summary': ''})
 
@@ -2714,10 +2829,12 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     _vlm_saved = len(need_vlm) - len(_key_frames)
 
     # === 断点续跑标识：用「场景起始时间」而非索引，视频/间隔变化都不会串号 ===
-    def _start_key_of(ts):
+    def _start_key_of(ts, idx=None):
+        if _anchor_mode and idx is not None:
+            return '%.3f' % _win(ts, idx)[0]
         return '%.3f' % max(0.0, float(ts) - interval / 2.0)
 
-    _key_of_idx = {idx: _start_key_of(ts) for idx, ts in enumerate(sample_times)}
+    _key_of_idx = {idx: _start_key_of(ts, idx) for idx, ts in enumerate(sample_times)}
 
     # 第二遍：批量VLM调用
     #  质量模式：4帧/批（单批输出更短、更稳），模型常驻显存 30 分钟，超时给足。
@@ -2875,8 +2992,9 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             base = dict(_EMPTY_F)
             if lk in _failed:
                 base['summary'] = 'VLM超时跳过'
+        _ws, _we = _win(ts, idx)
         results.append({
-            'start': max(0, ts - interval/2), 'end': min(vdur, ts + interval/2),
+            'start': _ws, 'end': _we,
             'location': base['location'], 'characters': base['characters'],
             'event': base['event'], 'dialogue': base['dialogue'], 'summary': base['summary'],
         })

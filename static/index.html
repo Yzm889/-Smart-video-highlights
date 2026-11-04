@@ -424,6 +424,15 @@
     <div id="narrGuide" class="narr-guide"></div>
     <div id="narDrop" class="musdrop">🎞️ 拖入一段电影/动漫/短片片段</div>
     <input type="file" id="narInput" accept="video/*" style="display:none">
+    <!-- 字幕导入：这是「看懂剧情 + 对齐时间轴」的关键输入。
+         有了字幕就不用 Whisper 猜台词（准确、快、不占显存），
+         画面抽样也会按台词时间轴落点，VLM 才不会一直在看空镜。 -->
+    <div class="row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap;">
+      <button class="btn ghost" id="narSubBtn" type="button" style="padding:6px 12px;">📄 导入字幕（可选，强烈推荐）</button>
+      <input type="file" id="narSubInput" accept=".srt,.ass,.ssa,.vtt" style="display:none">
+      <span class="hint" id="narSubInfo" style="margin:0;">没字幕也能跑：会用 Whisper 听写台词，但准确率和速度都差一截</span>
+    </div>
+    <div class="hint" style="margin-top:2px;">💡 字幕从哪来？下载资源时通常带 `.srt` 文件（和视频同名那个就是）；B 站/网盘资源也常附带。中/英文字幕都行，工具会自动识别编码。</div>
     <div class="hint">按<b>你写的剧情</b>写解说稿 → 按每句解说去原片里<b>挑有内容的画面</b> → 按时间轴<b>配音</b>（默认系统免费中文配音）+ <b>字幕</b> → 出片。过场空镜会被跳过，成片比原片短。</div>
     <div class="hint" id="narInfo">还没有选择视频。</div>
     <div class="row" style="margin-top:10px;">
@@ -1278,7 +1287,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=82"></script>
+<script src="/static/app.js?v=83"></script>
 </body>
 </html>
 
