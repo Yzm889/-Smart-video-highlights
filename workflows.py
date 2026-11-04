@@ -515,7 +515,6 @@ def dispatch_narrate(req, prog):
         # 逻辑自动接管（见 _save_user_subtitle 的说明）。
         _w._save_user_subtitle(req.get('subtitle_file'), vp)
         music_path = _w._resolve_music(req.get('music'))
-        music_path = _w._resolve_music(req.get('music'))
         final, diag = _w.narrate_video(vp, req.get('params', {}), run_dir, prog, music_path=music_path)
         # 【不静默】合成完成≠视频存在：final 为空/文件缺失/过小都要明确报错，
         # 而不是让前端显示「✅ 完成」却没有可播放的成片。
