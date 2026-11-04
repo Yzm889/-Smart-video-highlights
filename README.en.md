@@ -31,7 +31,7 @@ A **locally running, AI-powered** video creation tool. Upload images/videos + ch
 - 🖼 **Auto cover generation** – smart frame picking (contrast + edge energy) + large‑title cover compositing, three layouts
 - 🧹 **Auto disk cleanup** – run dirs / warm‑up dirs / upload leftovers recycled on a 6‑hour sweep; analysis cache capped at 200 entries (fingerprint+params+version keyed)
 - 🕘 Generation history, cancel‑able synthesis (immediate ffmpeg kill + cooperative flags), vertical formats, multiple transitions
-- 🧪 **Regression assurance** – **308 tests / 0 failures** + pyflakes zero‑warning gate + GitHub Actions CI (Python 3.9/3.11 matrix)
+- 🧪 **Regression assurance** – **576 tests / 0 failures** + flake8 zero‑warning gate + GitHub Actions CI (Python 3.9/3.11 matrix)
 
 ## 📁 Project Structure
 
@@ -50,11 +50,11 @@ A **locally running, AI-powered** video creation tool. Upload images/videos + ch
 ├── text_utils.py          # Text utilities (narration cleaning / splitting / alignment)
 ├── bili_downloader.py     # Bilibili material: search/download
 ├── static/                # Frontend (index.html / style.css / app.js)
-├── tests/                 # Regression tests (308 cases, pytest)
-├── .github/workflows/     # CI: pyflakes gate + pytest matrix
+├── tests/                 # Regression tests (576 cases, pytest)
+├── .github/workflows/     # CI: flake8 --select=F gate + pytest matrix
 ├── ai_config.example.json # AI config template (copy to ai_config.json)
 ├── requirements.txt       # Python runtime dependencies
-├── requirements-dev.txt   # Dev dependencies (pytest + pyflakes)
+├── requirements-dev.txt   # Dev dependencies (pytest + flake8)
 ├── Dockerfile             # Container image (ffmpeg / CJK fonts / HEALTHCHECK)
 ├── docker-compose.yml     # One‑click deployment with persisted volumes
 ├── material_library/      # Local material library (.gitignore‑excluded)

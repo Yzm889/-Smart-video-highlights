@@ -24,6 +24,9 @@
 - ⚡ **国内加速通道**：网页拉取自动走 **hf-mirror + aria2c 多线程**（白名单 qwen3:14b-q4_K_M / qwen3-vl:8b 双文件 / qwen2.5 系），几 GB 约 2~3 分钟；失败自动回退官方源
 - ⚡ **GPU 编码加速**：自动探测 `h264_nvenc` 硬编（约 **1.8× 提速**），不可用自动回退 `libx264`；三档画质（速度 / 均衡 / 画质）可选
 - 🔇 **本地配音引擎**：edge-tts（免 Key·多音色）/ sherpa-onnx 离线模型 / 系统 SAPI 三选一 + 自动回退 + 熔断
+- 🎯 **声画对齐精度再提升**：解说句与镜头段用 DP 全局单调对齐，位置先验改为「锚点专用」（只在首/尾句生效），实测平均误差 ~35s→~29s、最大误差 152s→96s，关键段不再整段错配画面。
+- 🎙 **配音不再机械**：`prosody_for_tts` 自动按分句注入情绪 + 停顿——edge-tts 走真实 SSML 情感 / `<break>`，sherpa / MeloTTS 按 `{停顿:n}` 插真实静音做呼吸感，且不改动你的原文字符。
+- 📝 **用户自带稿子路线**：解说支持直接粘贴你写好的稿子，工具只负责「按稿子找画面 + 逐句配音 + 烧字幕」，不再依赖本地模型写稿（一个字都不改你的稿）。
 - ⚡ **上传后后台预热**：上传完成即在空闲期预分析 ASR+VLM，点击解说时命中缓存秒出
 - 🎙 **配音并发生成**：edge 本地配音 3 路并发（断点续跑 / 失败重试 / 熔断探测），50 段约 1 分钟
 - 🧮 **GPU 资源隔离**：本地推理全局互斥（ASR / LLM / VLM 同槽串行，远端 API 可并行）——多任务并发不互抢 Ollama
@@ -32,7 +35,7 @@
 - 🖼 **自动封面生成**：智能选帧（对比度+边缘能量打分）+ 大字标题合成封面，三种版式可换帧
 - 🧹 **磁盘自动清理**：run_dir / 预热目录 / 上传残片纳入 6h 周期自动回收；分析缓存按「指纹+参数+版本」落盘（200 条上限自动清最旧）
 - 🕘 最近生成历史、可取消合成（ffmpeg 立即终止 + 协作式标志）、竖屏发布规格、多种转场
-- 🧪 **回归保障**：全量 **308 个测试**（0 失败）+ pyflakes 零告警门禁 + GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
+- 🧪 **回归保障**：全量 **576 个测试**（0 失败）+ flake8 零告警门禁 + GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
 
 ## 📁 目录结构
 
@@ -52,7 +55,7 @@
 ├── bili_downloader.py     # B 站素材：搜索/下载（playurl 直连 + yt-dlp 兜底）
 ├── static/                # 前端页面（index.html / style.css / app.js）
 ├── tests/                 # 回归测试（308 用例，pytest）
-├── .github/workflows/     # CI：pyflakes 门禁 + pytest（Python 3.9/3.11 双矩阵）
+├── .github/workflows/     # CI：flake8 --select=F 门禁 + pytest（Python 3.9/3.11 双矩阵）
 ├── ai_config.example.json # AI 配置模板（复制为 ai_config.json 使用）
 ├── requirements.txt       # Python 运行依赖
 ├── requirements-dev.txt   # 开发/回归依赖（pytest + pyflakes）
@@ -196,7 +199,7 @@ $env:SPRING_VIDEO_FONT = "C:/path/to/NotoSansSC-Regular.otf"
 | 接口 | 说明 |
 | --- | --- |
 | `POST /api/narrate` | Phase 2 本地短片解说（body: `video`, `params{economy,maxSeg}`, 可选 `music`） |
-| `POST /api/narrate_movie` | Phase 3 联网解说（body: `movie`, `plot?`, `video?`, `params`, 可选 `music`） |
+| `POST /api/narrate_movie` | Phase 3 联网解说（body: `movie`, `plot?`, `video?`, `params`, 可选 `script` 用户自带稿子, 可选 `music`） |
 | `POST /api/instruct` | Phase 4 指令路由（body: `instruction`, `context{video,music,items}`） |
 | `POST /api/beatcut` / `POST /api/build` | 强卡点 / 通用合成（与指令层共用） |
 | `POST /api/upload/init` → `chunk` → `done` | Phase 6 大视频分片上传：>64MB 的视频前端自动分片（每片 4MB、单文件上限 2GB），任务请求里 `video` 传 `{name, upload_id}`；≤64MB 仍走 base64 旧路径。三接口分别开会话 / 乱序写分片 / 按序合并，废弃会话 24h 自动清理。 |
@@ -286,7 +289,7 @@ $env:SPRING_VIDEO_FONT = "C:/path/to/NotoSansSC-Regular.otf"
 ## 🧪 工程化与质量
 
 - **模块化拆分**：后端从单文件（1.1 万行）按域拆为 `handler / workflows / movie_narrator / video_render / beat_analysis / ffmpeg_utils / cache_utils / ai_providers / tts_engines / text_utils / bili_downloader`；HTTP 端点路由表化（新增端点 = 一个方法 + 登记一行）
-- **回归保障**：全量 **442 个测试 / 0 失败**（覆盖三大创作链路、并发双任务、分片上传、命令注入面、路径安全、断点续跑、磁盘清理等）；`pyflakes webui_server.py tests/` 零告警门禁；GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
+- **回归保障**：全量 **576 个测试 / 0 失败**（覆盖三大创作链路、并发双任务、分片上传、命令注入面、路径安全、断点续跑、磁盘清理等）；`flake8 --select=F webui_server.py tests/` 零告警门禁；GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
 - **一键巡检（替代手工点页面测）**：`python tools/selfcheck.py` —— 静态门禁（枚举/接口/字段对账）+ **真起服务扫描全部 GET 端点**（抓 404/500/非法 JSON）+ 关键 POST 冒烟 + 单元测试，末尾直接给出「已知问题清单」。加 `--fast` 可跳过单元测试
 - **契约门禁（防"两侧各写一份"）**：题材/风格/详略等枚举与后端模板**双向对账**（前端多一个选项、后端少一个 key 都会红）；前端调用的每个 `/api/...` 必须存在于后端路由表（防接口改名/漏接）；前端依赖的关键响应字段必须真返回（防读到 undefined 静默失效）
 - **安全**：路径穿越防护（素材/音乐/媒体目录归属校验）、全项目禁 `shell=True`（模型拉取白名单校验）、前端 XSS 转义、`ai_config.json` 密钥不入库（`.gitignore` 排除）
@@ -346,6 +349,27 @@ ollama pull minicpm-v4.5       # 看图（约6.1GB 显存，与 8B 写稿模型�
 然后在界面「🤖 AI 配置 → ③ 本地模型」把**写稿模型**填成 `qwen3:14b`，「⑤ VLM」保持视觉模型 `qwen3-vl:8b`。程序会自动用「视觉模型看画面 + 文字模型写解说」，无需改代码。
 
 > 💡 界面「短片解说」卡片顶部会实时提示：当前视觉模型是否偏弱、是否已部署好文字模型，并给出推荐命令。
+
+## 🆕 近期重点改进
+
+### 1. 声画对齐精度再提升
+解说句 ↔ 镜头段的匹配从「逐句就近」升级为 **DP（动态规划）全局单调对齐**（`_algo_align_beats_to_scenes`）：
+- **位置先验改为「锚点专用」**：只在第 1 句和最后 1 句施加时间位置先验，中段完全交给语义相似度，避免中间某句被先验「吸走」导致整条时间轴歪掉（真机实测：29 句稿子里第 12 句曾错配到 1044 秒处的医院走廊，而稿子讲的是巡逻车里啃汉堡）。
+- 实测收益（同一部 22 分钟片）：平均误差 35s → 29s，最大误差 152s → 96s，冲突 / 枪战等关键段不再整段错配画面。
+
+### 2. 配音不再机械（情感 + 呼吸感）
+**根因**：`local_tts_speak` 入口先 `_strip_tts_markup` 把 `{情绪}` / `{停顿}` 全剥掉，导致 edge-tts 的 SSML 情感分支永不触发，听起来就是平铺直叙的机器音。
+**修复**：`prosody_for_tts(text)` 在配音前**自动按分句注入情绪 + 标点停顿**，且不改动源文字（剥离后等于原文）：
+- **edge-tts**：走真实 SSML `<mstts:express-as type=...>` 情绪 + `<break>` 停顿；
+- **sherpa / MeloTTS**：按 `{停顿:n}` 插入真实静音，模拟换气 / 呼吸节奏；
+- 用户稿 / 未标记文本也能自动获得分句情绪，无需手写标记。
+新增 `tests/test_tts_prosody.py`（8 用例）守住「原文字符不变 + 情绪 / 停顿已注入」这条契约。
+
+### 3. 用户自带稿子路线
+解说不再强依赖本地模型写稿：输入框可直接粘贴你写好的解说稿，工具**只负责「按稿子找画面 + 逐句配音 + 烧字幕」**（`user_script` 是一等输入，一个字都不改你的稿）。通过 `/api/narrate_movie` 的 `script` 字段传入。
+
+### 4. CI 静态门禁修正
+GitHub Actions 原先用 `pyflakes` 做零告警门禁，但 pyflakes **不认 `# noqa`**，会把约 50 处「刻意循环导入规避」的导入误判为未用，导致 CI 红。已切到 `flake8 --select=F`（认 `# noqa`），并清理了历史堆积的未用导入 / 变量与一份被重复定义、导致半数用例静默失效的测试块（`test_quality_alignment.py`）。
 
 ## 📄 License
 
