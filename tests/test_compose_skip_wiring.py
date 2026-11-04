@@ -10,7 +10,6 @@
 本测试锁定「skip 段在真正剪切前已从 segs 剔除」这一关键接线，
 不依赖真实 ffmpeg / 视频 / 配音，只拦截交给 _cut_video_by_spans 的 segs。
 """
-import os
 import json
 
 

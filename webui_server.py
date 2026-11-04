@@ -753,7 +753,7 @@ def dispatch_ollama_install(req, prog):
                             if total:
                                 P['pct'] = int(downloaded * 90 / total)
                 break  # 成功就跳出重试
-            except Exception as e:
+            except Exception:
                 if attempt < 2:
                     P['phase'] = '下载中断，重试 %d/2...' % (attempt + 1)
                     time.sleep(3)
@@ -4547,7 +4547,6 @@ def tts_model_download_async(model_key=None):
                 candidates.append('https://gh-proxy.com/' + m['url'])
             _downloaded = False
             _last_err = ''
-            _start_all = time.time()
             for _cand in candidates:
                 _host = urllib.parse.urlparse(_cand).netloc
                 try:

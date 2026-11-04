@@ -1,6 +1,7 @@
 # CI：回归测试 + 静态检查
 # - pytest：tests/ 全量回归（重依赖已在测试内做函数级导入，CI 无需 GPU/模型）
-# - pyflakes：后端与测试代码静态检查（未用导入/未用变量/重复键等）
+# - flake8 --select=F：只查 pyflakes 类的静态问题（未用导入/未用变量/重复定义），
+#   并尊重代码里已有的 `# noqa: F401`（有意的循环导入规避/加载顺序导入）
 name: CI
 
 on:
@@ -32,8 +33,8 @@ jobs:
           python -c "import sys; print('PY', sys.version)"
           python -c "import imageio_ffmpeg; print('IMGFF', imageio_ffmpeg.__version__)"
 
-      - name: pyflakes 静态检查
-        run: python -m pyflakes webui_server.py tests/
+      - name: flake8 静态检查
+        run: python -m flake8 --select=F webui_server.py tests/
 
       - name: pytest 回归测试
         run: |

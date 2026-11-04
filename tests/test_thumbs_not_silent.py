@@ -12,7 +12,6 @@ F5：分镜缩略图整批丢失时，接口仍返回 `ok:True`、无任何 warn
 修复原则与项目「不静默」红线一致：失败原因要能进 progress['warnings']
 并在响应里给出可判别的标志，让前端能显示占位图而不是一片空白。
 """
-import os
 
 import pytest
 
@@ -57,7 +56,6 @@ def test_thumbs_missing_is_flagged_in_response(monkeypatch, tmp_path):
         sent['body'] = body.decode('utf-8') if isinstance(body, bytes) else body
     monkeypatch.setattr(h, '_send', _send)
 
-    import json
     # 构造最小 plan：让 _plan_thumbs 抛异常，验证不会静默 pass
     plan = {'video': str(tmp_path / 'v.mp4'), 'segs': [(0.0, 5.0)],
             'narr': ['一句解说'], 'run_dir': str(tmp_path)}

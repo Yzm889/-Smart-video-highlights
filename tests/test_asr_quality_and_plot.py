@@ -15,11 +15,8 @@
      「按通用模板生成，剧情走向可能不准」——绝不允许静默退化（那就是"乱剪"）。
   ④ 失败/取消的任务必须回收 src 副本与中间物，但保留结果文件与缩略图。
 """
-import os
 import sys
 import types
-
-import pytest
 
 import webui_server as S
 import ai_providers as A
@@ -231,7 +228,6 @@ def test_external_subtitle_file_is_used(tmp_path, monkeypatch):
         encoding='utf-8')
     monkeypatch.setattr(A, '_subtitle_segments', lambda p: None)   # 容器内没有字幕轨
     monkeypatch.setattr(A, '_note_progress_warning', lambda m: None)
-    seen = []
     monkeypatch.setattr(A, '_load_wav_as_float32', lambda p: (_ for _ in ()).throw(
         AssertionError('有外挂字幕时不该走 ASR')))
     segs = A.asr_segments(str(vid))

@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-import webui_server            # 必须先导入宿主，规避循环导入
+import webui_server            # noqa: F401 必须先导入宿主，规避循环导入
 import analyze_pipeline as A
 import ai_providers as AP
 from ffmpeg_utils import ffmpeg_run
@@ -51,8 +51,6 @@ def _mk_video(path, dur=2.0, with_audio=True, size='320x240'):
 
 def _run(video_path, tmp_path, options=None, segs_override=None):
     """跑一次真实 dispatch_analyze，返回 (prog, result)。"""
-    if segs_override is not None:
-        monkey = segs_override
     run_dir = tmp_path / ('run_%d' % abs(hash(str(video_path))))
     run_dir.mkdir(parents=True, exist_ok=True)
     prog = {'run_dir': str(run_dir), 'warnings': []}

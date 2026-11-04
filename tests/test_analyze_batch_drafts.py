@@ -15,9 +15,8 @@
 import json
 import os
 
-import pytest
 
-import webui_server          # 必须先导入宿主，规避 video_render<->webui_server 循环导入
+import webui_server          # noqa: F401 必须先导入宿主，规避 video_render<->webui_server 循环导入
 import analyze_pipeline as A
 
 

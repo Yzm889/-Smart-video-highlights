@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import webui_server as S  # noqa: E402  （必须先导入宿主，模块晚绑定其符号）
+import webui_server as S  # noqa: F401  （必须先导入宿主，模块晚绑定其符号）
 import ai_providers as P  # noqa: E402
 
 

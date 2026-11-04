@@ -12,9 +12,8 @@
 import io
 import json
 
-import pytest
 
-import webui_server as S
+import webui_server as S  # noqa: F401 必须先导入宿主，规避循环导入
 import handler as H
 
 

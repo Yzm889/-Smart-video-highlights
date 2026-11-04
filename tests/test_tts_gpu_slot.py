@@ -7,11 +7,8 @@ _g​pu_slot 互斥，避免 12GB 显存下与 ASR/VLM 并发导致 CUDA OOM、
 venv 子进程路径与 CosyVoice 的主进程推理路径，断言互斥锁确实被获取。
 """
 import contextlib
-import os
 import sys
 import types
-
-import pytest
 
 import tts_engines as T
 

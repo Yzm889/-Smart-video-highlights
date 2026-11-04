@@ -16,10 +16,9 @@ import re
 
 import pytest
 
-import webui_server as S
+import webui_server as S  # noqa: F401 必须先导入宿主，规避循环导入
 import handler as H
 import movie_narrator as MN
-import analyze_pipeline as AN
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HTML = os.path.join(ROOT, 'static', 'index.html')

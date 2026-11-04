@@ -8,7 +8,6 @@ tts_log 里 success=4、failed=0、无一条错误，
 """
 import os
 
-import pytest
 
 import webui_server as S  # noqa: F401  先导入宿主（符号晚绑定）
 import movie_narrator as MN

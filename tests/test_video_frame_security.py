@@ -9,7 +9,6 @@
 """
 import os
 
-import pytest
 
 import webui_server as S
 import handler as H

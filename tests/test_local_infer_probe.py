@@ -13,7 +13,6 @@ import json
 import urllib.error
 import urllib.request
 
-import pytest
 
 import ai_providers as A
 
@@ -111,7 +110,6 @@ def test_host_reexports_probe():
 
 def test_analyze_skips_drafts_when_probe_fails(monkeypatch, tmp_path):
     """探针失败 → 阶段①快速跳过草稿（不再挂 200+ 秒），且必须有可见告警。"""
-    import webui_server
     import analyze_pipeline as A2
 
     monkeypatch.setattr(A, 'local_llm_infer_probe', lambda *a, **k: (False, '推理无响应（超时）'))
