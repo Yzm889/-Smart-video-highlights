@@ -594,7 +594,13 @@ function loadTtsLocal(){
     if(cfg.cosy_voice && $('ttsCosyVoice')) $('ttsCosyVoice').value = cfg.cosy_voice;
     const edgeBtn = $('ttsEdgeBtn'), modelBtn = $('ttsModelBtn');
     if(edgeBtn) edgeBtn.textContent = res.edge_installed ? '✅ edge-tts 已装' : '📥 装 edge-tts';
-    if(modelBtn) modelBtn.textContent = res.sherpa_model_ready ? '✅ 离线模型已装' : '📥 下载选中的离线模型';
+    // 模型齐 ≠ 引擎可用：sherpa_installed 才是「包+模型都齐」的真判据。
+    // 旧逻辑只看 sherpa_model_ready，运行包没装时仍显示「已装」，用户不会去补装 → 配音掉 SAPI。
+    if(modelBtn){
+      if(res.sherpa_installed) modelBtn.textContent = '✅ 离线配音已就绪';
+      else if(res.sherpa_model_ready) modelBtn.textContent = '⚠️ 修复离线配音（运行包未装）';
+      else modelBtn.textContent = '📥 下载选中的离线模型';
+    }
     // CosyVoice状态：已装则按钮变灰显示已装；安装中则显示安装进度
     const cosyBtn = document.querySelector('button[onclick="installCosyVoice()"]');
     const setup = res.setup || {};
@@ -623,6 +629,7 @@ function loadTtsLocal(){
       if(!res.edge_installed) parts.push('edge-tts 未安装');
       else if(res.edge_dead) parts.push('edge-tts 暂不可用（' + res.edge_dead.slice(0,60) + '）');
       if(!res.sherpa_model_ready) parts.push('离线模型未下载（' + (res.sherpa_model_label||'') + '）');
+      else if(!res.sherpa_installed) parts.push('离线配音运行包未装，点「⚠️ 修复离线配音」补装即可用自然音');
       // [task #22] 引擎降级可见化（textContent 本身即防注入，勿再 escape 以免显示 &amp; 等实体）
       if(res.degrade_msg) parts.push(res.degrade_msg);
       st.textContent = parts.join(' · ');

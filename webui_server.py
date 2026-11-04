@@ -4513,6 +4513,49 @@ def tts_install_chattts_async():
     return True, '已开始后台安装 ChatTTS，可在下方看进度'
 
 
+def _install_sherpa_runtime_async():
+    """只补装 sherpa-onnx 运行包（模型已就绪但运行包缺失时），复用 TTS_SETUP 进度。
+
+    【为什么独立一步】模型齐了不等于引擎能用：sherpa_tts_available() 要求
+    「模型 ready + sherpa_onnx 包已装」。旧实现在模型 ready 时直接返回「无需重复下载」，
+    用户永远补不上运行包，edge-tts 一失败就静默掉到 SAPI 机械音。
+    这里不重下上百 MB 模型，只装约 30MB 的运行包（国内走阿里云镜像）。
+    """
+    MIRROR = ['-i', 'https://mirrors.aliyun.com/pypi/simple/',
+              '--trusted-host', 'mirrors.aliyun.com']
+    with _SETUP_LOCK:
+        if TTS_SETUP['running']:
+            return False, '已有一个安装/下载任务在进行中'
+        TTS_SETUP.update(running=True, op='runtime', pct=0,
+                         msg='正在安装离线配音运行包 sherpa-onnx…', ok=None)
+
+    def _run():
+        try:
+            import importlib.util as _ilu
+            if _ilu.find_spec('sherpa_onnx') is not None:
+                TTS_SETUP.update(ok=True, pct=100, msg='✅ 运行包已就绪')
+                return
+            TTS_SETUP.update(pct=40, msg='安装 sherpa-onnx（约 30MB，国内镜像）…')
+            _rc, _err = _run_pip(
+                sys.executable,
+                ['-m', 'pip', 'install', '--no-input', '--timeout', '30', '--retries', '5',
+                 'sherpa-onnx'] + MIRROR, timeout=600, label='sherpa-onnx')
+            if _rc != 0:
+                TTS_SETUP.update(ok=False, pct=100,
+                                 msg='❌ 运行包安装失败：' + (_err or '')[-200:])
+            else:
+                TTS_SETUP.update(ok=True, pct=100,
+                                 msg='✅ 离线配音已就绪（点「🧪 试听」验证）')
+        except Exception as e:
+            TTS_SETUP.update(ok=False, pct=100, msg='❌ 安装失败：' + str(e)[-200:])
+        finally:
+            # 同下载端点：必须复位 running，否则前端永久转圈、后续安装被挡
+            TTS_SETUP['running'] = False
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return True, '模型已就绪，正在补装离线配音运行包（无需重下模型）'
+
+
 def tts_model_download_async(model_key=None):
     """后台下载离线中文配音模型（tar.bz2）到 models/tts/<name>/ 并解压。
 
@@ -4524,7 +4567,17 @@ def tts_model_download_async(model_key=None):
     name = m['name']
     dest = os.path.join(tts_models_dir(), name)
     if _sherpa_ready(key):
-        return True, '模型已就绪，无需重复下载'
+        # 模型齐 ≠ 引擎可用：sherpa_onnx 运行包没装时 sherpa_tts_available() 仍为 False，
+        # 配音会静默掉到 SAPI。旧实现在这里直接返回「无需重复下载」，用户永远补不上运行包。
+        # 这里只补装运行包（约 30MB），不重下上百 MB 的模型。
+        try:
+            import importlib.util as _ilu
+            _have = _ilu.find_spec('sherpa_onnx') is not None
+        except Exception:
+            _have = False
+        if _have:
+            return True, '模型已就绪，无需重复下载'
+        return _install_sherpa_runtime_async()
     with _SETUP_LOCK:      # 与 tts_install_async 互斥，防双点起两个下载线程
         if TTS_SETUP['running']:
             return False, '已有一个安装/下载任务在进行中'
