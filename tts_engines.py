@@ -1172,6 +1172,26 @@ def _prosody_emotion(clause):
     return best
 
 
+def emotion_of(text):
+    """整段文案的主情绪（只读复用，供配乐/渲染等非 TTS 场景使用）。
+
+    与 _prosody_emotion 共用同一张关键词表，但作用域不同：
+      · _prosody_emotion 是逐「子句」判定（<=2 个命中才切，宁稳不噪）；
+      · 本函数是整段汇总，统计全段命中总数，取最多且 >=2 次的那一类，
+        都没有就归为「解说」（平铺讲述）。
+    这样配乐包络拿到的是「这一段在讲什么情绪」，而不是被一句话里的单个词带偏。
+    """
+    s = str(text or '')
+    if not s:
+        return '解说'
+    best, hits_max = '解说', 0
+    for name, kws in _PROSODY_EMOTION.items():
+        hits = sum(s.count(k) for k in kws)
+        if hits >= 2 and hits > hits_max:
+            best, hits_max = name, hits
+    return best
+
+
 def prosody_for_tts(text):
     """把无标记的解说句转成「仅用于合成」的带标记文本。
 

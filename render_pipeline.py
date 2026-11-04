@@ -25,7 +25,7 @@ import shutil
 import logging
 
 from ffmpeg_utils import probe_audio_len
-from video_render import _cut_video_by_spans, _compose_narration_video
+from video_render import _cut_video_by_spans, _compose_narration_video, attach_importance
 from movie_narrator import _generate_all_tts, _clean_caption, _w
 
 _log = logging.getLogger('framecut.render')
@@ -178,6 +178,9 @@ def dispatch_render(req, prog):
         prog['pct'] = 85
         narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t)
                     for t in narr]
+        # [P0-2] 配乐情绪包络：把编辑台确认过的重要度带进混音阶段。
+        # 注意用 new_spans（剪辑后时间轴）的段数对齐——这里是真正交付给混音的段数。
+        params = attach_importance(params, prog, new_spans)
         final = _compose_narration_video(
             cut_video, new_spans, narr_srt, tts_paths, out_dir, params,
             music_path=None, voice_spans=voice_spans)

@@ -563,6 +563,12 @@
             <option value="5M">5M 中</option>
             <option value="3M">3M 低</option>
           </select></div>
+        <div class="field"><label>调色</label>
+          <select id="exportColor" style="width:120px" title="统一全片色调：清冷压黄偏蓝（悬疑/惊悚），暖调提红偏暖（怀旧/温情）。默认原片不加任何滤镜。">
+            <option value="native">原片（不调色）</option>
+            <option value="cool">清冷</option>
+            <option value="warm">暖调</option>
+          </select></div>
         <div class="field"><label>转场</label>
           <select id="exportTransition" style="width:120px">
             <option value="hard">硬切（默认）</option>
@@ -1272,7 +1278,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=81"></script>
+<script src="/static/app.js?v=82"></script>
 </body>
 </html>
 

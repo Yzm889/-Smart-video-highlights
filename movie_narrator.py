@@ -18,7 +18,7 @@ from ffmpeg_utils import (AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS,
     ffmpeg_exe, ffmpeg_run, probe_audio_len, _has_audio_track)
 from text_utils import _clean_caption
 from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
-    _compose_narration_video)
+    _compose_narration_video, attach_importance)
 from beat_analysis import _cached_scene_cuts
 from tts_engines import (local_tts_speak, edge_tts_speak, edge_tts_available,
     edge_tts_dead_reason,
@@ -5512,6 +5512,8 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     # 会在画面里显示成「{/情绪}{/停顿}」（实测成片即如此）。
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)')
                 else _clean_caption(strip_tts_markup(t)) for t in narr]
+    # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
+    params = attach_importance(params, progress, segs)
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:
@@ -5687,6 +5689,8 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     # 会在画面里显示成「{/情绪}{/停顿}」（实测成片即如此）。
     narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)')
                 else _clean_caption(strip_tts_markup(t)) for t in narr]
+    # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
+    params = attach_importance(params, progress, segs)
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans)
     if progress:

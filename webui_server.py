@@ -3608,6 +3608,47 @@ def build_video_filter(params):
     return None
 
 
+# ---------------------------------------------------------------------------
+# 轻量统一调色（P0-1）
+# ---------------------------------------------------------------------------
+# 为什么用 eq + colorbalance 而不是 LUT：lut3d 需要额外 .cube 资源，且不同 ffmpeg 构建
+# 对 LUT 采样精度/matrix 处理不一致；eq/colorbalance 是基础滤镜，任何构建都有，
+# 参数可读可调、成本极低（一帧一次线性运算）。
+# 强度克制是刻意的：这一步的目的是「把不同镜头的色调拉齐、去掉直出感的灰」，
+# 不是加滤镜味。对比/饱和的改动都压在个位数百分比，人眼感觉「干净」而非「调过色」。
+_COLOR_STYLES = {
+    # 清冷：压黄、提蓝、略降饱和——悬疑/惊悚/都市冷调片的安全牌。
+    # 实测（demo.mp4 有画面素材）：ΔU +4.7（偏蓝）、ΔV −3.5（去黄）、饱和 −4.3%、
+    # 亮度 +1.6，YMIN/YMAX 仍在 47/243（无高光溢出、无死黑）。
+    'cool': ('eq=contrast=1.075:brightness=0.004:saturation=0.95:gamma=0.975,'
+             'colorbalance=rs=-0.052:rm=-0.028:rh=-0.036:'
+             'bs=0.080:bm=0.042:bh=0.055'),
+    # 暖调：提红压蓝、略提饱和——怀旧/温情/年代感。
+    # 实测：ΔU −8.2（去蓝）、ΔV +3.0（偏暖）、饱和 +12.1%、亮度 +4.8，YMAX 243 不爆。
+    'warm': ('eq=contrast=1.06:brightness=0.004:saturation=1.10:gamma=1.002,'
+             'colorbalance=rs=0.036:rm=0.048:rh=0.055:'
+             'bs=-0.030:bm=-0.042:bh=-0.048'),
+}
+# 前端可能传中文、英文、大小写混写：统一归一化，避免「选了清冷却没效果」的哑失败
+_COLOR_ALIAS = {
+    'native': 'native', 'raw': 'native', 'none': 'native', 'auto': 'native',
+    '原片': 'native', '无': 'native', '原始': 'native', '': 'native',
+    'cool': 'cool', 'cold': 'cool', '清冷': 'cool', '冷': 'cool', '冷调': 'cool',
+    'warm': 'warm', '暖': 'warm', '暖调': 'warm', 'warmth': 'warm',
+}
+
+
+def color_style(params):
+    """调色风格：'native'(默认,原片零影响) / 'cool'(清冷) / 'warm'(暖调)。"""
+    v = str((params or {}).get('colorStyle') or '').strip()
+    return _COLOR_ALIAS.get(v.lower(), _COLOR_ALIAS.get(v, 'native'))
+
+
+def grade_filter(params):
+    """返回调色滤镜串；'原片'（默认）返回 None —— 保证默认输出与改动前逐字符一致。"""
+    return _COLOR_STYLES.get(color_style(params)) or None
+
+
 def video_encoder_label():
     """给前端展示当前实际生效的编码器。"""
     mode = video_encoder_cfg()

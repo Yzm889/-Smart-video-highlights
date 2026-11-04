@@ -107,6 +107,23 @@ def _display_factor(seg_len, v_len):
     return D / seg_len
 
 
+def attach_importance(params, progress, segs):
+    """把分析阶段落盘的剧情重要度接进 params['_importance']，供 BGM 情绪包络使用。
+
+    只在长度严格一致时采用：outline 是「镜头段」粒度、narr 是「解说节」粒度，
+    高密度剪辑聚合后两者长度不同，硬套索引会让配乐情绪整体错位——宁可不带。
+    返回新的 params（不原地改，避免污染调用方共享的字典）。
+    """
+    if (params or {}).get('_importance'):
+        return params
+    ol = (progress or {}).get('outline') or []
+    if not ol or len(ol) != len(segs or []):
+        return params
+    p = dict(params or {})
+    p['_importance'] = [str(o.get('importance') or 'advance') for o in ol]
+    return p
+
+
 def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, music_path=None, mode=None,
                     auto_cut=True, narr_map=None):
     """解说渲染阶段：按分镜剪辑(可选)→逐段配音→混音→烧字幕→配乐。
@@ -252,6 +269,8 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
 
     # ---- 第三阶段：按（剪辑后的）新时间轴定位配音 + 字幕窗口 ----
     up('混音+烧字幕+配乐', 60)
+    # [P0-2] 把「每段剧情重要度」带进混音阶段，供 BGM 情绪包络使用。
+    params = attach_importance(params, progress, segs)
     tts_paths = []
     voice_spans = _build_voice_spans(segs, voice_durs, tts_clips)
     for i in sorted(tts_clips.keys()):
@@ -594,6 +613,10 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     out = os.path.join(run_dir, 'vburn.mp4')
     sub_style = _build_subtitle_style(params)
     scale_filter = _w.build_video_filter(params)
+    # P0-1 统一调色：放在「拼接之后、烧字幕之前」——只算一次，全片色调一致；
+    # 且在字幕之前，白色字幕不会被 colorbalance 染上蓝/红色偏。
+    # 默认 '原片' 返回 None → 滤镜串与改动前逐字符一致（零影响）。
+    grade = _w.grade_filter(params)
     bitrate = params.get('bitrate') or None
     tier = params.get('qualityTier') or None
     transition = params.get('transition') or 'hard'   # 'hard' 硬切(默认) / 'crossfade' 段落边界 200ms 交叉淡化
@@ -604,7 +627,10 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         new_spans = raw
         srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips), params)
         esc = srt.replace('\\', '/').replace(':', '\\:')
-        vf = [f"subtitles='{esc}':force_style='{sub_style}'"]
+        vf = []
+        if grade:
+            vf.append(grade)
+        vf.append(f"subtitles='{esc}':force_style='{sub_style}'")
         if scale_filter:
             vf.append(scale_filter)
         cmd = ['-y', '-i', video_path, '-vf', ','.join(vf)]
@@ -674,11 +700,15 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
             _nxt = 'vxf' if k == n - 1 else f'x{k}'
             vparts.append(f"[{_vlabel}][sv{k}]xfade=transition=fade:duration={_FADE}:offset={_off:.3f}[{_nxt}]")
             _vlabel = _nxt
-        vparts.append(f"[{_vlabel}]subtitles='{esc}':force_style='{sub_style}'[vsub]")
     else:
         vlabels = ''.join(f'[sv{i}]' for i in range(n))
         vparts.append(f"{vlabels}concat=n={n}:v=1:a=0[vmid]")
-        vparts.append(f"[vmid]subtitles='{esc}':force_style='{sub_style}'[vsub]")
+        _vlabel = 'vmid'
+    # P0-1 调色：整片拼好后统一上一遍（一次运算、全片一致）；默认 native 不加，串完全不变
+    if grade:
+        vparts.append(f"[{_vlabel}]{grade}[vgrade]")
+        _vlabel = 'vgrade'
+    vparts.append(f"[{_vlabel}]subtitles='{esc}':force_style='{sub_style}'[vsub]")
     if scale_filter:
         vparts.append(f"[vsub]{scale_filter}[vout]")
     else:
@@ -716,8 +746,139 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     return out, new_spans, cut_sec
 
 
+# ---------------------------------------------------------------------------
+# P0-2 配乐情绪包络：让 BGM 跟着剧情起伏，而不是全程一条平线
+# ---------------------------------------------------------------------------
+# 为什么可以「零新增推理」：解说段落的情绪本来就已经算出来了（tts_engines.emotion_of
+# 与 prosody_for_tts 共用同一张关键词表），重要度标签也已经由 _beat_plan 落盘
+# （key/advance/transition/mood）。这里只是把这些现成信号旁路一份给混音用。
+#
+# 音量档位（相对基线 0.18）的取值不是拍脑袋：BGM 抬到 0.22 已接近人声可懂度阈值，
+# 再高就会盖字；压到 0.12 仍然「听得见但让位」。限幅写死在 [0.10, 0.24] 内，
+# 配合链尾 alimiter + loudnorm，总响度不会漂。
+_BGM_BASE = 0.18          # 基线（与改动前 volume=0.18 一致，保证「包络失效」时回到旧行为）
+_BGM_TIER = {
+    'hook': 0.225,        # 开场钩子：推起来抓人
+    'key': 0.205,         # 关键/高光：推进感
+    'tense': 0.200,       # 紧张/激动
+    'sad': 0.125,         # 悲伤：让位，留白
+    'soft': 0.145,        # 温柔：轻轻垫着
+    'transition': 0.140,  # 过渡/铺垫：让位给人声
+    'mood': 0.155,        # 氛围
+    'advance': 0.180,     # 推进（=基线）
+    'close': 0.105,       # 收束：收到最低
+}
+_BGM_LO, _BGM_HI = 0.10, 0.24   # 包络限幅，防止表达式写错导致忽大忽小/静音
+_BGM_RAMP = 0.45                # 换档渐变时长(s)：太短会有「音量台阶」的抽动感
+_BGM_HOOK_SEC = 7.0             # 开场钩子窗(s)
+
+
+def bgm_envelope(segs, narr, importance=None, vdur=0.0, enabled=True):
+    """按段落情绪/重要度生成 BGM 音量包络：[{start, end, vol, tier}]。
+
+    - segs: 与 narr 一一对应的 (start, end) 新时间轴（剪辑后的）
+    - narr: 每段解说词（可为空串）；情绪从中提取
+    - importance: 可选，与 narr 对齐的 'key'/'advance'/'transition'/'mood' 列表
+    - 返回按时间排序、已合并相邻同档的区段；enabled=False 或信息不足时返回 []（调用方回退旧行为）
+    """
+    if not enabled or not segs:
+        return []
+    n = min(len(segs), len(narr) if narr else len(segs))
+    if n <= 0:
+        return []
+    try:
+        from tts_engines import emotion_of
+    except Exception:
+        emotion_of = None
+    _IMP_TIER = {'key': 'key', 'advance': 'advance', 'transition': 'transition', 'mood': 'mood'}
+
+    def _base_tier(i, s0, txt, imp):
+        """单段的基础档位（不含开场钩子——钩子只作用于片头那一小段）。"""
+        emo = emotion_of(txt) if (emotion_of and txt) else '解说'
+        # 优先级：悲伤/温柔（人声最需要让位）> 关键/高光 > 紧张/激动 > 重要度兜底
+        if emo == '悲伤':
+            return 'sad'
+        if emo == '温柔':
+            return 'soft'
+        if imp == 'key':
+            return 'key'
+        if emo in ('紧张', '激动'):
+            return 'tense'
+        return imp or 'advance'
+
+    rows = []
+    for i in range(n):
+        try:
+            s0, s1 = float(segs[i][0]), float(segs[i][1])
+        except Exception:
+            continue
+        if s1 - s0 <= 0.05:
+            continue
+        txt = ''
+        if narr and i < len(narr):
+            txt = _strip_tts_markup(narr[i]) or ''
+        imp = ''
+        if importance and i < len(importance):
+            imp = _IMP_TIER.get(str(importance[i] or ''), '')
+        tier = _base_tier(i, s0, txt, imp)
+        # 开场钩子只覆盖「片头那一小段」：第一段若跨过钩子窗，就在窗口处切开，
+        # 不能让一个 15 秒的长开场把中段的高光/紧张一起吞成 hook 档
+        # （否则整片 BGM 是一条平线，包络等于没做）。
+        if i == 0 and s0 < _BGM_HOOK_SEC:
+            if s1 <= _BGM_HOOK_SEC:
+                rows.append([s0, s1, _BGM_TIER['hook'], 'hook'])
+            else:
+                rows.append([s0, _BGM_HOOK_SEC, _BGM_TIER['hook'], 'hook'])
+                rows.append([_BGM_HOOK_SEC, s1, _BGM_TIER.get(tier, _BGM_BASE), tier])
+            continue
+        rows.append([s0, s1, _BGM_TIER.get(tier, _BGM_BASE), tier])
+    if not rows:
+        return []
+    rows.sort(key=lambda r: r[0])
+    # 收束：最后一段若已经接近片尾，降到 close 档（留白收尾，避免音乐压着金句走）
+    if len(rows) >= 2 and (not vdur or rows[-1][1] >= vdur * 0.90):
+        rows[-1][2] = _BGM_TIER['close']
+        rows[-1][3] = 'close'
+    # 相邻同档合并：表达式里每个台阶都要多一对 clip()，能减就减
+    merged = [rows[0]]
+    for s0, s1, vol, tier in rows[1:]:
+        last = merged[-1]
+        if tier == last[3] and abs(s0 - last[1]) < 0.02:
+            last[1] = s1
+        else:
+            merged.append([s0, s1, vol, tier])
+    return [{'start': round(a, 3), 'end': round(b, 3), 'vol': round(v, 4), 'tier': t}
+            for a, b, v, t in merged]
+
+
+def bgm_volume_expr(env, base=_BGM_BASE, ramp=_BGM_RAMP):
+    """把包络区段转成 ffmpeg 的 volume 表达式（eval=frame）。
+
+    用「逐档叠加 clip 斜坡」而不是 if() 嵌套：
+      · clip((t-a)/ramp,0,1) 给出 0→1 的线性斜坡，天然没有台阶爆音；
+      · 每一档只是 +Δ / -Δ，表达式长度与段数线性相关，不会像 if() 嵌套那样指数膨胀；
+      · ffmpeg 的 volume 表达式支持 clip()，实测可用（见 tests/test_grade_bgm.py）。
+
+    env 为空时返回 None —— 调用方保持旧的 volume=<base> 常量，输出与改动前一致。
+    """
+    if not env:
+        return None
+    # 起点用基线，之后每一段在它开始处抬/降到目标值（相对前一档的差值）
+    expr = '%.4f' % base
+    prev = base
+    for seg in env:
+        tgt = float(seg['vol'])
+        delta = tgt - prev
+        if abs(delta) < 1e-4:
+            prev = tgt
+            continue
+        a = max(0.0, float(seg['start']) - (ramp / 2.0))   # 斜坡以换档点为中点，听感更自然
+        expr += '%+.4f*clip((t-%.3f)/%.3f,0,1)' % (delta, a, ramp)
+        prev = tgt
+    return expr
+
+
 def _build_subtitle_style(params):
-    """从params构建ffmpeg force_style字幕样式字符串。支持用户自定义。"""
     sub = params.get('subtitle') or {}
     font_size = int(sub.get('fontSize', 22))
     # 颜色：用户给#RRGGBB，转成ASS的&HBBGGRR格式
@@ -769,7 +930,12 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         vsub = os.path.join(run_dir, 'vsub.mp4')
         sub_style = _build_subtitle_style(params)
         # 导出选项：分辨率缩放 + 码率
-        vf_parts = [f"subtitles='{esc}':force_style='{sub_style}'"]
+        vf_parts = []
+        _grade = _w.grade_filter(params)
+        if _grade:
+            # 调色在字幕之前：白色字幕不被 colorbalance 染色
+            vf_parts.append(_grade)
+        vf_parts.append(f"subtitles='{esc}':force_style='{sub_style}'")
         scale_filter = _w.build_video_filter(params)
         if scale_filter:
             vf_parts.append(scale_filter)
@@ -806,7 +972,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
 
     inputs = ['-y', '-i', base_video]   # 0 = 字幕视频(画面)
     fparts = []
-    mixin = ''
+    orig_label = ''                     # 原声那一路的标签（没有原声时为空）
     next_idx = 1                        # 下一个音频输入索引（显式记录，避免 count("-i") 脆弱）
     if has_orig_audio:
         inputs += ['-i', video_path]    # 1 = 原视频(音频)
@@ -823,8 +989,9 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             fparts.append("[1:a]volume='%s':eval=frame[orig]" % expr)
         else:
             fparts.append('[1:a]volume=0.5[orig]')
-        mixin = '[orig]'
+        orig_label = '[orig]'
         next_idx += 1
+    tt_labels = []
     for k2, item in enumerate(tts_paths):
         np_, od, oe, _ov = _tt_span(item)
         inputs += ['-i', np_]
@@ -842,7 +1009,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         else:
             fparts.append(f'[{next_idx + k2}:a]aresample=44100,adelay={int(od * 1000)}|{int(od * 1000)},'
                           f'apad=whole_dur={vdur:.2f}[t{k2}]')
-        mixin += f'[t{k2}]'
+        tt_labels.append(f'[t{k2}]')
     if use_music:
         # 【任务4】配乐淡入淡出：默认 3 秒，视频短于 6 秒时长减半但不低于 0.5s，避免硬切。
         _fade = 3.0 if vdur >= 6.0 else max(0.5, vdur / 4.0)
@@ -856,24 +1023,63 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             _bgm_in = ['-stream_loop', str(_loop_n)] + _bgm_in
         inputs += _bgm_in
         _bgm_idx = next_idx + len(tts_paths)
-        # 基线音量略抬高到 0.18，给侧链闪避留出「压低到更轻」的余量（详见下方 sidechaincompress）
-        fparts.append(f'[{_bgm_idx}:a]aresample=44100,volume=0.18,'
+        # [P0-2] 情绪包络：用已算好的段落情绪/重要度生成随剧情起伏的音量曲线。
+        #   · 默认开启（params.bgmEnvelope 显式 false 才关），但只在「有分段信息」时生效；
+        #   · 生成失败/信息不足 → 回退旧的常量 volume=0.18（与改动前完全一致）；
+        #   · 表达式含逗号（clip(a,b,c)），必须用单引号包裹，否则 ffmpeg 会把逗号当链分隔符。
+        _env_expr = None
+        try:
+            if params.get('bgmEnvelope', True):
+                _imp = params.get('_importance') or []
+                _env = bgm_envelope(segs, narr, importance=_imp, vdur=vdur)
+                _env_expr = bgm_volume_expr(_env)
+                if _env_expr:
+                    _tiers = '/'.join(f"{e['tier']}@{e['start']:.1f}s" for e in _env[:8])
+                    _log.info(f'[DIAG] BGM情绪包络 {len(_env)}档: {_tiers}')
+        except Exception as _ee:
+            _log.info(f'[DIAG] BGM情绪包络生成失败，回退常量音量: {_ee}')
+            _env_expr = None
+        _bgm_vol = (f"volume='{_env_expr}':eval=frame" if _env_expr
+                    else f'volume={_BGM_BASE}')
+        # 有包络时淡入要快：3s 的慢淡入会把「开场钩子」推起来的力气直接抹平，
+        # 听感上就是「开头没音乐、后面才起来」。压到 1.2s，第一秒内就有声。
+        _fade_in = min(_fade, 1.2) if _env_expr else _fade
+        # 基线音量 0.18：给侧链闪避留出「压低到更轻」的余量（详见下方 sidechaincompress）
+        fparts.append(f'[{_bgm_idx}:a]aresample=44100,{_bgm_vol},'
                       f'atrim=0:{vdur:.2f},'
-                      f'afade=t=in:st=0:d={_fade:.2f},'
+                      f'afade=t=in:st=0:d={_fade_in:.2f},'
                       f'afade=t=out:st={_fade_out_st:.2f}:d={_fade:.2f}[bgmraw]')
         if tts_paths:
             # [P1-3] 侧链闪避（sidechain ducking）：用「全部解说配音混成的人声总线」驱动 BGM 增益，
             #         人声一开口 BGM 自动压低，人声停缓升。这是解说视频人声清晰度质的飞跃。
-            _vbus = ''.join(f'[t{k2}]' for k2 in range(len(tts_paths)))
-            fparts.append(f'{_vbus}amix=inputs={len(tts_paths)}:normalize=0,'
-                          f'aformat=sample_fmts=fltp:channel_layouts=stereo[vbus]')
+            #
+            # 【致命缺陷修复】人声总线必须 asplit 成两条：
+            #   侧链压缩要「读」人声做触发信号，最终 amix 也要「读」人声出声音；
+            #   而 ffmpeg 的 link label 是**一次性消费**的——同一个 [vbus] 被两处引用，
+            #   会直接报 `Stream specifier 't0' ... matches no streams / Error binding
+            #   filtergraph inputs/outputs`，整条音频链两级全败，
+            #   最后落到「丢弃配音」兜底 → 成片有画面有字幕有原声，唯独没有解说。
+            #   实测：开配乐 + 有配音时 100% 触发（只看代码看不出，只有真跑才会撞到）。
+            fparts.append(f'{"".join(tt_labels)}amix=inputs={len(tts_paths)}:normalize=0,'
+                          f'aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                          f'asplit=2[vbus][vmix]')
             fparts.append(f'[bgmraw][vbus]sidechaincompress='
                           f'threshold=0.04:ratio=6:attack=15:release=250:detection=peak[bgm]')
+            # 混音侧：人声走 vmix（[t*] 已被 amix 消费，不能再引用），BGM 走 bgm，原声照旧
+            mixin = orig_label + '[vmix][bgm]'
         else:
             # 无人声（纯配乐片段）：无需闪避，直通
             fparts.append('[bgmraw]anull[bgm]')
-        mixin += '[bgm]'
-    n_mix = len(tts_paths) + (1 if has_orig_audio else 0) + (1 if use_music else 0)
+            mixin = orig_label + '[bgm]'
+    else:
+        # 没有配乐：原声与各段配音各自独立进最终 amix
+        mixin = orig_label + ''.join(tt_labels)
+    # amix 的输入数必须按**实际接进去的标签**数算，不能按「配音文件数」：
+    #   · 无配乐时：[t0]..[tn] 各自独立进 mixin → 算 n 份；
+    #   · 有配乐时：人声先被 amix 成一条 vbus，再 asplit 出 vmix 参与最终混音 → 只算 1 份。
+    # 算错会直接 `inputs=N` 与实际标签数不符，ffmpeg 报错 → 整链降级到「丢弃配音」。
+    # 直接按 mixin 里实际拼出来的标签个数算，杜绝手工累加漂移。
+    n_mix = mixin.count('[')
     # amix 前统一采样率/声道，避免不同来源（SAPI 22k mono / 云端 TTS 24-48k / 原声 44.1k stereo）混音异常或音量失衡
     # 2026-09-08 质量升级：amix 后接 alimiter 防爆音 + loudnorm 统一响度到 -16 LUFS（流媒体标准）。
     # 【安全设计】loudnorm 链路整体失败时，先回退到「只 alimiter 不 loudnorm」（保留防爆音），
