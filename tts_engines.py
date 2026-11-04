@@ -687,6 +687,9 @@ def local_tts_speak(text, out_path):
     保证整段音色一致。
 
     返回 (ok, engine, actual_path)；SAPI/离线输出 wav，故实际路径后缀可能不同。"""
+    # 用户自带稿子/无标记文案：在这里注入韵律（只改送往引擎的文本）。
+    # 下游 narr/texts 与字幕仍用原文，用户稿子一个字都不动。
+    text = prosody_for_tts(text)
     cfg = tts_local_cfg()
     eng_set = cfg['engine']
     if eng_set == 'edge':
@@ -800,8 +803,10 @@ def local_tts_speak(text, out_path):
         if eng == 'edge':
             if not edge_tts_available():
                 continue
-            clean_text = _strip_tts_markup(text)
-            if edge_tts_speak(clean_text, out_path):
+            # 【不能剥标记】edge_tts_speak 靠 has_tts_markup 走 SSML 分支，
+            # 这里一剥，{情绪}/{停顿} 全部失效，9 种情感从来没被真正用过。
+            # 标记由 prosody_for_tts / _enhance_tts_markup 生成，均为合法配对。
+            if edge_tts_speak(text, out_path):
                 return _ok('edge', out_path)
             _tts_note_fail('edge')            # [2.1] edge 整轮重试仍失败 → 记录连续失败
             # edge-tts 命令会先建文件再写入，失败时留下 0 字节 mp3 赖在产物目录里，
@@ -827,8 +832,9 @@ def local_tts_speak(text, out_path):
             if not sherpa_tts_available():
                 continue
             wv = stem + '_sherpa.wav'
-            clean_text = _strip_tts_markup(text)
-            if sherpa_tts_speak(clean_text, wv, speed=speed):
+            # 传带标记文本：sherpa_tts_speak 内部按 {停顿:n} 分段并插入真实静音，
+            # 让离线模型也有「呼吸感」，而不是一口气平读到底。
+            if sherpa_tts_speak(text, wv, speed=speed):
                 return _ok('sherpa', wv)
             _tts_note_fail('sherpa')
         else:
@@ -924,7 +930,12 @@ def _sherpa_load():
     return tts
 
 def sherpa_tts_speak(text, out_path, speed=1.0):
-    """用离线模型合成中文配音（完全不联网）。成功返回 True。"""
+    """用离线模型合成中文配音（完全不联网）。成功返回 True。
+
+    离线模型没有 SSML 情感，但可以按 {停顿:n} 把一句拆成多个短句逐段合成、
+    中间插入真实静音——机械朗读最大的破绽就是「一口气念到底、没有呼吸」。
+    有了呼吸和句读，同样的模型听感会明显像人在讲，而不是机器在报字。
+    """
     if not (text or '').strip():
         return False
     d = os.path.dirname(os.path.abspath(out_path))
@@ -932,32 +943,43 @@ def sherpa_tts_speak(text, out_path, speed=1.0):
         os.makedirs(d, exist_ok=True)
     try:
         tts = _sherpa_load()
-        audio = tts.generate(text, speed=float(speed or 1.0))
-        if audio is None or not len(audio.samples):
-            return False
-        import soundfile as _sf            # 写 wav；没装则用 wave 模块兜底
-        _sf.write(out_path, audio.samples, audio.sample_rate)
+        try:
+            import numpy as _np
+        except ImportError:
+            _np = None
+        segs = prosody_segments(text)
+        if _np is not None and len(segs) > 1:
+            chunks, sr = [], None
+            for seg_txt, pause in segs:
+                a = tts.generate(seg_txt, speed=float(speed or 1.0))
+                if a is None or not len(a.samples):
+                    return False
+                sr = a.sample_rate
+                chunks.append(_np.asarray(a.samples, dtype='float32'))
+                if pause > 0:
+                    chunks.append(_np.zeros(max(1, int(pause * sr)), dtype='float32'))
+            samples = _np.concatenate(chunks)
+        else:
+            # 无 numpy / 单段：退回原行为，标记必须剥掉以免被念出来
+            audio = tts.generate(_strip_tts_markup(text), speed=float(speed or 1.0))
+            if audio is None or not len(audio.samples):
+                return False
+            samples, sr = audio.samples, audio.sample_rate
+        try:
+            import soundfile as _sf            # 写 wav；没装则用 wave 模块兜底
+            _sf.write(out_path, samples, sr)
+        except ImportError:
+            import wave, struct
+            with wave.open(out_path, 'wb') as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+                w.writeframes(b''.join(struct.pack('<h', int(max(-1.0, min(1.0, float(s))) * 32767))
+                                       for s in samples))
         # 强制刷盘：避免进程被杀时大文件丢失（诊断日志说成功但文件不存在的根因）
         try:
             with open(out_path, 'rb') as _ff:
                 os.fsync(_ff.fileno())
         except Exception:
             pass
-    except ImportError:
-        try:
-            import wave, struct
-            with wave.open(out_path, 'wb') as w:
-                w.setnchannels(1); w.setsampwidth(2); w.setframerate(audio.sample_rate)
-                w.writeframes(b''.join(struct.pack('<h', int(max(-1.0, min(1.0, s)) * 32767))
-                                       for s in audio.samples))
-            # 强制刷盘
-            try:
-                with open(out_path, 'rb') as _ff:
-                    os.fsync(_ff.fileno())
-            except Exception:
-                pass
-        except Exception:
-            return False
     except Exception:
         return False
     return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
@@ -1118,6 +1140,88 @@ def markup_to_chattts_text(text):
                 parts.append('[uv_break]')
         # emotion/prosody 标记在 ChatTTS 中通过文本本身的语气传达，不做特殊转换
     return ''.join(parts)
+
+# ---------------------------------------------------------------------------
+# 影视解说韵律注入：给「用户自带稿子」这类没有 TTS 标记的成品文案自动加情绪/停顿。
+# 只在送进合成引擎的文本里生效，不改 narr/texts、不改字幕、不改用户一个字。
+# 为什么必须有：用户稿子路线刻意跳过了 _enhance_tts_markup，结果即使换到
+# edge-tts 也只是「更好的嗓子平读」；而 local_tts_speak 又会把标记全剥掉，
+# SSML 情感分支从未被走到——两边叠加，成片必然是机械朗读。
+# ---------------------------------------------------------------------------
+_PROSODY_EMOTION = {
+    '紧张': ('枪', '开枪', '枪响', '扑', '低吼', '吼', '追', '逃', '血', '尸', '丧尸',
+             '倒地', '中枪', '猛地', '突然', '危险', '翻倒', '追捕', '逃窜', '开火',
+             '对峙', '倒下', '撞', '警报', '尖叫', '僵硬', '撕裂', '浑浊', '锁在'),
+    '悲伤': ('枯萎', '枯', '没有回应', '寂静', '空荡', '废墟', '走远', '再也', '腐烂',
+             '碎屑', '沉默', '消失', '睡过去', '死', '残破', '破碎'),
+    '温柔': ('别怕', '轻轻', '放轻', '缓缓', '小心', '小姑娘', '孩子', '安静',
+             '慢慢', '平淡', '熟稔', '一搭没一搭'),
+    '激动': ('炸开', '终于', '竟然', '轰', '爆发', '冲进', '掀开', '第一次'),
+}
+_PROSODY_PAUSE = {'，': 0.12, '、': 0.10, '；': 0.18, '：': 0.18,
+                  '。': 0.26, '！': 0.30, '？': 0.30, '—': 0.11}
+
+
+def _prosody_emotion(clause):
+    """给单个子句选情绪：命中 >=2 个同情绪关键词才切，否则用「解说」讲述感。"""
+    best, hits_max = '解说', 0
+    for name, kws in _PROSODY_EMOTION.items():
+        hits = sum(1 for k in kws if k in clause)
+        if hits >= 2 and hits > hits_max:
+            best, hits_max = name, hits
+    return best
+
+
+def prosody_for_tts(text):
+    """把无标记的解说句转成「仅用于合成」的带标记文本。
+
+    按子句贴情绪，不整句一刀切：一句里既有「放轻声音喊她」又有「皮肉烂穿」时，
+    整句贴一个情绪必然错。真实解说是整体平稳讲述、关键处才起情绪。
+    引号内的对白不插停顿、不拆开，免得把一句台词念碎。
+    """
+    s = str(text or '').strip()
+    if len(s) < 12 or has_tts_markup(s):
+        return text
+    clauses = []
+    quote = False
+    buf = []
+    for i, ch in enumerate(s):
+        if ch in '“‘「『':
+            quote = True
+        elif ch in '”’」』':
+            quote = False
+        buf.append(ch)
+        if not quote and i < len(s) - 1 and ch in _PROSODY_PAUSE:
+            clauses.append((''.join(buf), _PROSODY_PAUSE[ch]))
+            buf = []
+    if buf:
+        clauses.append((''.join(buf), 0.0))
+    if not clauses:
+        return text
+    out = []
+    for clause, pause in clauses:
+        out.append('{情绪:%s}' % _prosody_emotion(clause) + clause + '{/情绪}')
+        if pause > 0:
+            out.append('{停顿:%.2f}' % pause)
+    return ''.join(out)
+
+
+def prosody_segments(text):
+    """把带标记文本拆成 [(朗读文本, 停顿秒数)]，用于不支持 SSML 的离线引擎。"""
+    s = re.sub(r'\{/?(?:情绪|慢|快|高音|低音|大声|小声)(?::[^}]*)?\}', '',
+               str(text or ''))
+    parts = re.split(r'\{停顿\s*:\s*([0-9.]+)\}', s)
+    segs = []
+    for i in range(0, len(parts) - 1, 2):
+        try:
+            pause = float(parts[i + 1])
+        except (ValueError, IndexError):
+            pause = 0.0
+        segs.append((parts[i], pause))
+    if len(parts) % 2 == 1:
+        segs.append((parts[-1], 0.0))
+    return [(t, p) for t, p in segs if t.strip()]
+
 
 def has_tts_markup(text):
     """检查文案是否包含 TTS 标记。"""

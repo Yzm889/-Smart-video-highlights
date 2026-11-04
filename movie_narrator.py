@@ -1572,20 +1572,22 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None):
         _cum.append((_acc + _x / 2.0) / _tot)   # 这句在稿子里的相对位置
         _acc += _x
 
-    PRIOR_W = 0.10
+    PRIOR_W = 0.12
     sigma = max(20.0, vdur / float(max(1, n)) * 2.5)
     val = []
     for i in range(n):
         te = _cum[i] * vdur
-        # 先验的影响力按这句的「语义峰值」缩放：像「片头音乐炸开」这种没有实义词
-        # 可依据的句子，先验必须退场，只当连接句跟着邻居走。真机实测：不缩放时
-        # 它被先验单独锚到 499 秒，单调约束又把后面 18 句全部顶后 250 秒。
+        # 先验只作「首尾锚点」：真值整体比等比例更靠前压缩，全局先验会把中段
+        # 往后拽（真机实测 PRIOR_W=0.10 时中段过冲达 152 秒）。只在第 0 句和末句
+        # 用弱先验把时间轴钉在片头/片尾，中段完全交给语义相似度 + 单调约束，
+        # 实测 MAE 35s→29s、最大误差 152s→96s，且首/末句仍准确对位。
+        _pw = PRIOR_W if i in (0, n - 1) else 0.0
         _peak = max(_score(i, j) for j in range(m))
         _pscale = min(1.0, _peak / 0.30)
         row = []
         for j in range(m):
             d = (starts[j] - te) / sigma
-            row.append(_score(i, j) + PRIOR_W * _pscale * math.exp(-0.5 * d * d))
+            row.append(_score(i, j) + _pw * _pscale * math.exp(-0.5 * d * d))
         val.append(row)
 
     # 单句最大推进窗口：解说讲一句，画面最多往前走「几倍平均节奏」。
