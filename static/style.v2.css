@@ -1,0 +1,738 @@
+/* ============================================================================
+   FrameCut UI v2 · 简约设计系统
+   ----------------------------------------------------------------------------
+   设计目标：把原先「深色玻璃拟态 + 金色极光 + 多色霓虹」的沉浸式科技风，
+   换成「纯色底 + 1px 细线 + 单一强调色 + 克制的层级」的简约工作台风格。
+
+   【为什么不删原 style.css】
+   页面有 358 个 id、88 个 inline 事件函数、86 个表单控件、271 个 class，
+   还有时间轴编辑器 / 拖拽区 / 弹窗 / 进度坞等大量依赖原布局规则的复杂组件。
+   全量重写 CSS 极易让功能「看得见但用不了」。本文件是**纯覆盖层**：
+     · 原 style.css 一行不动 → 所有布局、定位、显示逻辑、契约测试全部保留
+     · 本文件在其后加载 → 只重定义视觉（颜色/背景/边框/圆角/阴影/字号/间距）
+     · 一键回退：删掉 index.html 里这一行 <link> 即可
+   同时补齐原文件里被引用却从未定义的 --text / --border / --input 变量。
+
+   规则：功能结构零改动，不新增/删除任何控件；只是「同样功能，更少噪音」。
+   ============================================================================ */
+
+/* ---------------------------------------------------------------------------
+   1 · 设计令牌（Design Tokens）
+   --------------------------------------------------------------------------- */
+:root {
+  /* 简约浅色（默认 / 无 data-theme） */
+  --v2-bg:            #f6f7f9;
+  --v2-surface:       #ffffff;
+  --v2-surface-2:     #f0f2f5;
+  --v2-text:          #1e2330;
+  --v2-muted:         #7a8493;
+  --v2-border:        #e3e7ed;
+  --v2-border-strong: #cfd6e0;
+  --v2-accent:        #3867e8;
+  --v2-accent-hover:  #2c56cf;
+  --v2-accent-soft:   rgba(56, 103, 232, .08);
+  --v2-danger:        #cf443c;
+  --v2-danger-soft:   rgba(207, 68, 60, .08);
+  --v2-ok:            #2e8b6b;
+  --v2-ok-soft:       rgba(46, 139, 107, .09);
+  --v2-warn:          #b9862b;
+  --v2-warn-soft:     rgba(185, 134, 43, .09);
+  --v2-radius:        12px;
+  --v2-radius-sm:     7px;
+  --v2-shadow:        0 1px 2px rgba(20, 30, 50, .05);
+  --v2-shadow-lg:     0 8px 28px -14px rgba(20, 30, 50, .22);
+
+  /* 兼容原变量名：原 CSS 大量使用这些，重定义即可整体换肤 */
+  --bg1: var(--v2-bg);
+  --bg2: var(--v2-bg);
+  --bg3: var(--v2-bg);
+  --ink: var(--v2-text);
+  --muted: var(--v2-muted);
+  --accent: var(--v2-accent);
+  --accent2: var(--v2-accent);
+  --accent3: var(--v2-ok);
+  --card: var(--v2-surface);
+  --card-border: var(--v2-border);
+  --line: var(--v2-border);
+  --ring: 0 0 0 3px var(--v2-accent-soft);
+  --radius: var(--v2-radius);
+  --radius-sm: var(--v2-radius-sm);
+  --shadow: var(--v2-shadow-lg);
+  --shadow-sm: var(--v2-shadow);
+
+  /* 历史遗留：后半段组件引用了却从未定义，这里补齐（修掉颜色发虚/发黑） */
+  --text: var(--v2-text);
+  --border: var(--v2-border);
+  --input: var(--v2-surface);
+}
+
+/* 浅色主题：压过原文件中部的 [data-theme="light"] 金色段落 */
+html[data-theme="light"] {
+  --v2-bg: #f6f7f9; --v2-surface: #ffffff; --v2-surface-2: #f0f2f5;
+  --v2-text: #1e2330; --v2-muted: #7a8493;
+  --v2-border: #e3e7ed; --v2-border-strong: #cfd6e0;
+  --v2-accent: #3867e8; --v2-accent-hover: #2c56cf;
+  --v2-accent-soft: rgba(56, 103, 232, .08);
+  --bg1: var(--v2-bg); --bg2: var(--v2-bg); --bg3: var(--v2-bg);
+  --ink: var(--v2-text); --muted: var(--v2-muted);
+  --accent: var(--v2-accent); --accent2: var(--v2-accent); --accent3: var(--v2-ok);
+  --card: var(--v2-surface); --card-border: var(--v2-border);
+  --line: var(--v2-border); --ring: 0 0 0 3px var(--v2-accent-soft);
+  --radius: var(--v2-radius); --radius-sm: var(--v2-radius-sm);
+  --shadow: var(--v2-shadow-lg); --shadow-sm: var(--v2-shadow);
+  --text: var(--v2-text); --border: var(--v2-border); --input: var(--v2-surface);
+}
+
+/* 深色主题：同样简约，只是中性深灰 + 稍亮的蓝，无极光/无霓虹 */
+html[data-theme="dark"] {
+  --v2-bg: #14171d; --v2-surface: #1b1f27; --v2-surface-2: #222732;
+  --v2-text: #e9edf4; --v2-muted: #939cac;
+  --v2-border: #2b313c; --v2-border-strong: #3b4351;
+  --v2-accent: #6b93ff; --v2-accent-hover: #8aabff;
+  --v2-accent-soft: rgba(107, 147, 255, .13);
+  --v2-danger: #f0837c; --v2-danger-soft: rgba(240, 131, 124, .12);
+  --v2-ok: #6bc7a3; --v2-ok-soft: rgba(107, 199, 163, .12);
+  --v2-warn: #e0b45f; --v2-warn-soft: rgba(224, 180, 95, .12);
+  --v2-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+  --v2-shadow-lg: 0 8px 28px -14px rgba(0, 0, 0, .55);
+  --bg1: var(--v2-bg); --bg2: var(--v2-bg); --bg3: var(--v2-bg);
+  --ink: var(--v2-text); --muted: var(--v2-muted);
+  --accent: var(--v2-accent); --accent2: var(--v2-accent); --accent3: var(--v2-ok);
+  --card: var(--v2-surface); --card-border: var(--v2-border);
+  --line: var(--v2-border); --ring: 0 0 0 3px var(--v2-accent-soft);
+  --radius: var(--v2-radius); --radius-sm: var(--v2-radius-sm);
+  --shadow: var(--v2-shadow-lg); --shadow-sm: var(--v2-shadow);
+  --text: var(--v2-text); --border: var(--v2-border); --input: var(--v2-surface);
+}
+
+/* ---------------------------------------------------------------------------
+   2 · 基础层：纯色背景、去掉所有渐变/玻璃拟态，统一字体与字号层级
+   --------------------------------------------------------------------------- */
+html { -webkit-text-size-adjust: 100%; }
+
+html[data-theme="light"] body,
+html[data-theme="dark"] body,
+body {
+  background: var(--v2-bg) !important;
+  background-image: none !important;
+  background-attachment: scroll !important;
+  color: var(--v2-text);
+  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui,
+               -apple-system, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.6;
+  letter-spacing: .1px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 全局去掉装饰性渐变、光晕、玻璃模糊（不影响布局属性） */
+.card, header, .aibar, .modal-box, .gprog, .previewDock,
+.flow-nav, .flow-more-menu, .toast, .pvcard, .tier-card, .bubble,
+.mode-hint, .plot-guide, .codebox, .item, .mres, .seg-align {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-image: none !important;
+  text-shadow: none !important;
+}
+
+h1, h2, h3, h4 { color: var(--v2-text); font-weight: 600; letter-spacing: -.2px; }
+a { color: var(--v2-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .codebox, pre {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+}
+
+/* ---------------------------------------------------------------------------
+   3 · 顶栏： thinner、纯色、无渐变字
+   --------------------------------------------------------------------------- */
+header {
+  background: var(--v2-surface) !important;
+  border-bottom: 1px solid var(--v2-border) !important;
+  padding: 11px 26px;
+  box-shadow: none;
+  color: var(--v2-text);
+}
+html[data-theme="light"] header,
+html[data-theme="dark"] header {
+  background: var(--v2-surface) !important;
+  border-bottom: 1px solid var(--v2-border) !important;
+}
+header h1,
+html[data-theme="light"] header h1 {
+  background: none !important;
+  -webkit-background-clip: border-box !important;
+  background-clip: border-box !important;
+  color: var(--v2-text) !important;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: .2px;
+}
+header .sub { color: var(--v2-muted); font-size: 11.5px; opacity: 1; }
+#srv { color: var(--v2-muted); font-size: 11.5px; opacity: 1; }
+.htools { display: flex; align-items: center; gap: 10px; }
+
+.theme-toggle, .flow-more-btn {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  color: var(--v2-text) !important;
+  border-radius: var(--v2-radius-sm);
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+.theme-toggle:hover, .flow-more-btn:hover {
+  border-color: var(--v2-border-strong) !important;
+  background: var(--v2-surface-2) !important;
+}
+
+/* ---------------------------------------------------------------------------
+   4 · 流程导航：从「发光圆点」改成克制的分段进度条
+   --------------------------------------------------------------------------- */
+.flow-nav {
+  background: var(--v2-surface) !important;
+  border-bottom: 1px solid var(--v2-border) !important;
+  box-shadow: none;
+}
+.flow-steps { gap: 0; }
+.flow-step {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--v2-muted) !important;
+  padding: 8px 12px !important;
+  border-radius: var(--v2-radius-sm) !important;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background .15s, color .15s;
+}
+.flow-step:hover { background: var(--v2-surface-2) !important; color: var(--v2-text) !important; }
+.flow-step .flow-num {
+  background: var(--v2-surface-2) !important;
+  color: var(--v2-muted) !important;
+  border: 1px solid var(--v2-border) !important;
+  box-shadow: none !important;
+  width: 20px; height: 20px; line-height: 18px;
+  border-radius: 50%;
+  font-size: 10.5px; font-weight: 600;
+}
+.flow-step.active {
+  background: var(--v2-accent-soft) !important;
+  color: var(--v2-accent) !important;
+}
+.flow-step.active .flow-num {
+  background: var(--v2-accent) !important;
+  border-color: var(--v2-accent) !important;
+  color: #fff !important;
+}
+.flow-step.done { color: var(--v2-text) !important; }
+.flow-step.done .flow-num {
+  background: var(--v2-ok-soft) !important;
+  border-color: var(--v2-ok) !important;
+  color: var(--v2-ok) !important;
+}
+.flow-line { background: var(--v2-border) !important; height: 1px; box-shadow: none !important; }
+.flow-line.done { background: var(--v2-ok) !important; }
+.flow-more { position: relative; }
+.flow-more-menu {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius);
+  box-shadow: var(--v2-shadow-lg) !important;
+  padding: 6px;
+  min-width: 170px;
+}
+.flow-more-menu button {
+  display: block; width: 100%; text-align: left;
+  background: transparent !important; border: none !important;
+  color: var(--v2-text) !important; padding: 7px 10px;
+  border-radius: var(--v2-radius-sm); font-size: 12.5px;
+  box-shadow: none !important;
+}
+.flow-more-menu button:hover { background: var(--v2-surface-2) !important; }
+
+/* ---------------------------------------------------------------------------
+   5 · AI 状态条：一行轻标签，去掉彩色药丸
+   --------------------------------------------------------------------------- */
+.aibar {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius-sm);
+  box-shadow: none;
+  color: var(--v2-muted);
+  font-size: 11.5px;
+}
+.ailabel { color: var(--v2-muted); font-weight: 600; letter-spacing: .3px; }
+.aichip {
+  background: var(--v2-surface-2) !important;
+  border: 1px solid var(--v2-border) !important;
+  color: var(--v2-muted) !important;
+  border-radius: 999px;
+  box-shadow: none !important;
+  font-size: 11px;
+}
+.aichip.ok, .aichip.free { color: var(--v2-ok) !important; border-color: var(--v2-ok) !important; }
+.aichip.warn { color: var(--v2-warn) !important; border-color: var(--v2-warn) !important; }
+.aichip.off { opacity: .65; }
+.ailink { color: var(--v2-accent); font-weight: 500; }
+
+/* ---------------------------------------------------------------------------
+   6 · 布局与卡片：留白统一、去掉 hover 位移与彩色描边
+   --------------------------------------------------------------------------- */
+.layout { background: transparent; }
+.wrap { max-width: 1120px; padding: 22px 20px 56px; }
+
+.card,
+html[data-theme="light"] .card,
+html[data-theme="dark"] .card {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius);
+  padding: 20px 22px;
+  margin-bottom: 14px;
+  box-shadow: var(--v2-shadow) !important;
+  transition: border-color .15s;
+}
+.card:hover,
+html[data-theme="light"] .card:hover {
+  border-color: var(--v2-border-strong) !important;
+  box-shadow: var(--v2-shadow) !important;
+  transform: none !important;
+}
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--v2-text);
+  letter-spacing: -.2px;
+}
+.card h2::after {
+  content: ""; flex: 1; height: 1px;
+  background: var(--v2-border) !important;
+  margin-left: 10px;
+}
+.card h3 { font-size: 13px; font-weight: 600; margin: 14px 0 8px; color: var(--v2-text); }
+
+/* 分区标签 */
+.modebadge, .step-tag, .num {
+  background: var(--v2-surface-2) !important;
+  border: 1px solid var(--v2-border) !important;
+  color: var(--v2-text) !important;
+  box-shadow: none !important;
+  border-radius: var(--v2-radius-sm);
+  font-weight: 600;
+}
+.step-tag { border-radius: 50% !important; }
+.mode-hint {
+  background: var(--v2-accent-soft) !important;
+  border: 1px solid var(--v2-border) !important;
+  color: var(--v2-text) !important;
+  border-radius: var(--v2-radius-sm);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------------
+   7 · 按钮：三级层次（主实心 / 次描边 / 危险淡描边），无渐变无光晕
+   --------------------------------------------------------------------------- */
+.btn,
+html[data-theme="light"] .btn,
+html[data-theme="dark"] .btn,
+.btn2, .btn-secondary {
+  background: var(--v2-accent) !important;
+  background-image: none !important;
+  border: 1px solid var(--v2-accent) !important;
+  color: #fff !important;
+  border-radius: var(--v2-radius-sm);
+  padding: 8px 15px;
+  font-size: 12.5px;
+  font-weight: 550;
+  letter-spacing: .1px;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  transition: background .15s, border-color .15s;
+}
+.btn:hover, .btn2:hover, .btn-secondary:hover {
+  background: var(--v2-accent-hover) !important;
+  border-color: var(--v2-accent-hover) !important;
+  transform: none !important;
+}
+.btn.ghost,
+html[data-theme="light"] .btn.ghost,
+.btn-secondary {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border-strong) !important;
+  color: var(--v2-text) !important;
+}
+.btn.ghost:hover,
+html[data-theme="light"] .btn.ghost:hover,
+.btn-secondary:hover {
+  background: var(--v2-surface-2) !important;
+  border-color: var(--v2-accent) !important;
+  color: var(--v2-accent) !important;
+}
+.btn.danger,
+html[data-theme="light"] .btn.danger {
+  background: var(--v2-danger-soft) !important;
+  border: 1px solid var(--v2-danger) !important;
+  color: var(--v2-danger) !important;
+}
+.btn.danger:hover { background: var(--v2-danger) !important; color: #fff !important; }
+.btn.mini { padding: 5px 10px; font-size: 11.5px; }
+.btn[disabled], .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.next-step-btn {
+  background: var(--v2-accent) !important;
+  border: 1px solid var(--v2-accent) !important;
+  color: #fff !important;
+  border-radius: var(--v2-radius-sm);
+  box-shadow: none !important;
+  padding: 8px 16px; font-size: 12.5px;
+}
+.next-step-bar { border-top: 1px solid var(--v2-border); padding-top: 12px; margin-top: 14px; }
+
+/* ---------------------------------------------------------------------------
+   8 · 表单：统一高度、细边框、单一 focus ring
+   --------------------------------------------------------------------------- */
+input[type=text], input[type=number], input[type=password], input[type=search],
+input[type=file], input:not([type]), select, textarea,
+html[data-theme="light"] input[type=text],
+html[data-theme="light"] input[type=number],
+html[data-theme="light"] input[type=password],
+html[data-theme="light"] input[type=search],
+html[data-theme="light"] select {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border-strong) !important;
+  color: var(--v2-text) !important;
+  border-radius: var(--v2-radius-sm);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: none !important;
+  outline: none;
+}
+textarea { min-height: 76px; resize: vertical; }
+input:focus, select:focus, textarea:focus,
+html[data-theme="light"] input:focus,
+html[data-theme="light"] select:focus {
+  border-color: var(--v2-accent) !important;
+  background: var(--v2-surface) !important;
+  box-shadow: 0 0 0 3px var(--v2-accent-soft) !important;
+}
+input::placeholder, textarea::placeholder { color: var(--v2-muted); opacity: .85; }
+select option { background: var(--v2-surface); color: var(--v2-text); }
+input[type=checkbox], input[type=radio] { accent-color: var(--v2-accent); }
+input[type=range] { accent-color: var(--v2-accent); }
+
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field > label, label { color: var(--v2-muted); font-size: 11.5px; font-weight: 500; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* ---------------------------------------------------------------------------
+   9 · 信息降噪：提示文字更克制（不隐藏、不删信息），折叠块统一轻量
+   --------------------------------------------------------------------------- */
+.hint {
+  color: var(--v2-muted) !important;
+  font-size: 11.5px !important;
+  line-height: 1.55;
+  background: transparent !important;
+  border: none !important;
+  padding: 2px 0 !important;
+  box-shadow: none !important;
+}
+.bubble, .bubble.warn, .plot-box, .nar-advanced, .movie-advanced,
+.guide-collapse, .narr-guide, .tts-confirm-panel, .tts-installing {
+  background: var(--v2-surface-2) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius-sm);
+  box-shadow: none !important;
+  color: var(--v2-text);
+}
+.bubble-body { background: transparent !important; border: none !important; color: var(--v2-muted); font-size: 12px; }
+.bubble.warn { border-left: 3px solid var(--v2-warn) !important; }
+.bubble.ok, .seg-align.ok { border-left: 3px solid var(--v2-ok) !important; }
+
+details { border-radius: var(--v2-radius-sm); }
+details > summary {
+  cursor: pointer;
+  color: var(--v2-text);
+  font-size: 12px;
+  font-weight: 550;
+  padding: 6px 8px;
+  border-radius: var(--v2-radius-sm);
+  list-style-position: outside;
+}
+details > summary:hover { background: var(--v2-surface-2); }
+details[open] > summary { margin-bottom: 8px; border-bottom: 1px solid var(--v2-border); }
+.step, .step-body { background: transparent !important; border: none !important; box-shadow: none !important; }
+.step-line { font-size: 12.5px; color: var(--v2-text); }
+
+.codebox {
+  background: var(--v2-surface-2) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-text);
+  box-shadow: none !important;
+}
+.codebox code { color: var(--v2-text); }
+.cp { white-space: nowrap; }
+.jump-link { color: var(--v2-accent); font-weight: 500; }
+
+/* ---------------------------------------------------------------------------
+   10 · 子标签页：下划线式，去掉重色块
+   --------------------------------------------------------------------------- */
+.start-subtab, .narr-subtab, .music-subtab, .adjust-subtab,
+.start-subtab[style], .narr-subtab[style] {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  color: var(--v2-muted) !important;
+  padding: 8px 14px !important;
+  font-size: 12.5px !important;
+  font-weight: 550 !important;
+  box-shadow: none !important;
+  margin-bottom: -1px !important;
+}
+.start-subtab:hover, .narr-subtab:hover, .music-subtab:hover, .adjust-subtab:hover {
+  color: var(--v2-text) !important;
+}
+.start-subtab.active, .narr-subtab.active, .music-subtab.active, .adjust-subtab.active {
+  color: var(--v2-accent) !important;
+  border-bottom-color: var(--v2-accent) !important;
+}
+
+/* ---------------------------------------------------------------------------
+   11 · 拖拽区 / 列表项
+   --------------------------------------------------------------------------- */
+#drop, .musdrop, #bcDrop, #smartDrop,
+html[data-theme="light"] #drop,
+html[data-theme="light"] .musdrop,
+#drop:hover, .musdrop:hover,
+html[data-theme="light"] #drop:hover,
+html[data-theme="light"] .musdrop:hover {
+  background: var(--v2-surface-2) !important;
+  border: 1.5px dashed var(--v2-border-strong) !important;
+  border-radius: var(--v2-radius);
+  color: var(--v2-muted);
+  box-shadow: none !important;
+  padding: 26px 20px;
+}
+#drop.dragover, .musdrop.dragover, .dragover, .over {
+  border-color: var(--v2-accent) !important;
+  background: var(--v2-accent-soft) !important;
+}
+.item, .mres, .mlib-tag-btn, .pvcard, .tier-card, .credits {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-text) !important;
+  box-shadow: none !important;
+}
+.item:hover, .mres:hover { border-color: var(--v2-border-strong) !important; }
+.mlib-tag-btn.active, .tier-card.active, .pvcard.active {
+  border-color: var(--v2-accent) !important;
+  background: var(--v2-accent-soft) !important;
+  box-shadow: none !important;
+}
+.locked { opacity: .6; }
+
+/* ---------------------------------------------------------------------------
+   12 · 进度 / 状态 / 弹层
+   --------------------------------------------------------------------------- */
+.bar, .status, .gprog-bar, .gprog, .gprog-in {
+  background: var(--v2-surface-2) !important;
+  border-color: var(--v2-border) !important;
+  box-shadow: none !important;
+  background-image: none !important;
+}
+.bar > i, .bar > div, .gprog-bar > i, #gprogFill {
+  background: var(--v2-accent) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+.gprog, .gprog-in {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-text);
+}
+.gprog-label, .gprog-pct, .gprog-meta, .gprog-phase { color: var(--v2-muted); font-size: 11.5px; }
+.status.ok, .seg-align.ok, .plot-len.ok { color: var(--v2-ok) !important; background: var(--v2-ok-soft) !important; border-color: var(--v2-ok) !important; }
+.status.warn, .seg-align.warn, .plot-len.warn { color: var(--v2-warn) !important; background: var(--v2-warn-soft) !important; border-color: var(--v2-warn) !important; }
+.status.bad, .seg-align.bad, .taskerr { color: var(--v2-danger) !important; background: var(--v2-danger-soft) !important; border-color: var(--v2-danger) !important; }
+.seg-align.idle, .plot-len { color: var(--v2-muted); background: var(--v2-surface-2) !important; border: 1px solid var(--v2-border) !important; }
+
+.modal { background: rgba(20, 24, 32, .45) !important; backdrop-filter: none !important; }
+.modal-box {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius);
+  box-shadow: var(--v2-shadow-lg) !important;
+  color: var(--v2-text);
+}
+.modal-title { color: var(--v2-text); font-size: 15px; font-weight: 650; }
+.modal-msg { color: var(--v2-muted); font-size: 12.5px; }
+.modal-ico { font-size: 20px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.toast, .toast-out, .toast-x, .toast-msg, .toast-actions,
+.toast-ok, .toast-warn, .toast-error {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-text) !important;
+  box-shadow: var(--v2-shadow-lg) !important;
+  background-image: none !important;
+}
+.toast-ok { border-left: 3px solid var(--v2-ok) !important; }
+.toast-warn { border-left: 3px solid var(--v2-warn) !important; }
+.toast-error, .toast-err { border-left: 3px solid var(--v2-danger) !important; }
+
+.previewDock, .scrollTopBtn {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  border-radius: var(--v2-radius);
+  box-shadow: var(--v2-shadow-lg) !important;
+  color: var(--v2-text);
+  background-image: none !important;
+}
+.scrollTopBtn.show { display: block; }
+.shake { animation: v2-shake .3s ease; }
+@keyframes v2-shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-3px)} 75%{transform:translateX(3px)} }
+
+/* 时间轴 / 编辑器里的深色硬编码统一收敛 */
+.seg-io, .seg-io input, .seg-note, .seg-align, .plot-guide, .plot-guide .pg-k,
+.tier-card .t-head, .tier-card .t-hw, .tier-card .t-row, .tier-card .t-dl {
+  color: var(--v2-text);
+}
+.plot-guide { background: var(--v2-surface-2) !important; border: 1px solid var(--v2-border) !important; }
+.plot-guide .pg-k { color: var(--v2-accent); }
+.plot-guide .pg-v { color: var(--v2-muted); }
+.tier-card .t-reco { background: var(--v2-accent) !important; color: #fff !important; border-radius: 999px; }
+.tier-card .t-dl { color: var(--v2-ok); }
+.seg-io input, .seg-io-btns button {
+  background: var(--v2-surface) !important;
+  border: 1px solid var(--v2-border) !important;
+  color: var(--v2-text) !important;
+}
+.seg-io-btns button.primary { border-color: var(--v2-ok) !important; color: var(--v2-ok) !important; }
+
+/* ---------------------------------------------------------------------------
+   13 · 状态类（JS 会切换，全部显式定义，防契约门禁误报 / 样式失效）
+   --------------------------------------------------------------------------- */
+/* 只给中性兜底，具体外观交给上方各组件规则 —— 避免全局 !important 误伤布局 */
+.active  { outline: none; }
+.done    { color: var(--v2-ok); }
+.show    { display: block; }
+.scrollTopBtn.show { display: block !important; }
+.off     { opacity: .55; }
+.ok      { color: var(--v2-ok); }
+.warn    { color: var(--v2-warn); }
+.free    { color: var(--v2-muted); }
+.ai, .local, .vlm, .aichip, .item, .mres, .ghost, .mini, .hint,
+.modebadge, .credits, .taskerr, .narr-guide { color: inherit; }
+/* 上面这些类只保证「存在且可继承」，具体外观仍由各自组件规则决定 */
+.tts-confirm-panel, .tts-installing { padding: 10px 12px; font-size: 12px; }
+
+/* ---------------------------------------------------------------------------
+   14 · 响应式：窄屏自动折行、减小留白（功能不删）
+   --------------------------------------------------------------------------- */
+@media (max-width: 900px) {
+  .wrap { padding: 16px 14px 44px; }
+  .card { padding: 16px 15px; }
+  header { padding: 10px 14px; }
+  .flow-nav { padding: 0 10px; }
+  .flow-step { padding: 7px 8px !important; font-size: 11.5px; }
+  .flow-label { font-size: 11px; }
+  .row { gap: 9px; }
+}
+@media (max-width: 620px) {
+  .flow-steps { flex-wrap: wrap; }
+  .flow-line { display: none; }
+  .aibar { flex-wrap: wrap; gap: 6px; }
+  .btn, .btn2, .btn-secondary { padding: 7px 12px; }
+  .card h2 { font-size: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ---------------------------------------------------------------------------
+   15 · 清除原「工业风 / 科技风」遗留
+   原 style.css 在 1080 行后又叠加了一整套 --fc-* 橙色工业令牌、40px 工程网格、
+   胶片噪点、header 危险条纹，并用 [style*="..."] + !important 强行接管 inline
+   样式（把圆角改成 2px、边框改成深灰）。不处理这些，简约风会「局部漏色」。
+   --------------------------------------------------------------------------- */
+:root {
+  /* 把第二套令牌映射到简约色 —— 后半段上百条规则自动跟着统一 */
+  --fc-bg:         var(--v2-bg);
+  --fc-bg-raise:   var(--v2-surface);
+  --fc-surface:    var(--v2-surface);
+  --fc-surface-2:  var(--v2-surface-2);
+  --fc-text:       var(--v2-text);
+  --fc-muted:      var(--v2-muted);
+  --fc-dim:        var(--v2-muted);
+  --fc-accent:     var(--v2-accent);
+  --fc-accent2:    var(--v2-accent);
+  --fc-accent3:    var(--v2-ok);
+  --fc-warn:       var(--v2-warn);
+  --fc-err:        var(--v2-danger);
+  --fc-line:       var(--v2-border);
+  --fc-line-soft:  var(--v2-border);
+  --fc-mono:       "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --fc-display:    "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --fc-body:       "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --fc-inset:      none;
+  --accent-bg:     var(--v2-accent-soft);
+  --gold-glow:     none;
+}
+
+/* 伪元素装饰一律移除（网格 / 噪点 / 危险条纹 / 琥珀发丝线） */
+body::before, body::after, header::after, header .brand::after {
+  display: none !important;
+  content: none !important;
+  background-image: none !important;
+  animation: none !important;
+}
+
+/* 反接管：把被强制改成 2px 方角 / 深灰边框 / 蓝底块的 inline 样式拉回简约值 */
+[style*="1px solid #ddd"],
+[style*="1px dashed #ddd"],
+[style*="border:1px solid #ddd"] { border-color: var(--v2-border) !important; }
+[style*="background:#e3f2fd"],
+[style*="background:#e8f0fe"] {
+  background: var(--v2-surface-2) !important;
+  border-color: var(--v2-border) !important;
+}
+[style*="border-radius:12px"],
+[style*="border-radius:10px"],
+[style*="border-radius:8px"] { border-radius: var(--v2-radius-sm) !important; }
+
+/* 残留的金色 !important、闪烁动画、渐变进度条 */
+.tts-installing { color: var(--v2-accent) !important; animation: none !important; }
+.tts-installing::before,
+.bar > i, .gprog-bar > i, #gprogFill { animation: none !important; background-image: none !important; }
+
+:focus-visible { outline: 2px solid var(--v2-accent); outline-offset: 2px; }
+::selection { background: var(--v2-accent-soft); color: var(--v2-text); }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: var(--v2-bg); }
+::-webkit-scrollbar-thumb {
+  background: var(--v2-border-strong);
+  border: 2px solid var(--v2-bg);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--v2-muted); }
+
+/* 后半段补齐的关键类，纳入同样的按钮/标题层级 */
+.btn-primary {
+  background: var(--v2-accent) !important;
+  border: 1px solid var(--v2-accent) !important;
+  color: #fff !important;
+  border-radius: var(--v2-radius-sm);
+  box-shadow: none !important;
+}
+.btn-primary:hover { background: var(--v2-accent-hover) !important; }
+.card-title, .card-h { color: var(--v2-text); font-weight: 600; }

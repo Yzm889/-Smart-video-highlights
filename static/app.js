@@ -17,7 +17,7 @@ window.addEventListener('error', function(e){
 });
 
 (function(){
-  const saved = localStorage.getItem('framecut_theme') || 'dark';
+  const saved = localStorage.getItem('framecut_theme') || 'light';
   applyTheme(saved);
 })();
 
@@ -30,7 +30,7 @@ function applyTheme(theme){
 }
 
 function toggleTheme(){
-  const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  const cur = document.documentElement.getAttribute('data-theme') || 'light';
   const next = cur === 'dark' ? 'light' : 'dark';
   applyTheme(next);
   localStorage.setItem('framecut_theme', next);
