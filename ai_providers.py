@@ -578,6 +578,22 @@ def subtitle_sync_report(segs, video_path):
         # 头部已判定整体后移 → 去掉尾部缺口那条（同源问题）
         msgs = [m for m in msgs if '字幕比视频早结束' not in m]
 
+    # ②b 字幕比视频长：有相当一批台词**起点就落在视频结束之后**。
+    # 这是尾部缺口的镜像情形，同样属于「错版」：字幕是更长版本（导演剪辑/未删减）
+    # 的，套在短版本视频上。① 抓不到它，因为 tail_gap 变成负数，一个分支都不进。
+    #
+    # 为什么不直接用 last - vdur：有些字幕文件末尾带一条时间轴乱写的译者鸣谢
+    # （比如 99:59:59），单看最后一条会把正常字幕误判成错版。改成数「落在片外的
+    # 台词条数」，一两条野数据淹没不掉，而真的长版本字幕是成批超出。
+    beyond = sum(1 for st in starts if st >= vdur)
+    if not _head_shift and beyond >= max(3, int(len(starts) * 0.02)):
+        level = 'bad'
+        msgs.append(
+            '⚠️ 有 %d 条台词（共 %d 条）的起点在视频结束之后 —— 这个字幕比视频长，'
+            '多半是「未删减版字幕配了删减版视频」，对白与画面的对应关系会整体错位。'
+            '建议换成与视频同版本的字幕。'
+            % (beyond, len(starts)))
+
     # ③ 覆盖率：视频大面积没有台词覆盖（中间断档多）→ 字幕可能是删减版
     covered = sum(max(0.0, e - s) for s, e in zip(starts, ends))
     ratio = covered / vdur if vdur > 0 else 0.0

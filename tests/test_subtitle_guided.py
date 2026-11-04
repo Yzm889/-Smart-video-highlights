@@ -335,6 +335,26 @@ def test_broken_timeline_is_warned(real_video):
     assert any('时间异常' in m for m in msgs), '脏时间轴未被提示: %r' % (msgs,)
 
 
+def test_subtitle_longer_than_video_is_bad(real_video):
+    """未删减版字幕配删减版视频：成批台词起点落在视频结束之后，必须报 bad。
+
+    【这条是端到端跑出来才发现的】原实现只有 `tail_gap = vdur - last` 一个方向，
+    字幕比视频长时 tail_gap 变负数，①②③④ 四个分支一个都不进 —— 完全静默。
+    而这正是错版的镜像情形：对白与画面的对应关系整体错位，界面却显示 ✅。
+    """
+    level, msgs, _g = A.subtitle_sync_report(_mk(220), real_video)   # 到 657s，超 97s
+    assert level == 'bad', '字幕比视频长被判 %s，这一类错版被完全放过了' % level
+    assert any('比视频长' in m for m in msgs), '文案没点明「字幕比视频长」: %r' % (msgs,)
+
+
+def test_few_stray_lines_beyond_video_are_silent(real_video):
+    """末尾一两条时间轴乱写的译者鸣谢（如 99:59:59）不许把正常字幕判成错版。"""
+    segs = _mk(186)
+    segs.append({'start': 99 * 3600.0, 'end': 99 * 3600.0 + 4, 'text': '本字幕由某某制作'})
+    level, msgs, _g = A.subtitle_sync_report(segs, real_video)
+    assert level == 'ok', '单条野数据把正常字幕误判成 %s: %r' % (level, msgs)
+
+
 def test_no_video_duration_means_no_judgement(tmp_path):
     """拿不到视频时长时不瞎判 —— 宁可不说，也不要凭猜测给出「字幕不匹配」。"""
     bogus = str(tmp_path / 'nope.mp4')
