@@ -554,6 +554,19 @@ def dispatch_movie(req, prog):
         _w.fail_task(prog, e)
 
 
+def _merge_user_script(params, script):
+    """把请求体里的用户稿子放进 params。
+
+    【为什么要单独搬一次】稿子以前只能靠「剧情」框间接喂给模型写稿，本地模型写不好，
+    用户就只能忍着。现在稿子是一等输入：有它就不调写稿模型，一个字都不改用户的稿。
+    """
+    p = dict(params or {})
+    s = str(script or '').strip()
+    if s:
+        p['user_script'] = s
+    return p
+
+
 def dispatch_movie_tts(req, prog):
     """Phase 1：生成解说稿+所有配音，暂停等用户确认。"""
     try:
@@ -563,7 +576,8 @@ def dispatch_movie_tts(req, prog):
         if vp is None and req.get('video'):
             raise RuntimeError('未收到视频（或上传会话已过期，请重新上传）')
         _final, diag = _w.narrate_movie(req.get('movie', ''), req.get('plot', ''), vp,
-                                     req.get('params', {}), run_dir, prog,
+                                     _merge_user_script(req.get('params', {}), req.get('script')),
+                                     run_dir, prog,
                                      music_path=_w._resolve_music(req.get('music')),
                                      tts_only=True)
         prog['diag'] = diag

@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=21">
+<link rel="stylesheet" href="/static/style.css?v=23">
 </head>
 <body>
 <header>
@@ -441,8 +441,22 @@
         <input id="narReq" placeholder="例：多点幽默 / 语气接地气 / 强调兄弟情"></div>
     </div>
 
+    <details class="bubble plot-box" style="margin-top:10px;" id="narScriptBox" open>
+      <summary><span class="step-tag">1</span> 我的解说稿　<span style="font-weight:400;color:var(--muted);">推荐 · 有稿子就完全不用 AI 写，直接按稿子剪</span></summary>
+      <div class="bubble-body">
+        <div class="plot-guide">
+          <div class="pg-row"><span class="pg-k">为什么</span><span class="pg-v">本地写稿模型达不到能用的水平（写出来像镜头清单）。<b>你自己写、或者用 DeepSeek 写好粘进来</b>，成片效果和市面解说没区别——因为稿子本身就是解说。</span></div>
+          <div class="pg-row"><span class="pg-k">怎么用</span><span class="pg-v">把整篇解说词粘进来即可，<b>不用分段、不用标注</b>：工具按句号自动切句，逐句配音、逐句找画面对上。<b>填了这里就跳过 AI 写稿和润色</b>，一个字都不改你的稿。</span></div>
+          <div class="pg-row"><span class="pg-k">写多长</span><span class="pg-v">按语速约 <b>每分钟 250~280 字</b>。想剪 5 分钟就写 1300 字左右。稿子多长，成片就多长。</span></div>
+        </div>
+        <textarea id="narScript" rows="12" placeholder="把整篇解说稿粘在这里，例如：&#10;开场是一个加油站。南方乡间的公路被太阳烤得发白，废弃的车辆横七竖八地堆在路边……&#10;瑞克·格莱姆斯，金县的副警长，推着一只空油桶走到加油机前。牌子上写着“NO GAS”。……&#10;&#10;（直接粘，不用管换行和分段，工具会自己切句）"
+          oninput="updateScriptHint()"></textarea>
+        <div id="narScriptHint" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>
+      </div>
+    </details>
+
     <details class="bubble plot-box" style="margin-top:10px;" id="narPlotBox" open>
-      <summary><span class="step-tag">1</span> 写剧情　<span style="font-weight:400;color:var(--muted);">必填 · AI 靠它决定怎么剪，这是全流程最关键的一步</span></summary>
+      <summary><span class="step-tag">或</span> 写剧情　<span style="font-weight:400;color:var(--muted);">没有稿子时才需要 · AI 靠它决定怎么剪；有稿子就只当参考</span></summary>
       <div class="bubble-body">
         <!-- 上手引导：非专业用户最大的卡点是「不知道该写什么、写多少」 -->
         <div class="plot-guide">
@@ -1250,7 +1264,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=76"></script>
+<script src="/static/app.js?v=78"></script>
 </body>
 </html>
 

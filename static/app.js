@@ -1561,6 +1561,22 @@ function _showPlotBrief(p){
 
 // 剧情输入框的实时反馈：非专业用户最大的卡点是「不知道写没写够」。
 // 与其事后报错，不如边写边告诉他够不够——这样第一次用的人不会卡在这一步。
+function updateScriptHint(){
+  const el = document.getElementById('narScript');
+  const box = document.getElementById('narScriptHint');
+  if(!el || !box) return;
+  const n = (el.value || '').trim().length;
+  if(n === 0){
+    box.textContent = '还没填稿子 —— 填了就用你的稿，不填就走 AI 写稿（效果差，不推荐）。';
+    return;
+  }
+  // 中文解说语速约 250~280 字/分钟（含停顿），据此估成片时长，比「多少字」直观
+  const min = (n / 270).toFixed(1);
+  box.textContent = '已填 ' + n + ' 字 ≈ 成片 ' + min + ' 分钟。'
+    + (n < 120 ? '偏短，只够十几秒，建议多写几句。' : '✓ 直接开始即可，AI 不会改动你的稿子。');
+}
+if(typeof window !== 'undefined'){ window.updateScriptHint = updateScriptHint; window.addEventListener('DOMContentLoaded', updateScriptHint); }
+
 function updatePlotHint(){
   const el = document.getElementById('narPlot');
   const box = document.getElementById('plotLenHint');
@@ -2753,6 +2769,8 @@ async function buildNarrate(){
   if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
   const ok = await preflight('narrate'); if(!ok) return;
   const go=$('narQuickBtn')||$('narGo'); go.disabled=true; $('narResult').style.display='none';
+  // 【用户稿子优先】填了稿子就完全不走 AI 写稿：稿子是成品，工具只负责按句找画面。
+  const userScript = ($('narScript') && $('narScript').value.trim()) ? $('narScript').value.trim() : '';
   let plot = ($('narPlot') && $('narPlot').value.trim()) ? $('narPlot').value.trim() : '';
   // 没有填剧情但填了主题/要求时，合并成剧情文本，走剧情驱动（质量更好）
   if(!plot){
@@ -2763,8 +2781,10 @@ async function buildNarrate(){
   // 【流程收敛 2026-10-29】剧情必填。
   // 过去剧情留空时会退化成「AI 识别画面」模式：AI 不知道这片子讲什么，只能凭画面瞎猜，
   // 于是按模板均匀分段——这正是用户看到的「乱剪」。现在只有一条流程：先写剧情再剪辑。
-  if(!plot){
+  if(!userScript && !plot){
     go.disabled=false;
+    const sb=$('narScriptBox');
+    if(sb){ sb.open=true; sb.classList.add('shake'); setTimeout(()=>sb.classList.remove('shake'),600); }
     const pb=$('narPlotBox');
     if(pb){ pb.open=true; pb.classList.add('shake'); setTimeout(()=>pb.classList.remove('shake'),600); }
     const el=$('narPlot'); if(el) el.focus();
@@ -2790,6 +2810,7 @@ async function buildNarrate(){
                          bitrate: ($('exportBitrate')||{}).value || '',
                          qualityTier: ($('exportQualityTier')||{}).value || 'balanced',
                          transition: ($('exportTransition')||{}).value || 'hard'} };
+  if(userScript){ body.script = userScript; }  // 用户稿子：后端跳过写稿/润色，直接按句切
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
   if($('narBgm').checked && MUSIC){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
@@ -2797,7 +2818,8 @@ async function buildNarrate(){
   }
   try{
     // 有视频+剧情时走两步走：先生成配音，用户确认后再合成
-    const api = (plot && NAR_VIDEO) ? '/api/movie_tts' : (plot ? '/api/narrate_movie' : '/api/narrate');
+    const api = ((userScript || plot) && NAR_VIDEO) ? '/api/movie_tts'
+              : (plot ? '/api/narrate_movie' : '/api/narrate');
     snapshotParams('narrate');   // [P2] 发起即记住参数，下次一键回填
     const r=await fetch(api,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const out=await r.json();
