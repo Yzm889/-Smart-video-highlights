@@ -208,21 +208,29 @@ def _plot_brief(frames, per_seg, params):
     else:
         dlg_idx = [0]
     dlg = []
+    _srcs = []
+    if isinstance(params, dict):
+        _srcs = params.get('_dlg_src') or []
     for j in dlg_idx:
         s0, s1, txt = per_seg[j]
         t = (txt or '').strip()
-        dlg.append('%s-%s秒 台词：%s' % (int(s0), int(s1), t[:100] if t else '(无台词画面)'))
+        # 来源标注只进提示词，不进 per_seg 数据流（下游 20+ 处直接解包 3 元组）
+        _src = _srcs[j] if j < len(_srcs) else 'asr'
+        _label = '画面字幕（可能含错字，仅作辅助）' if _src == 'onscreen' else '台词'
+        dlg.append('%s-%s秒 %s：%s' % (int(s0), int(s1), _label,
+                                      t[:100] if t else '(无台词画面)'))
     theme = (params.get('theme') or '').strip()
     name = (params.get('name') or '').strip()
     sys = '你是资深影视解说编辑，擅长从若干关键画面与台词重构一段视频的完整剧情。'
-    prompt = ('以下是同一段视频中按时间先后排列的关键画面，以及对应时段的台词（台词可能含识别误差，但能帮助理解剧情）。\n'
+    prompt = ('以下是同一段视频中按时间先后排列的关键画面，以及对应时段的台词。\n'
+              '台词分两类：「台词」来自语音识别（较可靠）；「画面字幕」来自画面识别（可信度低）。\n'
               '请回答：\n'
               '1) 这是一段什么内容（影视剧片段 / 纪录片 / 口播 / 风光等）；\n'
               '2) 如果明显来自某部影视作品，请点出片名与年代背景；无法确定时务必写明“无法确认片名”，不要编造；\n'
               '3) 重点：结合台词与画面，把这段讲的具体剧情事件写清楚——人物是谁、身在何处、在做什么、'
               '台词里透露了哪些冲突或信息（例如借钱/赶路/争吵/求助等），结果如何；\n'
-              '4) 如果画面上有字幕（烧在画面里的文字，如底部白字/对话气泡），'
-              '请把字幕文字也抄出来——硬字幕的片子只能靠它拿台词；\n'
+              '4) 标注「画面字幕」的文本可能含台标错字或臆造，可信度低于「台词」；'
+              '只作辅助参考，不得据此推断片名、年代、人物关系或剧情事实；\n'
               '5) 最后用 4~6 句话完整概括这段视频的剧情（供后续解说使用）。\n')
     if name:
         prompt += '\n视频文件名：' + name
@@ -530,6 +538,37 @@ def _map_lines_to_segs(lines, n):
     return out
 
 
+# 台标 / 水印 / 推广语：VLM 读画面字幕时极易把这些当成「台词」抄回来。
+# 它们会与真实 ASR 台词同质合并进 per_seg，污染剧情理解、分镜规划与声画对齐。
+# 只拦高置信度伪字幕，宁可漏拦也不误删真实对话（硬字幕片仍要靠这一路拿台词）。
+_ONSCREEN_BLACKLIST = (
+    '点点关注', '图灵影视', '字幕组', '请关注', '关注我', '加关注', '点赞', '订阅',
+    '更多精彩', '下集更精彩', '未完待续', '影视剪辑', '禁止转载', '版权所有',
+    '高清资源', '微信公众号', 'QQ群', '本视频由', '素材来自', '仅供学习',
+)
+
+
+def _clean_onscreen_text(txt, extra=None):
+    """清洗 VLM 从画面抄回的「字幕」：滤掉台标/水印/推广语与臆造残句。
+
+    返回清洗后的文本；判定为垃圾则返回 ''。extra 可传 ai_config.json 里的
+    onscreen_blacklist（用户自定义词表），不配则只用内置表。
+    """
+    t = str(txt or '').strip()
+    if not t or t in ('(无字幕)', '（无字幕）', '无字幕', 'N/A', '无', 'none'):
+        return ''
+    if len(t) < 2:
+        return ''
+    # 纯符号 / 纯数字（含全角数字）不算对话
+    core = ''.join(ch for ch in t if ch.isalnum())
+    if not core or core.isdigit():
+        return ''
+    for w in tuple(_ONSCREEN_BLACKLIST) + tuple(extra or []):
+        if w and w in t:
+            return ''
+    return t
+
+
 def _read_onscreen_subtitles(frames, per_seg, max_seg=12):
     """让 VLM 读出画面里**烧录的字幕文字** → {段下标: 字幕文本}。失败返回 {}。
 
@@ -551,15 +590,21 @@ def _read_onscreen_subtitles(frames, per_seg, max_seg=12):
         step = (len(idxs) - 1) / float(max_seg - 1)
         idxs = sorted(set(idxs[int(i * step)] for i in range(max_seg)))
     img_list = [frames[i] for i in idxs]
-    sys_ = '你是视频字幕识别助手，只抄录画面里出现的字幕文字。'
+    sys_ = '你是视频字幕识别助手，只抄录画面里出现的对话字幕文字。'
     prompt = ('下面是同一段视频按时间顺序抽取的画面（第1张对应第1段，依此类推）。\n'
-              '请逐段抄录画面里出现的**字幕文字**（底部/中间的白色描边字、对话气泡等）。\n'
+              '只抄录画面**底部中央字幕带**的对话字幕（白色描边字、对话气泡）。\n'
+              '四角台标、片名水印、滚动推广条、点赞关注、UI 按钮等文字一律忽略，'
+              '这些不是台词，遇到就写「(无字幕)」。\n'
               '严格按顺序每段一行，格式严格为「第k段: 字幕文字」，k 从 1 开始递增。\n'
-              '该段没有字幕就写「第k段: (无字幕)」；不要描述画面、不要推测台词。')
+              '该段没有字幕就写「第k段: (无字幕)」；不要描述画面、不要推测台词、不要编造。')
     try:
         out = vlm_chat_multi(img_list, prompt, system=sys_, timeout=240) or ''
     except Exception:
         return {}
+    try:
+        _extra = load_ai_config().get('onscreen_blacklist') or []
+    except Exception:
+        _extra = []
     got = {}
     for l in out.splitlines():
         m = _re.match(r'^第(\d+)段[:：]\s*(.+)$', l.strip())
@@ -568,11 +613,12 @@ def _read_onscreen_subtitles(frames, per_seg, max_seg=12):
         k = int(m.group(1))
         if not (1 <= k <= len(idxs)):
             continue
-        txt = m.group(2).strip()
-        if txt and txt not in ('(无字幕)', '（无字幕）', '无字幕'):
+        txt = _clean_onscreen_text(m.group(2).strip(), extra=_extra)
+        if txt:
             got[idxs[k - 1]] = txt
     if got:
-        _note_progress_warning('已从画面字幕读出 %d 段台词（硬字幕无法直接提取，由视觉模型读出）' % len(got))
+        _note_progress_warning('已从画面字幕读出 %d 段台词（已过滤台标/水印；'
+                               '硬字幕无法直接提取，由视觉模型读出）' % len(got))
     return got
 
 
@@ -1346,6 +1392,9 @@ def _condense_segs(fine_segs, asr, params, plot=None, beat_plan=None, frames=Non
     has_dlg = [bool(_asr_text_in(asr, s, e).strip()) for (s, e) in fine_segs]
     if beat_plan is None and (_local_model_available() or _w.vlm_enabled()):
         per_seg = [(s0, s1, _asr_text_in(asr, s0, s1)) for (s0, s1) in fine_segs]
+        # 台词来源映射：asr=语音识别 / onscreen=画面字幕 / none=无。
+        # 与 per_seg 等长平行维护，**不改 3 元组结构**（下游 20+ 处直接解包）。
+        _dlg_src = ['asr' if (t or '').strip() else 'none' for _s0, _s1, t in per_seg]
         # 硬字幕兜底：ASR 台词覆盖不足一半时（常见于字幕烧进画面、语音不可识别），
         # 让 VLM 从画面里读字幕补进台词轨——否则剧情理解与写稿都缺台词依据（=乱剪）。
         if frames:
@@ -1358,6 +1407,13 @@ def _condense_segs(fine_segs, asr, params, plot=None, beat_plan=None, frames=Non
                 if _subs:
                     per_seg = [(s0, s1, (t or '').strip() or _subs.get(i, ''))
                                for i, (s0, s1, t) in enumerate(per_seg)]
+                    # 只有原本无台词、被画面字幕补位的段才标 onscreen；ASR 永远优先
+                    for i in range(len(per_seg)):
+                        if _dlg_src[i] == 'none' and (per_seg[i][2] or '').strip():
+                            _dlg_src[i] = 'onscreen'
+        # 来源只用于提示词可信度标注，不污染业务参数语义（本函数后半段只用这两个调用）
+        params = dict(params or {})
+        params['_dlg_src'] = _dlg_src
         if plot is None and frames:
             plot = _plot_brief(frames, per_seg, params)
         beat_plan = _beat_plan(per_seg, plot, params)
