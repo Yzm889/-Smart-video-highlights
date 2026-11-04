@@ -3,7 +3,7 @@
 import os, json, threading, time
 # ---- 跨模块依赖（拆分后显式导入） ----
 from cache_utils import HERE, WORKDIR
-from ffmpeg_utils import AbortError, PROGRESS, _TLS, ffmpeg_run
+from ffmpeg_utils import AbortError, PROGRESS, _TLS, ffmpeg_run, probe_duration
 
 # 本来在 webui 模块级、仅供本模块使用的常量（随迁移）；webui 侧通过 re-export 保持旧命名空间
 AI_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_config.json')
@@ -487,12 +487,136 @@ def _asr_collapse_repeats(segs, min_run=2):
     return out
 
 
+def _report_subtitle_sync(segs, video_path):
+    """把字幕-视频版本校验结果写进任务 warnings；'ok' 时静默。
+
+    只走 _note_progress_warning（与本文件其它提示的惯例一致），不引入 logger：
+    这几条提示是给用户看的，不是给排查用的。
+    """
+    try:
+        level, msgs, _gap = subtitle_sync_report(segs, video_path)
+    except Exception:
+        return
+    if level == 'ok' or not msgs:
+        return
+    for m in msgs:
+        _note_progress_warning(m)
+
+
+def subtitle_sync_report(segs, video_path):
+    """检查字幕时间轴与视频是否**同一版本**，返回 (level, messages, offset_hint)。
+
+    【为什么必须查这一项】字幕路线最大的优点是不幻觉，但它有一个专属失效模式
+    **错版**：内容全对，时间对不上。典型三种：
+      · 视频无删减、字幕是删减版 → 字幕只覆盖前 25 分钟，后 5 分钟没台词
+      · 视频是 WEB 版（片头有平台 logo + 片头曲）、字幕是 BD 版 → 全部台词整体偏移
+      · 帧率不同（25 vs 23.976）→ 越往后错得越多
+    前两种能靠数值检查抓出来；第三种（缓慢累积漂移）本地无法可靠判断，不假装能查。
+
+    「硬字幕」会读错字，但读的就是这一帧；「错版字幕」每个字都对，读的却是别的时刻。
+    后者更难发现，所以这里宁可多提示，也不要静默产出剧情断层的成片。
+
+    level: 'ok' / 'warn' / 'bad'；messages 面向用户，直接进任务 warnings；
+    offset_hint 是估算的整体偏移秒数（无把握时为 0.0，绝不猜）。
+    """
+    msgs = []
+    if not segs:
+        return 'ok', msgs, 0.0
+    vdur = 0.0
+    try:
+        vdur = probe_duration(video_path) or 0.0
+    except Exception:
+        vdur = 0.0
+    if vdur <= 1.0:
+        return 'ok', msgs, 0.0        # 拿不到时长就不瞎判，宁可不说
+
+    starts, ends = [], []
+    for s in segs:
+        try:
+            starts.append(float(s.get('start', 0) or 0))
+            ends.append(float(s.get('end', 0) or 0))
+        except (ValueError, TypeError):
+            continue
+    if not starts:
+        return 'ok', msgs, 0.0
+    first, last = min(starts), max(ends)
+
+    level = 'ok'
+    _head_shift = False
+    # ① 尾部缺口：字幕结束得比视频早太多 → 后半段没台词（删减版最典型）
+    # 阈值定得比"片尾正常空档"大：片尾常有无人声的长镜头/字幕表/片尾曲，
+    # 差 10%~20% 秒属于正常。误报会让用户习惯性无视警告，比不报更糟。
+    tail_gap = vdur - last
+    if tail_gap > max(60.0, vdur * 0.15):
+        level = 'bad'
+        msgs.append(
+            '⚠️ 字幕只到 %s，视频长 %s，后半段差 %s —— 这多半是「删减版字幕配了完整版视频」，'
+            '结局段会没有台词依据。建议换成与视频同版本的字幕。'
+            % (_fmt_mmss(last), _fmt_mmss(vdur), _fmt_mmss(tail_gap)))
+    elif tail_gap > max(90.0, vdur * 0.30):
+        level = 'warn'
+        msgs.append('提示：字幕比视频早结束 %s（若片尾是长镜头/无人声段落，可忽略）'
+                    % _fmt_mmss(tail_gap))
+
+    # ② 头部空白：字幕迟迟不开始 → 可能缺片头，导致整体后移
+    # 90 秒是常见片头长度（平台 logo + 片头曲）；达到它就值得怀疑（用 >= 不用 >：
+    # 整 90 秒的偏移正是最典型的情况，卡在边界上漏判等于这道检查白做）。
+    # 注意：整体后移会让片尾也自然提前，所以判定为头部偏移后就不再重复报尾部缺口
+    # （同一个病根报两条，用户会以为是两个问题）。
+    if first >= max(90.0, vdur * 0.10):
+        level = 'bad'
+        _head_shift = True
+        msgs.append(
+            '⚠️ 字幕从 %s 才开始，前 %s 完全没有台词 —— 可能视频片头（平台 logo/片头曲）'
+            '比字幕版本长，导致**全部台词整体偏移**。成片可能出现「画面与旁白错位」。'
+            % (_fmt_mmss(first), _fmt_mmss(first)))
+    elif first > 45.0:
+        level = 'warn'
+        msgs.append('提示：字幕 %s 才开始（片头较长？若台词确实从这时说起可忽略）'
+                    % _fmt_mmss(first))
+    if _head_shift and len(msgs) > 1:
+        # 头部已判定整体后移 → 去掉尾部缺口那条（同源问题）
+        msgs = [m for m in msgs if '字幕比视频早结束' not in m]
+
+    # ③ 覆盖率：视频大面积没有台词覆盖（中间断档多）→ 字幕可能是删减版
+    covered = sum(max(0.0, e - s) for s, e in zip(starts, ends))
+    ratio = covered / vdur if vdur > 0 else 0.0
+    if 0 < ratio < 0.15 and vdur > 60:
+        if level == 'ok':
+            level = 'warn'
+        msgs.append('提示：字幕只覆盖全片 %.0f%% 的时长（%d 条）。若这是对话稀疏的片种可忽略；'
+                    '否则说明字幕与视频版本可能不一致。' % (ratio * 100, len(segs)))
+
+    # ④ 时间轴自身异常：乱序/重叠/零长，会让吸附与对齐拿到脏锚点
+    bad_rows = sum(1 for s, e in zip(starts, ends) if e <= s)
+    if bad_rows:
+        if level == 'ok':
+            level = 'warn'
+        msgs.append('提示：字幕里有 %d 条时间异常（结束≤开始），已按解析顺序跳过其锚点。'
+                    % bad_rows)
+
+    return level, msgs, tail_gap
+
+
+def _fmt_mmss(sec):
+    """秒 → '12:34'。只用于提示文案，留空也不影响流程。"""
+    try:
+        s = int(round(float(sec)))
+    except (ValueError, TypeError):
+        return '--:--'
+    if s < 0:
+        s = 0
+    return '%d:%02d' % (s // 60, s % 60) if s < 3600 else '%d:%02d:%02d' % (s // 3600, s % 3600 // 60, s % 60)
+
+
 def asr_segments(video_path, progress=None, pct_range=None):
     """本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
     自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
 
     **优先用视频内嵌字幕轨**（人工校对，比 ASR 准）；没有字幕轨才走语音识别。
     用了哪种来源会写进当前任务的 warnings，用户在结果里能直接看到。
+    用字幕时还会做一次「字幕与视频是否同版本」的校验（见 subtitle_sync_report）：
+    错版字幕不会产出幻觉，但会让旁白与画面整体错位，且看起来一切正常，必须提示出来。
 
     progress / pct_range：可选。传了就逐段推进进度并响应取消——
     旧实现一次性消费 transcribe 的生成器，长视频（十几分钟）转写期间进度条
@@ -504,6 +628,7 @@ def asr_segments(video_path, progress=None, pct_range=None):
         _subs = None
     if _subs:
         _note_progress_warning('台词来源：视频内嵌字幕轨（%d 条，比语音识别更准）' % len(_subs))
+        _report_subtitle_sync(_subs, video_path)
         return _subs
     try:
         _ext = _external_subtitle_segments(video_path)
@@ -511,6 +636,7 @@ def asr_segments(video_path, progress=None, pct_range=None):
         _ext = None
     if _ext:
         _note_progress_warning('台词来源：同目录外挂字幕文件（%d 条，比语音识别更准）' % len(_ext))
+        _report_subtitle_sync(_ext, video_path)
         return _ext
     try:
         from faster_whisper import WhisperModel

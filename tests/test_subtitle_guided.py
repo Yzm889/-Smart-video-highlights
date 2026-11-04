@@ -22,6 +22,8 @@ B. 吸附不许降低覆盖率：点数不变、最大空档不显著变大。
 import os
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -250,3 +252,111 @@ def test_subtitle_field_does_not_collide_with_style_params():
         '字幕文件必须从 subtitle_file 取，不能与 subtitle(样式) 混用'
     assert "_save_user_subtitle(req.get('subtitle')" not in src, \
         '有人把字幕文件接到 subtitle(样式) 上了，会覆盖用户字幕样式'
+
+
+# --------------------------------------------------------------------------
+# 四、字幕-视频「版本一致性」校验
+#
+# 【为什么需要这一节】字幕路线不幻觉，但它有一个专属失效模式：**错版**。
+# 内容全对、时间对不上。典型三种：
+#   · 视频无删减、字幕是删减版 → 后半段没台词
+#   · 视频是 WEB 版（片头有平台 logo+片头曲）、字幕是 BD 版 → 全部台词整体偏移
+#   · 帧率不同（25 vs 23.976）→ 越往后错得越多（本地查不出来，不做假装）
+# 前两种能靠数值抓出来。抓不住的表现就是「成片后半段莫名其妙 / 旁白与画面错位」，
+# 而界面上只显示一句 ✅「台词来源：外挂字幕（比语音识别更准）」。
+#
+# 阈值必须两头兼顾：漏判会让成片错，误报会让人习惯性无视警告（比不报更糟）。
+# 所以「片尾正常长空镜」必须静默，「整 90 秒偏移」必须报警。
+# --------------------------------------------------------------------------
+
+VD = 560.0   # 与 _e2e_slice.mp4 实测时长一致（560.18s）
+
+
+def _mk(n, step=3.0, off=0.0, dur=2.4):
+    return [{'start': off + i * step, 'end': off + i * step + dur, 'text': '台词%d' % i}
+            for i in range(n)]
+
+
+@pytest.fixture()
+def real_video():
+    """真实视频路径：SDK 里那个 9 分 20 秒的切片。不存在就跳过。"""
+    p = os.path.join(ROOT, '_e2e_slice.mp4')
+    if not os.path.isfile(p):
+        pytest.skip('缺少 _e2e_slice.mp4（真实时长探测用）')
+    return p
+
+
+def test_normal_subtitle_is_silent(real_video):
+    """正常字幕必须完全静默 —— 误报会让用户习惯性无视警告。"""
+    level, msgs, _g = A.subtitle_sync_report(_mk(186), real_video)
+    assert level == 'ok', '正常字幕被误报为 %s: %r' % (level, msgs)
+    assert not msgs
+
+
+def test_normal_tail_gap_is_silent(real_video):
+    """片尾长空镜（无人声镜头/字幕表/片尾曲）是常态，差 20 多秒不许报。"""
+    level, msgs, gap = A.subtitle_sync_report(_mk(180), real_video)
+    assert gap > 15, '构造前提不成立：应有一段片尾缺口，实际 %.1fs' % gap
+    assert level == 'ok', '片尾正常空档被误报: %r' % (msgs,)
+
+
+def test_truncated_subtitle_is_bad(real_video):
+    """删减版字幕：只覆盖前半段 → 必须报 bad，且文案要指出「后半段没台词依据」。"""
+    level, msgs, _g = A.subtitle_sync_report(_mk(90), real_video)
+    assert level == 'bad'
+    assert any('后半段' in m and '删减' in m for m in msgs), \
+        '报错文案没点明「删减版」，用户不知道该怎么办: %r' % (msgs,)
+
+
+def test_missing_opening_is_bad(real_video):
+    """片头缺失（字幕从 90s 才开始）→ 整体偏移，必须报 bad。
+
+    整 90 秒恰好是最典型的偏移量，卡在边界上漏判等于这道检查白做，
+    所以断言用的是「>= 90」，测试也照着边界造数据。
+    """
+    level, msgs, _g = A.subtitle_sync_report(_mk(150, off=90.0), real_video)
+    assert level == 'bad', '片头缺 90 秒被判 %s，最危险的错版被放过了' % level
+    assert any('整体偏移' in m for m in msgs), '文案没点明「整体偏移」: %r' % (msgs,)
+
+
+def test_head_shift_does_not_double_report_tail(real_video):
+    """头部偏移会让片尾自然提前。同一病根不许报两条（用户会以为是两个问题）。"""
+    _level, msgs, _g = A.subtitle_sync_report(_mk(150, off=90.0), real_video)
+    tail_msgs = [m for m in msgs if '早结束' in m]
+    assert not tail_msgs, '头部偏移时又重复报了尾部缺口: %r' % (tail_msgs,)
+
+
+def test_broken_timeline_is_warned(real_video):
+    """结束≤开始 的脏数据 → 提示但不算致命（解析仍可用，只是这些锚点不可信）。"""
+    segs = [{'start': 10, 'end': 5, 'text': '坏A'}, {'start': 20, 'end': 25, 'text': '好'},
+            {'start': 30, 'end': 30, 'text': '坏B'}] + _mk(180)
+    level, msgs, _g = A.subtitle_sync_report(segs, real_video)
+    assert level in ('warn', 'bad')
+    assert any('时间异常' in m for m in msgs), '脏时间轴未被提示: %r' % (msgs,)
+
+
+def test_no_video_duration_means_no_judgement(tmp_path):
+    """拿不到视频时长时不瞎判 —— 宁可不说，也不要凭猜测给出「字幕不匹配」。"""
+    bogus = str(tmp_path / 'nope.mp4')
+    msg_segs = _mk(50)
+    level, msgs, _g = A.subtitle_sync_report(msg_segs, bogus)
+    assert level == 'ok' and not msgs, '探测不到时长却给了结论: %r' % (msgs,)
+
+
+def test_empty_segments_are_safe(real_video):
+    """空台词不许炸（ASR 失败、字幕全空都会走到这里）。"""
+    assert A.subtitle_sync_report([], real_video)[0] == 'ok'
+    assert A.subtitle_sync_report(None, real_video)[0] == 'ok'
+
+
+def test_sync_report_reaches_task_warnings(monkeypatch, real_video):
+    """校验结果必须真的进到任务 warnings —— 否则用户永远看不到，等于没做。"""
+    got = []
+    monkeypatch.setattr(A, '_note_progress_warning', lambda m: got.append(m))
+    A._report_subtitle_sync(_mk(90), real_video)          # 删减版字幕
+    assert got, '错版字幕没有产生任何用户可见提示（静默失败）'
+    assert any('后半段' in m for m in got)
+
+    got.clear()
+    A._report_subtitle_sync(_mk(186), real_video)         # 正常字幕
+    assert not got, '正常字幕产生了噪音提示: %r' % (got,)
