@@ -10,7 +10,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 可正常为 setup-python 提供 3.9/3.11；ubuntu-latest(24.04) 无法在 1s 内
+    # 拉起 Python 3.9（setup-python@v5 在该镜像上装 3.9 直接失败），故固定到 22.04。
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
