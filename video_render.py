@@ -443,9 +443,74 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
     return out, new_spans, round(max(0.0, gap), 3)
 
 
-def _build_narr_srt(segs, narr, run_dir, voice_spans=None):
-    """把解说词按新时间轴写成 narr.srt 供字幕烧录。抽出以便单遍/两遍管线共用。"""
+def _ass_enabled(params):
+    """字幕淡入淡出开关：默认开；subtitle.ass=False 或 FRAMECUT_ASS=0 回退纯 SRT。"""
+    sub = (params or {}).get('subtitle') or {}
+    if sub.get('ass') is False:
+        return False
+    return os.environ.get('FRAMECUT_ASS') != '0'
+
+
+def _ass_ts(sec):
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    return '%d:%02d:%05.2f' % (h, m, sec % 60)
+
+
+def _write_narr_ass(rows, params, path):
+    """文本 / 时间轴与 SRT 逐条一致，只给每句加 120ms 淡入淡出。"""
+    try:
+        rect = _w.effective_frame_rect(params)
+    except Exception:
+        rect = None
+    pw, ph = (rect[0], rect[1]) if rect else (1280, 720)
+    head = (
+        '[Script Info]\nScriptType: v4.00+\n'
+        'PlayResX: %d\nPlayResY: %d\nWrapStyle: 0\n\n'
+        '[V4+ Styles]\n'
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, '
+        'OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, '
+        'ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, '
+        'MarginL, MarginR, MarginV, Encoding\n'
+        'Style: Default,Microsoft YaHei,22,&H00FFFFFF,&H000000FF,&H00000000,'
+        '&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,50,1\n\n'
+        '[Events]\n'
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
+    ) % (pw, ph)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(head)
+        for w0, w1, cap in rows:
+            text = cap
+            # 竖屏字号放大后一行放不下，长句按标点折行，否则字幕左右会被裁掉
+            if ph > pw and len(text) > 15:
+                parts, rest = [], text
+                while len(rest) > 15:
+                    cut = -1
+                    for ch in '，。！？；、':
+                        idx = rest.find(ch, 8, 17)
+                        if idx > 0:
+                            cut = idx + 1
+                            break
+                    if cut < 0:
+                        cut = 15
+                    parts.append(rest[:cut])
+                    rest = rest[cut:]
+                if rest:
+                    parts.append(rest)
+                text = '\\N'.join(parts)
+            f.write('Dialogue: 0,%s,%s,Default,,0,0,0,,{\\fad(120,120)}%s\n'
+                    % (_ass_ts(w0), _ass_ts(w1), text))
+    return path
+
+
+def _build_narr_srt(segs, narr, run_dir, voice_spans=None, params=None):
+    """把解说词按新时间轴写成 narr.srt 供字幕烧录（单遍/两遍管线共用）。
+
+    同时生成 narr.ass：每句 120ms 淡入淡出，文本与时间轴和 SRT 逐条一致。
+    启用且生成成功时返回 .ass 路径，否则回退返回 .srt —— 出片链路零风险。
+    """
     srt = os.path.join(run_dir, 'narr.srt')
+    rows = []
     with open(srt, 'w', encoding='utf-8') as f:
         def ts(sec):
             hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60); ms = int((sec % 1) * 1000)
@@ -462,6 +527,12 @@ def _build_narr_srt(segs, narr, run_dir, voice_spans=None):
                 w1 = min(s1, max(vs[1], w0 + 0.8))   # 至少显示 0.8s，避免一闪而过
             seq += 1
             f.write(f'{seq}\n{ts(w0)} --> {ts(w1)}\n{cap}\n\n')
+            rows.append((w0, w1, cap))
+    if rows and _ass_enabled(params):
+        try:
+            return _write_narr_ass(rows, params or {}, os.path.join(run_dir, 'narr.ass'))
+        except Exception:
+            pass
     return srt
 
 
@@ -531,7 +602,7 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     if _no_cut:
         # 全片覆盖：直接在原片上烧字幕+缩放，时长、画面与两遍管线返回原片后烧字幕完全一致
         new_spans = raw
-        srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips))
+        srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips), params)
         esc = srt.replace('\\', '/').replace(':', '\\:')
         vf = [f"subtitles='{esc}':force_style='{sub_style}'"]
         if scale_filter:
@@ -577,7 +648,7 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     cut_sec = round(max(0.0, gap), 3)
 
     # 字幕 SRT 基于新时间轴 new_spans 定位（与两遍管线 _compose_narration_video 内一致）
-    srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips))
+    srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips), params)
     esc = srt.replace('\\', '/').replace(':', '\\:')
 
     # ---- 构造单遍滤镜图 ----
@@ -660,6 +731,18 @@ def _build_subtitle_style(params):
     outline_w = float(sub.get('outlineWidth', 2))
     alignment = int(sub.get('alignment', 2))  # 1=左下 2=中下 3=右下 5=左上 8=中上
     margin_v = int(sub.get('marginV', 50))
+    # letterbox 有上下黑边时，字幕默认 MarginV 会落进黑边里。按「有效画面区」
+    # 把字幕抬回画面内（与 build_video_filter 共用同一份计算，防两侧漂移）。
+    try:
+        _rect = _w.effective_frame_rect(params)
+    except Exception:
+        _rect = None
+    if _rect:
+        # 竖屏/高分辨率导出时按画布高度等比放大，否则 22 号字在 1920 高画布上小得看不清
+        if _rect[1] > 720:
+            font_size = max(font_size, int(round(font_size * _rect[1] / 720.0)))
+        if _rect[5] > 0:
+            margin_v += int(_rect[5])
     font_name = sub.get('fontName', 'Microsoft YaHei')
     return (f'FontName={font_name},FontSize={font_size},'
             f'PrimaryColour={primary},OutlineColour={outline_c},Outline={outline_w},'
@@ -681,7 +764,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         base_video = video_path
     else:
         # 1) 烧字幕：解说词按段显示；有配音时间窗时字随声走
-        srt = _build_narr_srt(segs, narr, run_dir, voice_spans)
+        srt = _build_narr_srt(segs, narr, run_dir, voice_spans, params)
         esc = srt.replace('\\', '/').replace(':', '\\:')
         vsub = os.path.join(run_dir, 'vsub.mp4')
         sub_style = _build_subtitle_style(params)

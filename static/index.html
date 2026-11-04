@@ -550,6 +550,12 @@
             <option value="1280x720">720p</option>
             <option value="854x480">480p</option>
           </select></div>
+        <div class="field"><label>画面填充</label>
+          <select id="exportFit" style="width:110px">
+            <option value="auto">自动（竖屏满屏）</option>
+            <option value="crop">满屏裁切</option>
+            <option value="letterbox">完整画面（留黑边）</option>
+          </select></div>
         <div class="field"><label>码率</label>
           <select id="exportBitrate" style="width:100px">
             <option value="">自动(CRF)</option>
@@ -1266,7 +1272,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=80"></script>
+<script src="/static/app.js?v=81"></script>
 </body>
 </html>
 

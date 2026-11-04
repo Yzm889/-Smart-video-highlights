@@ -3542,6 +3542,49 @@ def video_encode_args_interim():
     return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast', '-crf', '16']
 
 
+def effective_fit(params):
+    """画面填充方式：letterbox(完整画面+黑边) / crop(满屏裁切)。
+
+    竖屏目标默认 crop —— 否则 16:9 素材导出 1080x1920 时有效画面只有 1080x608、
+    上下各约 656px 黑边，成片像「一条小视频嵌在黑幕里」。
+    横屏目标保持 letterbox（与旧版完全一致，零影响）。用户可用 params.fit 显式指定。
+    """
+    p = params or {}
+    f = str(p.get('fit') or '').strip().lower()
+    if f in ('crop', 'letterbox'):
+        return f
+    parts = str(p.get('resolution') or '').lower().split('x')
+    if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+        return 'crop' if int(parts[1]) > int(parts[0]) else 'letterbox'
+    return 'letterbox'
+
+
+def effective_frame_rect(params):
+    """目标画布内「有效画面区」，供缩放滤镜与字幕安全区**共用**（防两侧各算一份）。
+
+    返回 (W, H, eff_w, eff_h, eff_x, eff_y)；无缩放设置时返回 None。
+    crop 模式画面满屏 → 有效区就是整张画布；letterbox 模式按源片比例居中留出黑边。
+    """
+    p = params or {}
+    parts = str(p.get('resolution') or '').lower().split('x')
+    if len(parts) != 2:
+        return None
+    a, b = parts[0].strip(), parts[1].strip()
+    if not (a.isdigit() and b.isdigit()):
+        return None
+    W, H = int(a), int(b)
+    if effective_fit(p) == 'crop':
+        return (W, H, W, H, 0, 0)
+    # 源片比例：调用方未给时按 16:9 估算（真实比例仍由 ffmpeg 滤镜计算，这里只用于字幕偏移）
+    sw = float(p.get('src_width') or 16)
+    sh = float(p.get('src_height') or 9)
+    if sw <= 0 or sh <= 0:
+        sw, sh = 16.0, 9.0
+    k = min(W / sw, H / sh)
+    ew, eh = max(1, int(sw * k)), max(1, int(sh * k))
+    return (W, H, ew, eh, (W - ew) // 2, (H - eh) // 2)
+
+
 def build_video_filter(params):
     """根据导出参数构建视频滤镜（分辨率缩放）。返回filter字符串或None。"""
     if not params:
@@ -3556,6 +3599,10 @@ def build_video_filter(params):
         if w.isdigit() and h.isdigit():
             # flags=lanczos：默认 bicubic 在降采样（如 1080p→720p）时会明显发糊，
             # lanczos 保留更多细节，是缩放质量最好的通用算法（代价仅为略慢）
+            if effective_fit(params) == 'crop':
+                # 放大到填满目标框再居中裁掉溢出：竖屏满屏无黑边
+                return (f'scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,'
+                        f'crop={w}:{h}')
             return (f'scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,'
                     f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2')
     return None
