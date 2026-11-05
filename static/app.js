@@ -4625,6 +4625,12 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
     html += '<button title="删除此段（不进合成，可撤销）" style="flex:none;padding:2px 7px;font-size:12px;color:#f87171;border:1px solid rgba(248,113,113,.4);background:transparent;border-radius:5px;cursor:pointer" onclick="event.stopPropagation();deleteAdjustItem('+idx+')">✕</button>';
     html += '</div>';
     html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:3px;display:none"></div>';
+    // 行内隐藏音频元素（preload 预加载）：播放时直接播对应元素，不做全局换源 ——
+    // 全局元素「换 src→load→play」存在加载竞态（AbortError/err4 随机出现，
+    // 2026-11-06 实测同一文件忽好忽坏），预载元素彻底绕开
+    if(item.audio){
+      html += '<audio id="adjAudio'+idx+'" preload="auto" src="/media/'+item.audio+'" style="display:none"></audio>';
+    }
     html += '</div>';
   });
   list.innerHTML = html;
@@ -5321,38 +5327,33 @@ function fmtTime(s){
 // 播放指定片段的配音（暂停其他所有配音）
 let _currentAudioIdx = -1;
 function _playSegmentAudio(idx){
-  // 暂停片段列表中的所有音频
-  var allAudios = document.querySelectorAll('[id^="adjAudio"]');
+  // 暂停所有行内音频元素与全局元素
+  var allAudios = document.querySelectorAll('audio[id^="adjAudio"]');
   for(var i=0;i<allAudios.length;i++){
     try { allAudios[i].pause(); } catch(e){}
   }
-  // 使用全局预览音频元素（不受tab可见性影响）
   var globalAudio = document.getElementById('adjGlobalAudio');
   if(idx < 0){
     if(globalAudio){ try{ globalAudio.pause(); }catch(e){} }
     return;
   }
   if(!_adjustState.items || !_adjustState.items[idx]) return;
-  var audioPath = _adjustState.items[idx].audio;
-  if(!audioPath){ console.warn('[段'+idx+'] 无配音文件'); return; }
-  var audioUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/' + audioPath;
-  if(globalAudio){
-    // 预览音量跟随该段的解说音量设定（>100% 的增益受元素上限 1.0 限制，
-    // 完整增益在合成混音里生效；这里保证 0~100% 的调整在预览里听得到）
-    var nvPct = _adjustState.items[idx].narr_volume;
-    try { globalAudio.volume = (nvPct === undefined || nvPct === null) ? 1 : Math.max(0, Math.min(1, nvPct / 100)); } catch(e){}
-    try {
-      // 只有路径变化时才重新设置src
-      if(globalAudio.src !== audioUrl){
-        globalAudio.src = audioUrl;
-        globalAudio.load();
-      }
-      globalAudio.currentTime = 0;
-      var p = globalAudio.play();
-      if(p && p.catch){ p.catch(function(err){ console.warn('[配音播放失败] 段'+idx, err.message); }); }
-      _currentAudioIdx = idx;
-    } catch(e){ console.warn('[配音播放异常] 段'+idx, e.message); }
-  }
+  var it = _adjustState.items[idx];
+  if(!it.audio){ console.warn('[段'+idx+'] 无配音文件'); return; }
+  // 【预载元素直播】每行渲染时就带隐藏 <audio preload="auto">（src 一次到位），
+  // 播放时直接播对应元素——不做「全局元素换 src→load→play」：那条路径有加载
+  // 竞态（AbortError/err4 随机出现，同一文件忽好忽坏，2026-11-06 实测定位），
+  // 是「时间轴预览听不见配音」的老根因
+  var el = document.getElementById('adjAudio' + idx);
+  if(!el){ console.warn('[段'+idx+'] 行内音频元素缺失'); return; }
+  // 预览音量跟随该段的解说音量设定（>100% 的增益受元素上限 1.0 限制，
+  // 完整增益在合成混音里生效；这里保证 0~100% 的调整在预览里听得到）
+  var nvPct = it.narr_volume;
+  try { el.volume = (nvPct === undefined || nvPct === null) ? 1 : Math.max(0, Math.min(1, nvPct / 100)); } catch(e){}
+  try { el.currentTime = 0; } catch(e){}
+  var p = el.play();
+  if(p && p.catch){ p.catch(function(err){ console.warn('[配音播放失败] 段'+idx, err.message); }); }
+  _currentAudioIdx = idx;
 }
 
 function toggleAdjPlay(){
@@ -5395,8 +5396,12 @@ function toggleAdjPlay(){
       video.play().then(function(){
         if(btn) btn.textContent = '⏸ 暂停';
         _applyPreviewMix(_playSegIndex);
-        _playSegmentAudio(_playSegIndex);
+        // 【顺序敏感】先 startPlayheadSync（内部 stopPlayheadSync 会 pause 解说），
+        // 再启动本段配音——旧顺序是先播后停，解说 play() 还在加载中就被
+        // stopPlayheadSync 的 pause() 掐死（AbortError），且无人再启动 →
+        // 「时间轴预览永远听不见配音」（老 bug，2026-11-06 实测定位）
         startPlayheadSync();
+        _playSegmentAudio(_playSegIndex);
       }).catch(function(e){
         if(btn) btn.textContent = '❌ ' + (e.message || '播放失败');
       });
@@ -5712,12 +5717,12 @@ function _tlCtxOpen(idx, x, y){
     _tlCtxOpen(idx, e.clientX, e.clientY);
   });
 })();
-// 预览音量跟随该段解说音量（全局音频元素正在播时即时生效）
+// 预览音量跟随该段解说音量（行内音频元素正在播时即时生效）
 function _applyPreviewNarrVolume(idx){
-  const ga = document.getElementById('adjGlobalAudio');
-  if(!ga || _currentAudioIdx !== idx) return;
+  const el = document.getElementById('adjAudio' + idx);
+  if(!el || _currentAudioIdx !== idx) return;
   const nv = _adjustState.items[idx].narr_volume;
-  try { ga.volume = (nv === undefined || nv === null) ? 1 : Math.max(0, Math.min(1, nv / 100)); } catch(e){}
+  try { el.volume = (nv === undefined || nv === null) ? 1 : Math.max(0, Math.min(1, nv / 100)); } catch(e){}
 }
 
 function _adjVideoUrl(){
