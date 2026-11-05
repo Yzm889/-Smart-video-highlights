@@ -260,7 +260,11 @@ def server():
     try:
         for _ in range(40):
             try:
-                urllib.request.urlopen('http://127.0.0.1:%d/api/hardware' % port, timeout=2)
+                # /api/hardware 每次都要跑 nvidia-smi + 探测 Ollama(11434)，本机实测
+                # Ollama 忙时仅这一项就要 2s+：探测超时必须 ≥ 端点最坏耗时，否则
+                # 「服务明明活着、每次都差 0.2s」而被误跳过（曾把基线 686/5 打成 684/7）。
+                # 服务真挂时连接会被立刻拒绝，不会白等满 8s。
+                urllib.request.urlopen('http://127.0.0.1:%d/api/hardware' % port, timeout=8)
                 ok = True
                 break
             except Exception:
