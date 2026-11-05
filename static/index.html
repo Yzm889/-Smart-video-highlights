@@ -809,7 +809,15 @@
       <span id="adjustVideoTitle" style="font-size:13px;font-weight:600">🎬 预览窗口</span>
       <span id="adjustVideoTime" style="font-size:12px;color:var(--muted);font-family:monospace">00:00 / 00:00</span>
     </div>
-    <video id="adjGlobalVideo" style="width:100%;max-height:360px;border-radius:8px;background:#000" playsinline></video>
+    <div style="position:relative">
+      <video id="adjGlobalVideo" style="width:100%;max-height:360px;border-radius:8px;background:#000" playsinline></video>
+      <!-- 预览叠加字幕：随播放指针显示当前段文字，样式跟随「字幕交付方式」设置
+           （所见即所得的编辑辅助；叠加层不参与合成） -->
+      <div id="adjSubOverlay" style="position:absolute;left:0;right:0;bottom:7%;text-align:center;pointer-events:none;display:none;
+           font-size:20px;font-weight:600;color:#FFFFFF;line-height:1.35;padding:0 4%;
+           text-shadow:0 0 4px #000,0 0 2px #000,1px 1px 2px #000,-1px 1px 2px #000,1px -1px 2px #000,-1px -1px 2px #000;
+           font-family:'Microsoft YaHei','PingFang SC',sans-serif"></div>
+    </div>
     <div style="display:flex;gap:12px;margin-top:8px;align-items:center;flex-wrap:wrap">
       <audio id="adjGlobalAudio" preload="auto" style="flex:1;min-width:180px;height:32px;max-width:55%" controls></audio>
       <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)" title="解说配音音量">
@@ -1372,7 +1380,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=101"></script>
+<script src="/static/app.js?v=102"></script>
 </body>
 </html>
 

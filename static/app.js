@@ -2069,6 +2069,7 @@ const STEP_CARDS = {
   storage: ['storageCard'],
 };
 function showStep(step){
+  if (typeof _bindSubOverlay === 'function') _bindSubOverlay();   // 预览叠字幕绑定（幂等）
   if (!STEP_CARDS[step]) return;
   Object.entries(STEP_CARDS).forEach(([s, ids]) => {
     const on = (s === step);
@@ -5525,6 +5526,43 @@ function ensureAdjVideoLoaded(){
 
 // 预览视频片段：同时播放视频段和配音
 let _adjPlayingIdx = -1;
+
+// ---- 预览叠加字幕：播放/拖动进度时在画面上显示当前段的字幕文字 ----
+// 所见即所得的编辑辅助（叠加层不参与合成；合成烧录走 video_render 的字幕链）。
+function _updateSubOverlay(){
+  const ov = document.getElementById('adjSubOverlay');
+  const v = document.getElementById('adjGlobalVideo');
+  if(!ov || !v || !_adjustState.items) return;
+  const t = v.currentTime || 0;
+  let txt = '';
+  for(let i=0;i<_adjustState.items.length;i++){
+    const it = _adjustState.items[i];
+    if(!it || it.isBroll || it._deleted) continue;
+    const vs = it.video_start || 0, ve = it.video_end || 0;
+    if(ve > vs && t >= vs && t < ve){ txt = (it.text || '').replace(/\{[^}]*\}/g, ''); break; }
+  }
+  if(txt){
+    const st = (typeof getSubtitleStyle === 'function') ? getSubtitleStyle() : {};
+    // 字号按「成片 720p 参考」折算到预览元素高度；描边用 text-shadow 模拟
+    const scale = v.clientHeight ? Math.max(0.5, Math.min(2.5, v.clientHeight / 720)) : 1;
+    ov.style.fontSize = Math.round((st.fontSize || 22) * scale) + 'px';
+    ov.style.color = st.color || '#FFFFFF';
+    const oc = st.outlineColor || '#000000';
+    const ow = Math.max(1, Math.round((st.outlineWidth || 2) * scale));
+    ov.style.textShadow = '0 0 ' + ow + 'px ' + oc + ',0 0 2px ' + oc + ',1px 1px ' + ow + 'px ' + oc + ',-1px 1px ' + ow + 'px ' + oc + ',1px -1px ' + ow + 'px ' + oc + ',-1px -1px ' + ow + 'px ' + oc;
+    ov.style.bottom = Math.max(2, Math.min(40, Math.round(((st.marginV || 50) / 720) * 100))) + '%';
+    ov.style.textAlign = (st.alignment === 2 || !st.alignment) ? 'center' : 'center';  // 预览统一居中（成片支持顶部/底部）
+  }
+  ov.textContent = txt || '';
+  ov.style.display = txt ? 'block' : 'none';
+}
+function _bindSubOverlay(){
+  const v = document.getElementById('adjGlobalVideo');
+  if(!v || v.dataset.subOverlayBound) return;
+  v.dataset.subOverlayBound = '1';
+  v.addEventListener('timeupdate', _updateSubOverlay);
+  v.addEventListener('seeked', _updateSubOverlay);
+}
 // 时间轴 ↔ 右侧片段竖列 双向联动：选中段滚动到可视区并高亮边框
 function _syncSideList(idx){
   const row = document.getElementById('adjItem' + idx);
