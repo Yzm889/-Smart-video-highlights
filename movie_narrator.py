@@ -5706,6 +5706,9 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                                       'duration': round(probe_audio_len(p) or 0, 1)}
                                      for i, p in tts_results]
             progress['run_dir'] = os.path.basename(run_dir)
+            # 源片真实文件名（可能是 .mkv/.webm 等任意容器）：手动调整页的片段
+            # 预览按此拼 /media/ 地址——曾写死 src.mp4，4K MKV 预览全 404。
+            progress['video_file'] = os.path.relpath(video_path, _w.OUTDIR).replace('\\', '/')
             progress['script'] = events
             progress['diag'] = {'segments': len(segs), 'asr_lines': len(asr) if asr else 0,
                                 'voice_clips': len(tts_results), 'narration': narr,

@@ -3092,7 +3092,7 @@ function pollNarrate(runid){
             const nd = $('narDiag');
             if(nd) nd.innerHTML = '🎙️ <b>配音已生成（'+p.tts_list.length+'段）</b>，视频尚未合成。<br>下一步：在「⑥ 手动调整」逐段试听/修改后，点击「<b>合成视频</b>」按钮产出成片。'; renderCutPlan($('narCutPlan'), p); renderWarnings($('narWarn'), p);
             const nt = $('narDoneTitle'); if(nt) nt.textContent = '🎙️ 配音完成，待合成';
-            renderAdjustPanel(p.tts_list, p.run_dir || '', 'nar', p.script || []);
+            renderAdjustPanel(p.tts_list, p.run_dir || '', 'nar', p.script || [], p.video_file);
             if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
@@ -3190,7 +3190,7 @@ function pollMovie(runid){
             const mnd = $('movieDiag');
             if(mnd) mnd.innerHTML = '🎙️ <b>配音已生成（'+p.tts_list.length+'段）</b>，视频尚未合成。<br>下一步：在「⑥ 手动调整」逐段试听/修改后，点击「<b>合成视频</b>」按钮产出成片。'; renderCutPlan($('movieCutPlan'), p); renderWarnings($('movieWarn'), p);
             const mt = $('movieDoneTitle'); if(mt) mt.textContent = '🎙️ 配音完成，待合成';
-            renderAdjustPanel(p.tts_list, p.run_dir || '', 'movie', p.script || []);
+            renderAdjustPanel(p.tts_list, p.run_dir || '', 'movie', p.script || [], p.video_file);
             if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
@@ -4416,7 +4416,7 @@ async function restoreTtsState(runDir){
     const r = await fetch('/api/tts_state?run_dir=' + encodeURIComponent(runDir));
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '失败');
-    renderAdjustPanel(out.tts_list, runDir, 'movie', []);
+    renderAdjustPanel(out.tts_list, runDir, 'movie', [], out.video_path);
     status.textContent = '✅ 已恢复 ' + out.tts_list.length + ' 段配音，可试听调整后合成';
   }catch(e){
     status.textContent = '❌ 恢复失败：' + e.message;
@@ -4571,12 +4571,16 @@ function _onSegFieldChange(idx, field){
   scheduleAutoSave();
 }
 
-function renderAdjustPanel(ttsList, runDir, mode, script){
+function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
   // 重载入列表 = 新的编辑基线，清空撤销/重做栈（undo/redo 内部重建时跳过）
   if(!_suppressUndoReset){ _undoStack = []; _redoStack = []; _pendingSnapshot = null; }
   var _keepVideoDur = _adjustState.videoDuration;
+  var _keepVideoFile = _adjustState.videoFile;
   _adjustState = { runDir: runDir, mode: mode, items: JSON.parse(JSON.stringify(ttsList)), changed: {} };
   if(_keepVideoDur) _adjustState.videoDuration = _keepVideoDur;  // 跨重绘保留源片时长
+  // 源片真实文件名（可能是 .mkv/.webm 等容器）：预览/时间轴按它拼 /media/ 地址
+  if(videoFile) _adjustState.videoFile = videoFile;
+  else if(_keepVideoFile) _adjustState.videoFile = _keepVideoFile;
   const list = document.getElementById('adjustList');
   const status = document.getElementById('adjustStatus');
   const actions = document.getElementById('adjustActions');
@@ -5348,10 +5352,11 @@ function toggleAdjPlay(){
   var video = document.getElementById('adjGlobalVideo');
   var btn = document.getElementById('adjPlayBtn');
   if(!video) return;
-  // 确保视频源已设置
-  if(!video.src || video.src.indexOf('src.mp4') < 0){
-    var videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
-    video.src = videoUrl;
+  // 确保视频源已设置（按后端下发的真实文件名，源片可能是 mkv 等容器）
+  var wantUrl = _adjVideoUrl();
+  if(video.dataset.mediaUrl !== wantUrl){
+    video.src = wantUrl;
+    video.dataset.mediaUrl = wantUrl;
     video.load();
   }
   if(video.paused){
@@ -5519,15 +5524,26 @@ function _enforceSegBounds(){
 function ensureAdjVideoLoaded(){
   var video = document.getElementById('adjGlobalVideo');
   if(!video || !_adjustState.runDir) return;
-  if(!video.src || video.src.indexOf('src.mp4') < 0){
-    var videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
-    video.src = videoUrl;
+  var wantUrl = _adjVideoUrl();
+  if(video.dataset.mediaUrl !== wantUrl){
+    video.src = wantUrl;
+    video.dataset.mediaUrl = wantUrl;
     video.load();
   }
 }
 
 // 预览视频片段：同时播放视频段和配音
 let _adjPlayingIdx = -1;
+function _adjVideoUrl(){
+  // 源片可能是 mkv/webm 等任意容器：曾把地址写死成 src.mp4，4K MKV 任务
+  // （实存 src.mkv）预览全 404。优先用后端下发的真实文件名，旧任务回退 src.mp4。
+  // 兼容两种形态：相对 OUTDIR 的带目录路径（progress.video_file）或纯文件名
+  // （tts_state.video_path），没有目录段时补上 runDir。
+  var rel = _adjustState.videoFile;
+  if(!rel) rel = (_adjustState.runDir || '').replace(/\\/g, '/') + '/src.mp4';
+  else if(rel.indexOf('/') < 0) rel = (_adjustState.runDir || '').replace(/\\/g, '/') + '/' + rel;
+  return '/media/' + encodeURIComponent(rel).replace(/%2F/g, '/');
+}
 function previewVideoSegment(idx){
   const vs = parseFloat(document.getElementById('adjVStart'+idx).value) || 0;
   const ve = parseFloat(document.getElementById('adjVEnd'+idx).value) || 0;
@@ -5553,10 +5569,13 @@ function previewVideoSegment(idx){
   hint.style.display = 'block';
   hint.textContent = '⏳ 加载视频中…';
 
-  // 设置视频源
-  const videoUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/src.mp4';
-  const needLoad = !video.src || video.src.indexOf('src.mp4') < 0;
-  if(needLoad){ video.src = videoUrl; }
+  // 设置视频源（按后端下发的真实文件名，源片可能是 mkv 等容器）
+  const videoUrl = _adjVideoUrl();
+  if(video.dataset.mediaUrl !== videoUrl){
+    video.src = videoUrl;
+    video.dataset.mediaUrl = videoUrl;
+    video.load();
+  }
 
   // 视频播放到end时停止
   const onTimeUpdate = function(){

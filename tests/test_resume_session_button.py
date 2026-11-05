@@ -39,3 +39,20 @@ def test_resume_function_jumps_and_restores():
     lr = js[js.index('async function loadRecentTts'):js.index('async function restoreTtsState')]
     assert '/api/tts_recent' in lr and 'restoreTtsState' in lr
     assert 'videoToBody' not in lr, '恢复流程不得要求重新上传视频'
+
+
+def test_preview_uses_real_source_filename():
+    """片段预览/时间轴不得写死 src.mp4——4K MKV 任务实存 src.mkv，写死即全 404
+    （2026-11-06 主人实测《惩罚者》预览黑屏的根因）。必须走 _adjVideoUrl 统一取址。"""
+    js = _read(JS_PATH)
+    assert 'function _adjVideoUrl' in js, '缺统一取址 helper'
+    # 三处预览（时间轴播放/ensureLoaded/片段预览）都必须经 helper，且带 mediaUrl 去重载标记
+    assert js.count('_adjVideoUrl()') >= 3, '预览取址未统一走 _adjVideoUrl'
+    assert js.count('dataset.mediaUrl') >= 3, '缺少 mediaUrl 去重载标记（换任务后可能播旧源）'
+    # helper 必须兼容两种形态：带目录的 video_file 与纯文件名 video_path
+    i = js.index('function _adjVideoUrl')
+    body = js[i:js.index('\n}', i)]
+    assert "indexOf('/') < 0" in body, '纯文件名形态未补 runDir 目录段'
+    # 恢复与两个完成分支都要把文件名传进 renderAdjustPanel
+    assert 'renderAdjustPanel(out.tts_list, runDir, \'movie\', [], out.video_path)' in js
+    assert js.count('p.video_file') >= 2, 'nar/movie 完成分支未传 video_file'
