@@ -5805,8 +5805,10 @@ function fillNarSrt(file, burned, voiceFile, voiceLayered){
 function getAudioDelivery(){
   var lay = document.getElementById('audioLayers');
   var exp = document.getElementById('exportVoice');
+  var v = lay ? lay.value : '0';
   return {
-    layers: !!(lay && lay.value === '1'),
+    // 1=双轨分层(true)；2=成片不含解说(数值 2，后端 _narr_out_enabled 判 ==2)
+    layers: v === '1' ? true : (v === '2' ? 2 : false),
     exportVoice: !!(exp && exp.checked)
   };
 }
@@ -5816,8 +5818,14 @@ function updateAudioHint(){
   var exp = document.getElementById('exportVoice');
   var hint = document.getElementById('audioHint');
   if (!hint) return;
-  var layered = !!(lay && lay.value === '1');
+  var mode = lay ? lay.value : '0';
   var wav = !!(exp && exp.checked);
+  if (mode === '2'){
+    hint.innerHTML = '✅ 成片<b>不含解说</b>：画面 + 原声/配乐，配「不烧录字幕」就是干净的剪辑素材包；'
+      + '解说自动另出 <b>.wav</b>（无需勾选），拖进剪辑软件 0 秒对齐成片 0 秒。';
+    return;
+  }
+  var layered = mode === '1';
   if (!layered && !wav){
     hint.innerHTML = '当前：成片只有一条混音轨（原声 + 解说 + 配乐）。导入 PR 后无法单独调解说音量。';
     return;

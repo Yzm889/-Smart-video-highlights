@@ -287,7 +287,8 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
     # 分层音轨与单独导出共用这一条 WAV（一次生成，两处用）。
     # 失败一律不影响成片：这是附赠物，不是主链路。
     _voice_wav = None
-    if tts_paths and (_voice_track_enabled(params) or _audio_layers_enabled(params)):
+    if tts_paths and (_voice_track_enabled(params) or _audio_layers_enabled(params)
+                      or _narr_out_enabled(params)):
         _vdur = probe_audio_len(final) or cut_info.get('out_dur') or 0.0
         try:
             _voice_wav = build_voice_track(tts_paths, run_dir, _vdur)
@@ -636,6 +637,16 @@ def _voice_track_enabled(params):
     """是否单独导出一条纯解说音轨文件（.wav）。默认 False。"""
     a = (params or {}).get('audio') or {}
     return a.get('exportVoice') is True
+
+
+def _narr_out_enabled(params):
+    """成片是否**不含解说音轨**（audio.layers == 2，前端「成片不含解说」档）。
+
+    该档位下：成片 = 原声/配乐（无解说、无 ducking），解说只经 build_voice_track
+    出成 .wav——供用户在剪映/PR 自己铺解说（2026-11-06 主人需求：素材包式交付）。
+    """
+    a = (params or {}).get('audio') or {}
+    return a.get('layers') == 2
 
 
 def build_voice_track(tts_paths, run_dir, vdur, out_name='narration_voice.wav'):
@@ -1114,6 +1125,11 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     # 构建音频滤镜图
     # tts_paths 元素：2 元组 (audio, start) 或 3 元组 (audio, start, end)，后者用于把配音裁剪在本镜头段内，
     # 避免配音时长超过镜头段导致的跨段语音重叠。
+    # 「成片不含解说」档（audio.layers==2）：解说不进最终混音（无 ducking、无 [t*]），
+    #   成片=原声/配乐；解说只走 build_voice_track 出 .wav（调用方已保证导出）。
+    #   混音侧把 tts_paths 视为空即可——四条混音分支全部按 _mix_tts 走。
+    _narr_out = _narr_out_enabled(params)
+    _mix_tts = [] if _narr_out else (tts_paths or [])
     def _tt_span(item):
         # item: (path, start, end, orig_volume_or_None)
         if len(item) >= 4:
@@ -1128,10 +1144,10 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     next_idx = 1                        # 下一个音频输入索引（显式记录，避免 count("-i") 脆弱）
     if has_orig_audio:
         inputs += ['-i', video_path]    # 1 = 原视频(音频)
-        if tts_paths:
+        if _mix_tts:
             # 解说配音存在时做 ducking：解说段内原声按用户设置音量，缝隙还原 0.5
             expr = '0.5'
-            for item in tts_paths:
+            for item in _mix_tts:
                 np_, od, _oe, _ovol = _tt_span(item)
                 dur = probe_audio_len(np_) or 3.0
                 # 用户设置了原片音量则用用户值（0-100 -> 0-1.0），否则默认0.08
@@ -1144,7 +1160,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         orig_label = '[orig]'
         next_idx += 1
     tt_labels = []
-    for k2, item in enumerate(tts_paths):
+    for k2, item in enumerate(_mix_tts):
         np_, od, oe, _ov = _tt_span(item)
         inputs += ['-i', np_]
         if oe is not None and oe > od:
@@ -1174,7 +1190,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             _loop_n = int(vdur / mdur) + 2   # 多 +1 防浮点误差，atrim 精确截断
             _bgm_in = ['-stream_loop', str(_loop_n)] + _bgm_in
         inputs += _bgm_in
-        _bgm_idx = next_idx + len(tts_paths)
+        _bgm_idx = next_idx + len(_mix_tts)
         # [P0-2] 情绪包络：用已算好的段落情绪/重要度生成随剧情起伏的音量曲线。
         #   · 默认开启（params.bgmEnvelope 显式 false 才关），但只在「有分段信息」时生效；
         #   · 生成失败/信息不足 → 回退旧的常量 volume=0.18（与改动前完全一致）；
@@ -1201,7 +1217,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
                       f'atrim=0:{vdur:.2f},'
                       f'afade=t=in:st=0:d={_fade_in:.2f},'
                       f'afade=t=out:st={_fade_out_st:.2f}:d={_fade:.2f}[bgmraw]')
-        if tts_paths:
+        if _mix_tts:
             # [P1-3] 侧链闪避（sidechain ducking）：用「全部解说配音混成的人声总线」驱动 BGM 增益，
             #         人声一开口 BGM 自动压低，人声停缓升。这是解说视频人声清晰度质的飞跃。
             #
@@ -1232,6 +1248,15 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     # 算错会直接 `inputs=N` 与实际标签数不符，ffmpeg 报错 → 整链降级到「丢弃配音」。
     # 直接按 mixin 里实际拼出来的标签个数算，杜绝手工累加漂移。
     n_mix = mixin.count('[')
+    if n_mix == 0:
+        # 「成片不含解说」且原片无音轨、也无配乐：没有可混的输入（amix=inputs=0
+        # 非法，会整链报错再降到「丢弃配音」兜底也救不了）。直接交付画面。
+        final = os.path.join(run_dir, 'final.mp4')
+        rc, o, e = ffmpeg_run(['-y', '-i', base_video, '-c:v', 'copy', '-c:a', 'aac',
+                               '-b:a', '160k', '-movflags', '+faststart', final])
+        if rc == 0 and os.path.exists(final):
+            return final
+        raise RuntimeError('成片失败（无可混音频输入）: ' + e.decode('utf-8', 'ignore')[-200:])
     # amix 前统一采样率/声道，避免不同来源（SAPI 22k mono / 云端 TTS 24-48k / 原声 44.1k stereo）混音异常或音量失衡
     # 2026-09-08 质量升级：amix 后接 alimiter 防爆音 + loudnorm 统一响度到 -16 LUFS（流媒体标准）。
     # 【安全设计】loudnorm 链路整体失败时，先回退到「只 alimiter 不 loudnorm」（保留防爆音），

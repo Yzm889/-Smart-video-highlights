@@ -21,11 +21,23 @@
 
 import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VR_PATH = os.path.join(ROOT, 'video_render.py')
 JS_PATH = os.path.join(ROOT, 'static', 'app.js')
 HTML_PATH = os.path.join(ROOT, 'static', 'index.html')
+
+sys.path.insert(0, ROOT)
+import webui_server as _W  # noqa: F401,E402  解除循环依赖
+import video_render as VR  # noqa: E402
+
+imageio_ffmpeg = pytest.importorskip('imageio_ffmpeg')
 
 
 def _read(p):
@@ -129,3 +141,87 @@ def test_default_selected_option_is_single_track():
     opt = re.search(r'<option value="0"[^>]*>', m.group(1))
     assert opt and 'selected' in opt.group(0), '默认必须是单轨混音 (value=0)'
     assert 'value="1"' in m.group(1), '缺双轨分层选项'
+
+
+# ---- 「成片不含解说」档（2026-11-06 主人需求：素材包式交付）----
+
+def test_narr_out_switch_parses_layers_2():
+    """audio.layers==2 = 成片不含解说；与双轨(true)/默认(False)互不误触。"""
+    narr_out = _extract_func(_read(VR_PATH), '_narr_out_enabled')
+    assert narr_out({'audio': {'layers': 2}}) is True
+    for p in ({}, None, {'audio': {}}, {'audio': {'layers': True}},
+              {'audio': {'layers': False}}, {'audio': {'layers': '2'}}):
+        assert narr_out(p) is False, '不该触发: %r' % (p,)
+
+
+def test_frontend_has_narr_out_option():
+    """第三档选项、数值映射、提示文案都必须在。"""
+    html = _read(HTML_PATH)
+    js = _read(JS_PATH)
+    m = re.search(r'<select id="audioLayers"[^>]*>(.*?)</select>', html, re.S)
+    assert m and 'value="2"' in m.group(1), '缺「成片不含解说」选项'
+    i = js.index('function getAudioDelivery')
+    assert "? 2 :" in js[i:i + 400] or "? 2:" in js[i:i + 400], \
+        'getAudioDelivery 未把档位 2 映射成数值 layers=2'
+
+
+def _mean_volume(path, ss, t):
+    r = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-ss', str(ss), '-t', str(t),
+                        '-i', path, '-af', 'volumedetect', '-f', 'null', '-'],
+                       capture_output=True, text=True, errors='ignore')
+    m = re.search(r'mean_volume: (-?[\d.]+) dB', r.stderr)
+    return float(m.group(1)) if m else -999.0
+
+
+def test_narr_out_excludes_narration_from_final_mix():
+    """真跑 ffmpeg：成片不含解说时，解说段窗口只剩原声（明显轻于含解说版）。"""
+    d = tempfile.mkdtemp(prefix='narrout_')
+    try:
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        # 原声视频：6s 黑画面 + 330Hz 正弦原声
+        src = os.path.join(d, 'src.mp4')
+        subprocess.run([exe, '-y', '-f', 'lavfi', '-i', 'color=c=black:s=160x120:r=10:d=6',
+                        '-f', 'lavfi', '-i', 'sine=frequency=330:duration=6',
+                        '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                        '-c:a', 'aac', src], capture_output=True)
+        assert os.path.exists(src)
+        narr = os.path.join(d, 'n.wav')
+        subprocess.run([exe, '-y', '-f', 'lavfi', '-i', 'sine=frequency=880:duration=1', narr],
+                       capture_output=True)
+        segs = [(0.0, 6.0)]
+        tts = [(narr, 1.0, 2.0)]
+        # 两档必须用不同 run 目录：compose 固定写 run_dir/final.mp4，同目录会互相覆盖
+        d_a = os.path.join(d, 'a'); d_b = os.path.join(d, 'b')
+        os.makedirs(d_a); os.makedirs(d_b)
+        # 默认档：解说混进成片
+        out_a = VR._compose_narration_video(src, segs, ['一'], tts, d_a, {}, burned=True)
+        assert out_a and os.path.exists(out_a), '默认档成片失败'
+        # 不含解说档：audio.layers=2
+        out_b = VR._compose_narration_video(src, segs, ['一'], tts, d_b,
+                                            {'audio': {'layers': 2}}, burned=True)
+        assert out_b and os.path.exists(out_b), '不含解说档成片失败'
+
+        def _band_880(path, ss, t):
+            """880Hz 频段能量（解说音所在频带）：loudnorm 会把整轨响度拉平，
+            比总音量失灵，必须用带通看「解说音在不在」。330Hz 原声被 highpass 挡掉。"""
+            r = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-ss', str(ss), '-t', str(t),
+                                '-i', path, '-af', 'highpass=f=600,lowpass=f=1200,volumedetect',
+                                '-f', 'null', '-'], capture_output=True, text=True, errors='ignore')
+            m = re.search(r'mean_volume: (-?[\d.]+) dB', r.stderr)
+            return float(m.group(1)) if m else -999.0
+
+        va = _band_880(out_a, 1.3, 0.5)   # 解说播放窗口（解说 880Hz + 原声 330Hz）
+        vb = _band_880(out_b, 1.3, 0.5)   # 同窗口应只剩被挡掉大半的 330Hz
+        assert va - vb >= 6.0, \
+            '「不含解说」档在解说窗口仍检出 880Hz 解说能量（含 %.1f dB vs 不含 %.1f dB）——旁路未生效' % (va, vb)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_narr_out_still_exports_voice_wav():
+    """不含解说档必须强制出解说 .wav——否则解说就整个丢了。"""
+    src = _read(VR_PATH)
+    j = src.index('_voice_wav = build_voice_track(')
+    caller = src[max(0, j - 260):j + 60]
+    assert '_narr_out_enabled(params)' in caller, \
+        'wav 导出条件未包含「成片不含解说」档：该档位下解说不进混音，不出 wav = 解说丢失'
