@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=24">
+<link rel="stylesheet" href="/static/style.css?v=25">
 <!-- FrameCut UI v2 · 简约设计系统（纯覆盖层，原样式一行未删；删掉本行即可一键回退） -->
 <link rel="stylesheet" href="/static/style.v2.css?v=24">
 </head>
@@ -306,7 +306,32 @@
       </div>
     </div>
 
-    <div class="card" id="drop" data-step="narrate" onclick="document.getElementById('fileInput').click()" style="cursor:pointer;">
+    <!-- ======== 页面2 · 左栏工具卡 + 右侧功能面板 ========
+         三个功能（图文成片/强卡点/解说出片）不再全部平铺堆叠，
+         改为左栏三张可收缩卡片：点谁展谁，同一时间只显示一个功能面板。 -->
+    <div id="narPageLayout" class="nar-page-layout">
+      <aside id="narPageRail" class="nar-page-rail">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+          <div class="nr-rail-title" style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;padding:2px 4px;">选择功能</div>
+          <button type="button" id="narRailToggle" onclick="toggleNarRail()" title="收起 / 展开左栏"
+                  style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px 6px;border-radius:6px;">«</button>
+        </div>
+        <button type="button" class="nar-rail-card" id="railDrop" data-panel="drop" onclick="selectNarPanel('drop')">
+          <span class="nr-ico">🖼️</span>
+          <span class="nr-txt"><b>图文成片</b><i>图片/视频混排 · 自动运镜</i></span>
+        </button>
+        <button type="button" class="nar-rail-card" id="railBeatcut" data-panel="beatcut" onclick="selectNarPanel('beatcut')">
+          <span class="nr-ico">🎯</span>
+          <span class="nr-txt"><b>智能强卡点</b><i>画面切点对齐音乐鼓点</i></span>
+        </button>
+        <button type="button" class="nar-rail-card active" id="railNar" data-panel="nar" onclick="selectNarPanel('nar')">
+          <span class="nr-ico">🎬</span>
+          <span class="nr-txt"><b>解说出片</b><i>写剧情/稿子 → 真剪出成品</i></span>
+        </button>
+      </aside>
+      <div id="narPageMain" class="nar-page-main">
+
+    <div class="card" id="drop" data-step="narrate" data-narpanel="drop" onclick="document.getElementById('fileInput').click()" style="cursor:pointer;">
     <b>把图片或视频拖到这里，或点此选择文件</b>
     <div class="hint">支持顺序混排：图片自动加镜头运动(推近/平移/拉远/轻摇)，视频自动裁剪，之间带交叉淡入淡出转场。</div>
     <div class="hint bili-hint">📺 需要 B 站视频？<a href="https://www.v2ob.com/bilibili/" target="_blank" rel="noopener" style="color:#1d4ed8;text-decoration:underline;">v2ob.com</a> 可免费提取 B 站视频（MP4，跳转使用）· 或直接在下方搜索并自动下载入素材 <span style="opacity:.7;">（请仅下载你有权使用的视频，注意版权）</span></div>
@@ -330,11 +355,15 @@
       <div id="mlibList" style="max-height:300px; overflow:auto;"></div>
     </details>
     <input type="file" id="fileInput" multiple accept="image/*,video/*" style="display:none">
+      <!-- 这张卡整卡绑了「点哪都是选文件」（见 app.js 的 drop.addEventListener('click')），
+           所以「下一步」按钮必须自己拦掉冒泡，否则一点就弹文件选择框。 -->
+      <div class="next-step-bar" onclick="event.stopPropagation()">
+        <button class="next-step-btn" onclick="nextFlowStep()">下一步：解说出片 →</button>
+      </div>
   </div>
-      <div class="next-step-bar"><button class="next-step-btn" onclick="nextFlowStep()">下一步：生成解说 →</button></div>
 
 
-  <div class="card" id="beatcutCard" data-step="narrate">
+  <div class="card" id="beatcutCard" data-step="narrate" data-narpanel="beatcut">
     <h2>🎯 智能强卡点（本应用核心）</h2>
     <div id="bcDrop" class="musdrop">🎬 拖入一段视频（自动识别<b>场景切换</b>与<b>动作停顿帧</b>）</div>
     <input type="file" id="bcInput" accept="video/*" style="display:none">
@@ -411,7 +440,8 @@
     </div>
   </div>
 
-  <!-- 解说页子标签 -->
+  <!-- 解说页子标签（只在「解说出片」面板内显示） -->
+  <div id="narrPanelWrap" data-narpanel="nar">
   <div id="narrSubTabs" style="display:flex;gap:4px;margin:8px 0;border-bottom:2px solid var(--border);padding-bottom:0">
     <button class="narr-subtab active" data-subtab="nar" onclick="switchNarrTab('nar')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-weight:600">🎬 剪成片<span style="font-weight:400;color:var(--muted);"> · 要传视频</span></button>
     <button class="narr-subtab" data-subtab="movie" onclick="switchNarrTab('movie')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">📝 只要解说稿<span style="font-weight:400;color:var(--muted);"> · 可不传视频</span></button>
@@ -427,10 +457,16 @@
     <!-- 字幕导入：这是「看懂剧情 + 对齐时间轴」的关键输入。
          有了字幕就不用 Whisper 猜台词（准确、快、不占显存），
          画面抽样也会按台词时间轴落点，VLM 才不会一直在看空镜。 -->
-    <div class="row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap;">
-      <button class="btn ghost" id="narSubBtn" type="button" style="padding:6px 12px;">📄 导入字幕（可选，强烈推荐）</button>
-      <input type="file" id="narSubInput" accept=".srt,.ass,.ssa,.vtt" style="display:none">
-      <span class="hint" id="narSubInfo" style="margin:0;">没字幕也能跑：会用 Whisper 听写台词，但准确率和速度都差一截</span>
+    <div id="narSubBox" style="margin-top:10px;padding:14px 16px;border-radius:12px;background:linear-gradient(135deg,rgba(201,168,76,.14),rgba(201,168,76,.05));border:1.5px solid rgba(201,168,76,.45);">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <button class="btn" id="narSubBtn" type="button" style="font-size:15px;padding:12px 26px;font-weight:700;flex:none;">📄 导入字幕（SRT）</button>
+        <input type="file" id="narSubInput" accept=".srt,.ass,.ssa,.vtt" style="display:none">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-size:14px;font-weight:700;color:var(--ink);">★★ 强烈推荐：字幕是本工具理解剧情的命脉</div>
+          <div class="hint" style="margin:2px 0 0;">不导入也能跑（Whisper 听写），但<b>准确率低、速度慢、占显存</b>；导入字幕 = 剧情理解准 + 时间轴零偏差 + 出片更快。</div>
+        </div>
+      </div>
+      <div class="hint" id="narSubInfo" style="margin:8px 0 0;">📥 还没导入字幕。下载资源时通常自带 <b>.srt</b> 文件（和视频同名那个就是），中/英文都行，自动识别编码。</div>
     </div>
     <div class="hint" style="margin-top:2px;">💡 字幕从哪来？下载资源时通常带 `.srt` 文件（和视频同名那个就是）；B 站/网盘资源也常附带。中/英文字幕都行，工具会自动识别编码。</div>
     <div class="hint">按<b>你写的剧情</b>写解说稿 → 按每句解说去原片里<b>挑有内容的画面</b> → 按时间轴<b>配音</b>（默认系统免费中文配音）+ <b>字幕</b> → 出片。过场空镜会被跳过，成片比原片短。</div>
@@ -685,6 +721,9 @@
         <div id="movieQuality" style="display:none"></div>
     </div>
   </div>
+  </div><!-- /narrPanelWrap -->
+      </div><!-- /narPageMain -->
+    </div><!-- /narPageLayout -->
 
   <div class="card" id="adjustCard" data-step="adjust">
   <div class="card-h">
@@ -1287,7 +1326,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=83"></script>
+<script src="/static/app.js?v=84"></script>
 </body>
 </html>
 

@@ -2047,8 +2047,12 @@ function gPreview(file, name){
 let _tasksTimer = null;   // 任务中心轮询定时器（声明在最前，避免 showStep 中 TDZ 报错）
 let _flowCurrent = 1;     // 当前流程步骤（声明在最前，避免 showStep 中 TDZ 报错）
 let _flowDone = new Set(); // 已完成步骤（声明在最前，避免 showStep 中 TDZ 报错）
+// 页面2左栏功能面板（声明在最前：初始化 IIFE 在文件 2/3 处就执行，
+// 那时会读 localStorage 恢复上次面板，声明放到后面会被 var 提升后的赋值二次覆盖）
+var NAR_ACTIVE_PANEL = 'nar';   // 默认「解说出片」：多数人是来干这个的
+var NAR_PANEL_KEY = 'springStudio.narPanel';
 const STEP_CARDS = {
-  start: ['guideCard', 'smartCard', 'instructCard'],  music: ['musicCard', 'libCard'],  narrate: ['narCard', 'movieCard', 'drop', 'beatcutCard'],
+  start: ['guideCard', 'smartCard', 'instructCard'],  music: ['musicCard', 'libCard'],  narrate: ['narPageLayout', 'narCard', 'movieCard', 'drop', 'beatcutCard'],
   adjust: ['adjustCard'],
   ai: ['aiCard'],
   output: ['timelineCard', 'outCard'],
@@ -2088,6 +2092,12 @@ function showStep(step){
       switchStartTab(activeTab ? activeTab.dataset.subtab : 'smart');
     }
     if (step === 'narrate' && typeof switchNarrTab === 'function') {
+      // 先恢复左栏选中面板，再激活子标签 —— 顺序不能反：
+      // 面板若还停在「强卡点」，子标签的 display 会算在一个隐藏容器里，
+      // 用户切回「解说出片」时会看到一张空白卡。
+      if (typeof selectNarPanel === 'function') {
+        selectNarPanel(NAR_ACTIVE_PANEL || 'nar');
+      }
       const activeTab = document.querySelector('.narr-subtab.active');
       if (activeTab) switchNarrTab(activeTab.dataset.subtab);
     }
@@ -2120,11 +2130,40 @@ function goStep(targetId){
   if (!el) return;
   const step = el.getAttribute('data-step');
   if (step) showStep(step);
+  // 页面2的三张卡已收进左栏面板：从别处跳「某张卡」时，必须先把它的面板展开，
+  // 否则 showStep 已经把卡片标成 .active 了，用户却看不到它（被 .nr-on 规则藏着）
+  // —— 表现就是「点了按钮，页面滚到一片空白」。
+  try {
+    if (typeof selectNarPanel === 'function') {
+      if (targetId === 'beatcutCard') selectNarPanel('beatcut');
+      else if (targetId === 'drop') selectNarPanel('drop');
+      else if (targetId === 'narCard' || targetId === 'movieCard') {
+        selectNarPanel('nar');
+        // 跳到 movieCard 时顺手把子标签也切过去，避免「展开了解说面板但停在剪成片」
+        if (typeof switchNarrTab === 'function') {
+          switchNarrTab(targetId === 'movieCard' ? 'movie' : 'nar');
+        }
+      }
+    }
+  } catch(e){ console.warn('展开功能面板失败:', e); }
   setTimeout(() => { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 60);
 }
 (function(){
   let init = 'start';
   try { init = localStorage.getItem('springStudio.lastStep') || 'start'; } catch(e){}
+  // 恢复上次选中的功能面板与左栏折叠态（必须在 showStep 之前：
+  // showStep('narrate') 内部会调 selectNarPanel(NAR_ACTIVE_PANEL)，
+  // 那时还没读 localStorage 的话，用户上次停在「强卡点」也会被打回「解说出片」）
+  try {
+    var _p = localStorage.getItem(NAR_PANEL_KEY);
+    if (_p) NAR_ACTIVE_PANEL = _p;
+    if (localStorage.getItem('springStudio.narRailMini') === '1') {
+      var _rail = document.getElementById('narPageRail');
+      var _rt = document.getElementById('narRailToggle');
+      if (_rail) _rail.classList.add('nr-mini');
+      if (_rt) _rt.textContent = '»';
+    }
+  } catch(e){}
   // 只允许主流程步骤，其他步骤（如beatcut/ai/output等独立页）重置为start
   const MAIN_STEPS = ['start', 'narrate', 'adjust', 'build'];
   if (!STEP_CARDS[init] || MAIN_STEPS.indexOf(init) === -1) init = 'start';
@@ -6531,6 +6570,50 @@ function switchStartTab(tabName){
   contents.forEach(function(c){
     c.style.display = (c.getAttribute('data-subtab') === tabName) ? '' : 'none';
   });
+}
+
+
+// === 页面2 · 左栏功能面板切换 ===
+// 背景：图文成片 / 智能强卡点 / 解说出片 原来三张卡纵向平铺，用户要一路往下滚
+// 才能发现有哪些功能，也分不清当前在用哪个。改成左栏三张卡片，点谁展谁。
+//
+// 显隐用 .nr-on 而不是 .active：.active 的语义是「这个流程步骤正在显示」，
+// 由 showStep 统一管理（四张卡都会被标上）；面板选中是另一个维度。
+// 两者混用会导致 showStep('narrate') 一次性把三张卡全展开——正是要修的问题。
+// （NAR_ACTIVE_PANEL / NAR_PANEL_KEY 在文件顶部声明，供初始化 IIFE 先读到）
+
+function selectNarPanel(name){
+  if (!name) name = 'nar';
+  // 「只要解说稿」是解说面板下的子标签，外部传 movie 时归到 nar 面板
+  if (name === 'movie') name = 'nar';
+  if (['nar', 'beatcut', 'drop'].indexOf(name) === -1) name = 'nar';
+  NAR_ACTIVE_PANEL = name;
+
+  // 左栏卡片选中态
+  document.querySelectorAll('.nar-rail-card').forEach(function(c){
+    c.classList.toggle('active', c.getAttribute('data-panel') === name);
+  });
+
+  // 面板显隐。注意 narCard / movieCard 不参与：它们由 switchNarrTab 独占控制，
+  // 这里只切外层容器 #narrPanelWrap，避免两套 display 逻辑互相覆盖。
+  document.querySelectorAll('#narPageMain [data-narpanel]').forEach(function(p){
+    p.classList.toggle('nr-on', p.getAttribute('data-narpanel') === name);
+  });
+
+  // 面板切走后，原先因「不在 narrate 步骤」而隐藏的卡不该被留成 active，
+  // 否则下次进页面会看到两张卡同时亮着。这里不做额外清理：showStep 负责步骤级状态。
+
+  try { localStorage.setItem(NAR_PANEL_KEY, name); } catch(e) {}
+}
+
+// 左栏折叠：窄屏或想多看内容时把图标栏收成一条
+function toggleNarRail(){
+  var rail = $('narPageRail');
+  if (!rail) return;
+  var mini = rail.classList.toggle('nr-mini');
+  var btn = $('narRailToggle');
+  if (btn) btn.textContent = mini ? '»' : '«';
+  try { localStorage.setItem('springStudio.narRailMini', mini ? '1' : '0'); } catch(e) {}
 }
 
 

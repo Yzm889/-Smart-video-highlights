@@ -150,3 +150,95 @@ def test_js_toggled_classes_defined_in_css():
             continue
         missing.append(c)
     assert not missing, 'JS 切换的 class 在 CSS 里没有定义（样式不生效）：%s' % sorted(missing)
+
+
+# ---------------------------------------------------------------------------
+# 页面2 左栏工具卡布局（2026-11-05）
+#
+# 背景：图文成片 / 智能强卡点 / 解说出片 三张卡原来纵向平铺堆在同一页。
+# 用户要滚很久才知道有哪些功能，也分不清当前在用哪个。改成左栏三张卡、
+# 点谁展谁、同一时刻只显示一个面板。
+#
+# 这个改法最容易被后续改动毁掉的两个点，正是下面两条测试：
+#   ① 面板显隐规则的特异性必须高于 `.card[data-step].active`（0,3,0）。
+#      否则 showStep('narrate') 给四张卡全加 .active 后，三张卡又同时铺开——
+#      改了一圈回到原点。
+#   ② 左栏卡片、面板、JS 里的面板名必须三方一致。少一处就是「点了没反应」。
+# ---------------------------------------------------------------------------
+
+def _spec(sel):
+    """粗略计算选择器特异性 (id, class+attr+pseudo, element)。"""
+    s = re.sub(r':not\(([^)]*)\)', r' \1 ', sel)
+    n_id = len(re.findall(r'#[\w-]+', s))
+    n_cls = len(re.findall(r'\.[\w-]+', s)) + len(re.findall(r'\[[^\]]+\]', s))
+    n_el = sum(1 for t in re.split(r'[\s>+~]+', s)
+               if re.fullmatch(r'[a-zA-Z][\w-]*', t))
+    return (n_id, n_cls, n_el)
+
+
+def _read(rel):
+    with open(os.path.join(ROOT, rel), encoding='utf-8') as f:
+        return f.read()
+
+
+def test_nar_panel_rules_beat_card_active(src):
+    """面板显隐规则必须压过 `.card[data-step].active`。
+
+    这是本布局能成立的前提：showStep('narrate') 会无条件给 narCard/movieCard/
+    drop/beatcutCard 四张卡加 .active（它们都是 .card[data-step]），
+    若面板规则特异性不够，三张卡仍会同时显示。
+    """
+    css = _read('static/style.css')
+    base = '.card[data-step].active'
+    assert base in css, '基础显隐规则不在了，请复核本测试前提'
+
+    # 找出面板隐藏/显示两条规则
+    hide = '.nar-page-main .card[data-step][data-narpanel]'
+    show = '.nar-page-main .card[data-step][data-narpanel].nr-on'
+    for sel in (hide, show):
+        assert sel in css, '面板规则缺失：%s（改布局时被删了？）' % sel
+
+    assert _spec(hide) > _spec(base), (
+        '面板隐藏规则特异性 %s 不高于 %s —— showStep 加了 .active 后三张卡会同时铺开'
+        % (_spec(hide), _spec(base)))
+    assert _spec(show) > _spec(hide), (
+        '选中态特异性 %s 不高于隐藏规则 %s —— 选中了也显示不出来'
+        % (_spec(show), _spec(hide)))
+
+
+def test_nar_rail_panels_are_consistent(src):
+    """左栏卡片 data-panel、面板 data-narpanel、JS 允许值三方必须一致。
+
+    少一处就是「点了没反应」：左栏写着 beatcut，面板写 beatcutCard，
+    selectNarPanel 一比对不上就静默回落到解说面板——用户以为按钮坏了。
+    """
+    html, js = src
+    rail = set(re.findall(r'class="nar-rail-card[^"]*"[^>]*data-panel="([^"]+)"', html))
+    rail |= set(re.findall(r'data-panel="([^"]+)"[^>]*class="nar-rail-card', html))
+    assert rail == {'drop', 'beatcut', 'nar'}, '左栏卡片集合不对：%s' % sorted(rail)
+
+    panels = set(re.findall(r'data-narpanel="([^"]+)"', html))
+    assert panels == {'drop', 'beatcut', 'nar'}, '面板集合与左栏不匹配：%s' % sorted(panels)
+
+    i = js.find('function selectNarPanel')
+    assert i > 0, 'selectNarPanel 不见了（左栏点击会变成无响应）'
+    body = js[i:i + 700]
+    allowed = re.search(r"\[\s*'nar'\s*,\s*'beatcut'\s*,\s*'drop'\s*\]", body)
+    assert allowed, 'selectNarPanel 的允许值列表不见了或被改动，请与 data-panel 同步'
+
+
+def test_nar_panel_keeps_subtab_mechanism(src):
+    """narCard / movieCard 不得挂 data-narpanel。
+
+    它们的显隐由「剪成片 / 只要解说稿」子标签（switchNarrTab 设 inline display）
+    独占控制。若也挂 data-narpanel，会被 `.nar-page-main [data-narpanel]{display:none}`
+    一并打死 —— 表现就是从别的步骤跳进来时解说卡一片空白。
+    """
+    html, _js = src
+    for cid in ('narCard', 'movieCard'):
+        m = re.search(r'<div[^>]*id="%s"[^>]*>' % cid, html)
+        assert m, '找不到卡片 %s' % cid
+        tag = m.group(0)
+        assert 'data-narpanel' not in tag, (
+            '%s 挂上了 data-narpanel，子标签与面板两套 display 逻辑会互相覆盖' % cid)
+        assert 'narr-tab-content' in tag, '%s 应保留 narr-tab-content 供 switchNarrTab 管理' % cid
