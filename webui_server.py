@@ -4318,24 +4318,34 @@ def cosyvoice_install_async():
             except Exception:
                 pass
             if not torch_ok:
-                # 心跳：下载中每隔一段时间更新提示
+                # 心跳：下载中每隔一段时间更新提示（20s 一跳保持活性，等待分钟数按真实秒数换算）
                 def _torch_heartbeat(stop_event, start_pct):
-                    mins = 0
+                    secs = 0
                     while not stop_event.is_set():
                         time.sleep(20)
-                        mins += 1
+                        secs += 20
                         if TTS_SETUP['running']:
-                            TTS_SETUP.update(pct=min(start_pct + mins * 0.5, 45),
-                                             msg='正在下载 PyTorch CUDA版（约2.4GB，已等%d分钟，请耐心等待）…' % mins)
+                            TTS_SETUP.update(pct=min(start_pct + secs / 120.0, 45),
+                                             msg='正在下载 PyTorch CUDA版（约2.4GB，已等%d分钟，请耐心等待）…' % (secs // 60))
                 _stop_hb = _th.Event()
                 _hb = _th.Thread(target=_torch_heartbeat, args=(_stop_hb, 15), daemon=True)
                 _hb.start()
                 torch_err = ''
                 try:
-                    TTS_SETUP.update(pct=15, msg='正在下载 PyTorch CUDA版（约2.4GB，根据网速需5-30分钟）…')
-                    rc, torch_err = _run_pip(pip, ['install', 'torch', 'torchaudio', '--index-url',
-                                                    'https://download.pytorch.org/whl/cu121'],
-                                             timeout=3600, label='PyTorch CUDA')
+                    # 国内镜像优先（2026-11-06 主人提醒）：官方源在国内常只有 1~2MB/s 甚至
+                    # 卡死。SJTU 镜像有 +cu121 轮子（已验证 /torch/ 索引与轮子均 200）；
+                    # 依赖（filelock/sympy 等）走阿里云主索引。版本钉死 2.5.1+cu121：
+                    # cu121 索引到 2.5.1 为止，与 CosyVoice 兼容，也避免两个索引版本漂移。
+                    TTS_SETUP.update(pct=15, msg='正在下载 PyTorch CUDA版（国内镜像，约2.4GB）…')
+                    rc, torch_err = _run_pip(pip, ['install', 'torch==2.5.1+cu121', 'torchaudio==2.5.1+cu121',
+                                                    '--index-url', 'https://mirrors.aliyun.com/pypi/simple/',
+                                                    '--extra-index-url', 'https://mirror.sjtu.edu.cn/pytorch-wheels/cu121'],
+                                             timeout=3600, label='PyTorch CUDA(镜像)')
+                    if rc != 0:
+                        TTS_SETUP.update(pct=15, msg='镜像失败，改走官方源（国内较慢）…')
+                        rc, torch_err = _run_pip(pip, ['install', 'torch', 'torchaudio', '--index-url',
+                                                        'https://download.pytorch.org/whl/cu121'],
+                                                 timeout=3600, label='PyTorch CUDA')
                     torch_ok = (rc == 0)
                 finally:
                     _stop_hb.set()
@@ -4420,10 +4430,10 @@ def cosyvoice_install_async():
                 # 下载心跳
                 _stop_dl = _th.Event()
                 def _dl_heartbeat(stop_evt, base_pct):
-                    m = 0
+                    secs = 0
                     while not stop_evt.is_set():
                         time.sleep(20)
-                        m += 1
+                        secs += 20  # 20s 一跳；分钟数按真实秒数换算（旧版每 20s 记 1 分钟，虚报 3 倍）
                         if TTS_SETUP['running']:
                             # 检查模型目录大小，估算进度
                             try:
@@ -4433,9 +4443,9 @@ def cosyvoice_install_async():
                                         total += os.path.getsize(os.path.join(root, f))
                                 gb = total / (1024**3)
                                 est = min(95, base_pct + gb * 3.0)  # 9GB约占30%进度
-                                TTS_SETUP.update(pct=est, msg='正在下载模型（已等%d分钟，已下%.1fGB/约9GB）…' % (m, gb))
+                                TTS_SETUP.update(pct=est, msg='正在下载模型（已等%d分钟，已下%.1fGB/约9GB）…' % (secs // 60, gb))
                             except Exception:
-                                TTS_SETUP.update(pct=min(base_pct + m, 90), msg='正在下载模型（已等%d分钟）…' % m)
+                                TTS_SETUP.update(pct=min(base_pct + secs // 60, 90), msg='正在下载模型（已等%d分钟）…' % (secs // 60))
                 _dl_hb = _th.Thread(target=_dl_heartbeat, args=(_stop_dl, 65), daemon=True)
                 _dl_hb.start()
                 TTS_SETUP.update(pct=65, msg='下载 CosyVoice2-0.5B 模型（约9GB，国内镜像，需10-20分钟）…')
@@ -4457,6 +4467,20 @@ snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
             # 6. 创建worker脚本
             TTS_SETUP.update(pct=95, msg='配置推理脚本…')
             _ensure_cosyvoice_worker()
+            # 参考音频（zero-shot 克隆的音色来源）：官方仓库自带示例人声，落成默认「中文女」。
+            # 安装链原本没人负责这一步——装完一开口就报「参考音频不存在，请重新安装」，
+            # 而重装并不会补上它（2026-11-06 实测缺口）。
+            try:
+                _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+                os.makedirs(_vdir, exist_ok=True)
+                _default_ref = os.path.join(_vdir, '中文女.wav')
+                if not os.path.exists(_default_ref):
+                    _asset = os.path.join(COSYVOICE_REPO_DIR, 'asset', 'zero_shot_prompt.wav')
+                    if os.path.exists(_asset):
+                        import shutil as _sh2
+                        _sh2.copyfile(_asset, _default_ref)
+            except Exception:
+                pass
             # 验证模型目录有关键文件
             model_files = []
             try:
