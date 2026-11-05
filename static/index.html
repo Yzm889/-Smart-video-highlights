@@ -774,6 +774,7 @@
   <div id="adjustStatus" style="margin:8px 0;color:var(--muted);font-size:13px">请先在「⑤ 解说」生成配音，完成后会自动跳到这里。</div>
   <div id="adjustRestore" style="margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <button class="btn btn2" onclick="loadRecentTts()" style="padding:8px 16px;font-size:13px">📂 恢复配音</button>
+    <a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection('tts')" style="font-size:13px">⚙️ 配音设置（换引擎/音色/下载模型）</a>
     <select id="adjustRestoreSelect" style="display:none;padding:6px;border-radius:6px;background:var(--bg);color:var(--text);border:1px solid var(--border)"></select>
     <span id="projectAutoSaveHint" style="font-size:11px;color:var(--muted);margin-left:auto"></span>
   </div>
@@ -1367,7 +1368,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=87"></script>
+<script src="/static/app.js?v=89"></script>
 </body>
 </html>
 

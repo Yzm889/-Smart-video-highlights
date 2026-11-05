@@ -637,8 +637,11 @@ function loadTtsLocal(){
     // 解说卡直接显示「这条解说会用哪种声音」，不用跑去 AI 页才知道
     const nv = $('narVoiceInfo');
     if(nv){
+      // 跳转目标必须是 'tts'：jumpToAISection 只对 'tts'/'voice' 才会滚动到引擎选择器。
+      // 曾误传 'local'，落点是「本地离线模型」折叠区顶部（Whisper/VLM 一堆配置之上），
+      // 配音区埋在最底部 → 主人反馈「看不到下载/配置配音模型的入口」（2026-11-05）。
       nv.innerHTML = '🔊 配音：<b>' + escapeHtml(res.label || '未知') + '</b>'
-        + '　<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'local\')">⚙️ 换配音引擎/音色</a>';
+        + '　<a href="javascript:void(0)" class="jump-link" onclick="jumpToAISection(\'tts\')">⚙️ 换配音引擎/音色</a>';
     }
     // 填充离线模型下拉框 + 控制卸载按钮
     const sherpaSel = $('ttsSherpaModel');
@@ -2492,9 +2495,15 @@ function jumpToAISection(section){
       if (cloudD) cloudD.open = false;
     }
     if (section === 'tts' || section === 'voice') {
-      // 配音引擎跳转：额外滚动到引擎选择控件，方便直接换引擎/下载模型
+      // 配音引擎跳转：落点必须精确到引擎选择控件，下方紧跟模型下载/安装按钮。
+      // 不能用 smooth：上面的 card smooth 滚动还在动画中，两个平滑滚动会互相
+      // 打架（实测落点偏 40px+）。这里直接算目标位置、瞬时一次到位。
       const eng = document.getElementById('ttsLocalEngine');
-      if (eng) eng.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (eng) {
+        const y = eng.getBoundingClientRect().top + window.scrollY
+                 - window.innerHeight / 2 + eng.offsetHeight / 2;
+        window.scrollTo({ top: Math.max(0, y) });
+      }
     }
   }, 350);
 }
