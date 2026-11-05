@@ -1586,7 +1586,7 @@ if(typeof window !== 'undefined'){ window.updateScriptHint = updateScriptHint; w
 // 字幕交付方式选「不烧录」时，把下面的样式项灰掉并改写说明。
 // 必须在 DOM 就绪后跑一次：否则刷新页面时下拉框显示的选中值与灰显状态会对不上
 // （浏览器会保留 select 的选中项，但我们没有重新应用 disabled）。
-if(typeof window !== 'undefined'){ window.addEventListener('DOMContentLoaded', function(){ try{ updateSubStyleHint(); }catch(e){} }); }
+if(typeof window !== 'undefined'){ window.addEventListener('DOMContentLoaded', function(){ try{ updateSubStyleHint(); }catch(e){} try{ updateAudioHint(); }catch(e){} }); }
 
 function updatePlotHint(){
   const el = document.getElementById('narPlot');
@@ -2963,6 +2963,7 @@ async function buildNarrate(){
                          autoCut: $('narAutoCut') ? $('narAutoCut').checked : true,
                          targetSec: parseFloat(($('narTargetSec')||{}).value) || 0,
                          subtitle: getSubtitleStyle(),
+                         audio: getAudioDelivery(),
                          resolution: ($('exportResolution')||{}).value || 'original', fit: ($('exportFit')||{}).value || 'auto',
                          colorStyle: ($('exportColor')||{}).value || 'native',
                          bitrate: ($('exportBitrate')||{}).value || '',
@@ -3066,7 +3067,7 @@ function pollNarrate(runid){
           setModeBadge('narBadge', p.mode);
           gPreview(p.file, '电影解说');
           $('narDl').href='/media/'+p.file;
-          fillNarSrt(p.subtitle_file, p.subtitle_burned);
+          fillNarSrt(p.subtitle_file, p.subtitle_burned, p.voice_file, p.voice_track_layered);
           renderCredits('narResult', p.credits);
           _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
           const d=p.diag||{};
@@ -3777,7 +3778,7 @@ function _showPlanResult(type, p){
     g('narResult').style.display='block';
     g('narPlayer').src='/media/'+p.file+'?t='+Date.now();
     g('narDl').href='/media/'+p.file;
-    fillNarSrt(p.subtitle_file, p.subtitle_burned);
+    fillNarSrt(p.subtitle_file, p.subtitle_burned, p.voice_file, p.voice_track_layered);
     _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
     setModeBadge('narBadge','human');
     gPreview(p.file,'电影解说');
@@ -5717,19 +5718,19 @@ function deletePreset(){
 // 后端在 progress 里给 subtitle_file（相对 OUTDIR）与 subtitle_burned。
 // 规则：不烧录时把提示说清楚（用户必须知道成片没有字幕）；
 // 烧录时也允许下载（可拿 srt 去别处复用/校对），但不加提示、不抢视线。
-function fillNarSrt(file, burned){
+function fillNarSrt(file, burned, voiceFile, voiceLayered){
   var a = $('narSrtDl'), tip = $('narSrtTip');
   if (!a) return;
   if (!file){
     a.style.display = 'none';
     if (tip){ tip.style.display = 'none'; tip.innerHTML = ''; }
-    return;
+  } else {
+    a.href = '/media/' + file;
+    a.setAttribute('download', (String(file).split('/').pop() || 'narration.srt'));
+    a.style.display = '';
   }
-  a.href = '/media/' + file;
-  a.setAttribute('download', (String(file).split('/').pop() || 'narration.srt'));
-  a.style.display = '';
   if (tip){
-    if (burned === false){
+    if (burned === false && file){
       tip.style.display = '';
       tip.innerHTML = '📄 本次<b>没有</b>把字幕烧进画面：成片是干净画面，字幕在上面的 .srt 里。'
         + '拿去剪映 / PR / FCP 导入后可自由调位置、字号、字体，不影响画面质量。';
@@ -5738,6 +5739,54 @@ function fillNarSrt(file, burned){
       tip.innerHTML = '';
     }
   }
+  // 独立的纯解说音轨（.wav）。分层模式下成片里已经有一条 A2，
+  // 但单独文件仍然给：拖进剪辑软件是最省事的那条路。
+  var va = $('narVoiceDl'), vtip = $('narVoiceTip');
+  if (va){
+    if (!voiceFile){
+      va.style.display = 'none';
+      if (vtip){ vtip.style.display = 'none'; vtip.innerHTML = ''; }
+    } else {
+      va.href = '/media/' + voiceFile;
+      va.setAttribute('download', (String(voiceFile).split('/').pop() || 'narration_voice.wav'));
+      va.style.display = '';
+      if (vtip){
+        vtip.style.display = '';
+        vtip.innerHTML = voiceLayered
+          ? '🎚 成片已带 <b>两条音轨</b>：A1 完整混音（默认播放）、A2 纯解说。这条 .wav 与 A2 内容相同，拖进 PR 即独立音轨。'
+          : '🎙 这条 .wav 是<b>纯解说</b>（不含原声/配乐），0 秒对齐成片 0 秒；拖进 PR / FCP / 剪映就是一条独立音轨，可单独调音量、剪掉某句或整轨替换。';
+      }
+    }
+  }
+}
+
+// 音轨交付参数。两个开关都只有「明确勾选」才开，缺元素一律回落老行为
+// （单轨混音、不导出 wav）——避免某次 UI 改版漏了元素就静默改变成片。
+function getAudioDelivery(){
+  var lay = document.getElementById('audioLayers');
+  var exp = document.getElementById('exportVoice');
+  return {
+    layers: !!(lay && lay.value === '1'),
+    exportVoice: !!(exp && exp.checked)
+  };
+}
+
+function updateAudioHint(){
+  var lay = document.getElementById('audioLayers');
+  var exp = document.getElementById('exportVoice');
+  var hint = document.getElementById('audioHint');
+  if (!hint) return;
+  var layered = !!(lay && lay.value === '1');
+  var wav = !!(exp && exp.checked);
+  if (!layered && !wav){
+    hint.innerHTML = '当前：成片只有一条混音轨（原声 + 解说 + 配乐）。导入 PR 后无法单独调解说音量。';
+    return;
+  }
+  var parts = [];
+  if (layered) parts.push('成片带 <b>两条音轨</b>：A1 完整混音（默认播放）、A2 纯解说；在 PR/FCP/剪映里可静音 A1 单独用 A2');
+  if (wav) parts.push('额外给一条无损 <b>.wav</b>，拖进剪辑软件就是独立音轨，0 秒对齐成片 0 秒');
+  hint.innerHTML = '✅ ' + parts.join('；') + '。';
+  if (!wav && layered) hint.innerHTML += '（A2 已含在成片里，不想要单独文件就不用勾。）';
 }
 
 function getSubtitleStyle(){

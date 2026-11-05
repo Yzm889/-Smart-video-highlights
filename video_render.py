@@ -283,6 +283,38 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
     _log.info(f'[DIAG] 配音完成: tts_paths={len(tts_paths)}/{len([t for t in narr if t and t.strip()])} voice_spans={len(voice_spans)}')
     final = _w._compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans, burned=_single_pass)
+    # ---- 附赠产物：独立的纯解说音轨 ----
+    # 分层音轨与单独导出共用这一条 WAV（一次生成，两处用）。
+    # 失败一律不影响成片：这是附赠物，不是主链路。
+    _voice_wav = None
+    if tts_paths and (_voice_track_enabled(params) or _audio_layers_enabled(params)):
+        _vdur = probe_audio_len(final) or cut_info.get('out_dur') or 0.0
+        try:
+            _voice_wav = build_voice_track(tts_paths, run_dir, _vdur)
+        except Exception as _ve:
+            _log.info('[DIAG] 解说音轨导出异常（不影响成片）: %s', _ve)
+
+    # 成片分层音轨：A1 = 完整混音（默认播放轨，保证任何播放器打开都能听到解说），
+    #                A2 = 纯解说（剪辑软件里可静音 A1 后单独用，或做校对/替换）。
+    # 用二次 mux（-c:v copy -c:a:0 copy）而不是改主混音链：主链里有 asplit
+    # 与 sidechaincompress，动错一个标签就会整链降级到「丢弃配音」（真机踩过）。
+    # 二次 mux 失败 → 保留原成片，只是没有 A2，用户仍有单独导出的 WAV。
+    if _audio_layers_enabled(params) and _voice_wav and os.path.isfile(_voice_wav):
+        try:
+            _layered = os.path.join(run_dir, 'final_layered.mp4')
+            _rc, _o, _e = ffmpeg_run([
+                '-y', '-i', final, '-i', _voice_wav,
+                '-map', '0:v:0', '-map', '0:a:0', '-map', '1:a:0',
+                '-c:v', 'copy', '-c:a:0', 'copy', '-c:a:1', 'aac', '-b:a:1', '192k',
+                '-disposition:a:0', 'default', '-disposition:a:1', '0',
+                '-movflags', '+faststart', _layered])
+            if _rc == 0 and os.path.isfile(_layered) and os.path.getsize(_layered) > 0:
+                final = _layered
+            else:
+                _log.info('[DIAG] 分层音轨 mux 失败，保留单轨成片: %s',
+                          _e.decode('utf-8', 'ignore')[-200:])
+        except Exception as _me:
+            _log.info('[DIAG] 分层音轨 mux 异常，保留单轨成片: %s', _me)
     if progress:
         progress['done'] = True
         progress['pct'] = 100
@@ -295,6 +327,15 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
             if os.path.isfile(_srt_path) and os.path.getsize(_srt_path) > 0:
                 progress['subtitle_file'] = os.path.relpath(_srt_path, _w.OUTDIR).replace('\\', '/')
                 progress['subtitle_burned'] = bool(_burn_enabled(params))
+        except Exception:
+            pass
+        # 独立的纯解说音轨：勾了「单独导出」或「成片分层音轨」都给下载链接。
+        # 它是 pcm_s16le WAV（无损、无固定编码延迟），剪辑软件里拖进去
+        # 就是一条独立的 A2，0 秒对齐成片 0 秒。
+        try:
+            if _voice_wav and os.path.isfile(_voice_wav) and os.path.getsize(_voice_wav) > 0:
+                progress['voice_file'] = os.path.relpath(_voice_wav, _w.OUTDIR).replace('\\', '/')
+                progress['voice_track_layered'] = bool(_audio_layers_enabled(params))
         except Exception:
             pass
         if mode:
@@ -579,6 +620,71 @@ def _build_narr_srt(segs, narr, run_dir, voice_spans=None, params=None):
         except Exception:
             pass
     return srt
+
+
+def _audio_layers_enabled(params):
+    """成片是否输出**两条独立 AAC 音轨**：默认 False（老行为，单轨混合）。
+
+    True = A1 原声+BGM 混合（成片默认播放轨），A2 纯解说（剪辑软件里可单独
+    静音/调音量/替换/校对）。MP4 支持多音频流，PR/FCP/剪映导入后会看到两条轨。
+    """
+    a = (params or {}).get('audio') or {}
+    return a.get('layers') is True
+
+
+def _voice_track_enabled(params):
+    """是否单独导出一条纯解说音轨文件（.wav）。默认 False。"""
+    a = (params or {}).get('audio') or {}
+    return a.get('exportVoice') is True
+
+
+def build_voice_track(tts_paths, run_dir, vdur, out_name='narration_voice.wav'):
+    """把各段配音按**成片时间轴**铺成一条纯解说音轨（不含原声/BGM）。
+
+    为什么要单独导出：现有 amix 把原声+配音+BGM 全压进一条 AAC，导入 PR 后
+    只有一条音轨，想单独调解说音量、替换某句、或对齐字幕都得整轨重做。
+    给一条干净的 WAV，剪辑软件里拖进去就是独立 A2，随便剪。
+
+    时间轴对齐规则必须与 _compose_narration_video 里的配音链**完全一致**：
+      · 先 atrim 再 adelay（顺序反了会把整句删掉，见下方原链里的实测注释）；
+      · adelay 用 seg 的起点 od；总长用 apad=whole_dur 撑到成片时长，
+        这样拖进 PR 时 0 秒就是 0 秒，不用手工找偏移。
+    失败一律返回 None 而不是抛异常：这是「附赠产物」，不能把主成片拖垮。
+    """
+    if not tts_paths or vdur <= 0:
+        return None
+    out = os.path.join(run_dir, out_name)
+    inputs, fparts, labels, idx = [], [], [], 0
+    for item in tts_paths:
+        path = item[0]
+        od = float(item[1] or 0)
+        oe = item[2] if len(item) > 2 else None
+        if not os.path.isfile(path):
+            continue
+        dmax = max(0.05, (oe - od) if (oe is not None and oe > od) else 0.05)
+        inputs += ['-i', path]
+        # 与主混音链同样的处理：aresample → atrim → adelay → apad
+        fparts.append(f'[{idx}:a]aresample=44100,'
+                      f'atrim=start=0:end={dmax:.2f},'
+                      f'adelay={int(od * 1000)}|{int(od * 1000)},'
+                      f'apad=whole_dur={vdur:.2f}[vt{idx}]')
+        labels.append(f'[vt{idx}]')
+        idx += 1
+    if not labels:
+        return None
+    fparts.append(f'{"".join(labels)}amix=inputs={len(labels)}:normalize=0,'
+                  'aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                  'alimiter=limit=0.95,'
+                  f'atrim=0:{vdur:.2f}[aout]')
+    cmd = ['-y'] + inputs + ['-filter_complex', ';'.join(fparts),
+                             '-map', '[aout]', '-c:a', 'pcm_s16le',
+                             '-ar', '44100', '-ac', '2', out]
+    rc, _o, e = ffmpeg_run(cmd)
+    if rc != 0 or not os.path.isfile(out):
+        _log.info('[DIAG] 解说音轨导出失败（不影响成片）: %s',
+                  e.decode('utf-8', 'ignore')[-200:])
+        return None
+    return out
 
 
 def _build_voice_spans(segs, voice_durs, tts_clips):
@@ -1158,5 +1264,7 @@ for _sym in ('_NAR_CPS', '_NAR_MIN_CHARS', '_NAR_MAX_CHARS', '_NAR_MAX_SPEED', '
              '_target_chars', '_fit_voice', '_render_narrate',
              '_merge_spans', '_cut_video_by_spans',
              '_build_narr_srt', '_build_voice_spans', '_cut_and_burn_video',
-             '_build_subtitle_style', '_compose_narration_video'):
+             '_build_subtitle_style', '_compose_narration_video',
+             '_burn_enabled', '_audio_layers_enabled', '_voice_track_enabled',
+             'build_voice_track'):
     setattr(_w, _sym, globals()[_sym])
