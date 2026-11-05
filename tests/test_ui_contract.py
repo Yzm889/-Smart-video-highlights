@@ -242,3 +242,81 @@ def test_nar_panel_keeps_subtab_mechanism(src):
         assert 'data-narpanel' not in tag, (
             '%s 挂上了 data-narpanel，子标签与面板两套 display 逻辑会互相覆盖' % cid)
         assert 'narr-tab-content' in tag, '%s 应保留 narr-tab-content 供 switchNarrTab 管理' % cid
+
+
+# ---------------------------------------------------------------------------
+# 局部别名跨作用域误用（2026-11-05）
+#
+# 真实事故：`readNarSubtitle` 里写了 `esc(file.name)`，但 `esc` 只是
+# `renderNarrGuide` 内部的局部别名（`const esc = escapeHtml;`）。
+# 结果：字幕导入成功那一刻抛 ReferenceError，顶部红条弹出，
+# 后面的「按钮文案改成『换一个字幕』」再也没执行 —— 用户以为导入失败。
+#
+# 这类 bug 特别难在代码评审里看出来：`esc` 这个名字在文件里确实存在
+# （在别的函数里），grep 得到结果，肉眼看过去毫无问题。
+# 而 app.js 里同时存在 esc / escapeHtml / _esc 三种转义名，更容易搞混。
+#
+# 静态检测规则：找出 `const X = Y;`（Y 是纯标识符）形式的别名，
+# 若 X 在**定义它的函数之外**被调用，就是跨作用域误用。
+# ---------------------------------------------------------------------------
+
+def _func_ranges(js):
+    """返回 [(name, start, end)]，用大括号配平算每个 function 的字面量区间。"""
+    out = []
+    for m in re.finditer(r'\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{', js):
+        name = m.group(1)
+        i = js.index('{', m.start())
+        depth = 0
+        for j in range(i, len(js)):
+            if js[j] == '{':
+                depth += 1
+            elif js[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    out.append((name, m.start(), j + 1))
+                    break
+    return out
+
+
+def test_local_alias_not_used_outside_its_function():
+    """局部别名不得在定义它的函数之外被调用（会抛 ReferenceError）。
+
+    事故现场：`readNarSubtitle` 调用了 `renderNarrGuide` 内部的 `esc` 别名。
+    报错发生在用户操作路径上（导入字幕 → 顶部红条 → 按钮文案不更新），
+    静态阅读完全看不出来，因为 `esc` 这个名字在文件里确实存在。
+    """
+    with open(JS_PATH, encoding='utf-8') as f:
+        js = f.read()
+
+    funcs = _func_ranges(js)
+    # 只有「别名指向一个已定义的函数」才纳入检查。这是关键收窄：
+    # 初版把 `var s = ...` 这类普通变量也算进去，结果 `'s ('` 这种字符串片段
+    # 被当成了函数调用，报了 3 条纯噪音 —— 门槛一旦有噪音就会被无视，等于没门禁。
+    defined_funcs = {f[0] for f in funcs}
+    # 别名声明：const/let/var X = Y;   （Y 是纯标识符，且 X != Y）
+    aliases = []
+    for m in re.finditer(r'\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;', js):
+        name, target = m.group(1), m.group(2)
+        if name == target or target not in defined_funcs:
+            continue
+        # 所属函数 = 最内层包住这个声明位置的 function
+        owner = None
+        for fname, s, e in funcs:
+            if s <= m.start() < e and (owner is None or (e - s) < (owner[2] - owner[1])):
+                owner = (fname, s, e)
+        if owner is None:
+            continue           # 顶层别名就是全局的，随便用
+        aliases.append((name, owner, m.start()))
+
+    bad = []
+    for name, (fname, s, e), _decl in aliases:
+        # 该别名在**定义函数之外**被调用的位置
+        for m in re.finditer(r'(?<![.\w$])' + re.escape(name) + r'\s*\(', js):
+            if not (s <= m.start() < e):
+                line = js[:m.start()].count('\n') + 1
+                bad.append('%s() 在 %s 之外被调用（%s 只在 %s 内定义为局部别名）第 %d 行'
+                           % (name, fname, name, fname, line))
+
+    assert not bad, (
+        '发现局部别名跨作用域误用（运行时必抛 ReferenceError，且发生在用户操作路径上）：\n  '
+        + '\n  '.join(sorted(set(bad))))

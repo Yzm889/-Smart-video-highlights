@@ -1946,3 +1946,17 @@ select option { background: var(--fc-surface-2); color: var(--fc-text); }
   .nar-page-rail .nr-rail-title { display: none; }
   .nar-rail-card { width: auto; flex: 1 1 46%; }
 }
+
+/* 字幕拖拽导入高亮（2026-11-05）：
+   字幕框本身是提示卡，不是标准 dropzone，拖进来时必须有明确反馈，
+   否则用户不知道「这个框能不能接」。
+   注意别只改背景色：提示卡本身已有浅金底，只加深会看不出来，
+   所以同时改边框为实线粗边 + 轻微外发光。 */
+#narSubBox.subdrop-over {
+  border-color: var(--accent) !important;
+  border-style: dashed !important;
+  border-width: 2px !important;
+  background: linear-gradient(135deg, rgba(201, 168, 76, .26), rgba(201, 168, 76, .12)) !important;
+  box-shadow: 0 0 0 3px rgba(201, 168, 76, .18), 0 8px 24px -12px rgba(201, 168, 76, .55);
+  transform: translateY(-1px);
+}

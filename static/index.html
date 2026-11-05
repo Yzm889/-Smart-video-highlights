@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=25">
+<link rel="stylesheet" href="/static/style.css?v=26">
 <!-- FrameCut UI v2 · 简约设计系统（纯覆盖层，原样式一行未删；删掉本行即可一键回退） -->
 <link rel="stylesheet" href="/static/style.v2.css?v=24">
 </head>
@@ -457,13 +457,14 @@
     <!-- 字幕导入：这是「看懂剧情 + 对齐时间轴」的关键输入。
          有了字幕就不用 Whisper 猜台词（准确、快、不占显存），
          画面抽样也会按台词时间轴落点，VLM 才不会一直在看空镜。 -->
-    <div id="narSubBox" style="margin-top:10px;padding:14px 16px;border-radius:12px;background:linear-gradient(135deg,rgba(201,168,76,.14),rgba(201,168,76,.05));border:1.5px solid rgba(201,168,76,.45);">
+    <div id="narSubBox" style="margin-top:10px;padding:14px 16px;border-radius:12px;background:linear-gradient(135deg,rgba(201,168,76,.14),rgba(201,168,76,.05));border:1.5px solid rgba(201,168,76,.45);transition:border-color .18s,background .18s,box-shadow .18s;">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
         <button class="btn" id="narSubBtn" type="button" style="font-size:15px;padding:12px 26px;font-weight:700;flex:none;">📄 导入字幕（SRT）</button>
         <input type="file" id="narSubInput" accept=".srt,.ass,.ssa,.vtt" style="display:none">
         <div style="flex:1;min-width:220px;">
           <div style="font-size:14px;font-weight:700;color:var(--ink);">★★ 强烈推荐：字幕是本工具理解剧情的命脉</div>
           <div class="hint" style="margin:2px 0 0;">不导入也能跑（Whisper 听写），但<b>准确率低、速度慢、占显存</b>；导入字幕 = 剧情理解准 + 时间轴零偏差 + 出片更快。</div>
+          <div class="hint" style="margin:2px 0 0;color:var(--accent);font-weight:600;">📥 支持把 .srt 文件<b>直接拖到这一块</b>，或点左边按钮选文件</div>
         </div>
       </div>
       <div class="hint" id="narSubInfo" style="margin:8px 0 0;">📥 还没导入字幕。下载资源时通常自带 <b>.srt</b> 文件（和视频同名那个就是），中/英文都行，自动识别编码。</div>
@@ -1326,7 +1327,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=84"></script>
+<script src="/static/app.js?v=85"></script>
 </body>
 </html>
 

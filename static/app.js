@@ -2740,6 +2740,49 @@ let NAR_SUB = null;   // 用户导入的字幕 {name, text}；null = 没有（�
       si.value = '';
     });
   }
+  // 字幕支持**拖拽导入**：下载资源时通常视频和 .srt 一起解压出来，
+  // 用户自然会往这个框上拖。原来只能点按钮选文件，拖进来毫无反应
+  // —— 浏览器还会把文件当导航（直接播放/下载），页面丢掉当前状态。
+  const sbox = $('narSubBox');
+  if (sbox) {
+    const isSub = f => /\.(srt|ass|ssa|vtt)$/i.test((f && f.name) || '');
+    // 注意：整页没有其它 drop 监听，但 drop 默认行为必须每次都拦，
+    // 否则拖歪一点浏览器就跳去打开该文件，等于把当前进度全丢了。
+    sbox.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      sbox.classList.add('subdrop-over');
+    });
+    sbox.addEventListener('dragleave', e => {
+      // dragleave 在子元素间移动时也会触发，只有真正离开整个盒子才取消高亮
+      if (!sbox.contains(e.relatedTarget)) sbox.classList.remove('subdrop-over');
+    });
+    sbox.addEventListener('drop', e => {
+      e.preventDefault();
+      e.stopPropagation();          // 别冒泡到 #drop 卡（整卡绑了「点哪都选文件」）
+      sbox.classList.remove('subdrop-over');
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (!files.length) return;
+      const hit = files.find(isSub);
+      if (!hit) {
+        // 拖了视频/图片进来：给出明确指路，而不是静默失败
+        $('narSubInfo').innerHTML = '❌ 这里只收字幕文件（.srt / .ass / .ssa / .vtt）。'
+          + '视频请拖到上方的「🎞️ 拖入一段电影/动漫/短片片段」区域。';
+        return;
+      }
+      readNarSubtitle(hit);
+    });
+  }
+  // #drop 卡片会把整个页面变成「拖哪都是选文件」，字幕文件拖进去也别丢：
+  // 直接转交字幕导入，省得用户再找一次位置。
+  document.addEventListener('drop', e => {
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (!files.length) return;
+    if (files.some(f => /\.(srt|ass|ssa|vtt)$/i.test((f && f.name) || ''))) {
+      e.preventDefault();
+      readNarSubtitle(files.find(f => /\.(srt|ass|ssa|vtt)$/i.test((f && f.name) || '')));
+    }
+  });
 })();
 
 function readNarSubtitle(file){
@@ -2756,7 +2799,10 @@ function readNarSubtitle(file){
       return;
     }
     NAR_SUB = { name: file.name, text: text };
-    $('narSubInfo').innerHTML = '✅ 已导入 <b>' + esc(file.name) + '</b>（' + n + ' 条台词）—— 将用它的时间轴对齐画面、代替 Whisper 听写';
+    // 这里必须用全局的 escapeHtml：`esc` 只是 narrGuide 里那个局部别名（见 1615 行），
+    // 在本函数作用域内不存在，调用会抛 ReferenceError 把后面的状态更新全打断
+    // —— 用户看到的是顶部红条 + 按钮文案停在「导入字幕」不变。
+    $('narSubInfo').innerHTML = '✅ 已导入 <b>' + escapeHtml(file.name) + '</b>（' + n + ' 条台词）—— 将用它的时间轴对齐画面、代替 Whisper 听写';
     $('narSubBtn').textContent = '📄 换一个字幕';
   };
   reader.onerror = () => { $('narSubInfo').textContent = '❌ 读取失败，请重试'; };
