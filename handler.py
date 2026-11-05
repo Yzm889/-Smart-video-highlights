@@ -455,22 +455,27 @@ class Handler(BaseHTTPRequestHandler):
     def _get_tts_recent(self):
         try:
             import glob as _glob
-            dirs = sorted(_glob.glob(os.path.join(_w.OUTDIR, '*')), key=os.path.getmtime, reverse=True)
+            # 先筛「含 tts_state.json 的任务目录」再按时间取前 20 —— 曾按目录
+            # mtime 排序后取前 20 才筛：webui_output 里 progress_state.json（每次
+            # 轮询都刷新 mtime）、上传暂存、试听缓存等杂物会把真正的任务目录
+            # 挤出前 20，恢复列表永远为空（2026-11-06 主人实测「恢复不到」）。
+            task_dirs = [d for d in _glob.glob(os.path.join(_w.OUTDIR, '*'))
+                         if os.path.isdir(d) and os.path.exists(os.path.join(d, 'tts_state.json'))]
+            task_dirs.sort(key=os.path.getmtime, reverse=True)
             recent = []
-            for d in dirs[:20]:
-                if os.path.isdir(d) and os.path.exists(os.path.join(d, 'tts_state.json')):
-                    import json as _j
-                    try:
-                        st = _j.load(open(os.path.join(d, 'tts_state.json'), encoding='utf-8'))
-                        recent.append({
-                            'run_dir': os.path.basename(d),
-                            'movie': st.get('movie_name', ''),
-                            'narr_count': len(st.get('narr', [])),
-                            'tts_count': len(st.get('tts_results', [])),
-                            'time': time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(d)))
-                        })
-                    except Exception:
-                        pass
+            for d in task_dirs[:20]:
+                import json as _j
+                try:
+                    st = _j.load(open(os.path.join(d, 'tts_state.json'), encoding='utf-8'))
+                    recent.append({
+                        'run_dir': os.path.basename(d),
+                        'movie': st.get('movie_name', ''),
+                        'narr_count': len(st.get('narr', [])),
+                        'tts_count': len(st.get('tts_results', [])),
+                        'time': time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(d)))
+                    })
+                except Exception:
+                    pass
             self._send(200, json.dumps({'ok': True, 'list': recent}).encode('utf-8'), 'application/json')
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')

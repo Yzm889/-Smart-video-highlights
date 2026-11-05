@@ -62,3 +62,38 @@ def test_preview_uses_real_source_filename():
     # 恢复与两个完成分支都要把文件名传进 renderAdjustPanel
     assert 'renderAdjustPanel(out.tts_list, runDir, \'movie\', [], out.video_path)' in js
     assert js.count('p.video_file') >= 2, 'nar/movie 完成分支未传 video_file'
+
+
+def test_export_uses_latest_adjustments():
+    """导出必须等于最后调整过的成品（2026-11-06 主人要求）。
+
+    两个缺口钉死：
+    ① 改词后未手动重生成 → 合成必须自动重配改词段（新字幕配旧声=事故）；
+    ② 合成请求必须带上当前交付设置（字幕烧不烧/成片音轨），合成前改卡片要生效。
+    """
+    js = _read(JS_PATH)
+    i = js.index('async function confirmAdjustAndCompose')
+    body = js[i:i + 4200]
+    # ① 改词检测 + 自动重配（文字基线 audio_text vs 当前文字）
+    assert 'audio_text' in body, '合成前未做改词检测'
+    assert 'regenSingleTts' in body, '检测到改词后未自动重配'
+    # 改词基线在渲染时建立、regen 成功后同步
+    assert js.count('audio_text') >= 3, 'audio_text 基线未建立/未同步'
+    # ② 两个合成入口都带当前交付设置
+    assert 'audio: getAudioDelivery()' in body, 'confirmAdjustAndCompose 未带音轨交付设置'
+    j = js.index('async function confirmTtsAndCompose')
+    body2 = js[j:j + 1600]
+    assert 'audio: getAudioDelivery()' in body2, 'confirmTtsAndCompose 未带音轨交付设置'
+    assert 'subtitle: getSubtitleStyle()' in body2, 'confirmTtsAndCompose 未带字幕交付设置'
+
+
+def test_tts_recent_filters_before_sort():
+    """恢复列表必须「先筛任务目录、再按时间取前 20」——曾按目录 mtime 排序后
+    才筛：webui_output 里 progress_state.json（每次轮询都刷新 mtime）、上传暂存、
+    试听缓存等杂物把任务目录挤出前 20，恢复列表永远为空（2026-11-06 主人实测）。"""
+    src = _read(os.path.join(ROOT, 'handler.py'))
+    i = src.index('def _get_tts_recent')
+    body = src[i:src.index('def _get_tts_state')]
+    assert 'task_dirs' in body and "tts_state.json" in body.split('task_dirs.sort')[0], \
+        '未先筛任务目录就排序取前 20（杂物会挤掉真任务）'
+    assert body.index('tts_state.json') < body.index('sort('), '筛选必须发生在排序之前'

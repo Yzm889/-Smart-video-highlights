@@ -4338,7 +4338,10 @@ async function confirmTtsAndCompose(runDir, mode, ttsList){
   const btn = document.getElementById(mode+'TtsConfirmBtn');
   if(btn){ btn.disabled = true; btn.textContent = '合成中…'; }
   try{
-    const body = { run_dir: runDir };
+    // 交付设置随合成下发：此时卡片上的「字幕烧不烧/成片音轨」是用户最后意图，
+    // 覆盖第一步存档的旧值（否则合成前改卡片不生效）
+    const body = { run_dir: runDir,
+                   params: { subtitle: getSubtitleStyle(), audio: getAudioDelivery() } };
     if(mode === 'movie' && document.getElementById('movieBgm') && document.getElementById('movieBgm').checked && MUSIC){
       if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
       else { body.music = await musicToBody(MUSIC.file); }
@@ -4581,6 +4584,11 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
   // 源片真实文件名（可能是 .mkv/.webm 等容器）：预览/时间轴按它拼 /media/ 地址
   if(videoFile) _adjustState.videoFile = videoFile;
   else if(_keepVideoFile) _adjustState.videoFile = _keepVideoFile;
+  // 每段音频的「文字基线」：改词检测用。渲染时的 text 即该段音频对应的文稿；
+  // regenSingleTts 成功后同步更新。合成前据此自动重配改词段（否则新字幕配旧声）。
+  // 【必须写在 items 深拷贝之后】：曾写在 ttsList 上（源数组），拷贝出的
+  // _adjustState.items 没有基线 → 所有段都被判为「改过词」，79 段全部重配。
+  _adjustState.items.forEach(function(it){ if(it && it.audio_text === undefined) it.audio_text = it.text || ''; });
   const list = document.getElementById('adjustList');
   const status = document.getElementById('adjustStatus');
   const actions = document.getElementById('adjustActions');
@@ -6076,9 +6084,11 @@ async function regenSingleTts(idx, btnEl){
   const text = document.getElementById('adjText'+idx).value.trim();
   if(!text){ toast('解说词不能为空','warning'); return; }
   const statusEl = document.getElementById('adjStatus'+idx);
+  // btn/statusEl 都可能为 null（confirmAdjustAndCompose 自动重配时程序化调用，
+  // 不经按钮点击），全部判空——曾经直接 btn.disabled 炸掉整条自动重配链
   const btn = btnEl || event?.target || document.querySelector('button[onclick*="regenSingleTts('+idx+')"]');
-  btn.disabled = true; btn.textContent = '生成中…';
-  statusEl.style.display = 'block'; statusEl.style.color = 'var(--muted)'; statusEl.textContent = '正在生成…';
+  if(btn){ btn.disabled = true; btn.textContent = '生成中…'; }
+  if(statusEl){ statusEl.style.display = 'block'; statusEl.style.color = 'var(--muted)'; statusEl.textContent = '正在生成…'; }
   try{
     const r = await fetch('/api/tts_single', { method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ text: text, run_dir: _adjustState.runDir, index: idx }) });
@@ -6092,15 +6102,17 @@ async function regenSingleTts(idx, btnEl){
     if(audio && result.audio){ audio.src = '/media/'+result.audio+'?t='+Date.now(); audio.load(); }
     if(result.audio || result.duration) _pushUndo();
     _adjustState.items[idx].text = text;
+    _adjustState.items[idx].audio_text = text;   // 音频文字基线同步（合成前改词检测依据）
     if(result.audio) _adjustState.items[idx].audio = result.audio;
     if(result.duration) _adjustState.items[idx].duration = result.duration;
     _updateUndoButtons();
-    statusEl.style.color = '#4ade80'; statusEl.textContent = '✅ 已更新';
-    setTimeout(function(){ statusEl.style.display='none'; }, 2000);
+    if(statusEl){ statusEl.style.color = '#4ade80'; statusEl.textContent = '✅ 已更新';
+      setTimeout(function(){ statusEl.style.display='none'; }, 2000); }
   }catch(e){
-    statusEl.style.color = '#f87171'; statusEl.textContent = '❌ ' + e.message;
+    if(statusEl){ statusEl.style.color = '#f87171'; statusEl.textContent = '❌ ' + e.message; }
+    throw e;   // 自动重配调用方（confirmAdjustAndCompose）需要感知失败以中止合成
   }
-  btn.disabled = false; btn.textContent = '🔄 重生成';
+  if(btn){ btn.disabled = false; btn.textContent = '🔄 重生成'; }
 }
 
 // ---- B-roll 插入功能 ----
@@ -6336,8 +6348,30 @@ async function confirmAdjustAndCompose(){
     btn.disabled = false; btn.textContent = '✅ 确认调整，开始合成视频';
     return;
   }
+  // 【导出=最后调整过的成品】改词检测：文字与该段音频的文字基线不一致 →
+  // 自动重配这段（复用 /api/tts_single），杜绝「新字幕配旧声」。
+  // 必须在 skip/finalItems 收集之后（要按 skip 过滤）、发合成请求之前。
+  const changedSegs = [];
+  for(let i=0;i<_adjustState.items.length;i++){
+    if(skip.indexOf(i) >= 0) continue;
+    const it = _adjustState.items[i];
+    const domText = (document.getElementById('adjText'+i)||{}).value;
+    const effective = (domText !== undefined && domText !== null) ? domText.trim() : (it.text||'').trim();
+    if(effective && effective !== (it.audio_text||'').trim()) changedSegs.push(i);
+  }
+  if(changedSegs.length){
+    const st0 = document.getElementById('adjustStatus');
+    for(let k=0;k<changedSegs.length;k++){
+      const i = changedSegs[k];
+      if(st0) st0.textContent = '🔄 检测到改词，正在重配第 ' + (k+1) + '/' + changedSegs.length + ' 段（第' + (i+1) + '段）…';
+      try { await regenSingleTts(i); }
+      catch(e){ btn.disabled=false; btn.textContent='✅ 确认调整，开始合成视频';
+        if(st0) st0.textContent = '❌ 第' + (i+1) + '段重配失败：' + (e.message||e) + '。可点该段「🔄 重生成」手动重试。';
+        toast('改词段重配失败，已停止合成：' + (e.message||e), 'error'); return; }
+    }
+  }
   try{
-    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip, params: { subtitle: getSubtitleStyle(), resolution: ($('exportResolution')||{}).value || 'original', fit: ($('exportFit')||{}).value || 'auto', colorStyle: ($('exportColor')||{}).value || 'native', bitrate: ($('exportBitrate')||{}).value || '', qualityTier: ($('exportQualityTier')||{}).value || 'balanced', transition: ($('exportTransition')||{}).value || 'hard' } };
+    const body = { run_dir: _adjustState.runDir, items: finalItems, skip: skip, params: { subtitle: getSubtitleStyle(), audio: getAudioDelivery(), resolution: ($('exportResolution')||{}).value || 'original', fit: ($('exportFit')||{}).value || 'auto', colorStyle: ($('exportColor')||{}).value || 'native', bitrate: ($('exportBitrate')||{}).value || '', qualityTier: ($('exportQualityTier')||{}).value || 'balanced', transition: ($('exportTransition')||{}).value || 'hard' } };
     // 带上配乐
     if(_adjustState.mode === 'movie' && document.getElementById('movieBgm') && document.getElementById('movieBgm').checked && MUSIC){
       if(MUSIC.catalogId){ body.music = { source:'catalog', catalogId: MUSIC.catalogId }; }
