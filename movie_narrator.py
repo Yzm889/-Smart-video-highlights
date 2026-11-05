@@ -9,7 +9,7 @@ import logging, os, sys, json, math, random, re, shutil, subprocess, threading, 
 
 from ai_providers import (load_ai_config, _aborted, _note_progress_warning, asr_segments,
     local_llm_cfg, local_llm_chat, local_llm_light_chat, vlm_cfg, vlm_chat_multi,
-    vlm_unload, whisper_model_name, whisper_language)
+    vlm_unload, whisper_model_name, whisper_language, ollama_embed)
 from cache_utils import (ANALYSIS_VERSION, _file_fp, _analysis_cache_load, _analysis_cache_save,
     _cache_load, _cache_save, _video_cache_key,
     _sample_frame_cache_dir, _sample_frame_cache_mark, _sample_frame_cache_ready,
@@ -2103,6 +2103,9 @@ NAR_BEAT_MIN = 40       # 每节解说词最少字数：少于此讲不成完整
 NAR_BEAT_MAX = 90       # 每节最多字数：超过则口播发赶、字幕一行放不下
 NAR_SCRIPT_CPS = 5.2    # 影视解说话速（字/秒）：比普通解说略快，更贴近 B 站观感
 NAR_SEG_TARGET = 5.0    # 每个视频子片段目标时长（秒）：一节解说词拆成多个短片段，提升剪辑密度
+# 语义精修权重（_allocate_script_spans 的 sem_weight）：0=关。
+# bigram 版 A/B 实测仅 +1.8% 噪声已关；向量版（scene_sem/余弦）A/B 赢了才调成 >0（2026-11-06）
+_SEM_WEIGHT = 0.0
 
 SCRIPT_STYLE_MOVIE = (
     '你是资深影视解说博主（B站/抖音影视解说风格）。请根据片名与剧情资料，'
@@ -3992,7 +3995,34 @@ def _decide_keep_beats(beat_imp, beat_dur, target_sec, vdur):
     return _kept
 
 
-def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None, scene_story=None, sem_weight=1.2):
+def _compose_scene_texts(scenes, scene_story=None):
+    """场景 → 可检索文本（summary+event+keywords+剧情含义），按 start 排序。
+
+    语义精修（bigram / 向量共用）的素材侧；单独提成函数是为了让调用方
+    （向量 embed、A/B 工具）与打分内部**严格同构**，保证向量与场景一一对齐。
+    """
+    out = []
+    for _si, _sc in enumerate(scenes or []):
+        try:
+            _st = float(_sc.get('start', 0) or 0)
+            _en = float(_sc.get('end', 0) or 0)
+        except Exception:
+            continue
+        if _en <= _st:
+            continue
+        _sto = (scene_story or {}).get(_si) or (scene_story or {}).get(str(_si)) or {}
+        _parts = [str(_sc.get('summary') or ''), str(_sc.get('event') or '')]
+        _kws = _sto.get('keywords') or []
+        if _kws:
+            _parts.append(''.join(str(k) for k in _kws))
+        if _sto.get('story'):
+            _parts.append(str(_sto['story']))
+        out.append((_st, _en, ''.join(_parts)))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None, scene_story=None, sem_weight=1.2, scene_sem=None):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
 
     返回 (spans, narr_map)：
@@ -4001,6 +4031,12 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
 
     高密度剪辑：一节解说词不再只用一个长片段代表，而是从该节时间窗口内裁出多个
     短片段拼接，避免"第一幕只用一个片段一带而过"的问题。
+
+    scene_sem：向量语义素材 (scene_texts, scene_vecs, text_vecs)，可选。
+    - scene_texts 必须与 _compose_scene_texts(scenes, scene_story) 输出等长对齐，
+      不齐一律忽略向量退回 bigram，绝不让向量问题打断分配。
+    - 向量已 L2 归一化（余弦=点积）。传入后 _scene_match 用余弦替换 bigram——
+      口语解说 vs 白描场景描述的字面差异，bigram 抓不住（A/B 实测仅 +1.8% 噪声）。
     """
     cps = float(cps or NAR_SCRIPT_CPS)
     n = len(texts or [])
@@ -4079,30 +4115,46 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
     # 在已匹配的场景窗口内，优先挑「场景内容与这句解说语义最贴合」的起点。
     # 只在窗口内精修（窗口本身来自 DP 全局对齐），不动单调性结构。
     # scene_story/scenes 缺席时 scene_texts 为空 → 行为与旧版逐字节一致。
-    scene_texts = []
-    if scenes and sem_weight:
-        for _si, _sc in enumerate(scenes or []):
-            try:
-                _st = float(_sc.get('start', 0) or 0)
-                _en = float(_sc.get('end', 0) or 0)
-            except Exception:
-                continue
-            if _en <= _st:
-                continue
-            _sto = (scene_story or {}).get(_si) or (scene_story or {}).get(str(_si)) or {}
-            _parts = [str(_sc.get('summary') or ''), str(_sc.get('event') or '')]
-            _kws = _sto.get('keywords') or []
-            if _kws:
-                _parts.append(''.join(str(k) for k in _kws))
-            if _sto.get('story'):
-                _parts.append(str(_sto['story']))
-            scene_texts.append((_st, _en, ''.join(_parts)))
-        scene_texts.sort(key=lambda x: x[0])
+    scene_texts = _compose_scene_texts(scenes, scene_story) if (scenes and sem_weight) else []
 
-    def _scene_match(beat_text, t0, t1):
-        """候选画面范围与解说句的语义重合度（覆盖场景的 bigram 重叠，0~1）。"""
-        if not scene_texts or not beat_text:
+    # 向量语义素材对齐校验：scene_sem=(scene_texts, scene_vecs, text_vecs)。
+    # 场景文本必须与上面 _compose_scene_texts 的输出严格等长才可信；
+    # 不齐/缺向量 → 忽略向量，行为退回 bigram（与未传 scene_sem 完全一致）。
+    _sem_scene_vecs, _sem_text_vecs = None, None
+    if scene_sem and sem_weight and scene_texts:
+        try:
+            _st0, _sv, _tv = scene_sem
+            if (_sv and _tv and len(_st0) == len(scene_texts)
+                    and len(_sv) == len(_st0) and len(_tv) == len(texts or [])):
+                _sem_scene_vecs, _sem_text_vecs = list(_sv), list(_tv)
+        except Exception:
+            _sem_scene_vecs, _sem_text_vecs = None, None
+
+    def _scene_match(i, t0, t1):
+        """候选画面范围 [t0,t1) 与第 i 句解说的语义重合度（0~1）。
+
+        有向量素材：句向量与覆盖场景向量的**最大余弦**（L2 已归一化=点积）——
+        口语解说与白描场景之间的同义改写只有向量抓得住；无向量：退回
+        bigram 字面重叠（旧行为，逐字节一致）。"""
+        if not scene_texts or i >= len(texts or []):
             return 0.0
+        beat_text = str(texts[i] or '')
+        if not beat_text:
+            return 0.0
+        if _sem_scene_vecs is not None and i < len(_sem_text_vecs or []):
+            qv = _sem_text_vecs[i]
+            best = 0.0
+            for k, (st, en, _stx) in enumerate(scene_texts):
+                if en <= t0:
+                    continue
+                if st >= t1:
+                    break   # 已按 start 排序，后面的场景更晚
+                cos = 0.0
+                for a, b in zip(qv, _sem_scene_vecs[k]):
+                    cos += a * b
+                if cos > best:
+                    best = cos
+            return best   # 负值归 0：不相关不罚，只奖励贴合
         qbg = _bigrams(beat_text)
         if not qbg:
             return 0.0
@@ -4185,10 +4237,9 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
                 density = _score(t, t1)
                 t_match = _text_match(beat_txt, t, t1)
                 # 语义精修：窗口内的候选起点，优先落在「场景内容贴合这句解说」的
-                # 位置（additive 精修项，不压制台词密度主信号；旧版把 VLM 字符
-                # 重叠权重设 0 是因为裸字符重叠是噪声——现在用场景 summary/
-                # keywords 的 bigram，且只在 DP 已匹配的窗口内做精修）
-                v_match = _scene_match(beat_txt, t, t1)
+                # 位置（additive 精修项，不压制台词密度主信号；只在 DP 已匹配的
+                # 窗口内做精修）。向量版=余弦相似度（scene_sem），无向量=bigram 保底
+                v_match = _scene_match(i, t, t1)
                 s = density * (1.0 + t_match * 2.0) + sem_weight * v_match
                 if s > best_s + 1e-9:
                     best_s, best_t = s, t
@@ -5146,14 +5197,28 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     # 阶段3：在对齐的场景内选片段（_allocate_script_spans 内部处理），
     # 对齐失败时自动退回台词bigram匹配保底
     up('按解说分配画面', 52)
+    # 向量语义素材（2026-11-06）：场景描述=文档侧，解说句=查询侧（nomic-embed 官方前缀）。
+    # 只在 _SEM_WEIGHT>0 时才算向量（默认 0=关，A/B 赢了才开，零额外开销）；
+    # Ollama 不在/超时/返回不齐 → _scene_sem=None，自动退 bigram，绝不阻断出片。
+    _scene_sem = None
+    if _SEM_WEIGHT > 0 and scene_descs and scene_alignment:
+        try:
+            _st0 = _compose_scene_texts(scene_descs, scene_story)
+            if _st0 and texts:
+                _sv = ollama_embed([_t for _a, _b, _t in _st0], prefix='search_document: ')
+                _tv = ollama_embed(texts, prefix='search_query: ')
+                if _sv and _tv and len(_sv) == len(_st0) and len(_tv) == len(texts):
+                    _scene_sem = (_st0, _sv, _tv)
+        except Exception:
+            _scene_sem = None
     segs, narr_map = _allocate_script_spans(texts, vdur, asr=asr, vlm_captions=None,
                                              scene_alignment=scene_alignment, scenes=scene_descs,
                                              scene_story=scene_story,
-                                             # 语义精修 A/B 实测（惩罚者 79 句）：bigram 重合度仅 +1.8%
-                                             # （口语化解说 vs 白描场景，字面抓不住 paraphrase），
-                                             # 不默认启用——待接入向量语义（Ollama embedding）后
-                                             # 用 tools/ab_semantic_match.py 重测再开
-                                             sem_weight=0.0)
+                                             # 语义精修 A/B 实测（惩罚者 79 句）：bigram 仅 +1.8% 噪声
+                                             # （口语 vs 白描，字面抓不住 paraphrase）→ 默认关；
+                                             # 向量版（余弦）机制已接入，重测赢了把 _SEM_WEIGHT 调开
+                                             sem_weight=_SEM_WEIGHT,
+                                             scene_sem=_scene_sem)
     if not segs:
         raise RuntimeError('画面分配失败（视频可能过短）')
 

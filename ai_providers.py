@@ -957,6 +957,72 @@ def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
     return _strip_think((data.get('message') or {}).get('content', ''))
 
 
+# ---------------------------------------------------------------------------
+# 本地向量语义（Ollama /api/embed）：「解说↔画面对得上」的语义匹配素材（2026-11-06）
+# ---------------------------------------------------------------------------
+_EMBED_CACHE = {}           # (model, prefix, text) -> L2 归一化向量。进程内缓存：场景描述
+                            # 稳定、解说句重复生成间高度重合，第二次起零成本、零网络。
+_EMBED_CACHE_MAX = 20000    # 防无界增长（252 场景+几百句≈千条级；超限整表清空，重算也就几秒）
+
+
+def embed_cfg():
+    """向量语义配置：ai_config.json 的 embed 节。缺省=本机 Ollama + nomic-embed-text。
+
+    enabled 缺省 True：只在真正调用时才连；Ollama 不在/超时 → ollama_embed 返回 None，
+    调用方自动降级（向量语义是锦上添花，绝不能拖累出片主流程）。
+    """
+    cfg = load_ai_config().get('embed') or {}
+    return {
+        'enabled': bool(cfg.get('enabled', True)),
+        'base_url': (cfg.get('base_url') or 'http://localhost:11434').rstrip('/'),
+        'model': (cfg.get('model') or 'nomic-embed-text').strip(),
+    }
+
+
+def ollama_embed(texts, prefix='', timeout=30, keep_alive='15m'):
+    """批量把文本 embed 成向量（Ollama /api/embed），返回**L2 归一化**后的向量列表
+    （归一化后余弦相似度=点积，打分端不用再除模长）。
+
+    - 任何失败（服务不在/模型缺/超时/返回不齐）一律返回 None，绝不抛异常——
+      调用方必须能据此降级（bigram/无语义），不许让向量问题打断出片。
+    - 【代理坑】系统 HTTP_PROXY 会拦 127.0.0.1 → 用空 ProxyHandler 强制直连。
+    - prefix：nomic-embed 官方建议检索任务加任务前缀（场景描述用 'search_document: '、
+      解说句用 'search_query: '）；同侧文本同前缀，跨侧才有检索意义的相似度。
+    - keep_alive 默认 '15m'：274MB 小模型，常驻避免每次生成重复从磁盘加载。
+    """
+    texts = [str(t or '') for t in (texts or [])]
+    if not texts:
+        return None
+    c = embed_cfg()
+    if not c['enabled'] or not c['model']:
+        return None
+    import urllib.request as _u, json as _j
+    keys = [(c['model'], prefix, t) for t in texts]
+    miss = [k for k in keys if k not in _EMBED_CACHE]
+    if miss:
+        payload = {'model': c['model'], 'input': [prefix + k[2] for k in miss],
+                   'keep_alive': keep_alive}
+        req = _u.Request(c['base_url'] + '/api/embed', data=_j.dumps(payload).encode('utf-8'),
+                         headers={'Content-Type': 'application/json'})
+        opener = _u.build_opener(_u.ProxyHandler({}))   # 强制直连，绕开系统/会话代理
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                data = _j.loads(resp.read().decode('utf-8'))
+            embs = data.get('embeddings') or []
+            if len(embs) != len(miss):
+                return None
+            for k, vec in zip(miss, embs):
+                if not vec:
+                    return None
+                n = (sum(float(x) * float(x) for x in vec)) ** 0.5 or 1.0
+                _EMBED_CACHE[k] = tuple(float(x) / n for x in vec)
+            if len(_EMBED_CACHE) > _EMBED_CACHE_MAX:
+                _EMBED_CACHE.clear()
+        except Exception:
+            return None
+    return [_EMBED_CACHE[k] for k in keys]
+
+
 def vlm_unload():
     """显式让本地 VLM 退出显存，返回是否已发出卸载请求。失败不抛异常。
 
