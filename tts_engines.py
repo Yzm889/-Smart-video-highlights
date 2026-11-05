@@ -984,9 +984,25 @@ def sherpa_tts_speak(text, out_path, speed=1.0):
         return False
     return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
 
+def _cloud_tts_ready():
+    """云端 TTS 是否真的配好（有 Key + 有 model，且 provider/base_url 合规）。
+
+    与 _tts_available() 的区别：后者是「云端或本地任一可用」（handler 的 tts_available
+    状态用它），判断「当前是不是在用云端」必须用本函数。曾把 _tts_available() 误用在
+    local_tts_label()：没配 Key 也显示「云端 mimo」，用户看着云端标签、实际听的是
+    本地引擎，完全无法判断声音差在哪一环（2026-11-05 主人反馈的根因之一）。
+    """
+    t = load_ai_config().get('tts') or {}
+    if t.get('api_key') and t.get('model'):
+        if (t.get('provider') or 'openai').lower() in ('dashscope', 'mimo'):
+            return True
+        if t.get('base_url'):
+            return True
+    return False
+
 def local_tts_label():
     """给前端看的当前配音来源说明（用于解说卡状态提示）。"""
-    if _tts_available():
+    if _cloud_tts_ready():
         t = load_ai_config().get('tts') or {}
         return '云端 %s' % (t.get('provider') or 'tts')
     cfg = tts_local_cfg()
@@ -997,7 +1013,8 @@ def local_tts_label():
     if cfg['engine'] == 'chattts':
         return 'ChatTTS（自然·本地GPU）' if chattts_available() else 'ChatTTS（未安装，已回退）'
     if cfg['engine'] == 'sherpa':
-        return '离线模型 · 华研女声' if sherpa_tts_available() else '离线模型（未下载，已回退系统 SAPI）'
+        _m = (SHERPA_TTS_MODELS.get(sherpa_model_key()) or {}).get('label') or '已就绪'
+        return '离线模型 · %s' % _m if sherpa_tts_available() else '离线模型（未下载，已回退系统 SAPI）'
     if cfg['engine'] == 'sapi':
         return '系统 SAPI'
     # auto
@@ -1008,7 +1025,8 @@ def local_tts_label():
     if chattts_available():
         return 'ChatTTS（自然·本地GPU）'
     if sherpa_tts_available():
-        return '离线模型 · 华研女声'
+        _m = (SHERPA_TTS_MODELS.get(sherpa_model_key()) or {}).get('label') or '已就绪'
+        return '离线模型 · %s' % _m
     return '系统 SAPI（可选装 edge-tts/CosyVoice/离线模型）'
 
 def parse_tts_markup(text):
@@ -1389,12 +1407,8 @@ def strip_tts_markup(text):
 def _tts_available():
     """TTS 是否可用：云端 API 或本地任一引擎（edge-tts/ChatTTS/sherpa/SAPI）。"""
     # 1. 云端 TTS
-    t = load_ai_config().get('tts') or {}
-    if t.get('api_key') and t.get('model'):
-        if (t.get('provider') or 'openai').lower() in ('dashscope', 'mimo'):
-            return True
-        if t.get('base_url'):
-            return True
+    if _cloud_tts_ready():
+        return True
     # 2. 本地引擎
     try:
         if edge_tts_available():

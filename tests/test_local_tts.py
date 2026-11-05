@@ -183,3 +183,13 @@ def test_local_tts_label_reflects_state(monkeypatch):
     monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'sherpa'}})
     monkeypatch.setattr(T, 'sherpa_tts_available', lambda: True)
     assert '离线' in S.local_tts_label()
+    # 2026-11-05 回归：没配云端 Key 时绝不能显示「云端 xx」。
+    # 曾因 local_tts_label 误用 _tts_available()（=云端或本地任一可用）：
+    # Key 为空也显示「云端 mimo」，用户以为在用云端、实际听的是本地引擎。
+    monkeypatch.setattr(T, 'load_ai_config',
+                        lambda: {'tts': {'provider': 'mimo', 'api_key': '', 'model': ''},
+                                 'tts_local': {'engine': 'sherpa', 'sherpa_model': 'melo-zh'}})
+    monkeypatch.setattr(T, 'sherpa_model_key', lambda: 'melo-zh')
+    lbl = S.local_tts_label()
+    assert '云端' not in lbl, '没配 Key 不许显示云端：' + lbl
+    assert 'MeloTTS' in lbl, '离线标签必须反映真实选中的模型（曾是硬编码的「华研女声」）：' + lbl
