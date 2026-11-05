@@ -6,6 +6,8 @@ from ai_providers import load_ai_config, _gpu_slot
 from ffmpeg_utils import _TLS, _concat_audio_clips
 from text_utils import _split_long_text, _strip_tts_markup
 
+import json
+import queue
 import re
 import subprocess
 import sys
@@ -28,6 +30,11 @@ _EDGE_SUBPROC_TIMEOUT = 25
 _EDGE_STATE = {'fails': 0, 'dead_until': 0.0, 'reason': '', 'probe_tick': 0}
 _CHATTS = {'model': None, 'loading': False, 'error': ''}
 _COSYVOICE = {'model': None, 'loading': False, 'error': '', 'voice': '中文女'}
+# CosyVoice 是否参与 auto/edge 等引擎的「兜底链」。当前为 False：venv 子进程
+# 每句重载 9GB 模型（~100s/句），进兜底链会让 edge 一抽风就整条解说龟速
+# （2026-11-06 实测）。用户仍可在设置里显式选 CosyVoice 引擎。
+# 常驻 worker（模型加载一次、句句复用）落地后翻回 True。
+_COSY_IN_FALLBACK_CHAIN = False
 COSYVOICE_REPO_DIR = os.path.join(HERE, 'CosyVoice')
 COSYVOICE_MODEL_DIR = os.path.join(HERE, 'models', 'cosyvoice', 'CosyVoice2-0.5B')
 COSYVOICE_VENV_PY = os.path.join(HERE, '.venv_cosyvoice', 'Scripts', 'python.exe')
@@ -377,40 +384,153 @@ def cosyvoice_available():
         pass
     return False
 
+# ---- CosyVoice 常驻 worker（模型加载一次、句句复用）----
+# 逐句起新进程要每次重载 9GB 模型（实测 ~100s/句，一条 30 句解说 TTS 要近一小时）；
+# 常驻后仅首句付加载成本，之后每句秒级。进程挂掉由下一次调用自动重启。
+_COSY_SERVE = {'proc': None, 'q': None, 'lock': threading.Lock()}
+
+
+def _cosy_serve_reader(proc, q):
+    """后台线程：把 worker 的 stdout 行解析成 JSON 推进队列；进程结束推 _eos 哨兵。
+    worker 加载/推理时 modelscope 等库会往 stdout 打进度噪音（非 JSON），静默跳过——
+    协议应答（ready 事件、每请求一行 JSON）都是合法 JSON，不受影响。"""
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+            q.put(msg)
+    except Exception:
+        pass
+    q.put({'_eos': True})
+
+
+def _cosy_serve_start():
+    """启动常驻 worker 并等模型 ready。须持有 _COSY_SERVE['lock']。"""
+    venv_py = _cosyvoice_venv_python()
+    worker = os.path.join(HERE, 'cosyvoice_worker.py')
+    if not (venv_py and os.path.isdir(COSYVOICE_MODEL_DIR) and os.path.exists(worker)):
+        _COSYVOICE['error'] = 'venv/模型/worker 脚本不齐全'
+        return False
+    try:
+        proc = subprocess.Popen(
+            [venv_py, worker, 'serve', COSYVOICE_MODEL_DIR],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE,
+            text=True, encoding='utf-8', errors='replace', bufsize=1)
+    except Exception as e:
+        _COSYVOICE['error'] = str(e)[:300]
+        return False
+    q = queue.Queue()
+    threading.Thread(target=_cosy_serve_reader, args=(proc, q), daemon=True).start()
+    deadline = time.time() + 600  # 首次冷启动从磁盘换入 9GB 权重，给足 10 分钟
+    while time.time() < deadline:
+        try:
+            msg = q.get(timeout=5)
+        except Exception:
+            if proc.poll() is not None:
+                break
+            continue
+        if msg.get('event') == 'ready':
+            _COSY_SERVE.update(proc=proc, q=q)
+            print('[COSYVOICE] 常驻 worker 就绪（加载 %.0fs）' % (msg.get('load_sec') or 0), flush=True)
+            return True
+        if msg.get('_eos') or msg.get('ok') is False:
+            _COSYVOICE['error'] = str(msg.get('error') or 'worker 启动失败')[:300]
+            break
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    _COSY_SERVE.update(proc=None, q=None)
+    return False
+
+
+def _cosy_serve_synth(txt, out_path, ref_wav, timeout=300):
+    """经常驻 worker 合成一句。成功 True；失败时进程已清理，下次调用自动重启。"""
+    with _COSY_SERVE['lock']:
+        if _COSY_SERVE['proc'] is None and not _cosy_serve_start():
+            return False
+        proc, q = _COSY_SERVE['proc'], _COSY_SERVE['q']
+        if proc is None or proc.poll() is not None:
+            _COSY_SERVE.update(proc=None, q=None)
+            return False
+        try:
+            proc.stdin.write(json.dumps({'txt': txt, 'out': out_path, 'ref': ref_wav},
+                                        ensure_ascii=False) + '\n')
+            proc.stdin.flush()
+        except Exception:
+            _COSY_SERVE.update(proc=None, q=None)
+            return False
+        deadline = time.time() + timeout
+        while True:
+            remain = deadline - time.time()
+            if remain <= 0:
+                _COSYVOICE['error'] = '常驻 worker 合成超时（%ds）' % timeout
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                _COSY_SERVE.update(proc=None, q=None)
+                return False
+            try:
+                msg = q.get(timeout=min(remain, 10))
+            except Exception:
+                continue
+            if msg.get('_eos'):
+                _COSY_SERVE.update(proc=None, q=None)
+                return False
+            if msg.get('ok'):
+                return True
+            _COSYVOICE['error'] = str(msg.get('error') or 'worker 返回失败')[:300]
+            return False
+
+
+def _cosyvoice_ref_wav():
+    """按配置音色名找参考音频（zero-shot 克隆的音色来源）；找不到返回 None。"""
+    _cv = tts_local_cfg().get('cosy_voice') or _COSYVOICE['voice']
+    _ref_dir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+    for cand in (_cv + '.wav', _cv + '.mp3', '中文女.wav', '中文女.mp3'):
+        p = os.path.join(_ref_dir, cand)
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def cosyvoice_speak(text, out_path, progress=None):
     """用 CosyVoice2-0.5B 合成语音。成功返回 True。
-    优先主进程内推理，否则用 venv 子进程。不支持{{情绪}}标记，会自动剥离。"""
+    优先常驻 worker（模型只加载一次），失败回退 venv 单发子进程，再回退主进程内推理。
+    不支持{{情绪}}标记，会自动剥离。"""
     if not (text or '').strip():
         return False
     clean_text = _strip_tts_markup(text)
     if not clean_text.strip():
         return False
 
-    # 方式1：venv 子进程（推荐，隔离PyTorch环境）
+    # 方式1：常驻 worker（推荐；首句付 ~100s 模型加载，之后句句秒级）
     venv_py = _cosyvoice_venv_python()
     if venv_py and os.path.isdir(COSYVOICE_MODEL_DIR) and os.path.exists(os.path.join(HERE, 'cosyvoice_worker.py')):
+        _ref_wav = _cosyvoice_ref_wav()
+        if _ref_wav is None:
+            _COSYVOICE['error'] = '参考音频不存在，请重新安装CosyVoice'
+            print('[COSYVOICE] no ref audio')
+            return False
+        d = os.path.dirname(os.path.abspath(out_path))
+        if d:
+            os.makedirs(d, exist_ok=True)
+        if _cosy_serve_synth(clean_text, out_path, _ref_wav):
+            return True
+        print('[COSYVOICE] 常驻 worker 不可用，回退单发模式：', _COSYVOICE['error'][:120], flush=True)
+        # 方式1b：单发子进程兜底（每句付 ~100s 模型加载，慢但独立可用）
         try:
-            d = os.path.dirname(os.path.abspath(out_path))
-            if d:
-                os.makedirs(d, exist_ok=True)
             txt_file = out_path + '.txt'
             with open(txt_file, 'w', encoding='utf-8') as f:
                 f.write(clean_text)
             worker = os.path.join(HERE, 'cosyvoice_worker.py')
-            _cv = tts_local_cfg().get('cosy_voice') or _COSYVOICE['voice']
-            # 根据音色名找参考音频（zero-shot声音克隆需要参考音频）
-            _ref_dir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
-            _ref_wav = os.path.join(_ref_dir, _cv + '.wav')
-            if not os.path.exists(_ref_wav):
-                _ref_wav = os.path.join(_ref_dir, _cv + '.mp3')
-            if not os.path.exists(_ref_wav):
-                _ref_wav = os.path.join(_ref_dir, '中文女.wav')
-            if not os.path.exists(_ref_wav):
-                _ref_wav = os.path.join(_ref_dir, '中文女.mp3')
-            if not os.path.exists(_ref_wav):
-                _COSYVOICE['error'] = '参考音频不存在，请重新安装CosyVoice'
-                print('[COSYVOICE] no ref audio')
-                return False
             with _gpu_slot():
                 r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _ref_wav],
                                    capture_output=True, timeout=300, cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE)
@@ -692,18 +812,23 @@ def local_tts_speak(text, out_path):
     text = prosody_for_tts(text)
     cfg = tts_local_cfg()
     eng_set = cfg['engine']
+    # CosyVoice 只能当「显式选择的引擎」，不进任何兜底链：venv 子进程方式下
+    # 每句都要重载 9GB 模型（实测约 100s/句），edge 网络一抽风、整条解说就会
+    # 掉进百秒一句的慢坑（2026-11-06 实测）。常驻 worker 落地、单句成本降到
+    # 秒级后，再把 _COSY_IN_FALLBACK_CHAIN 翻回 True。
+    _cosy_fb = ['cosyvoice'] if _COSY_IN_FALLBACK_CHAIN else []
     if eng_set == 'edge':
-        order = ['edge', 'cosyvoice', 'chattts', 'sherpa', 'sapi']
+        order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
     elif eng_set == 'cosyvoice':
         order = ['cosyvoice', 'edge', 'chattts', 'sherpa', 'sapi']
     elif eng_set == 'chattts':
-        order = ['chattts', 'cosyvoice', 'edge', 'sherpa', 'sapi']
+        order = ['chattts'] + _cosy_fb + ['edge', 'sherpa', 'sapi']
     elif eng_set == 'sherpa':
-        order = ['sherpa', 'edge', 'cosyvoice', 'sapi']
+        order = ['sherpa', 'edge'] + _cosy_fb + ['sapi']
     elif eng_set == 'sapi':
         order = ['sapi', 'sherpa', 'edge']
-    else:   # auto：音质优先（edge）→ CosyVoice → ChatTTS → sherpa → 系统兜底
-        order = ['edge', 'cosyvoice', 'chattts', 'sherpa', 'sapi']
+    else:   # auto：音质优先（edge）→ ChatTTS → sherpa → 系统兜底（CosyVoice 待常驻后回归）
+        order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
     # 本任务已锁定过引擎 → 优先沿用，其余仍作后备
     locked = getattr(_TLS, 'tts_engine', None)
     if locked in order:
@@ -1017,10 +1142,10 @@ def local_tts_label():
         return '离线模型 · %s' % _m if sherpa_tts_available() else '离线模型（未下载，已回退系统 SAPI）'
     if cfg['engine'] == 'sapi':
         return '系统 SAPI'
-    # auto
+    # auto（顺序必须与 local_tts_speak 的兜底链一致，否则标签又开始说谎）
     if edge_tts_available():
         return 'edge-tts（%s）' % cfg['voice']
-    if cosyvoice_available():
+    if _COSY_IN_FALLBACK_CHAIN and cosyvoice_available():
         return 'CosyVoice（质量最高·%s）' % _COSYVOICE['voice']
     if chattts_available():
         return 'ChatTTS（自然·本地GPU）'
