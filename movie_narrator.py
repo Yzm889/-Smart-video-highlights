@@ -5588,15 +5588,17 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             else:
                 _log.info('[DIAG] 第%d段(原%d)索引越界(共%d段)，跳过' % (new_i + 1, old_i + 1, len(segs)))
     # === B-roll 支持：插入无配音的纯画面段 ===
+    quote_spans = []   # 原声引用段：混音时原声 1.0 全量保留（无引用段则为空）
     if adjusted_items:
-        broll_items = [(i, it) for i, it in enumerate(adjusted_items) if it.get('isBroll')]
+        broll_items = [(i, it) for i, it in enumerate(adjusted_items) if it.get('isBroll') or it.get('quote')]
         if broll_items:
-            _log.info('[DIAG] 检测到%d个B-roll段，插入到画面序列' % len(broll_items))
+            _log.info('[DIAG] 检测到%d个无解说插入段（B-roll/原声引用），插入到画面序列' % len(broll_items))
             # 按顺序重建segs和narr，插入B-roll段
             new_segs = []
             new_narr = []
+            quote_spans = []   # 原声引用段：混音时这段原声 1.0 全量保留（不闪避）
             # 建立 old_index -> new_index 映射（非B-roll项）
-            non_broll = [it for it in adjusted_items if not it.get('isBroll') and it.get('index', -1) not in skip_set]
+            non_broll = [it for it in adjusted_items if not it.get('isBroll') and not it.get('quote') and it.get('index', -1) not in skip_set]
             old_to_pos = {}
             for pos, it in enumerate(non_broll):
                 old_to_pos[it.get('index', 0)] = pos
@@ -5605,13 +5607,17 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             for it in adjusted_items:
                 if it.get('index', -1) in skip_set:
                     continue
-                if it.get('isBroll'):
+                if it.get('isBroll') or it.get('quote'):
                     vs = float(it.get('video_start', 0))
                     ve = float(it.get('video_end', 0))
                     if ve > vs:
                         new_segs.append((vs, ve))
-                        new_narr.append('')  # B-roll无解说词
-                        _log.info('[DIAG] B-roll段插入: %.1f-%.1f秒' % (vs, ve))
+                        new_narr.append('')  # B-roll/原声引用无解说词
+                        if it.get('quote'):
+                            quote_spans.append((vs, ve))
+                            _log.info('[DIAG] 原声引用段插入: %.1f-%.1f秒（原声全量保留）' % (vs, ve))
+                        else:
+                            _log.info('[DIAG] B-roll段插入: %.1f-%.1f秒' % (vs, ve))
                 else:
                     if seg_idx < len(segs):
                         new_segs.append(segs[seg_idx])
@@ -5631,7 +5637,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                 for it in adjusted_items:
                     if it.get('index', -1) in skip_set:
                         continue
-                    if not it.get('isBroll'):
+                    if not it.get('isBroll') and not it.get('quote'):
                         old_i = it.get('index', 0)
                         old_to_new_tts[old_i] = new_tts_idx
                         new_tts_idx += 1
@@ -5699,7 +5705,8 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
     params = attach_importance(params, progress, segs)
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
-                                     music_path=music_path, voice_spans=voice_spans)
+                                     music_path=music_path, voice_spans=voice_spans,
+                                     quote_spans=quote_spans)
     if progress:
         progress['done'] = True; progress['pct'] = 100
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/') if final else ''
@@ -5878,8 +5885,10 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                 else _clean_caption(strip_tts_markup(t)) for t in narr]
     # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
     params = attach_importance(params, progress, segs)
+    quote_spans = []   # 本路径（一步直出）无用户调整段，原声引用由上层路径处理
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
-                                     music_path=music_path, voice_spans=voice_spans)
+                                     music_path=music_path, voice_spans=voice_spans,
+                                     quote_spans=quote_spans)
     if progress:
         progress['done'] = True; progress['pct'] = 100
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/') if final else ''

@@ -132,8 +132,10 @@ def test_caption_editor_panel():
     assert "cap-row" in row_html and '✕' in row_html and 'timeLabel' in row_html
     assert '<video' not in row_html and 'audio controls' not in row_html, \
         '字幕行里不应再有视频/音频播放器（预览在左边）'
-    # 行点击 → 全局播放器 seek 到该字幕时间点
-    assert 'seekAdjVideo(it.video_start' in row_html or 'seekAdjVideo' in js[i:i+3000]
+    # 行点击 → 全局播放器 seek 到该字幕时间点（委托绑定在 list.innerHTML 之后）
+    i_row = js.index("list.querySelectorAll('.cap-row')")
+    assert 'seekAdjVideo(it.video_start' in js[i_row:i_row + 900], \
+        '字幕行点击未接全局播放器跳转'
     # ➕ 在指针处加字幕：入口 + 实现（按时间序插入、唯一 index、确认时自动 TTS）
     assert 'addCaptionAtPlayhead' in js and 'addCaptionAtPlayhead()' in html
     i_add = js.index('function addCaptionAtPlayhead')

@@ -1071,7 +1071,7 @@ def _build_subtitle_style(params):
 
 
 def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None,
-                             voice_spans=None, burned=False):
+                             voice_spans=None, burned=False, quote_spans=None):
     """把解说配音按时间轴混入原视频，烧录解说字幕，可选叠加背景音乐，输出 final.mp4。
     - narr[i] 对应 segs[i]（镜头段时间轴），作为该段字幕与配音文案。
     - tts_paths: [(audio_path, start_sec)]，按各自起始时间对齐到时间轴。
@@ -1151,8 +1151,12 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     if has_orig_audio:
         inputs += ['-i', video_path]    # 1 = 原视频(音频)
         if _mix_tts:
-            # 解说配音存在时做 ducking：解说段内原声按用户设置音量，缝隙还原 0.5
+            # 解说配音存在时做 ducking：解说段内原声按用户设置音量，缝隙还原 0.5。
+            # 原声引用段（quote_spans）优先级最高：这段原声 1.0 全量保留
+            #（博主的「原片原声引用」：解说提到的话/精彩片段，原片自己说）
             expr = '0.5'
+            for _qs, _qe in (quote_spans or []):
+                expr = "if(between(t,%.2f,%.2f),1.0,%s)" % (_qs, _qe, expr)
             for item in _mix_tts:
                 np_, od, _oe, _ovol, _nv = _tt_span(item)
                 dur = probe_audio_len(np_) or 3.0
@@ -1162,7 +1166,11 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             # 注意：表达式含逗号，必须用单引号包裹，否则 ffmpeg 会把逗号当作滤镜链分隔符导致解析失败
             fparts.append("[1:a]volume='%s':eval=frame[orig]" % expr)
         else:
-            fparts.append('[1:a]volume=0.5[orig]')
+            # 无解说（纯 B-roll/原声引用）：引用段原声 1.0，其余 0.5
+            _expr = '0.5'
+            for _qs, _qe in (quote_spans or []):
+                _expr = "if(between(t,%.2f,%.2f),1.0,%s)" % (_qs, _qe, _expr)
+            fparts.append("[1:a]volume='%s':eval=frame[orig]" % _expr)
         orig_label = '[orig]'
         next_idx += 1
     tt_labels = []

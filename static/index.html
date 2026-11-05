@@ -838,6 +838,8 @@
       <span style="font-size:13px;font-weight:600">📊 时间轴 · 裁剪/拖动/对齐</span>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <span style="font-size:11px;color:var(--muted)">左边缘裁剪开头 · 中间拖动取片位置 · 右边缘裁剪结尾 · 靠近配音自动磁吸</span>
+        <button class="btn-secondary" id="tlNarrTrackBtn" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="toggleNarrTrack()" title="一键静音/恢复整条解说配音轨">🎙 解说轨：开</button>
+        <button class="btn-secondary" id="tlOrigTrackBtn" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="toggleOrigTrack()" title="一键静音/恢复整条原片声音轨">🎬 原声轨：开</button>
         <button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignAllToAudio()">⇔ 全部对齐配音</button>
         <span style="display:inline-flex;gap:2px;align-items:center;margin-left:8px">
           <button class="btn-secondary" style="padding:4px 8px;font-size:12px;min-width:28px" onclick="zoomTimeline(0.7)" title="缩小时间轴">−</button>
@@ -1380,7 +1382,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=102"></script>
+<script src="/static/app.js?v=103"></script>
 </body>
 </html>
 

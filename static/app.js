@@ -4599,6 +4599,20 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
   ttsList.forEach(function(item, idx){
     let cleanText = (item.text||'').replace(/\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}/g, '').replace(/\{\/(?:情绪|停顿|慢|快|高音|低音|大声|小声)\}/g, '').replace(/\s+/g, ' ').trim();
     let vs = item.video_start !== undefined ? item.video_start : 0;
+    var mm0 = Math.floor((vs || 0) / 60), ss0 = Math.floor((vs || 0) % 60);
+    var tlLabel = (mm0 < 10 ? '0' : '') + mm0 + ':' + (ss0 < 10 ? '0' : '') + ss0;
+    if(item.quote){
+      // 原声引用段：不配解说，保留原片声音（文字暂存，右键可恢复解说）
+      html += '<div class="adjust-item cap-row" id="adjItem'+idx+'" data-idx="'+idx+'" style="padding:8px;margin:4px 0;border-radius:8px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.5);cursor:pointer">';
+      html += '<div style="display:flex;gap:6px;align-items:center">';
+      html += '<span style="flex:none;font-size:10px;color:#34d399;font-family:monospace;background:rgba(16,185,129,.12);padding:2px 5px;border-radius:4px">'+tlLabel+'</span>';
+      html += '<span style="flex:1;min-width:0;font-size:12px;color:#34d399">🎬 原声引用 '+vs.toFixed(1)+'-'+(item.video_end||0).toFixed(1)+'s · 保留原片声音（右键可恢复解说）</span>';
+      html += '<button title="删除此段" style="flex:none;padding:2px 7px;font-size:12px;color:#f87171;border:1px solid rgba(248,113,113,.4);background:transparent;border-radius:5px;cursor:pointer" onclick="event.stopPropagation();deleteAdjustItem('+idx+')">✕</button>';
+      html += '</div>';
+      html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:3px;display:none"></div>';
+      html += '</div>';
+      return;
+    }
     // PR 字幕面板式紧凑行（主人 2026-11-06）：文字为主，点行跳转到该字幕时间点；
     // 画面范围用时间轴拖拽调、音量用右键菜单调——行内不再放视频/音频/一堆控件。
     var mm = Math.floor((vs || 0) / 60), ss = Math.floor((vs || 0) % 60);
@@ -4803,12 +4817,13 @@ function renderTimeline(){
     const w = (vdur / totalDur) * 100;
     const colors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#ef4444','#84cc16','#f97316'];
     const isBroll = !!it.isBroll;
-    const c = isBroll ? '#6b7280' : colors[idx % colors.length];
+    const isQuote = !!it.quote;
+    const c = isQuote ? '#10b981' : (isBroll ? '#6b7280' : colors[idx % colors.length]);
     const borderStyle = isBroll ? '2px dashed rgba(255,255,255,0.5)' : '1px solid rgba(255,255,255,0.2)';
     let warn = '';
     if(!isBroll && vdur < adur - 0.3){ warn = ' ⚠️视频短'; }
     else if(!isBroll && vdur > adur + 1){ warn = ' ⚠️视频长'; }
-    const segLabel = isBroll ? '🎬 B-roll' : '第'+(idx+1)+'段';
+    const segLabel = isQuote ? '🎬 原声' : (isBroll ? '🎬 B-roll' : '第'+(idx+1)+'段');
     vHtml += '<div class="tl-vseg" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:32px;background:'+c+';border-radius:4px;overflow:hidden;opacity:0.75;border:'+borderStyle+'">';
     vHtml += '<div class="tl-handle tl-resize-l" data-idx="'+idx+'" data-side="l" title="调整源视频入点" style="position:absolute;left:0;top:0;width:8px;height:100%;cursor:w-resize;background:rgba(0,0,0,0.4);border-right:1px dashed rgba(255,255,255,0.5)"></div>';
     vHtml += '<div class="tl-move" data-idx="'+idx+'" data-side="m" title="点击选中并播放" style="position:absolute;left:8px;right:8px;top:0;height:100%;cursor:pointer">';
@@ -4825,7 +4840,7 @@ function renderTimeline(){
   let aHtml = '';
   let cumVideoForAudio = 0;
   items.forEach(function(it, idx){
-    if(it.isBroll){ cumVideoForAudio += Math.max(0, (it.video_end||0)-(it.video_start||0)); return; }
+    if(it.isBroll || it.quote){ cumVideoForAudio += Math.max(0, (it.video_end||0)-(it.video_start||0)); return; }
     const dur = it.duration || 3;
     const vs = it.video_start || 0, ve = it.video_end || 0;
     const vdur = Math.max(0, ve - vs);
@@ -5379,6 +5394,7 @@ function toggleAdjPlay(){
       try { video.currentTime = startT; } catch(e){}
       video.play().then(function(){
         if(btn) btn.textContent = '⏸ 暂停';
+        _applyPreviewMix(_playSegIndex);
         _playSegmentAudio(_playSegIndex);
         startPlayheadSync();
       }).catch(function(e){
@@ -5423,6 +5439,39 @@ function zoomTimeline(factor){
   }
 }
 
+// ---- 音轨总开关（PR 式）：一键整轨静音/恢复 ----
+let _trackNarrOn = true, _trackOrigOn = true;
+function toggleNarrTrack(){
+  _trackNarrOn = !_trackNarrOn;
+  const ga = document.getElementById('adjGlobalAudio');
+  if(ga) ga.muted = !_trackNarrOn;
+  const b = document.getElementById('tlNarrTrackBtn');
+  if(b){ b.textContent = _trackNarrOn ? '🎙 解说轨：开' : '🎙 解说轨：禁音';
+         b.style.color = _trackNarrOn ? '' : '#f87171'; }
+}
+function toggleOrigTrack(){
+  _trackOrigOn = !_trackOrigOn;
+  const v = document.getElementById('adjGlobalVideo');
+  if(v) v.muted = !_trackOrigOn;
+  const b = document.getElementById('tlOrigTrackBtn');
+  if(b){ b.textContent = _trackOrigOn ? '🎬 原声轨：开' : '🎬 原声轨：禁音';
+         b.style.color = _trackOrigOn ? '' : '#f87171'; }
+}
+// 预览镜像合成混音：解说段原声压到闪避音量（默认 8%）、缝隙 50%、原声引用 100%。
+// 不镜像的话原声 100% 盖住配音——「预览听不见配音」的实测根因（合成里是 8%，预览里是 100%）
+function _applyPreviewMix(idx){
+  const v = document.getElementById('adjGlobalVideo');
+  if(!v) return;
+  if(!_trackOrigOn){ try { v.volume = 0; } catch(e){} return; }
+  const it = _adjustState.items ? _adjustState.items[idx] : null;
+  let vol = 0.5;                                     // 无解说缝隙
+  if(it){
+    if(it.quote) vol = 1.0;                          // 原声引用：全量保留
+    else if(!it.isBroll) vol = (it.orig_volume !== undefined && it.orig_volume > 0) ? it.orig_volume / 100 : 0.08;
+  }
+  try { v.volume = Math.max(0, Math.min(1, vol)); } catch(e){}
+}
+
 function startPlayheadSync(){
   stopPlayheadSync();
   var video = document.getElementById('adjGlobalVideo');
@@ -5456,6 +5505,7 @@ function startPlayheadSync(){
               var nvs = next ? (next.video_start || 0) : 0;
               console.log('[PR] 切到段'+(_playSegIndex+1)+' 源@'+nvs.toFixed(1)+'s');
               video.currentTime = nvs;
+              _applyPreviewMix(_playSegIndex);
               _playSegmentAudio(_playSegIndex);
               var hint = document.getElementById('adjustVideoHint');
               if(hint) hint.textContent = '✂️ 段'+(_playSegIndex)+'结束 → 段'+(_playSegIndex+1)+' 源@'+nvs.toFixed(1)+'s';
@@ -5537,7 +5587,7 @@ function _updateSubOverlay(){
   let txt = '';
   for(let i=0;i<_adjustState.items.length;i++){
     const it = _adjustState.items[i];
-    if(!it || it.isBroll || it._deleted) continue;
+    if(!it || it.isBroll || it.quote || it._deleted) continue;   // 原声引用段无字幕
     const vs = it.video_start || 0, ve = it.video_end || 0;
     if(ve > vs && t >= vs && t < ve){ txt = (it.text || '').replace(/\{[^}]*\}/g, ''); break; }
   }
@@ -5601,7 +5651,12 @@ function _tlCtxOpen(idx, x, y){
   const it = _adjustState.items[idx] || {};
   const nv = (it.narr_volume === undefined || it.narr_volume === null) ? 100 : it.narr_volume;
   const ov = (it.orig_volume === undefined || it.orig_volume === null) ? 8 : it.orig_volume;
-  m.innerHTML = '<div style="font-weight:600;margin-bottom:6px;">第 ' + (idx + 1) + ' 段</div>'
+    m.innerHTML = '<div style="font-weight:600;margin-bottom:6px;">第 ' + (idx + 1) + ' 段</div>'
+    + '<button id="tlCtxQuote" style="width:100%;padding:5px;font-size:12px;cursor:pointer;margin-bottom:8px;'
+    + 'background:' + (it.quote ? 'rgba(16,185,129,.15)' : 'rgba(16,185,129,.08)') + ';'
+    + 'border:1px solid ' + (it.quote ? '#34d399' : 'var(--border,#444)') + ';'
+    + 'color:' + (it.quote ? '#34d399' : 'var(--text,#eee)') + ';border-radius:5px">'
+    + (it.quote ? '🗣 恢复为解说段' : '🎬 设为原声引用（保留原声，不配解说）') + '</button>'
     + '<div style="margin-bottom:8px;">🔊 解说音量 <b id="tlCtxNvVal">' + nv + '%</b><br>'
     + '<input type="range" id="tlCtxNv" min="0" max="200" step="5" value="' + nv + '" style="width:100%">'
     + '<span style="color:var(--muted);font-size:10px">100%=原声；合成与解说 .wav 同步生效</span></div>'
@@ -5631,6 +5686,15 @@ function _tlCtxOpen(idx, x, y){
     document.getElementById('tlCtxOvVal').textContent = v + '%';
     const ovInput = document.getElementById('adjOrigVol' + idx);
     if(ovInput) ovInput.value = v;
+  };
+  document.getElementById('tlCtxQuote').onclick = function(){
+    _pushUndo();
+    const it2 = _adjustState.items[idx];
+    it2.quote = !it2.quote;   // 文字保留（恢复解说时原句还在）；quote=true 时该段不配解说、原声全量
+    _tlCtxClose();
+    _rerenderAdjustList();
+    renderTimeline();
+    toast(it2.quote ? '🎬 已设为原声引用：这段保留原片声音，不配解说' : '🗣 已恢复为解说段', 'success');
   };
   document.getElementById('tlCtxSkip').onclick = function(){ _tlCtxClose(); deleteAdjustItem(idx); };
   document.getElementById('tlCtxCloseBtn').onclick = _tlCtxClose;
@@ -6416,7 +6480,8 @@ async function confirmAdjustAndCompose(){
       audio_offset: _adjustState.items[i].audio_offset || 0,
       orig_volume: vol ? parseFloat(vol.value) : (_adjustState.items[i].orig_volume !== undefined ? _adjustState.items[i].orig_volume : 0),
       narr_volume: _adjustState.items[i].narr_volume !== undefined ? _adjustState.items[i].narr_volume : null,
-      isBroll: !!_adjustState.items[i].isBroll
+      isBroll: !!_adjustState.items[i].isBroll,
+      quote: !!_adjustState.items[i].quote
     });
   }
   if(finalItems.length === 0){
@@ -6431,6 +6496,7 @@ async function confirmAdjustAndCompose(){
   for(let i=0;i<_adjustState.items.length;i++){
     if(skip.indexOf(i) >= 0) continue;
     const it = _adjustState.items[i];
+    if(it.quote) continue;   // 原声引用段无配音，不参与改词重配
     const domText = (document.getElementById('adjText'+i)||{}).value;
     const effective = (domText !== undefined && domText !== null) ? domText.trim() : (it.text||'').trim();
     if(effective && effective !== (it.audio_text||'').trim()) changedSegs.push(i);

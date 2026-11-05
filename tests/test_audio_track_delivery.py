@@ -248,3 +248,41 @@ def test_narr_volume_plumbing_end_to_end():
     # 前端：payload 带上 narr_volume；右键菜单存在
     assert 'narr_volume:' in js, '合成 payload 未带上每段解说音量'
     assert "id=\"tlCtxMenu\"" in js or "'tlCtxMenu'" in js, '缺时间轴右键菜单'
+
+
+# ---- 原声引用段（2026-11-06 主人需求：解说提到的话，原片原声放出来）----
+
+def test_quote_segment_plumbing():
+    """原声引用段必须全链打通：compose 按 B-roll 轨道插入（无解说）、
+    混音表达式引用段原声 1.0 全量保留、payload 带 quote 标志。"""
+    vr = _read(VR_PATH)
+    mn = _read(os.path.join(ROOT, 'movie_narrator.py'))
+    js = _read(JS_PATH)
+    # compose 插入：quote 项与 B-roll 同轨（无解说画面段）
+    assert "it.get('isBroll') or it.get('quote')" in mn, 'compose 未按 B-roll 轨道插入原声引用段'
+    assert 'quote_spans.append((vs, ve))' in mn, '未收集原声引用的时间范围'
+    # tts 索引重建必须排除 quote 段（它们没有配音）
+    assert "not it.get('isBroll') and not it.get('quote')" in mn, 'tts 索引重建未排除引用段'
+    # 两个合成调用点都传 quote_spans
+    assert mn.count('quote_spans=quote_spans') >= 2, 'quote_spans 未传进全部合成路径'
+    # 混音表达式：引用段优先级最高（1.0），且两条分支（有/无解说）都覆盖
+    assert vr.count("if(between(t,%.2f,%.2f),1.0,%s)") >= 2, '混音表达式缺引用段 1.0 分支'
+    # 前端：右键菜单开关 + payload 标志 + 字幕行占位
+    assert 'tlCtxQuote' in js, '缺右键「设为原声引用」入口'
+    assert 'quote: !!_adjustState.items[i].quote' in js, '合成 payload 未带 quote 标志'
+    assert '原声引用' in js, '缺字幕行占位说明'
+    # 叠字幕/改词检测必须跳过引用段（它们没有解说）
+    assert 'it.quote || it._deleted' in js, '叠加字幕未跳过引用段'
+    assert 'if(it.quote) continue;' in js, '改词检测未跳过引用段'
+
+
+def test_track_toggles_exist():
+    """PR 式音轨总开关：解说轨/原声轨一键整轨静音，按钮在时间轴头部。"""
+    js = _read(JS_PATH)
+    html = _read(HTML_PATH)
+    for fn in ('function toggleNarrTrack', 'function toggleOrigTrack', 'function _applyPreviewMix'):
+        assert fn in js, '缺 %s' % fn
+    for bid in ('id="tlNarrTrackBtn"', 'id="tlOrigTrackBtn"'):
+        assert bid in html, '缺音轨开关按钮 %s' % bid
+    # 预览闪避镜像必须在播放与切段两处生效（否则原声 100% 盖住配音=「听不见解说」）
+    assert js.count('_applyPreviewMix(') >= 3, '预览混音镜像未在播放/切段接入'
