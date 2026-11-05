@@ -5451,6 +5451,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         user_video_spans = {}
         user_audio_offsets = {}
         user_orig_volumes = {}  # 每段原视频音量（0-100）
+        user_narr_volumes = {}  # 每段解说音量（0-200 百分比，None=默认 100%）
         for item in adjusted_items:
             old_i = item.get('index', 0)
             if old_i in skip_set:
@@ -5465,6 +5466,10 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             ov = item.get('orig_volume')
             if ov is not None:
                 user_orig_volumes[old_i] = max(0, min(100, float(ov)))
+            nv = item.get('narr_volume')
+            if nv is not None:
+                # 每段解说音量（百分比 0~200，混音时 ÷100 成倍率）
+                user_narr_volumes[old_i] = max(0, min(200, float(nv)))
         # 重建segs和narr_map（只保留未跳过的段对应的画面）
         if narr_map and len(narr_map) == len(segs):
             new_segs = []
@@ -5614,14 +5619,19 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         # 应用用户调整的配音偏移
         _offset = 0.0
         _orig_vol = None
+        _narr_vol = None
         if adjusted_items and i in _rev_map:
             _offset = user_audio_offsets.get(_rev_map[i], 0.0)
             _orig_vol = user_orig_volumes.get(_rev_map[i])
+            if _rev_map[i] in user_narr_volumes:
+                _narr_vol = user_narr_volumes[_rev_map[i]] / 100.0
         if _offset != 0:
             _log.info('[DIAG] 第%d段配音偏移%.1f秒' % (i+1, _offset))
         if _orig_vol is not None:
             _log.info('[DIAG] 第%d段原片音量%.0f%%' % (i+1, _orig_vol))
-        tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol))
+        if _narr_vol is not None:
+            _log.info('[DIAG] 第%d段解说音量%.0f%%' % (i+1, _narr_vol * 100))
+        tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
         voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
     _log.info('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))

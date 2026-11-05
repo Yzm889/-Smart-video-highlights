@@ -4850,8 +4850,9 @@ function renderTimeline(){
     if(vdur < dur - 0.3) matchColor = 'rgba(239,68,68,0.6)';
     else if(vdur > dur + 1) matchColor = 'rgba(245,158,11,0.6)';
     const offsetLabel = offset !== 0 ? (offset > 0 ? ' +'+offset.toFixed(1)+'s' : ' '+offset.toFixed(1)+'s') : '';
+    const nvLabel = (it.narr_volume !== undefined && it.narr_volume !== null && it.narr_volume !== 100) ? ' · 🔊'+it.narr_volume+'%' : '';
     aHtml += '<div class="tl-aseg tl-audio-drag" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:36px;background:rgba(139,92,246,0.15);border-radius:3px;cursor:grab;border:1px dashed '+matchColor+';transition:none">';
-    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:36px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s'+offsetLabel+'</span>';
+    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:36px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s'+offsetLabel+nvLabel+'</span>';
     aHtml += '</div>';
     cumVideoForAudio += vdur;
   });
@@ -5334,6 +5335,10 @@ function _playSegmentAudio(idx){
   if(!audioPath){ console.warn('[段'+idx+'] 无配音文件'); return; }
   var audioUrl = '/media/' + _adjustState.runDir.replace(/\\/g,'/') + '/' + audioPath;
   if(globalAudio){
+    // 预览音量跟随该段的解说音量设定（>100% 的增益受元素上限 1.0 限制，
+    // 完整增益在合成混音里生效；这里保证 0~100% 的调整在预览里听得到）
+    var nvPct = _adjustState.items[idx].narr_volume;
+    try { globalAudio.volume = (nvPct === undefined || nvPct === null) ? 1 : Math.max(0, Math.min(1, nvPct / 100)); } catch(e){}
     try {
       // 只有路径变化时才重新设置src
       if(globalAudio.src !== audioUrl){
@@ -5534,6 +5539,82 @@ function ensureAdjVideoLoaded(){
 
 // 预览视频片段：同时播放视频段和配音
 let _adjPlayingIdx = -1;
+
+// ---- PR 式右键菜单（时间轴色块：解说音量/原声音量/跳过此段）----
+let _tlCtxFor = -1;   // 右键菜单当前作用的段索引
+function _tlCtxClose(){
+  const m = document.getElementById('tlCtxMenu');
+  if(m) m.style.display = 'none';
+  document.removeEventListener('click', _tlCtxClose, true);
+}
+function _tlCtxOpen(idx, x, y){
+  _tlCtxFor = idx;
+  let m = document.getElementById('tlCtxMenu');
+  if(!m){
+    m = document.createElement('div');
+    m.id = 'tlCtxMenu';
+    m.style.cssText = 'position:fixed;z-index:9999;display:none;min-width:230px;background:var(--bg,#1a1a2e);color:var(--text,#eee);'
+      + 'border:1px solid var(--border,#444);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:10px;font-size:12px;';
+    document.body.appendChild(m);
+  }
+  const it = _adjustState.items[idx] || {};
+  const nv = (it.narr_volume === undefined || it.narr_volume === null) ? 100 : it.narr_volume;
+  const ov = (it.orig_volume === undefined || it.orig_volume === null) ? 8 : it.orig_volume;
+  m.innerHTML = '<div style="font-weight:600;margin-bottom:6px;">第 ' + (idx + 1) + ' 段</div>'
+    + '<div style="margin-bottom:8px;">🔊 解说音量 <b id="tlCtxNvVal">' + nv + '%</b><br>'
+    + '<input type="range" id="tlCtxNv" min="0" max="200" step="5" value="' + nv + '" style="width:100%">'
+    + '<span style="color:var(--muted);font-size:10px">100%=原声；合成与解说 .wav 同步生效</span></div>'
+    + '<div style="margin-bottom:8px;">🎞 原声音量（此段画面） <b id="tlCtxOvVal">' + ov + '%</b><br>'
+    + '<input type="range" id="tlCtxOv" min="0" max="100" step="5" value="' + ov + '" style="width:100%"></div>'
+    + '<div style="border-top:1px solid var(--border,#444);padding-top:6px;display:flex;gap:6px;">'
+    + '<button id="tlCtxSkip" style="flex:1;padding:5px;font-size:12px;cursor:pointer;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#f87171;border-radius:5px">⏭ 跳过此段（不进合成）</button>'
+    + '<button id="tlCtxCloseBtn" style="padding:5px 8px;font-size:12px;cursor:pointer;background:none;border:1px solid var(--border,#444);color:var(--text,#eee);border-radius:5px">✕</button>'
+    + '</div>'
+    + '<div style="margin-top:6px;color:var(--muted);font-size:10px">💡 移动=拖动色块中间；裁剪=拖动左右边缘（视频轨）</div>';
+  m.style.display = 'block';
+  const mw = m.getBoundingClientRect();
+  m.style.left = Math.min(x, window.innerWidth - mw.width - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - mw.height - 8) + 'px';
+  setTimeout(() => document.addEventListener('click', _tlCtxClose, true), 0);
+  // 滑条实时生效：写回 item + 角标 + 预览音量
+  document.getElementById('tlCtxNv').oninput = function(){
+    const v = parseFloat(this.value);
+    _adjustState.items[idx].narr_volume = v;
+    document.getElementById('tlCtxNvVal').textContent = v + '%';
+    renderTimeline();
+    _applyPreviewNarrVolume(idx);
+  };
+  document.getElementById('tlCtxOv').oninput = function(){
+    const v = parseFloat(this.value);
+    _adjustState.items[idx].orig_volume = v;
+    document.getElementById('tlCtxOvVal').textContent = v + '%';
+    const ovInput = document.getElementById('adjOrigVol' + idx);
+    if(ovInput) ovInput.value = v;
+  };
+  document.getElementById('tlCtxSkip').onclick = function(){ _tlCtxClose(); deleteAdjustItem(idx); };
+  document.getElementById('tlCtxCloseBtn').onclick = _tlCtxClose;
+}
+// 右键入口：事件委托在时间轴容器上（色块会随 renderTimeline 重建）
+(function(){
+  const tc = document.getElementById('timelineInner');
+  if(!tc) return;
+  tc.addEventListener('contextmenu', function(e){
+    const seg = e.target.closest('.tl-vseg, .tl-aseg');
+    if(!seg) return;
+    e.preventDefault();
+    const idx = parseInt(seg.getAttribute('data-idx'));
+    if(isNaN(idx)) return;
+    _tlCtxOpen(idx, e.clientX, e.clientY);
+  });
+})();
+// 预览音量跟随该段解说音量（全局音频元素正在播时即时生效）
+function _applyPreviewNarrVolume(idx){
+  const ga = document.getElementById('adjGlobalAudio');
+  if(!ga || _currentAudioIdx !== idx) return;
+  const nv = _adjustState.items[idx].narr_volume;
+  try { ga.volume = (nv === undefined || nv === null) ? 1 : Math.max(0, Math.min(1, nv / 100)); } catch(e){}
+}
+
 function _adjVideoUrl(){
   // 源片可能是 mkv/webm 等任意容器：曾把地址写死成 src.mp4，4K MKV 任务
   // （实存 src.mkv）预览全 404。优先用后端下发的真实文件名，旧任务回退 src.mp4。
@@ -6246,6 +6327,7 @@ async function confirmAdjustAndCompose(){
       video_end: ve ? parseFloat(ve.value) : (_adjustState.items[i].video_end || 0),
       audio_offset: _adjustState.items[i].audio_offset || 0,
       orig_volume: vol ? parseFloat(vol.value) : (_adjustState.items[i].orig_volume !== undefined ? _adjustState.items[i].orig_volume : 0),
+      narr_volume: _adjustState.items[i].narr_volume !== undefined ? _adjustState.items[i].narr_volume : null,
       isBroll: !!_adjustState.items[i].isBroll
     });
   }

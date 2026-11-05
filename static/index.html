@@ -25,6 +25,9 @@
 
 <!-- 流程引导条：5步核心流程 + 更多菜单 -->
 <nav class="flow-nav" id="flowNav" aria-label="创作流程">
+  <!-- 主人 2026-11-06：恢复入口要放在左上角最显眼处——刷新/重开后一键回到
+       上次的配音任务（⑥ 手动调整），视频与配音都在服务器，无需重传。 -->
+  <button class="btn btn2" id="resumeTopBtn" onclick="resumeLastSession()" title="刷新/重开后一键回到上次的配音任务（无需重新上传视频）" style="flex:none;white-space:nowrap;">🔄 恢复上次进度</button>
   <div class="flow-steps">
     <button class="flow-step active" data-flow="1" data-step="start" onclick="goFlowStep(1)">
       <span class="flow-num">1</span><span class="flow-label">准备</span>
@@ -1364,7 +1367,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=94"></script>
+<script src="/static/app.js?v=95"></script>
 </body>
 </html>
 

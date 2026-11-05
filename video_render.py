@@ -670,12 +670,16 @@ def build_voice_track(tts_paths, run_dir, vdur, out_name='narration_voice.wav'):
         path = item[0]
         od = float(item[1] or 0)
         oe = item[2] if len(item) > 2 else None
+        # 每段解说音量（5 元组的第 5 位；None=不介入）：.wav 必须与主混音听到
+        # 同样的音量设定，否则用户在时间轴调了音量、拖进 PR 又对不上
+        nv = item[4] if len(item) > 4 else None
+        _nv_f = ('volume=%.3f,' % max(0.0, min(2.0, float(nv)))) if nv is not None else ''
         if not os.path.isfile(path):
             continue
         dmax = max(0.05, (oe - od) if (oe is not None and oe > od) else 0.05)
         inputs += ['-i', path]
-        # 与主混音链同样的处理：aresample → atrim → adelay → apad
-        fparts.append(f'[{idx}:a]aresample=44100,'
+        # 与主混音链同样的处理：aresample → (volume) → atrim → adelay → apad
+        fparts.append(f'[{idx}:a]aresample=44100,{_nv_f}'
                       f'atrim=start=0:end={dmax:.2f},'
                       f'adelay={int(od * 1000)}|{int(od * 1000)},'
                       f'apad=whole_dur={vdur:.2f}[vt{idx}]')
@@ -1131,12 +1135,14 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     _narr_out = _narr_out_enabled(params)
     _mix_tts = [] if _narr_out else (tts_paths or [])
     def _tt_span(item):
-        # item: (path, start, end, orig_volume_or_None)
+        # item: (path, start, end, orig_volume_or_None) 或 5 元组 (..., narr_volume_or_None)
+        if len(item) >= 5:
+            return item[0], item[1], item[2], item[3], item[4]
         if len(item) >= 4:
-            return item[0], item[1], item[2], item[3]
+            return item[0], item[1], item[2], item[3], None
         if len(item) >= 3:
-            return item[0], item[1], item[2], None
-        return item[0], item[1], None, None
+            return item[0], item[1], item[2], None, None
+        return item[0], item[1], None, None, None
 
     inputs = ['-y', '-i', base_video]   # 0 = 字幕视频(画面)
     fparts = []
@@ -1148,7 +1154,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             # 解说配音存在时做 ducking：解说段内原声按用户设置音量，缝隙还原 0.5
             expr = '0.5'
             for item in _mix_tts:
-                np_, od, _oe, _ovol = _tt_span(item)
+                np_, od, _oe, _ovol, _nv = _tt_span(item)
                 dur = probe_audio_len(np_) or 3.0
                 # 用户设置了原片音量则用用户值（0-100 -> 0-1.0），否则默认0.08
                 vol = (_ovol / 100.0) if (_ovol is not None and _ovol > 0) else 0.08
@@ -1161,7 +1167,11 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         next_idx += 1
     tt_labels = []
     for k2, item in enumerate(_mix_tts):
-        np_, od, oe, _ov = _tt_span(item)
+        np_, od, oe, _ov, _nv = _tt_span(item)
+        # 每段解说音量（PR 式右键调节；None=不介入保持 1.0，范围 0~2.0）
+        _nv_f = ''
+        if _nv is not None:
+            _nv_f = 'volume=%.3f,' % max(0.0, min(2.0, float(_nv)))
         inputs += ['-i', np_]
         if oe is not None and oe > od:
             # 限制配音时长不超过本镜头段，杜绝「这段解说拖到下一段画面」的重叠。
@@ -1170,12 +1180,12 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             #   等于把整句配音删掉。实测只有首段（od=0）能出声，第二句起全哑，
             #   成片表现就是「配了第一句之后就没有声音」。
             dmax = max(0.05, oe - od)
-            fparts.append(f'[{next_idx + k2}:a]aresample=44100,'
+            fparts.append(f'[{next_idx + k2}:a]aresample=44100,{_nv_f}'
                           f'atrim=start=0:end={dmax:.2f},'
                           f'adelay={int(od * 1000)}|{int(od * 1000)},'
                           f'apad=whole_dur={vdur:.2f}[t{k2}]')
         else:
-            fparts.append(f'[{next_idx + k2}:a]aresample=44100,adelay={int(od * 1000)}|{int(od * 1000)},'
+            fparts.append(f'[{next_idx + k2}:a]aresample=44100,{_nv_f}adelay={int(od * 1000)}|{int(od * 1000)},'
                           f'apad=whole_dur={vdur:.2f}[t{k2}]')
         tt_labels.append(f'[t{k2}]')
     if use_music:

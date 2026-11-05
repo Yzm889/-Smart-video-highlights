@@ -22,11 +22,17 @@ def _read(p):
 
 
 def test_resume_button_next_to_generate():
+    """恢复入口两处常驻：左上角流程导航（主人 2026-11-06 指定）+ 生成按钮旁。"""
     html = _read(HTML_PATH)
-    i_go = html.index('id="narGo"')
-    i_resume = html.index('resumeLastSession()')
-    assert abs(i_resume - i_go) < 800, '恢复按钮必须紧挨生成按钮（同一个操作行内）'
+    i_nav = html.index('id="flowNav"')
+    i_top = html.index('id="resumeTopBtn"')
+    i_steps = html.index('class="flow-steps"')
+    assert i_nav < i_top < i_steps, '恢复按钮必须位于左上角流程导航最前（主人指定显眼位置）'
     assert '恢复上次进度' in html
+    # 生成按钮旁保留第二个入口（操作行内就近可用）
+    i_go = html.index('id="narGo"')
+    i_row = html.index('resumeLastSession()', i_go - 800) if 'resumeLastSession()' in html[:i_go] else -1
+    assert i_row > 0 or html.count('resumeLastSession()') >= 2, '生成按钮旁的恢复入口丢失'
 
 
 def test_resume_function_jumps_and_restores():
