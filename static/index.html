@@ -666,6 +666,7 @@
     </div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="narGo" onclick="planNarrate()" title="Ctrl+Enter 快速生成">🎙 生成配音并调整</button>
+      <button class="btn btn2" onclick="resumeLastSession()" title="刷新/重开后找回顾才生成的配音与剪辑方案，无需重新上传视频">🔄 恢复上次进度</button>
       <button class="btn mini ghost" onclick="restoreParams('narrate')" title="回填上次成功生成时的全部参数">📋 上次参数</button>
       <button class="btn danger" id="narCancel" onclick="stopRun('narStatus')" title="生成过程中随时可点：当前阶段跑完即中断，不会输出半成品">⏹ 停止生成</button>
       <span class="status" id="narStatus"></span>
@@ -1363,7 +1364,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=92"></script>
+<script src="/static/app.js?v=93"></script>
 </body>
 </html>
 

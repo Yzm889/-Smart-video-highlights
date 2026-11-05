@@ -5813,6 +5813,14 @@ function getAudioDelivery(){
   };
 }
 
+async function resumeLastSession(){
+  // 主人 2026-11-06：刷新/重开后浏览器必丢本地视频文件，但已生成的配音与
+  // 剪辑方案都在服务器上（tts_state.json）。一键跳到「⑥ 手动调整」并恢复
+  // 最近的配音任务——无需重新上传视频，逐段试听后直接合成。
+  if (typeof showStep === 'function') showStep('adjust');
+  await loadRecentTts();
+}
+
 function updateAudioHint(){
   var lay = document.getElementById('audioLayers');
   var exp = document.getElementById('exportVoice');
