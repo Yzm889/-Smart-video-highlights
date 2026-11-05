@@ -2525,15 +2525,35 @@ function setRes(res, name){ $('res').value = res; $('status').textContent = '已
 // 分片路径每片 4MB、3 路并发提交，后端按序合并。小文件维持 base64 旧路径（少 3 个请求）。
 // 断点续传：同一文件（名+大小+mtime）的会话 id 记在 localStorage——刷新页面/换标签页后已传分片不重传；
 // 会话在服务端磁盘上，服务重启也能续传（24h 内）。续传键只保留最近 6 个，防 localStorage 堆积。
-async function uploadChunksOnly(file){
+async function uploadChunksOnly(file, onprog){
   const KEY = 'springStudio.up.' + file.name + '.' + file.size + '.' + (file.lastModified||0);
   let uid = null;
   try { uid = localStorage.getItem(KEY) || null; } catch(e){}
-  let init = await fetch('/api/upload/init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,size:file.size, upload_id: uid})}).then(r=>r.json());
+  // init 握手必须带超时：它是全链路唯一没有超时保护的 await，系统代理抽风时
+  // fetch 会无限静默挂起 → 进度弹窗永远 0.0%、控制台一行不动（2026-11-06 主人实测）。
+  // 20s 超时 × 3 次重试，仍失败则抛错走统一错误呈现。
+  const _initOnce = async (payload) => {
+    for (let a = 1; a <= 3; a++) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 20000);
+        try {
+          const r = await fetch('/api/upload/init', {method:'POST', headers:{'Content-Type':'application/json'},
+                                                     body: JSON.stringify(payload), signal: ctrl.signal});
+          return await r.json();
+        } finally { clearTimeout(timer); }
+      } catch (e) {
+        if (a === 3) throw new Error('上传初始化失败（已重试 3 次）：服务没响应。'
+          + '若后台服务在跑，请检查系统代理是否拦了 127.0.0.1，或稍后重试。');
+        await new Promise(res => setTimeout(res, 1500));
+      }
+    }
+  };
+  let init = await _initOnce({name:file.name, size:file.size, upload_id: uid});
   if(!init.ok && uid){
     try { localStorage.removeItem(KEY); } catch(e){}
     uid = null;   // 会话过期/被清理 → 重新开会话
-    init = await fetch('/api/upload/init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,size:file.size})}).then(r=>r.json());
+    init = await _initOnce({name:file.name, size:file.size});
   }
   if(!init.ok) throw new Error(init.error||'上传初始化失败');
   uid = init.upload_id;
@@ -2961,6 +2981,10 @@ async function buildNarrate(){
   }
   $('narStatus').textContent = '🎭 剧情驱动剪辑中（按你的剧情剪分镜+写解说）…';
   gStart('🎭 剧情驱动剪辑');
+  try {
+  // 上传/音乐转码必须在 try 内：此前 videoToBody 在 try 外，分片上传一旦失败
+  // 异常直接飞出函数——弹窗永远停在 0.0%、真实错误一个字都不显示（2026-11-06
+  // 主人实测「进程不动、进度卡 0%」的根因）。catch 里 gErr 关弹窗 + 状态行给详情。
   const videoObj = NAR_VIDEO.mlib ? {name: NAR_VIDEO.name, mlib: NAR_VIDEO.mlib} : await videoToBody(NAR_VIDEO);
   const body = { video: videoObj,
                  params:{maxSeg: parseFloat($('narMaxSeg').value)||25, w:1280, h:720, fps:30,
@@ -2987,17 +3011,21 @@ async function buildNarrate(){
     if(MUSIC.catalogId){ body.music={source:'catalog', catalogId:MUSIC.catalogId}; }
     else { body.music = await musicToBody(MUSIC.file); }
   }
-  try{
-    // 有视频+剧情时走两步走：先生成配音，用户确认后再合成
-    const api = ((userScript || plot) && NAR_VIDEO) ? '/api/movie_tts'
-              : (plot ? '/api/narrate_movie' : '/api/narrate');
-    snapshotParams('narrate');   // [P2] 发起即记住参数，下次一键回填
-    const r=await fetch(api,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const out=await r.json();
-    if(!out.ok) throw new Error(out.error||'失败');
-    await pollNarrate(out.runid);
-  }catch(e){ $('narStatus').textContent='❌ '+netErrMsg(e); }
+  // 有视频+剧情时走两步走：先生成配音，用户确认后再合成
+  const api = ((userScript || plot) && NAR_VIDEO) ? '/api/movie_tts'
+            : (plot ? '/api/narrate_movie' : '/api/narrate');
+  snapshotParams('narrate');   // [P2] 发起即记住参数，下次一键回填
+  const r=await fetch(api,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const out=await r.json();
+  if(!out.ok) throw new Error(out.error||'失败');
+  await pollNarrate(out.runid);
   go.disabled=false;
+  } catch(e){
+    const m = netErrMsg(e);
+    try { gErr(m); } catch(_e){}
+    $('narStatus').textContent='❌ '+m;
+    go.disabled=false;
+  }
 }
 function renderCutPlan(holder, p){
   // 🎬 剪辑方案透明化：显示成片保留/剪除了哪些画面，每段对应哪句解说词。
