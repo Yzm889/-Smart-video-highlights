@@ -52,6 +52,9 @@ def test_confirm_plan_really_cuts_video():
     out = _post('/api/plan', {
         'type': 'narrate',
         'video': {'name': os.path.basename(VIDEO), 'data': b64},
+        # 2026-10-29 流程收敛后 narrate 必须带剧情（_post_plan 硬校验，无剧情直接拒绝）；
+        # 本用例只关心「确认页取消勾选 = 真剪画面」，剧情给最小占位即可。
+        'plot': '1. 开场：图案展开。\n2. 中段：画面切换。\n3. 结尾：收束。',
         'params': {'maxSeg': MAX_SEG, 'w': 1280, 'h': 720, 'fps': 30, 'autoCut': True},
     })
     assert out.get('ok'), out
