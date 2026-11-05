@@ -182,3 +182,28 @@ def test_target_sec_controls_beat_count(monkeypatch, target, lo, hi):
         m = re.search(r'这一版请写成约 (\d+) 节', seen.get('prompt', ''))
         assert m, '目标时长应折算成节数：%s' % seen.get('prompt', '')[-120:]
         assert lo <= int(m.group(1)) <= hi, '节数 %s 不在合理区间' % m.group(1)
+
+
+def test_semantic_refinement_backward_compatible():
+    """语义精修（scene_story/sem_weight）缺省时必须与旧行为逐字节一致；
+    给定 scene_story 时结构安全（不回跳、不越界）——A/B 实测 bigram 增益
+    仅为噪声（+1.8%），默认 sem_weight=0 关闭，机制保留待向量方案。"""
+    texts = ['深夜的港口，一艘货船悄悄离岸。', '他不知道有人正盯着他。', '枪声打破了平静。']
+    vdur = 60.0
+    asr = [{'start': 5, 'end': 8, 'text': '货船离岸'},
+           {'start': 25, 'end': 28, 'text': '有人在盯着'},
+           {'start': 45, 'end': 48, 'text': '枪声响起'}]
+    scenes = [{'start': 0, 'end': 20, 'summary': '港口夜景货船'},
+              {'start': 20, 'end': 40, 'summary': '码头监视者'},
+              {'start': 40, 'end': 60, 'summary': '夜晚枪战'}]
+    story = {0: {'keywords': ['货船', '离岸'], 'story': '深夜港口货船离开'},
+             1: {'keywords': ['盯梢'], 'story': '有人暗中监视'},
+             2: {'keywords': ['枪战'], 'story': '发生枪战'}}
+    base = S._allocate_script_spans(texts, vdur, asr=asr, scenes=scenes)
+    off = S._allocate_script_spans(texts, vdur, asr=asr, scenes=scenes, scene_story=story, sem_weight=0.0)
+    on = S._allocate_script_spans(texts, vdur, asr=asr, scenes=scenes, scene_story=story, sem_weight=1.2)
+    assert base[0] == off[0], 'sem_weight=0 时必须与旧行为一致'
+    for sp in on[0]:
+        assert 0 <= sp[0] < sp[1] <= vdur + 0.5, '语义精修产生越界 span: %r' % (sp,)
+    for a, b in zip(on[0], on[0][1:]):
+        assert b[0] >= a[1] - 0.01, '语义精修产生回跳: %r → %r' % (a, b)

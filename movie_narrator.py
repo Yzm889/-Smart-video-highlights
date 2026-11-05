@@ -3992,7 +3992,7 @@ def _decide_keep_beats(beat_imp, beat_dur, target_sec, vdur):
     return _kept
 
 
-def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None):
+def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None, scene_story=None, sem_weight=1.2):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
 
     返回 (spans, narr_map)：
@@ -4074,6 +4074,52 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
             return 0.0
         return overlap / total
 
+    # ---- 语义匹配素材（2026-11-06「解说↔画面对得上」主攻点）----
+    # 把每个场景的 summary+event+keywords(+剧情含义) 拼成可检索文本，
+    # 在已匹配的场景窗口内，优先挑「场景内容与这句解说语义最贴合」的起点。
+    # 只在窗口内精修（窗口本身来自 DP 全局对齐），不动单调性结构。
+    # scene_story/scenes 缺席时 scene_texts 为空 → 行为与旧版逐字节一致。
+    scene_texts = []
+    if scenes and sem_weight:
+        for _si, _sc in enumerate(scenes or []):
+            try:
+                _st = float(_sc.get('start', 0) or 0)
+                _en = float(_sc.get('end', 0) or 0)
+            except Exception:
+                continue
+            if _en <= _st:
+                continue
+            _sto = (scene_story or {}).get(_si) or (scene_story or {}).get(str(_si)) or {}
+            _parts = [str(_sc.get('summary') or ''), str(_sc.get('event') or '')]
+            _kws = _sto.get('keywords') or []
+            if _kws:
+                _parts.append(''.join(str(k) for k in _kws))
+            if _sto.get('story'):
+                _parts.append(str(_sto['story']))
+            scene_texts.append((_st, _en, ''.join(_parts)))
+        scene_texts.sort(key=lambda x: x[0])
+
+    def _scene_match(beat_text, t0, t1):
+        """候选画面范围与解说句的语义重合度（覆盖场景的 bigram 重叠，0~1）。"""
+        if not scene_texts or not beat_text:
+            return 0.0
+        qbg = _bigrams(beat_text)
+        if not qbg:
+            return 0.0
+        best = 0.0
+        for st, en, stx in scene_texts:
+            if en <= t0:
+                continue
+            if st >= t1:
+                break   # 已按 start 排序，后面的场景更晚
+            sbg = _bigrams(stx)
+            if not sbg:
+                continue
+            ov = len(qbg & sbg)
+            if ov:
+                best = max(best, ov / max(1, len(qbg)))
+        return best
+
     spans = []
     narr_map = []
     last_end = 0.0
@@ -4138,8 +4184,12 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
                 t1 = min(vdur, t + sub_d)
                 density = _score(t, t1)
                 t_match = _text_match(beat_txt, t, t1)
-                # v_match 权重暂设0（VLM字符重叠是噪声），跳过计算省 CPU
-                s = density * (1.0 + t_match * 2.0)
+                # 语义精修：窗口内的候选起点，优先落在「场景内容贴合这句解说」的
+                # 位置（additive 精修项，不压制台词密度主信号；旧版把 VLM 字符
+                # 重叠权重设 0 是因为裸字符重叠是噪声——现在用场景 summary/
+                # keywords 的 bigram，且只在 DP 已匹配的窗口内做精修）
+                v_match = _scene_match(beat_txt, t, t1)
+                s = density * (1.0 + t_match * 2.0) + sem_weight * v_match
                 if s > best_s + 1e-9:
                     best_s, best_t = s, t
                 t += scan_step
@@ -5097,7 +5147,13 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     # 对齐失败时自动退回台词bigram匹配保底
     up('按解说分配画面', 52)
     segs, narr_map = _allocate_script_spans(texts, vdur, asr=asr, vlm_captions=None,
-                                             scene_alignment=scene_alignment, scenes=scene_descs)
+                                             scene_alignment=scene_alignment, scenes=scene_descs,
+                                             scene_story=scene_story,
+                                             # 语义精修 A/B 实测（惩罚者 79 句）：bigram 重合度仅 +1.8%
+                                             # （口语化解说 vs 白描场景，字面抓不住 paraphrase），
+                                             # 不默认启用——待接入向量语义（Ollama embedding）后
+                                             # 用 tools/ab_semantic_match.py 重测再开
+                                             sem_weight=0.0)
     if not segs:
         raise RuntimeError('画面分配失败（视频可能过短）')
 
