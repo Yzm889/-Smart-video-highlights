@@ -853,7 +853,10 @@
   </div>
     <!-- 右侧片段竖列（PR 字幕面板式：与预览/时间轴同屏对照，主人 2026-11-06 需求） -->
     <div id="adjustSide" style="flex:0 0 400px;max-width:400px;max-height:calc(100vh - 210px);overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:var(--bg2);padding:8px;position:sticky;top:64px">
-      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;position:sticky;top:0;background:var(--bg2);padding:2px 0;z-index:2">📝 片段列表 · 点时间轴定位到行，点行预览定位画面</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;position:sticky;top:0;background:var(--bg2);padding:2px 0;z-index:2">
+        <span style="font-size:12px;font-weight:600;color:var(--muted)">📝 字幕编辑 · 点行跳转时间点，直接改字，✕ 删除</span>
+        <button class="btn-secondary" style="padding:3px 9px;font-size:11px;white-space:nowrap" onclick="addCaptionAtPlayhead()" title="在播放指针当前位置插入一段新字幕（确认合成时自动配音）">➕ 加字幕</button>
+      </div>
       <div id="adjustList" style="margin:0"></div>
     </div>
   </div>
@@ -1369,7 +1372,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=100"></script>
+<script src="/static/app.js?v=101"></script>
 </body>
 </html>
 

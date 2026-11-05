@@ -117,3 +117,30 @@ def test_side_by_side_layout():
     # 滚动容器必须量 #adjustList（60vh 的真滚动容器），不能量外层侧栏
     i_sync = js.index('function _syncSideList')
     assert "getElementById('adjustList')" in js[i_sync:i_sync + 700], '滚动容器量错对象'
+
+
+def test_caption_editor_panel():
+    """右侧竖列必须是「纯字幕编辑面板」（PR 式，2026-11-06 主人拍板）：
+    紧凑文字行 + 点行跳转时间点 + ✕ 删除 + ➕ 在指针处加字幕；
+    行内不再放视频/音频播放器和一堆控件（预览在左边全局播放器）。"""
+    js = _read(JS_PATH)
+    html = _read(HTML_PATH)
+    # 紧凑行模板：cap-row + 时间徽标 + ✕，且不再有行内 <video>/<audio controls>
+    i_fn = js.index('function renderAdjustPanel')
+    i = js.index('ttsList.forEach(function(item, idx){', i_fn)
+    row_html = js[i:js.index('list.innerHTML = html', i)]
+    assert "cap-row" in row_html and '✕' in row_html and 'timeLabel' in row_html
+    assert '<video' not in row_html and 'audio controls' not in row_html, \
+        '字幕行里不应再有视频/音频播放器（预览在左边）'
+    # 行点击 → 全局播放器 seek 到该字幕时间点
+    assert 'seekAdjVideo(it.video_start' in row_html or 'seekAdjVideo' in js[i:i+3000]
+    # ➕ 在指针处加字幕：入口 + 实现（按时间序插入、唯一 index、确认时自动 TTS）
+    assert 'addCaptionAtPlayhead' in js and 'addCaptionAtPlayhead()' in html
+    i_add = js.index('function addCaptionAtPlayhead')
+    add_body = js[i_add:js.index('\nfunction ', i_add + 10) if '\nfunction ' in js[i_add:] else i_add + 1200]
+    assert 'video.currentTime' in add_body, '新字幕必须插在播放指针当前位置'
+    assert "audio_text: ''" in add_body, '新段无音频基线 → 确认合成时自动 TTS'
+    # 单段重配用 item.index（增删后数组位置会漂，用位置会覆盖别人的配音文件）
+    assert 'serverIdx' in js, 'regenSingleTts 未改用 item.index 稳定命名'
+    # 撤销/重做/B-roll 的重绘统一委托紧凑渲染
+    assert 'renderAdjustPanel(_adjustState.items' in js[js.index('function _rerenderAdjustList'):], '_rerenderAdjustList 未统一委托'

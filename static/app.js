@@ -4598,59 +4598,36 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
   ttsList.forEach(function(item, idx){
     let cleanText = (item.text||'').replace(/\{(?:情绪|停顿|慢|快|高音|低音|大声|小声)[^}]*\}/g, '').replace(/\{\/(?:情绪|停顿|慢|快|高音|低音|大声|小声)\}/g, '').replace(/\s+/g, ' ').trim();
     let vs = item.video_start !== undefined ? item.video_start : 0;
-    let ve = item.video_end !== undefined ? item.video_end : 0;
-    let hasVideoSpan = (vs > 0 || ve > 0);
-    let spanHint = hasVideoSpan ? '' : '<span style="color:#f59e0b;font-size:11px;margin-left:4px">（自动匹配中，可手动输入时间）</span>';
-    html += '<div class="adjust-item" id="adjItem'+idx+'" style="padding:12px;margin:8px 0;border-radius:10px;background:var(--bg2);border:1px solid var(--border)">';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
-    html += '<span style="font-size:13px;font-weight:600">第 '+(idx+1)+' 段 <span style="color:var(--muted);font-weight:400">配音'+(item.duration||0)+'秒</span></span>';
-    html += '<label style="font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="adjSkip'+idx+'" style="margin-right:4px;vertical-align:middle">跳过</label>';
-    html += '<button class="btn-secondary" style="padding:2px 8px;font-size:11px;color:#f87171;border-color:#f87171;background:transparent" onclick="deleteAdjustItem('+idx+')" title="删除此段（不进合成）">🗑 删除</button>';
+    // PR 字幕面板式紧凑行（主人 2026-11-06）：文字为主，点行跳转到该字幕时间点；
+    // 画面范围用时间轴拖拽调、音量用右键菜单调——行内不再放视频/音频/一堆控件。
+    var mm = Math.floor((vs || 0) / 60), ss = Math.floor((vs || 0) % 60);
+    var timeLabel = (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+    var isSkipped = item._deleted === true;
+    html += '<div class="adjust-item cap-row" id="adjItem'+idx+'" data-idx="'+idx+'" style="padding:8px;margin:4px 0;border-radius:8px;background:var(--bg2);border:1px solid var(--border);cursor:pointer;opacity:'+(isSkipped?0.45:1)+'">';
+    html += '<div style="display:flex;gap:6px;align-items:flex-start">';
+    html += '<span id="adjTime'+idx+'" title="点击跳到此字幕时间点" style="flex:none;font-size:10px;color:#c4b5fd;font-family:monospace;background:rgba(139,92,246,.12);padding:2px 5px;border-radius:4px;margin-top:2px">'+timeLabel+'</span>';
+    html += '<textarea id="adjText'+idx+'" rows="2" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'text\')" oninput="_adjustState.changed['+idx+']=true">'+cleanText.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>';
+    html += '<button title="删除此段（不进合成，可撤销）" style="flex:none;padding:2px 7px;font-size:12px;color:#f87171;border:1px solid rgba(248,113,113,.4);background:transparent;border-radius:5px;cursor:pointer" onclick="event.stopPropagation();deleteAdjustItem('+idx+')">✕</button>';
     html += '</div>';
-    html += '<textarea id="adjText'+idx+'" rows="2" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'text\')" oninput="_adjustState.changed['+idx+']=true">'+cleanText.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>';
-    html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">';
-    html += '<span style="font-size:12px;color:var(--muted);white-space:nowrap">🎬 对应画面:</span>';
-    html += '<span style="font-size:12px;color:var(--muted)">从</span>';
-    html += '<input type="number" id="adjVStart'+idx+'" value="'+vs+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'vs\')">';
-    html += '<span style="font-size:12px;color:var(--muted)">秒到</span>';
-    html += '<input type="number" id="adjVEnd'+idx+'" value="'+ve+'" step="0.5" min="0" style="width:70px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" onfocus="_snapshotOnFocus()" onchange="_onSegFieldChange('+idx+',\'ve\')">';
-    html += '<span style="font-size:12px;color:var(--muted)">秒</span>'+spanHint;
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoSegment('+idx+')">▶️ 预览</button>';
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="alignSegmentToAudio('+idx+')">⇔ 对齐配音</button>';
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="previewVideoFrame('+idx+')">🖼️ 截图</button>';
-    html += '<button class="btn-secondary" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="recommendSegments('+idx+')">🤖 AI推荐</button>';
+    html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:3px;display:none"></div>';
     html += '</div>';
-    html += '<div id="adjRecommend'+idx+'" style="margin-top:6px;display:none"></div>';
-    html += '<div id="adjFrame'+idx+'" style="margin-top:6px;display:none"><img id="adjFrameImg'+idx+'" style="max-width:100%;max-height:160px;border-radius:6px;border:1px solid var(--border)"></div>';
-    html += '<div id="adjVideo'+idx+'" style="margin-top:6px;display:none;position:relative">';
-    html += '<video id="adjVideoEl'+idx+'" style="max-width:100%;max-height:240px;border-radius:6px;border:1px solid var(--border);background:#000" playsinline></video>';
-    html += '<div id="adjVideoHint'+idx+'" style="position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.7);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;display:none">🎬 片段预览中…点击视频暂停</div>';
-    html += '</div>';
-    html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
-    html += '<audio controls preload="auto" id="adjAudio'+idx+'" style="flex:1;height:32px"><source src="/media/'+item.audio+'" type="audio/mpeg"></audio>';
-    html += '<button class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap" onclick="regenSingleTts('+idx+',this)">🔄 重生成</button>';
-    html += '</div>';
-    // 原视频音量控制
-    var origVol = (item.orig_volume !== undefined) ? item.orig_volume : 0;
-    html += '<div style="display:flex;gap:8px;margin-top:4px;align-items:center;font-size:11px;color:var(--muted)">';
-    html += '<span title="保留原视频声音的比例（0=完全静音，100=原声音量）">🔊 原片声音</span>';
-    html += '<input type="range" id="adjOrigVol'+idx+'" min="0" max="100" value="'+origVol+'" style="flex:1;max-width:160px" oninput="setOrigVolume('+idx+',this.value)">';
-    html += '<span id="adjOrigVolVal'+idx+'" style="min-width:32px;text-align:right;font-family:monospace">'+origVol+'%</span>';
-    html += '</div>';
-    html += '<div id="adjStatus'+idx+'" style="font-size:11px;color:var(--muted);margin-top:4px;display:none"></div>';
-    // 配音音量控制
-    html += '<div style="display:flex;gap:8px;margin-top:4px;align-items:center;font-size:11px;color:var(--muted)">';
-    html += '<span title="解说配音音量（0=静音，100=原始音量）">🎙️ 配音</span>';
-    html += '<input type="range" id="adjAudVol'+idx+'" min="0" max="100" value="100" style="flex:1;max-width:160px" oninput="setNarrationVolume('+idx+',this.value)">';
-    html += '<span id="adjAudVolVal'+idx+'" style="min-width:32px;text-align:right;font-family:monospace">100%</span>';
-    html += '</div>';
-    html += '</div>';
-    // 段间插入B-roll按钮
-    if(idx < ttsList.length - 1){
-      html += '<div style="text-align:center;margin:4px 0"><button class="btn-secondary" style="padding:3px 16px;font-size:11px;color:#6b7280;border-color:#d1d5db;background:transparent" onclick="insertBroll('+idx+')" title="在此处插入B-roll空镜/补充画面">➕ 插入B-roll</button></div>';
-    }
   });
   list.innerHTML = html;
+  // PR 式：点行（非输入框/按钮）→ 全局播放器跳到该字幕时间点 + 时间轴定位
+  list.querySelectorAll('.cap-row').forEach(function(row){
+    row.addEventListener('click', function(e){
+      if(e.target.closest('textarea, button, input')) return;
+      var idx = parseInt(row.getAttribute('data-idx'));
+      var it = _adjustState.items[idx];
+      if(!it) return;
+      _selectedSeg = idx; _playSegIndex = idx;
+      seekAdjVideo(it.video_start || 0);
+      var blocks = document.querySelectorAll('.tl-vseg');
+      for(var k=0;k<blocks.length;k++){ blocks[k].style.outline = ''; }
+      if(blocks[idx]) blocks[idx].style.outline = '2px solid #fbbf24';
+      _syncSideList(idx);
+    });
+  });
   actions.style.display = 'flex';
   // 显示预览区和时间轴
   const preview = document.getElementById('adjustVideoPreview');
@@ -6106,9 +6083,38 @@ function setOrigVolume(idx, val){
   if(typeof scheduleAutoSave === 'function') scheduleAutoSave();
 }
 
+// ➕ 在播放指针当前位置插入一段新字幕：文字留空待填，确认合成时自动 TTS
+// （audio_text 为空 → 改词检测自动重配该段，复用 /api/tts_single）
+function addCaptionAtPlayhead(){
+  if(!_adjustState.items) return;
+  const video = document.getElementById('adjGlobalVideo');
+  const t = video ? (video.currentTime || 0) : 0;
+  let pos = _adjustState.items.length;   // 默认排最后
+  for(let i=0;i<_adjustState.items.length;i++){
+    if((_adjustState.items[i].video_start || 0) > t){ pos = i; break; }   // 按时间序插入
+  }
+  let maxIdx = 0;
+  _adjustState.items.forEach(function(x){ if((x.index||0) > maxIdx) maxIdx = x.index; });
+  _pushUndo();
+  _adjustState.items.splice(pos, 0, {
+    index: maxIdx + 1, text: '', audio: '', audio_text: '', duration: 0,
+    video_start: Math.round(t * 10) / 10, video_end: Math.round((t + 5) * 10) / 10
+  });
+  renderAdjustPanel(_adjustState.items, _adjustState.runDir, _adjustState.mode, [], _adjustState.videoFile);
+  renderTimeline();
+  const ta = document.getElementById('adjText' + pos);
+  if(ta){ ta.focus(); ta.scrollIntoView({ block: 'nearest' }); }
+  const st = document.getElementById('adjustStatus');
+  if(st) st.textContent = '➕ 已在 ' + t.toFixed(1) + 's 处插入新字幕（第 ' + (pos + 1) + ' 行）：输入文字，点「确认合成」时会自动配音';
+}
+
 async function regenSingleTts(idx, btnEl){
   const text = document.getElementById('adjText'+idx).value.trim();
   if(!text){ toast('解说词不能为空','warning'); return; }
+  // 服务端文件名用 item.index（原始解说序号/新增段的全局唯一号），不用数组
+  // 位置——增删段后两者会分叉，用位置会覆盖别的段的配音文件
+  const _it = _adjustState.items[idx] || {};
+  const serverIdx = (_it.index !== undefined && _it.index !== null) ? _it.index : idx;
   const statusEl = document.getElementById('adjStatus'+idx);
   // btn/statusEl 都可能为 null（confirmAdjustAndCompose 自动重配时程序化调用，
   // 不经按钮点击），全部判空——曾经直接 btn.disabled 炸掉整条自动重配链
@@ -6117,7 +6123,7 @@ async function regenSingleTts(idx, btnEl){
   if(statusEl){ statusEl.style.display = 'block'; statusEl.style.color = 'var(--muted)'; statusEl.textContent = '正在生成…'; }
   try{
     const r = await fetch('/api/tts_single', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ text: text, run_dir: _adjustState.runDir, index: idx }) });
+      body: JSON.stringify({ text: text, run_dir: _adjustState.runDir, index: serverIdx }) });
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '失败');
     // 轮询任务结果
@@ -6219,6 +6225,12 @@ function applyBrollManual(afterIdx){
 
 // 重新渲染调整列表（B-roll插入后调用）
 function _rerenderAdjustList(){
+  // 统一走 renderAdjustPanel（PR 式紧凑字幕行）：撤销/重做/B-roll 重绘共用，
+  // 避免两套行模板漂移（曾胖行/紧凑行并存）
+  renderAdjustPanel(_adjustState.items, _adjustState.runDir, _adjustState.mode, [], _adjustState.videoFile);
+}
+
+function _rerenderAdjustListLegacy(){
   const list = document.getElementById('adjustList');
   if(!list) return;
   const status = document.getElementById('adjustStatus');
