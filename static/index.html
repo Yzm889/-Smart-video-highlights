@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=26">
+<link rel="stylesheet" href="/static/style.css?v=27">
 <!-- FrameCut UI v2 · 简约设计系统（纯覆盖层，原样式一行未删；删掉本行即可一键回退） -->
 <link rel="stylesheet" href="/static/style.v2.css?v=24">
 </head>
@@ -566,7 +566,22 @@
       </div>
       <div style="margin-top:10px;">
         <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;">🎨 字幕样式</div>
-      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px">
+      <!-- 字幕交付方式：烧进画面（老行为、默认）还是只出干净成片 + 独立 .srt。
+           放在样式项之前是有意的：先定「要不要字幕在画面上」，再调字号颜色才有意义
+           （选了不烧录，下面那堆样式对它完全不起作用，得能一眼看出来）。 -->
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px;">
+        <div class="field" style="flex:1;min-width:260px;">
+          <label for="subBurn">字幕交付方式</label>
+          <select id="subBurn" onchange="updateSubStyleHint()">
+            <option value="1" selected>🔥 烧进画面（成片自带字幕，不可再改）</option>
+            <option value="0">📄 不烧录，另给一个 .srt 文件（可在剪映/PR 里自己调位置和样式）</option>
+          </select>
+        </div>
+        <div class="hint" id="subBurnHint" style="flex:1;min-width:220px;align-self:center;margin:0;">
+          选「不烧录」时：成片画面干净，字幕另存为 .srt 随成片一起下载。
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px" id="subStyleRow">
         <div class="field"><label>字号</label>
           <input type="number" id="subFontSize" value="22" min="12" max="48" style="width:70px"></div>
         <div class="field"><label>文字颜色</label>
@@ -647,7 +662,9 @@
       <span class="modebadge" id="narBadge"></span>
       <div id="narPartial" class="partial" style="display:none"></div>
       <div style="margin-top:12px;"><a class="btn ghost" id="narDl" href="#" download="narration.mp4">💾 保存</a>
+      <a class="btn ghost" id="narSrtDl" href="#" download="narration.srt" style="display:none;">📄 下载字幕 (.srt)</a>
       <button class="btn mini ghost" id="narCoverBtn" style="display:none" onclick="makeCover(_coverCtx.nar.file, 'coverBoxNar', '电影解说')">🖼 生成封面</button></div>
+      <div class="hint" id="narSrtTip" style="display:none;"></div>
       <div id="coverBoxNar" style="display:none"></div>
       <div class="hint" id="narDiag"></div>
       <div id="narWarn" class="warnbox" style="display:none"></div>
@@ -1327,7 +1344,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=85"></script>
+<script src="/static/app.js?v=86"></script>
 </body>
 </html>
 

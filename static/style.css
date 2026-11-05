@@ -1960,3 +1960,27 @@ select option { background: var(--fc-surface-2); color: var(--fc-text); }
   box-shadow: 0 0 0 3px rgba(201, 168, 76, .18), 0 8px 24px -12px rgba(201, 168, 76, .55);
   transform: translateY(-1px);
 }
+
+/* 解说稿框（#narScript）：它不在 .plot-edit 里，所以 `.plot-edit > textarea`
+   的 width/min-height 一条都没命中 —— 实际用的是浏览器 textarea 默认尺寸
+   （约 20 字宽、12 行），贴一整篇稿子只能看到一小截，滚到手酸。
+   这里补成与剧情框一致的全宽 + 更高 + 可拖拽（稿子经常要通读校对）。 */
+#narScript {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 420px;
+  resize: vertical;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.8;
+  border: 1px solid var(--fc-line);
+  border-radius: 2px;
+  background: var(--fc-surface-2);
+  color: var(--fc-text);
+  box-shadow: var(--fc-inset);
+}
+#narScript:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+@media (max-width: 720px) {
+  #narScript { min-height: 300px; }
+}

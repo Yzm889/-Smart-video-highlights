@@ -1583,6 +1583,10 @@ function updateScriptHint(){
     + (n < 120 ? '偏短，只够十几秒，建议多写几句。' : '✓ 直接开始即可，AI 不会改动你的稿子。');
 }
 if(typeof window !== 'undefined'){ window.updateScriptHint = updateScriptHint; window.addEventListener('DOMContentLoaded', updateScriptHint); }
+// 字幕交付方式选「不烧录」时，把下面的样式项灰掉并改写说明。
+// 必须在 DOM 就绪后跑一次：否则刷新页面时下拉框显示的选中值与灰显状态会对不上
+// （浏览器会保留 select 的选中项，但我们没有重新应用 disabled）。
+if(typeof window !== 'undefined'){ window.addEventListener('DOMContentLoaded', function(){ try{ updateSubStyleHint(); }catch(e){} }); }
 
 function updatePlotHint(){
   const el = document.getElementById('narPlot');
@@ -3062,6 +3066,7 @@ function pollNarrate(runid){
           setModeBadge('narBadge', p.mode);
           gPreview(p.file, '电影解说');
           $('narDl').href='/media/'+p.file;
+          fillNarSrt(p.subtitle_file, p.subtitle_burned);
           renderCredits('narResult', p.credits);
           _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
           const d=p.diag||{};
@@ -3772,6 +3777,7 @@ function _showPlanResult(type, p){
     g('narResult').style.display='block';
     g('narPlayer').src='/media/'+p.file+'?t='+Date.now();
     g('narDl').href='/media/'+p.file;
+    fillNarSrt(p.subtitle_file, p.subtitle_burned);
     _coverCtx.nar = {file: p.file}; const _ncb=$('narCoverBtn'); if(_ncb) _ncb.style.display='';
     setModeBadge('narBadge','human');
     gPreview(p.file,'电影解说');
@@ -5707,15 +5713,65 @@ function deletePreset(){
   loadPresetList();
 }
 
+// 字幕文件下载链接回填（成片结果区）。
+// 后端在 progress 里给 subtitle_file（相对 OUTDIR）与 subtitle_burned。
+// 规则：不烧录时把提示说清楚（用户必须知道成片没有字幕）；
+// 烧录时也允许下载（可拿 srt 去别处复用/校对），但不加提示、不抢视线。
+function fillNarSrt(file, burned){
+  var a = $('narSrtDl'), tip = $('narSrtTip');
+  if (!a) return;
+  if (!file){
+    a.style.display = 'none';
+    if (tip){ tip.style.display = 'none'; tip.innerHTML = ''; }
+    return;
+  }
+  a.href = '/media/' + file;
+  a.setAttribute('download', (String(file).split('/').pop() || 'narration.srt'));
+  a.style.display = '';
+  if (tip){
+    if (burned === false){
+      tip.style.display = '';
+      tip.innerHTML = '📄 本次<b>没有</b>把字幕烧进画面：成片是干净画面，字幕在上面的 .srt 里。'
+        + '拿去剪映 / PR / FCP 导入后可自由调位置、字号、字体，不影响画面质量。';
+    } else {
+      tip.style.display = 'none';
+      tip.innerHTML = '';
+    }
+  }
+}
+
 function getSubtitleStyle(){
+  var _burnSel = document.getElementById('subBurn');
   return {
     fontSize: parseInt((document.getElementById('subFontSize')||{}).value) || 22,
     color: (document.getElementById('subColor')||{}).value || '#FFFFFF',
     outlineColor: (document.getElementById('subOutlineColor')||{}).value || '#000000',
     outlineWidth: parseFloat((document.getElementById('subOutlineWidth')||{}).value) || 2,
     alignment: parseInt((document.getElementById('subAlignment')||{}).value) || 2,
-    marginV: parseInt((document.getElementById('subMarginV')||{}).value) || 50
+    marginV: parseInt((document.getElementById('subMarginV')||{}).value) || 50,
+    // 字幕交付：burn=是否烧进画面。只有明确选了 '0' 才关，
+    // 缺元素/其他值一律按 true —— 默认行为必须与改动前逐字节一致。
+    burn: _burnSel ? (_burnSel.value !== '0') : true
   };
+}
+
+// 选了「不烧录」时把下面那一排样式项灰掉并说明原因：
+// 否则用户会以为调了字号没生效是 bug（其实是不烧字幕，样式无处可施）。
+function updateSubStyleHint(){
+  var sel = document.getElementById('subBurn');
+  var row = document.getElementById('subStyleRow');
+  var hint = document.getElementById('subBurnHint');
+  if (!sel) return;
+  var burn = sel.value !== '0';
+  if (row){
+    row.style.opacity = burn ? '' : '.45';
+    row.querySelectorAll('input,select').forEach(function(el){ el.disabled = !burn; });
+  }
+  if (hint){
+    hint.innerHTML = burn
+      ? '选「不烧录」时：成片画面干净，字幕另存为 .srt 随成片一起下载。'
+      : '✅ 已选不烧录：成片不带字幕，下载处会多一个 <b>.srt</b> 文件。下面的样式项已灰掉（对 srt 不生效，字幕样式请在你自己的剪辑软件里调）。';
+  }
 }
 
 

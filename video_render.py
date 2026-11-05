@@ -287,6 +287,16 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
         progress['done'] = True
         progress['pct'] = 100
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/')
+        # 字幕文件随任务一起交付（前端给下载链接）。
+        # 不管烧不烧都暴露：烧了的话用户也能拿到 srt 去别的软件复用/校对；
+        # 不烧的时候它就是唯一载体，必须给。
+        try:
+            _srt_path = os.path.join(run_dir, 'narr.srt')
+            if os.path.isfile(_srt_path) and os.path.getsize(_srt_path) > 0:
+                progress['subtitle_file'] = os.path.relpath(_srt_path, _w.OUTDIR).replace('\\', '/')
+                progress['subtitle_burned'] = bool(_burn_enabled(params))
+        except Exception:
+            pass
         if mode:
             progress['mode'] = mode
     return final, len(tts_paths), cut_info
@@ -470,6 +480,22 @@ def _ass_enabled(params):
     return os.environ.get('FRAMECUT_ASS') != '0'
 
 
+def _burn_enabled(params):
+    """字幕是否**烧进画面**。默认 True（老行为，逐字节一致）。
+
+    False = 只出干净成片 + 附带一个 .srt 字幕文件，让用户拿去剪映/PR/FCP
+    自己调位置、字体、字号。这不是"少做一步"，而是把字幕的控制权交回去：
+      · 硬烧之后想改字幕位置只能整片重渲染（几分钟起步）；
+      · 很多人的实际工作流是「先出片 → 在剪辑软件里统一调字幕样式」；
+      · 烧录还会把字幕永久压在画面上，想再改文案就只能回源。
+    代价是成片没有字幕，所以前端必须明确提示"这次不带字幕"。
+
+    参数位置：params.subtitle.burn（与 fontSize/color 这些样式项同处一支，
+    不新增顶层键 —— 顶层已有 subtitle_file 表示"导入的字幕文件"，别混）。"""
+    sub = (params or {}).get('subtitle') or {}
+    return sub.get('burn') is not False
+
+
 def _ass_ts(sec):
     h = int(sec // 3600)
     m = int((sec % 3600) // 60)
@@ -612,6 +638,8 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     has_audio = _has_audio_track(video_path)
     out = os.path.join(run_dir, 'vburn.mp4')
     sub_style = _build_subtitle_style(params)
+    # 是否把字幕烧进画面（默认 True）。False = 出干净成片 + 单独 .srt 交付。
+    _burn = _burn_enabled(params)
     scale_filter = _w.build_video_filter(params)
     # P0-1 统一调色：放在「拼接之后、烧字幕之前」——只算一次，全片色调一致；
     # 且在字幕之前，白色字幕不会被 colorbalance 染上蓝/红色偏。
@@ -626,19 +654,25 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         # 全片覆盖：直接在原片上烧字幕+缩放，时长、画面与两遍管线返回原片后烧字幕完全一致
         new_spans = raw
         srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips), params)
-        esc = srt.replace('\\', '/').replace(':', '\\:')
+        # _burn=False：字幕不烧进画面，只留 .srt 交付（见 _burn_enabled 的说明）
         vf = []
         if grade:
             vf.append(grade)
-        vf.append(f"subtitles='{esc}':force_style='{sub_style}'")
+        if _burn:
+            esc = srt.replace('\\', '/').replace(':', '\\:')
+            vf.append(f"subtitles='{esc}':force_style='{sub_style}'")
         if scale_filter:
             vf.append(scale_filter)
-        cmd = ['-y', '-i', video_path, '-vf', ','.join(vf)]
-        if has_audio:
-            cmd += ['-c:a', 'copy']
+        # vf 可能整个为空（不烧字幕 + 不调色 + 不缩放）：此时 -vf '' 会让 ffmpeg 报错，
+        # 直接复制视频流反而更快且零损失。
+        if vf:
+            cmd = ['-y', '-i', video_path, '-vf', ','.join(vf)]
+            cmd += (['-c:a', 'copy'] if has_audio else ['-an'])
+            cmd += _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-movflags', '+faststart', out]
         else:
-            cmd += ['-an']
-        cmd += _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-movflags', '+faststart', out]
+            cmd = ['-y', '-i', video_path, '-map', '0:v:0', '-c:v', 'copy']
+            cmd += (['-map', '0:a:0', '-c:a', 'copy'] if has_audio else ['-an'])
+            cmd += ['-movflags', '+faststart', out]
         rc, o, e = ffmpeg_run(cmd)
         if rc != 0 or not os.path.exists(out):
             raise RuntimeError('单遍合并(无裁剪)编码失败: ' + e.decode('utf-8', 'ignore')[-300:])
@@ -708,11 +742,15 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     if grade:
         vparts.append(f"[{_vlabel}]{grade}[vgrade]")
         _vlabel = 'vgrade'
-    vparts.append(f"[{_vlabel}]subtitles='{esc}':force_style='{sub_style}'[vsub]")
+    if _burn:
+        vparts.append(f"[{_vlabel}]subtitles='{esc}':force_style='{sub_style}'[vsub]")
+        _vlabel = 'vsub'
+    # 不烧字幕时不能让 'vsub' 这个标签悬空（scale_filter 那段引用了它），
+    # 所以直接把当前标签名接力下去，而不是伪造一个 subtitles 滤镜。
     if scale_filter:
-        vparts.append(f"[vsub]{scale_filter}[vout]")
+        vparts.append(f"[{_vlabel}]{scale_filter}[vout]")
     else:
-        vparts.append("[vsub]copy[vout]")
+        vparts.append(f"[{_vlabel}]copy[vout]")
     parts = list(vparts)
     if has_audio:
         if use_xfade:
@@ -925,8 +963,9 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         base_video = video_path
     else:
         # 1) 烧字幕：解说词按段显示；有配音时间窗时字随声走
+        #    注意 _build_narr_srt 必须无条件调用：不烧进画面时它产出的 narr.srt
+        #    就是要交付给用户的那个文件（见 _burn_enabled）。
         srt = _build_narr_srt(segs, narr, run_dir, voice_spans, params)
-        esc = srt.replace('\\', '/').replace(':', '\\:')
         vsub = os.path.join(run_dir, 'vsub.mp4')
         sub_style = _build_subtitle_style(params)
         # 导出选项：分辨率缩放 + 码率
@@ -935,16 +974,23 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         if _grade:
             # 调色在字幕之前：白色字幕不被 colorbalance 染色
             vf_parts.append(_grade)
-        vf_parts.append(f"subtitles='{esc}':force_style='{sub_style}'")
+        if _burn_enabled(params):
+            esc = srt.replace('\\', '/').replace(':', '\\:')
+            vf_parts.append(f"subtitles='{esc}':force_style='{sub_style}'")
         scale_filter = _w.build_video_filter(params)
         if scale_filter:
             vf_parts.append(scale_filter)
-        vf_str = ','.join(vf_parts)
         bitrate = params.get('bitrate') or None
         tier = params.get('qualityTier') or None
-        rc, o, e = ffmpeg_run(['-y', '-i', video_path,
-                               '-vf', vf_str,
-                               ] + _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-an', vsub])
+        if not vf_parts:
+            # 不烧字幕 + 不调色 + 不缩放：无需重编码，直接复制视频流
+            # （-vf '' 会被 ffmpeg 判成参数错误；且这一步本来就只是搬运）
+            rc, o, e = ffmpeg_run(['-y', '-i', video_path, '-map', '0:v:0', '-c:v', 'copy',
+                                   '-an', '-movflags', '+faststart', vsub])
+        else:
+            rc, o, e = ffmpeg_run(['-y', '-i', video_path,
+                                   '-vf', ','.join(vf_parts),
+                                   ] + _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-an', vsub])
         base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
 
     has_orig_audio = _has_audio_track(video_path)
