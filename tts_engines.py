@@ -450,7 +450,7 @@ def _cosy_serve_start():
     return False
 
 
-def _cosy_serve_synth(txt, out_path, ref_wav, timeout=300):
+def _cosy_serve_synth(txt, out_path, ref_wav, prompt_text='', timeout=300):
     """经常驻 worker 合成一句。成功 True；失败时进程已清理，下次调用自动重启。"""
     with _COSY_SERVE['lock']:
         if _COSY_SERVE['proc'] is None and not _cosy_serve_start():
@@ -460,7 +460,8 @@ def _cosy_serve_synth(txt, out_path, ref_wav, timeout=300):
             _COSY_SERVE.update(proc=None, q=None)
             return False
         try:
-            proc.stdin.write(json.dumps({'txt': txt, 'out': out_path, 'ref': ref_wav},
+            proc.stdin.write(json.dumps({'txt': txt, 'out': out_path, 'ref': ref_wav,
+                                         'prompt_text': prompt_text or ''},
                                         ensure_ascii=False) + '\n')
             proc.stdin.flush()
         except Exception:
@@ -501,6 +502,56 @@ def _cosyvoice_ref_wav():
     return None
 
 
+# whisper tiny 常驻缓存（参考音文字稿自动转写用；tiny 仅 75MB、CPU int8 秒级）
+_COSY_ASR = {'model': None}
+
+
+def _cosyvoice_prompt_text(ref_wav):
+    """取参考音频的文字稿。zero-shot 克隆必须「音频+文字稿」成对传入：
+    官方文档如此要求，且实测缺失时合成出的是乱码音节（2026-11-06 主人反馈
+    「乱说无厘头的字」，whisper 反转 cosyvoice.wav 证实为胡言乱语）。
+
+    查找顺序：ref 同名 .txt 侧车文件 → 本地 whisper tiny 自动转写（结果缓存为侧车）。
+    返回 '' 表示拿不到，调用方应跳过 CosyVoice（宁可不合成也不出乱码）。
+    """
+    base = os.path.splitext(ref_wav)[0]
+    sidecar = base + '.txt'
+    if os.path.exists(sidecar):
+        try:
+            with open(sidecar, encoding='utf-8') as f:
+                t = f.read().strip()
+            if t:
+                return t
+        except Exception:
+            pass
+    try:
+        import numpy as np
+        import imageio_ffmpeg
+        from faster_whisper import WhisperModel
+        if _COSY_ASR['model'] is None:
+            wdir = os.path.join(HERE, 'models', 'whisper', 'tiny')
+            if not os.path.isdir(wdir):
+                return ''
+            _COSY_ASR['model'] = WhisperModel(wdir, device='cpu', compute_type='int8')
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        raw = subprocess.run([exe, '-i', ref_wav, '-f', 'f32le', '-ac', '1', '-ar', '16000', '-'],
+                             capture_output=True, timeout=60).stdout
+        audio = np.frombuffer(raw, dtype=np.float32)
+        if audio.size < 1600:
+            return ''
+        segs, _ = _COSY_ASR['model'].transcribe(audio, language='zh')
+        text = ''.join(s.text for s in segs).strip()
+        if text:
+            try:
+                with open(sidecar, 'w', encoding='utf-8') as f:
+                    f.write(text)
+            except Exception:
+                pass
+        return text
+    except Exception:
+        return ''
+
+
 def cosyvoice_speak(text, out_path, progress=None):
     """用 CosyVoice2-0.5B 合成语音。成功返回 True。
     优先常驻 worker（模型只加载一次），失败回退 venv 单发子进程，再回退主进程内推理。
@@ -511,7 +562,7 @@ def cosyvoice_speak(text, out_path, progress=None):
     if not clean_text.strip():
         return False
 
-    # 方式1：常驻 worker（推荐；首句付 ~100s 模型加载，之后句句秒级）
+    # 方式1：常驻 worker（推荐；首句付 ~30s 模型加载，之后句句秒级）
     venv_py = _cosyvoice_venv_python()
     if venv_py and os.path.isdir(COSYVOICE_MODEL_DIR) and os.path.exists(os.path.join(HERE, 'cosyvoice_worker.py')):
         _ref_wav = _cosyvoice_ref_wav()
@@ -519,10 +570,19 @@ def cosyvoice_speak(text, out_path, progress=None):
             _COSYVOICE['error'] = '参考音频不存在，请重新安装CosyVoice'
             print('[COSYVOICE] no ref audio')
             return False
+        # zero-shot 必须带参考音文字稿：缺了会合成乱码音节（实测），宁可不合成
+        _ref_txt = _cosyvoice_prompt_text(_ref_wav)
+        if not _ref_txt:
+            _COSYVOICE['error'] = '参考音频缺文字稿（且自动转写失败），已跳过 CosyVoice'
+            print('[COSYVOICE] no prompt text for', _ref_wav)
+            return False
         d = os.path.dirname(os.path.abspath(out_path))
         if d:
             os.makedirs(d, exist_ok=True)
-        if _cosy_serve_synth(clean_text, out_path, _ref_wav):
+        # worker 进程的 cwd 是 CosyVoice 仓库目录，相对路径会写错位置
+        # （run_dir 等常以 webui_output/... 相对形式传入），必须先转绝对路径
+        _abs_out = os.path.abspath(out_path)
+        if _cosy_serve_synth(clean_text, _abs_out, _ref_wav, _ref_txt):
             return True
         print('[COSYVOICE] 常驻 worker 不可用，回退单发模式：', _COSYVOICE['error'][:120], flush=True)
         # 方式1b：单发子进程兜底（每句付 ~100s 模型加载，慢但独立可用）

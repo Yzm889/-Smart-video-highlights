@@ -40,14 +40,30 @@ def _load_model(model_dir):
     return CosyVoice2(model_dir, load_jit=False, load_trt=False, fp16=True)
 
 
-def _synth(model, text, ref_wav, out_path):
-    """zero-shot 声音克隆合成，成功返回 True。"""
+def _ref_prompt_text(ref_wav, explicit=None):
+    """参考音频的文字稿：显式传入优先，否则找 ref 同名 .txt 侧车文件。
+    zero-shot 克隆必须「音频+文字稿」成对（官方 example.py 即如此），
+    缺文字稿会合成乱码音节（2026-11-06 实测）。"""
+    if explicit:
+        return explicit
+    sidecar = os.path.splitext(ref_wav)[0] + '.txt'
+    if os.path.exists(sidecar):
+        try:
+            with open(sidecar, encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return ''
+
+
+def _synth(model, text, ref_wav, out_path, prompt_text=''):
+    """zero-shot 声音克隆合成，成功返回 True。prompt_text 是参考音频的文字稿。"""
     import torchaudio
     d = os.path.dirname(os.path.abspath(out_path))
     if d:
         os.makedirs(d, exist_ok=True)
     for i, j in enumerate(model.inference_zero_shot(
-            text, '', ref_wav, zero_shot_spk_id='', stream=False)):
+            text, prompt_text or '', ref_wav, zero_shot_spk_id='', stream=False)):
         torchaudio.save(out_path, j['tts_speech'], model.sample_rate)
         return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
     return False
@@ -79,8 +95,12 @@ def serve(model_dir):
             if not txt or not out or not os.path.exists(ref):
                 print(json.dumps({'ok': False, 'error': 'bad request: txt/out/ref required, ref must exist'}, ensure_ascii=False), flush=True)
                 continue
+            pt = _ref_prompt_text(ref, req.get('prompt_text'))
+            if not pt:
+                print(json.dumps({'ok': False, 'error': '参考音频缺文字稿（zero-shot 必须），请放置 %s' % (os.path.splitext(ref)[0] + '.txt')}, ensure_ascii=False), flush=True)
+                continue
             t1 = time.time()
-            ok = _synth(model, txt, ref, out)
+            ok = _synth(model, txt, ref, out, pt)
             print(json.dumps({'ok': bool(ok), 'out': out, 'sec': round(time.time() - t1, 1)}, ensure_ascii=False), flush=True)
         except Exception as e:
             print(json.dumps({'ok': False, 'error': str(e)[:300], 'traceback': traceback.format_exc()[-300:]}, ensure_ascii=False), flush=True)
@@ -102,7 +122,11 @@ def one_shot(txt_file, out_path, model_dir, ref_wav):
     print('[CosyVoice] loading model...', flush=True)
     model = _load_model(model_dir)
     print('[CosyVoice] synthesizing...', flush=True)
-    ok = _synth(model, text, ref_wav, out_path)
+    pt = _ref_prompt_text(ref_wav)
+    if not pt:
+        print('FAIL: ref transcript missing: %s' % (os.path.splitext(ref_wav)[0] + '.txt'))
+        sys.exit(1)
+    ok = _synth(model, text, ref_wav, out_path, pt)
     print('OK' if ok else 'FAIL: output too small or missing')
     sys.exit(0 if ok else 1)
 

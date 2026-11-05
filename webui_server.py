@@ -4479,6 +4479,12 @@ snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
                     if os.path.exists(_asset):
                         import shutil as _sh2
                         _sh2.copyfile(_asset, _default_ref)
+                # zero-shot 克隆必须「参考音频+文字稿」成对（缺失会合成乱码音节）；
+                # 这是官方示例音色的标准文字稿（CosyVoice/example.py 同款）
+                _sidecar = os.path.join(_vdir, '中文女.txt')
+                if not os.path.exists(_sidecar):
+                    with open(_sidecar, 'w', encoding='utf-8') as _sf:
+                        _sf.write('希望你以后能够做的比我还好呦。')
             except Exception:
                 pass
             # 验证模型目录有关键文件

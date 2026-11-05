@@ -1215,6 +1215,16 @@ class Handler(BaseHTTPRequestHandler):
                 try: os.unlink(_tmp)
                 except OSError: pass
             if os.path.exists(_out) and os.path.getsize(_out) > 1000:
+                # 文字稿（可选）：zero-shot 克隆必须「参考音频+文字稿」成对，缺失会合成
+                # 乱码音节。用户没填也不拦——首次使用时主进程会用本地 whisper tiny 自动
+                # 转写并缓存为同名 .txt（tts_engines._cosyvoice_prompt_text）。
+                _transcript = (data.get('transcript') or '').strip()
+                if _transcript:
+                    try:
+                        with open(os.path.join(_vdir, _name + '.txt'), 'w', encoding='utf-8') as _tf:
+                            _tf.write(_transcript)
+                    except OSError:
+                        pass
                 self._send(200, json.dumps({'ok': True, 'name': _name}).encode('utf-8'), 'application/json')
             else:
                 _err = '音频转换失败'
