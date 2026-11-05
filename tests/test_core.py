@@ -11,6 +11,7 @@
 """
 
 import os
+import time
 
 import urllib.request
 
@@ -1273,7 +1274,16 @@ def test_upload_chunk_and_finalize(monkeypatch, tmp_path):
     assert not S._upload_chunk_write(uid, 2, b'x' * (S.UPLOAD_CHUNK_MAX + 1))[0], '单片超限必须拒绝'
     final, err = S._upload_finalize(uid, '我的视频.mp4', 2)
     assert final and os.path.isfile(final) and open(final, 'rb').read() == b'aabb', '乱序分片须按序合并'
-    assert not any(fn.startswith('part_') for fn in os.listdir(str(tmp_path / 'uploads' / uid))), '合并后应清理分片'
+    # 分片清理已改为后台线程（见 _upload_finalize 的说明）：2.3GB/589 片实测
+    # 同步删要 4.2s、异步只用 1.3s，而清理慢会直接把 /api/upload/done 拖到前端超时，
+    # 用户看到「上传失败」但 final__ 其实已完整落盘（重试还会命中「会话已完成」的分支）。
+    # 所以这里必须等待而不是立即断言。
+    _d = str(tmp_path / 'uploads' / uid)
+    for _ in range(100):
+        if not any(fn.startswith('part_') for fn in os.listdir(_d)):
+            break
+        time.sleep(0.02)
+    assert not any(fn.startswith('part_') for fn in os.listdir(_d)), '合并后应清理分片（异步线程未完成）'
     assert S._upload_finalize(uid, 'x.mp4', 3)[0] is None, '缺片必须拒绝'
     assert S._upload_finalize(uid, 'x.mp4', 0)[0] is None, '非法分片数必须拒绝'
 
@@ -2347,3 +2357,75 @@ def test_ai_status_voice_ok_when_explicit_sapi(monkeypatch):
     S = _voice_cfg(monkeypatch, engine='sapi')
     v = S._voice_status()
     assert v['ready'] is True
+
+
+# ---------------------------------------------------------------------------
+# 视频体积上限（2026-11-05）
+#
+# 原来上限是 2GB，而这个值没有任何技术依据：分片上传是逐片 4MB 落盘 + 流式合并，
+# 内存占用与文件大小无关，真正的物理上限是分片序号 4096 × 4MB = 16GB。
+# 2GB 直接挡掉了「下载一整部 1080p 电影」（2 小时普遍 2~5GB）这个主要场景。
+#
+# 现在放到 8GB。这里钉住三件最容易漂移的事：
+#   ① 前端 6 处体积检查必须共用一个常量，不能再各写一份字面量；
+#   ② 前端常量与后端 UPLOAD_TOTAL_MAX 必须一致（否则前端放过、后端拒绝、
+#      用户传到 99% 才失败，而且重试会命中「会话已完成」的怪状态）；
+#   ③ 错误文案里的「8GB」必须跟着常量走，不能又变成硬编码。
+# ---------------------------------------------------------------------------
+
+def test_upload_total_limit_is_8gb():
+    """后端总量上限必须是 8GB，且小于分片序号能表达的物理上限。"""
+    import webui_server as S
+    assert S.UPLOAD_TOTAL_MAX == 8 * 1024 ** 3, \
+        '总量上限变了（当前 %.1fGB）：确认是有意调整，并同步前端 MAX_VIDEO_BYTES' % (
+            S.UPLOAD_TOTAL_MAX / 2 ** 30)
+    # 物理上限：分片序号上限 4096 × 前端每片 4MB。上限必须严格小于它，
+    # 否则超过可寻址范围的文件永远传不完（最后几片会被 '非法分片序号' 拒掉）。
+    physical = 4096 * 4 * 1024 ** 2
+    assert S.UPLOAD_TOTAL_MAX < physical, \
+        '总量上限已超出分片序号能表达的范围（%.1fGB）' % (physical / 2 ** 30)
+
+
+def test_frontend_has_single_volume_limit_constant():
+    """前端体积检查必须统一走 MAX_VIDEO_BYTES，不得再有散落的 2GB 字面量。"""
+    import re, os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'app.js'), encoding='utf-8') as f:
+        js = f.read()
+    assert 'const MAX_VIDEO_BYTES = 8*1024*1024*1024;' in js, \
+        '前端缺少 MAX_VIDEO_BYTES 常量（体积检查会退回各写一份字面量）'
+    # 旧写法残留检查：2*1024*1024*1024 作为"上限"出现在比较里就是漏改
+    leftovers = re.findall(r'\.size\s*>\s*2\s*\*\s*1024\s*\*\s*1024\s*\*\s*1024', js)
+    assert not leftovers, \
+        '还有 %d 处体积检查用旧的 2GB 字面量，应改为 MAX_VIDEO_BYTES' % len(leftovers)
+    assert 'videoTooBig(' in js, '缺少统一校验函数 videoTooBig'
+
+
+def test_frontend_backend_limit_in_sync():
+    """前端 MAX_VIDEO_BYTES 必须与后端 UPLOAD_TOTAL_MAX 相等。
+
+    两者不一致的后果很具体：前端放过 → 用户传完几个 GB → 后端在某个分片
+    回一句「文件超过 8GB 上限」→ 前端只显示「上传失败」，而上传目录里
+    躺着几 GB 的残片。更糟的是重试会命中「会话已完成」分支，行为更难理解。
+    """
+    import re, os
+    import webui_server as S
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'app.js'), encoding='utf-8') as f:
+        js = f.read()
+    m = re.search(r'const MAX_VIDEO_BYTES\s*=\s*([0-9*\s]+);', js)
+    assert m, '找不到前端 MAX_VIDEO_BYTES 定义'
+    front = eval(m.group(1).replace(' ', ''), {'__builtins__': {}})   # 仅算术表达式
+    assert front == S.UPLOAD_TOTAL_MAX, (
+        '前后端上限不一致：前端 %.1fGB / 后端 %.1fGB —— 会出现「前端放过、后端拒绝」'
+        % (front / 2 ** 30, S.UPLOAD_TOTAL_MAX / 2 ** 30))
+
+
+def test_upload_error_message_follows_constant():
+    """超限错误文案里的容量提示必须来自常量，不能硬编码。"""
+    import inspect
+    import webui_server as S
+    assert S.UPLOAD_TOTAL_MAX_HINT == '8GB'
+    src = inspect.getsource(S._upload_finalize) + inspect.getsource(S._upload_chunk_write)
+    assert '文件超过 2GB 上限' not in src, '错误文案又变回硬编码 2GB 了'
+    assert 'UPLOAD_TOTAL_MAX_HINT' in src, '错误文案未跟随 UPLOAD_TOTAL_MAX_HINT'

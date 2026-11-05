@@ -2566,7 +2566,14 @@ def _storage_scan():
 # ---------------------------------------------------------------------------
 UPLOAD_DIR = os.path.join(WORKDIR, 'uploads')
 UPLOAD_CHUNK_MAX = 8 * 1024 * 1024          # 单分片解码后上限
-UPLOAD_TOTAL_MAX = 2 * 1024 * 1024 * 1024   # 单文件总量上限 2GB
+# 单文件总量上限。原来是拍脑袋的 2GB，真机直接挡掉了「下载一整部 1080p 电影」
+# 这个最主要的使用场景（2 小时 1080p 普遍 2~5GB），而它没有任何技术依据：
+#   · 分片上传是逐片 4MB 追加落盘 + 流式合并，内存占用与文件大小无关；
+#   · 真正的物理上限是分片序号 4096 × 4MB = 16GB（见 _upload_chunk_write / _upload_finalize）。
+# 放到 8GB：覆盖绝大部分整部电影，同时给 16GB 物理上限留一倍余量。
+# 3 处引用（写分片累加、合并累加、错误文案）都走这个常量，别再各写一份字面量。
+UPLOAD_TOTAL_MAX = 8 * 1024 * 1024 * 1024   # 单文件总量上限 8GB
+UPLOAD_TOTAL_MAX_HINT = '8GB'               # 只用于错误文案，避免和上面那个数漂移
 
 
 def _upload_dir_of(upload_id):
@@ -2657,7 +2664,7 @@ def _upload_chunk_write(upload_id, idx, data_bytes):
             except OSError:
                 pass
         if used + len(data_bytes) > UPLOAD_TOTAL_MAX:
-            return False, '文件超过 2GB 上限'
+            return False, '文件超过 %s 上限' % UPLOAD_TOTAL_MAX_HINT
         with open(os.path.join(d, 'part_%04d' % idx), 'wb') as f:
             f.write(data_bytes)
     except OSError as e:
@@ -2711,18 +2718,29 @@ def _upload_finalize(upload_id, name, chunks):
                         out.write(b)
                         total += len(b)
                         if total > UPLOAD_TOTAL_MAX:
-                            raise RuntimeError('文件超过 2GB 上限')
+                            raise RuntimeError('文件超过 %s 上限' % UPLOAD_TOTAL_MAX_HINT)
     except Exception as e:
         try:
             os.remove(final)
         except OSError:
             pass
         return None, str(e)[:120]
-    for p in parts:
-        try:
-            os.remove(p)
-        except OSError:
-            pass
+    # 分片清理**不能挡在返回路径上**。实测 2.3GB（589 片）时，逐片 os.remove
+    # 在 Windows 上要几百毫秒到几秒；如果碰上杀软实时扫描或文件被占用，
+    # 一次请求就会拖到前端超时 —— 用户看到「上传失败」，可 final__ 其实已经完整落盘，
+    # 重试还会命中「会话已完成」的分支，非常难自查。
+    # 所以：立即返回成品路径，清理交给后台线程慢慢删（删不掉也只是占点临时空间，
+    # 反正 _upload_prune 24h 后照样会清）。
+    def _cleanup_parts(_parts):
+        for p in _parts:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    try:
+        threading.Thread(target=_cleanup_parts, args=(list(parts),), daemon=True).start()
+    except Exception:
+        pass      # 线程起不来也无所谓，交给 _upload_prune
     return final, ''
 
 

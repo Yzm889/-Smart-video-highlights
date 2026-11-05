@@ -1508,6 +1508,23 @@ class Handler(BaseHTTPRequestHandler):
                     if have is None:
                         uid = None   # 会话过期/非法 → 按新会话处理
             if uid is None:
+                # 开新会话前先看磁盘：上限提到 8GB 之后，「文件多大」不再是有效护栏，
+                # 真正会出事的是把盘写满（上传会话 + run_dir 副本 = 双份占用）。
+                # 要求剩余空间至少是本次文件的 2.5 倍：分片本身 + 合并成品 + 任务目录拷贝。
+                try:
+                    need = int(data.get('size') or 0) * 2.5
+                    free = shutil.disk_usage(_w.WORKDIR).free
+                    if need > 0 and free < need:
+                        raise RuntimeError(
+                            '磁盘空间不足：这个视频需要约 %.1fGB 可用空间（含上传暂存 + 任务副本），'
+                            '当前只剩 %.1fGB。请先清理磁盘，或压缩视频后再试。'
+                            % (need / 2**30, free / 2**30))
+                    if need > 0 and need > _w.UPLOAD_TOTAL_MAX * 0.98:
+                        raise RuntimeError('文件超过 %s 上限' % _w.UPLOAD_TOTAL_MAX_HINT)
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass      # 探测失败不阻断上传（宁可能传，也不要因为统计异常拒绝用户）
                 uid = 'up-%d-%s' % (int(time.time() * 1000), ''.join(random.choice('0123456789abcdef') for _ in range(6)))
                 d = _w._upload_dir_of(uid)
                 if d is None:

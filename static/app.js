@@ -2585,7 +2585,11 @@ async function uploadChunksOnly(file){
   if(failed) throw failed;
   // 合并阶段：大文件合并需要几秒到几十秒，单独显示进度避免"假死"
   gSet(22, '📦 正在合并视频文件（' + (file.size/1024/1024).toFixed(0) + 'MB）…');
-  const fin = await fetchWithTimeout('/api/upload/done', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uid, name:file.name, chunks:n})}, 120000).then(r=>r.json());
+  // 收紧到「120 秒 + 每 500MB 再加 60 秒」：合并是磁盘顺序读写，
+  // 固定 120 秒对 8GB 不够（8GB 单片合并实测要 2~4 分钟），
+  // 超时会被前端判成失败，但后端其实还在合并 —— 用户重试就会看到「会话已完成」的怪状态。
+  const mergeTimeout = 120000 + Math.ceil(file.size / (500*1024*1024)) * 60000;
+  const fin = await fetchWithTimeout('/api/upload/done', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uid, name:file.name, chunks:n})}, mergeTimeout).then(r=>r.json());
   if(!fin.ok) throw new Error(fin.error||'上传收尾失败');
   try { localStorage.removeItem(KEY); } catch(e){}
   return uid;
@@ -2595,6 +2599,31 @@ async function uploadChunksOnly(file){
 // 超过一律走分片上传——base64 让请求体膨胀 1.37 倍，服务端 json 解析 + b64 解码
 // 还要各复制一份，60MB 视频内联的内存峰值约 320MB；分片路径每片仅 4MB 常驻。
 const INLINE_UPLOAD_MAX = 8*1024*1024;
+
+// 视频体积上限：与后端 webui_server.UPLOAD_TOTAL_MAX 保持一致（8GB）。
+// 原来是 6 处各写一份 `2*1024*1024*1024` 字面量、文案里还硬编码「>2GB」，
+// 改一处忘一处就会出现「前端放过 / 后端拒绝」的割裂。
+// 2GB 这个值本身也没有依据：分片上传是逐片 4MB 落盘 + 流式合并，
+// 内存与文件大小无关，真正的物理上限是分片序号 4096 × 4MB = 16GB。
+// 8GB 足以覆盖「一整部 1080p 电影」，同时给物理上限留一倍余量。
+const MAX_VIDEO_BYTES = 8*1024*1024*1024;
+const LARGE_VIDEO_BYTES = 2*1024*1024*1024;   // 超过这个只提醒「会比较久」，不拦
+
+// 统一体积校验：超限返回 true 并写好提示；未超限返回 false。
+// 调用方一律 `if (videoTooBig(F, $('xxStatus'), '生成')) return;`
+function videoTooBig(file, statusEl, verb){
+  if (!file) return false;
+  const gb = (file.size/1073741824).toFixed(1);
+  if (file.size > MAX_VIDEO_BYTES){
+    if (statusEl) statusEl.textContent = '❌ 视频过大（' + gb + 'GB，上限 8GB）——'
+      + '请先压缩码率，或把整片切成上下半场分别' + (verb||'处理');
+    return true;
+  }
+  if (statusEl && file.size > LARGE_VIDEO_BYTES){
+    statusEl.textContent = '⏳ 视频 ' + gb + 'GB，上传与分析会比较久（可分片续传，别关页面）…';
+  }
+  return false;
+}
 
 async function videoToBody(file){
   if(file.size <= INLINE_UPLOAD_MAX){
@@ -2639,7 +2668,7 @@ function setBCVideo(file, fromGlobal){
 })();
 async function buildBeatCut(){
   if(!BC_VIDEO){ $('bcStatus').innerHTML='❌ 请先拖入视频到上方区域'; $('bcDrop').classList.add('shake'); setTimeout(()=>$('bcDrop').classList.remove('shake'),600); return; }
-  if(BC_VIDEO.size > 2*1024*1024*1024){ $('bcStatus').textContent='❌ 视频过大（'+(BC_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
+  if(videoTooBig(BC_VIDEO, $('bcStatus'), '生成')) return;
   if(!MUSIC){ $('bcStatus').innerHTML='❌ 请先选择背景音乐 — <a href="javascript:void(0)" onclick="goStep(\'musicCard\')" style="color:#1d4ed8;text-decoration:underline;">🎵 去选音乐</a> 或 <a href="javascript:void(0)" onclick="goStep(\'libCard\')" style="color:#1d4ed8;text-decoration:underline;">🔎 免费曲库</a>';
     const h=$('bcMusicHint'); if(h){ h.style.background='#fef2f2'; h.style.borderColor='#fca5a5'; h.style.color='#991b1b'; setTimeout(()=>updateMusicHint(),1500); } return; }
   const go=$('bcQuickBtn')||$('bcGo'); go.disabled=true; $('bcResult').style.display='none';
@@ -2890,7 +2919,7 @@ async function fetchDeepSeekPlot(which){
 
 async function buildNarrate(){
   if(!NAR_VIDEO){ $('narStatus').textContent='❌ 请先拖入视频到上方区域'; $('narDrop').classList.add('shake'); setTimeout(()=>$('narDrop').classList.remove('shake'),600); return; }
-  if(NAR_VIDEO.size > 2*1024*1024*1024){ $('narStatus').textContent='❌ 视频过大（'+(NAR_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
+  if(videoTooBig(NAR_VIDEO, $('narStatus'), '生成')) return;
   const ok = await preflight('narrate'); if(!ok) return;
   const go=$('narQuickBtn')||$('narGo'); go.disabled=true; $('narResult').style.display='none';
   // 【用户稿子优先】填了稿子就完全不走 AI 写稿：稿子是成品，工具只负责按句找画面。
@@ -3075,7 +3104,7 @@ async function buildMovieNarrate(){
   const name = ($('movieName').value || '').trim();
   const plot = ($('moviePlot').value || '').trim();
   if(!name && !plot && !MOVIE_VIDEO){ $('movieStatus').textContent='❌ 请填片名 / 剧情，或上传视频'; return; }
-  if(MOVIE_VIDEO && MOVIE_VIDEO.size > 2*1024*1024*1024){ $('movieStatus').textContent='❌ 视频过大（'+(MOVIE_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再生成'; return; }
+  if(videoTooBig(MOVIE_VIDEO, $('movieStatus'), '生成')) return;
   const ok = await preflight('movie'); if(!ok) return;
   const go = $('movieGo'); go.disabled = true; $('movieResult').style.display = 'none';
   $('movieStatus').textContent = '提交任务…';
@@ -3249,8 +3278,10 @@ async function build(){
       body.items.push({ kind:it.kind, name:it.name, dur:it.dur, mlib: it.mlib });
       continue;
     }
-    if (it.file.size > 2*1024*1024*1024){
-      stopBar(); $('cancelBtn').style.display='none'; $('status').textContent='❌ 文件过大：'+it.name+'（>2GB）'; gErr('文件过大'); go.disabled=false; return;
+    if (it.file.size > MAX_VIDEO_BYTES){
+      stopBar(); $('cancelBtn').style.display='none';
+      $('status').textContent='❌ 文件过大：'+it.name+'（'+(it.file.size/1073741824).toFixed(1)+'GB，上限 8GB），请先压缩';
+      gErr('文件过大'); go.disabled=false; return;
     }
     // 素材 >8MB 一律走分片上传（batch5-5.2：图片/视频同规则，控住 JSON 请求体体积
     // 与服务端内存峰值）；小素材维持 base64（少 3 个请求）
@@ -3356,7 +3387,7 @@ async function _planMusicBodyAsync(){
 
 async function planBeatCut(){
   if(!BC_VIDEO){ $('bcStatus').innerHTML='❌ 请先拖入视频到上方区域'; return; }
-  if(BC_VIDEO.size > 2*1024*1024*1024){ $('bcStatus').textContent='❌ 视频过大（'+(BC_VIDEO.size/1073741824).toFixed(1)+'GB > 2GB），请先剪辑或压缩后再分析'; return; }
+  if(videoTooBig(BC_VIDEO, $('bcStatus'), '分析')) return;
   if(!MUSIC){ $('bcStatus').innerHTML='❌ 请先选择背景音乐'; return; }
   const params={w:1280,h:720,fps:30,sceneTh:0.30,maxCuts:30, strength: $('bcStrength').value};
   if($('bcKeepAudio')){ params.keepAudio = $('bcKeepAudio').checked; }
@@ -4110,7 +4141,7 @@ function toggleProSettings(){
 async function smartGenerate(){
   const name = ($('smartMovieName').value || '').trim();
   if(!SMART_VIDEO && !name){ $('smartStatus').textContent='❌ 请上传视频或填电影名'; return; }
-  if(SMART_VIDEO && SMART_VIDEO.size > 2*1024*1024*1024){ $('smartStatus').textContent='❌ 视频过大（>2GB），请先压缩'; return; }
+  if(videoTooBig(SMART_VIDEO, $('smartStatus'), '生成')) return;
 
   const go = $('smartGo'); go.disabled = true;
   $('smartResult').style.display = 'none';
