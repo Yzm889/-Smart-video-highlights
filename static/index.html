@@ -565,22 +565,9 @@
           <input id="narTheme" placeholder="例：春天樱花树下散步的治愈短片"></div>
       </div>
       <div style="margin-top:10px;">
-        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;">🎨 字幕样式</div>
-      <!-- 字幕交付方式：烧进画面（老行为、默认）还是只出干净成片 + 独立 .srt。
-           放在样式项之前是有意的：先定「要不要字幕在画面上」，再调字号颜色才有意义
-           （选了不烧录，下面那堆样式对它完全不起作用，得能一眼看出来）。 -->
-      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px;">
-        <div class="field" style="flex:1;min-width:260px;">
-          <label for="subBurn">字幕交付方式</label>
-          <select id="subBurn" onchange="updateSubStyleHint()">
-            <option value="1" selected>🔥 烧进画面（成片自带字幕，不可再改）</option>
-            <option value="0">📄 不烧录，另给一个 .srt 文件（可在剪映/PR 里自己调位置和样式）</option>
-          </select>
-        </div>
-        <div class="hint" id="subBurnHint" style="flex:1;min-width:220px;align-self:center;margin:0;">
-          选「不烧录」时：成片画面干净，字幕另存为 .srt 随成片一起下载。
-        </div>
-      </div>
+        <!-- 字幕交付方式已上移到「生成」按钮前（主人 2026-11-06 要求常驻可见）；
+             这里只留样式：先在按钮前定「烧不烧」，再回来调字号颜色才有意义。 -->
+        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;">🎨 字幕样式（选了「不烧录」时对成片不起作用）</div>
       <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px" id="subStyleRow">
         <div class="field"><label>字号</label>
           <input type="number" id="subFontSize" value="22" min="12" max="48" style="width:70px"></div>
@@ -643,34 +630,40 @@
           </select></div>
       </div>
       </div>
-      <!-- 🎚 音轨交付：默认单轨混音（老行为）。分层后成片有两条 AAC 轨，
-           A1 完整混音保证任何播放器都能听到解说，A2 纯解说供 PR 单独调。 -->
-      <div style="margin-top:10px;">
-        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;">🎚 音轨交付（给剪辑软件用）</div>
-        <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px;">
-          <div class="field" style="flex:1;min-width:250px;">
-            <label for="audioLayers">成片音轨</label>
-            <select id="audioLayers" onchange="updateAudioHint()">
-              <option value="0" selected>单轨混音（默认 · 原声+解说+配乐合一条）</option>
-              <option value="1">双轨分层（A1 完整混音 / A2 纯解说，PR 可分别调）</option>
-              <option value="2">成片不含解说（原声/配乐成片，解说只出 .wav 自己铺）</option>
-            </select>
-          </div>
-          <div class="field" style="flex:none;">
-            <label for="exportVoice">单独导出解说音轨</label>
-            <label style="font-size:12px;font-weight:400;display:flex;align-items:center;gap:6px;padding:8px 0;">
-              <input type="checkbox" id="exportVoice" style="width:auto;" onchange="updateAudioHint()"> 附赠一条 .wav（0 秒对齐成片）
-            </label>
-          </div>
-        </div>
-        <div class="hint" id="audioHint" style="margin:6px 0 0;"></div>
-      </div>
+      <!-- 🎚 音轨交付已上移到「生成」按钮前（主人 2026-11-06 要求常驻可见）。 -->
     </details>
     <div class="hint" style="margin-top:6px;">
       <label><input type="checkbox" id="narAutoCut" checked style="width:auto"> ✂ 自动剪辑画面（只保留有解说的镜头段，把没选中的片段<b>真的剪掉</b>）</label>
       <span style="color:#64748b;">　勾选后成片会比原片短；想保留完整原片只加字幕配音，就取消勾选。</span>
     </div>
     <div class="hint" style="margin-top:6px;"><label><input type="checkbox" id="narBgm" style="width:auto"> 加配乐（使用上方🎵选中的背景音乐，低音量铺底）</label></div>
+    <!-- 📦 交付方式：从高级设置上移（主人 2026-11-06 要求常驻可见）——
+         生成前最后确认「字幕烧不烧、解说进不进成片」，产出 = 成片/解说.wav/.srt 三件套。 -->
+    <div style="margin-top:12px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--input);">
+      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;">📦 交付方式（出片前最后确认：字幕烧不烧 / 解说进不进成片）</div>
+      <div class="row" style="margin-top:6px;flex-wrap:wrap;gap:10px;">
+        <div class="field" style="flex:1;min-width:260px;">
+          <label for="subBurn">字幕交付方式</label>
+          <select id="subBurn" onchange="updateSubStyleHint()">
+            <option value="1" selected>🔥 烧进画面（成片自带字幕，不可再改）</option>
+            <option value="0">📄 不烧录，另给一个 .srt 文件（可在剪映/PR 里自己调位置和样式）</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1;min-width:250px;">
+          <label for="audioLayers">成片音轨</label>
+          <select id="audioLayers" onchange="updateAudioHint()">
+            <option value="0" selected>单轨混音（默认 · 原声+解说+配乐合一条）</option>
+            <option value="1">双轨分层（A1 完整混音 / A2 纯解说，PR 可分别调）</option>
+            <option value="2">成片不含解说（原声/配乐成片，解说只出 .wav 自己铺）</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:4px;"><label style="font-size:12px;font-weight:400;display:inline-flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="exportVoice" style="width:auto;" onchange="updateAudioHint()"> 单独导出解说音轨（附赠一条 .wav，0 秒对齐成片）
+      </label></div>
+      <div class="hint" id="subBurnHint" style="margin:4px 0 0;">选「不烧录」时：成片画面干净，字幕另存为 .srt 随成片一起下载。</div>
+      <div class="hint" id="audioHint" style="margin:2px 0 0;"></div>
+    </div>
     <div class="actions" style="margin-top:12px;">
       <button class="btn" id="narGo" onclick="planNarrate()" title="Ctrl+Enter 快速生成">🎙 生成配音并调整</button>
       <button class="btn mini ghost" onclick="restoreParams('narrate')" title="回填上次成功生成时的全部参数">📋 上次参数</button>
