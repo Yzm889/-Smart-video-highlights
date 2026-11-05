@@ -1522,15 +1522,19 @@ class Handler(BaseHTTPRequestHandler):
                 # 真正会出事的是把盘写满（上传会话 + run_dir 副本 = 双份占用）。
                 # 要求剩余空间至少是本次文件的 2.5 倍：分片本身 + 合并成品 + 任务目录拷贝。
                 try:
-                    need = int(data.get('size') or 0) * 2.5
+                    _size = int(data.get('size') or 0)
+                    # 文件大小上限按「文件本身」判。此前误用 need(=大小×2.5 的磁盘
+                    # 占用预估) 对比 UPLOAD_TOTAL_MAX，实际上限被缩到 8/2.5=3.2GB，
+                    # 5GB 电影被误拒「文件超过 8GB 上限」（2026-11-06 主人实测）。
+                    if _size > _w.UPLOAD_TOTAL_MAX:
+                        raise RuntimeError('文件超过 %s 上限' % _w.UPLOAD_TOTAL_MAX_HINT)
+                    need = _size * 2.5
                     free = shutil.disk_usage(_w.WORKDIR).free
                     if need > 0 and free < need:
                         raise RuntimeError(
                             '磁盘空间不足：这个视频需要约 %.1fGB 可用空间（含上传暂存 + 任务副本），'
                             '当前只剩 %.1fGB。请先清理磁盘，或压缩视频后再试。'
                             % (need / 2**30, free / 2**30))
-                    if need > 0 and need > _w.UPLOAD_TOTAL_MAX * 0.98:
-                        raise RuntimeError('文件超过 %s 上限' % _w.UPLOAD_TOTAL_MAX_HINT)
                 except RuntimeError:
                     raise
                 except Exception:
