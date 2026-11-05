@@ -780,7 +780,6 @@
   <!-- 标签页导航 -->
   <div id="adjustTabs" style="display:none;margin:8px 0;gap:4px;border-bottom:2px solid var(--border);padding-bottom:0">
     <button class="adjust-tab active" data-tab="preview" onclick="switchAdjustTab('preview')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">🎬 预览剪辑</button>
-    <button class="adjust-tab" data-tab="segments" onclick="switchAdjustTab('segments')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">📝 片段列表</button>
     <button class="adjust-tab" data-tab="advanced" onclick="switchAdjustTab('advanced')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">🔧 高级工具</button>
     <div style="margin-left:auto;display:flex;gap:6px;align-items:center;padding-bottom:4px">
       <button id="btnUndoAdjust" class="btn-secondary" style="padding:5px 12px;font-size:12px;white-space:nowrap;opacity:0.4;cursor:not-allowed" onclick="undoAdjust()" title="撤销（Ctrl+Z）">↩️ 撤销</button>
@@ -788,8 +787,10 @@
     </div>
   </div>
 
-  <!-- Tab 1: 预览剪辑 -->
+  <!-- Tab 1: 预览剪辑（左：预览/时间轴 · 右：片段竖列同屏对照） -->
   <div id="tabPreview" class="adjust-tab-content">
+  <div style="display:flex;gap:12px;align-items:flex-start">
+    <div style="flex:1;min-width:0">
   <!-- 项目文件工具栏（紧凑版） -->
   <div id="projectToolbar" style="display:none;margin:8px 0;padding:8px 12px;border-radius:8px;background:var(--bg2);border:1px solid var(--border);gap:8px;align-items:center;flex-wrap:wrap">
     <input type="text" id="projectName" placeholder="项目名" style="flex:1;min-width:100px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px">
@@ -849,13 +850,14 @@
       </div>
     </div>
   </div>
+  </div>
+    <!-- 右侧片段竖列（PR 字幕面板式：与预览/时间轴同屏对照，主人 2026-11-06 需求） -->
+    <div id="adjustSide" style="flex:0 0 400px;max-width:400px;max-height:calc(100vh - 210px);overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:var(--bg2);padding:8px;position:sticky;top:64px">
+      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;position:sticky;top:0;background:var(--bg2);padding:2px 0;z-index:2">📝 片段列表 · 点时间轴定位到行，点行预览定位画面</div>
+      <div id="adjustList" style="margin:0"></div>
+    </div>
+  </div>
   </div><!-- /tabPreview -->
-
-  <!-- Tab 2: 片段列表 -->
-  <div id="tabSegments" class="adjust-tab-content" style="display:none">
-  <!-- 片段详细编辑列表 -->
-  <div id="adjustList" style="margin:12px 0"></div>
-  </div><!-- /tabSegments -->
 
   <!-- Tab 3: 高级工具 -->
   <div id="tabAdvanced" class="adjust-tab-content" style="display:none">
@@ -1367,7 +1369,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=98"></script>
+<script src="/static/app.js?v=100"></script>
 </body>
 </html>
 

@@ -97,3 +97,23 @@ def test_tts_recent_filters_before_sort():
     assert 'task_dirs' in body and "tts_state.json" in body.split('task_dirs.sort')[0], \
         '未先筛任务目录就排序取前 20（杂物会挤掉真任务）'
     assert body.index('tts_state.json') < body.index('sort('), '筛选必须发生在排序之前'
+
+
+def test_side_by_side_layout():
+    """片段列表必须并入预览页右侧竖列（PR 字幕面板式），「片段列表」独立标签页取消
+    （2026-11-06 主人需求：对照着时间轴改词，不要来回切换）。"""
+    html = _read(HTML_PATH)
+    assert 'id="adjustSide"' in html, '缺右侧竖列容器'
+    assert 'id="tabSegments"' not in html, '「片段列表」独立标签页应已移除'
+    # adjustList 必须位于 adjustSide 内、且都在 tabPreview 内
+    i_tp = html.index('id="tabPreview"')
+    i_side = html.index('id="adjustSide"')
+    i_list = html.index('id="adjustList"')
+    i_adv = html.index('id="tabAdvanced"')
+    assert i_tp < i_side < i_list < i_adv, 'adjustList 未落在 tabPreview 的 adjustSide 内'
+    js = _read(JS_PATH)
+    assert 'function _syncSideList' in js, '缺时间轴↔列表联动函数'
+    assert js.count('_syncSideList(') >= 3, '联动未接入（时间轴点击/片段预览）'
+    # 滚动容器必须量 #adjustList（60vh 的真滚动容器），不能量外层侧栏
+    i_sync = js.index('function _syncSideList')
+    assert "getElementById('adjustList')" in js[i_sync:i_sync + 700], '滚动容器量错对象'

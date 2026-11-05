@@ -4929,6 +4929,7 @@ function renderTimeline(){
         seekAdjVideo(it.video_start || 0);
         var hint = document.getElementById('adjustVideoHint');
         if(hint) hint.textContent = '📌 第'+(idx+1)+'段 · 源视频'+(it.video_start||0).toFixed(1)+'-'+(it.video_end||0).toFixed(1)+'s · 配音'+(it.duration||0).toFixed(1)+'s';
+        _syncSideList(idx);
       }
     });
   }
@@ -5547,6 +5548,23 @@ function ensureAdjVideoLoaded(){
 
 // 预览视频片段：同时播放视频段和配音
 let _adjPlayingIdx = -1;
+// 时间轴 ↔ 右侧片段竖列 双向联动：选中段滚动到可视区并高亮边框
+function _syncSideList(idx){
+  const row = document.getElementById('adjItem' + idx);
+  if(!row) return;
+  // 真正的滚动容器是 #adjustList（style.css 给了它 max-height:60vh + overflow），
+  // 不是外层侧栏 —— 曾量错容器导致滚动永远「不生效」。
+  // 用相对位移精确对位（scrollIntoView 平滑滚动会停在边缘上方 ~12px，裁掉行标题）
+  const scroller = document.getElementById('adjustList');
+  if(scroller){
+    const sr = scroller.getBoundingClientRect();
+    const rr = row.getBoundingClientRect();
+    if(rr.top < sr.top + 8 || rr.bottom > sr.bottom)
+      scroller.scrollTop += (rr.top - sr.top) - 12;
+  }
+  document.querySelectorAll('.adjust-item').forEach(function(r){ r.style.borderColor = 'var(--border)'; });
+  row.style.borderColor = '#fbbf24';
+}
 
 // ---- PR 式右键菜单（时间轴色块：解说音量/原声音量/跳过此段）----
 let _tlCtxFor = -1;   // 右键菜单当前作用的段索引
@@ -5652,6 +5670,14 @@ function previewVideoSegment(idx){
     if(oldH) oldH.style.display = 'none';
   }
   _adjPlayingIdx = idx;
+  if(typeof _syncSideList === 'function') _syncSideList(idx);
+  // 反向联动：列表里点预览 → 时间轴对应块高亮 + 标记选中段
+  try {
+    _selectedSeg = idx; _playSegIndex = idx;
+    var _tlBlocks = document.querySelectorAll('.tl-vseg');
+    for(var _k=0;_k<_tlBlocks.length;_k++){ _tlBlocks[_k].style.outline = ''; }
+    if(_tlBlocks[idx]) _tlBlocks[idx].style.outline = '2px solid #fbbf24';
+  } catch(_e){}
 
   if(frameDiv) frameDiv.style.display = 'none';
   vDiv.style.display = 'block';
@@ -5697,7 +5723,7 @@ function previewVideoSegment(idx){
       doPlay();
     };
     video.addEventListener('loadedmetadata', onMeta);
-    if(needLoad) video.load();
+    video.load();
   }
 
   // 点击视频暂停/继续
