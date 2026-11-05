@@ -21,10 +21,11 @@ def _read(path):
 
 def _dropdown_secs():
     html = _read(os.path.join(_ROOT, 'static', 'index.html'))
-    # 仅取 narTargetSec 这个 select 内部 option 的 value（数字）
+    # 仅取 narTargetSec 这个 select 内部 option 的 value（数字）；option 可能带
+    # selected 等属性（默认档），正则不能要求 value 后紧跟 '>'
     m = re.search(r'<select id="narTargetSec">(.*?)</select>', html, re.S)
     assert m, 'index.html 找不到 narTargetSec 下拉'
-    return set(re.findall(r'<option value="(\d+)">', m.group(1)))
+    return set(re.findall(r'<option value="(\d+)"[^>]*>', m.group(1)))
 
 
 def _preset_target_secs():

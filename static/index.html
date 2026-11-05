@@ -524,11 +524,11 @@
             <a class="btn mini ghost" style="text-align:center;" href="https://chat.deepseek.com/" target="_blank" rel="noopener">🌐 打开 DeepSeek</a>
             <label for="narTargetSec" style="font-size:12px; font-weight:600; color:#3d6a5c; margin-top:6px;">目标成片时长</label>
             <select id="narTargetSec">
-              <option value="0" selected>自动（按视频时长·覆盖全片）</option>
+              <option value="0">覆盖全片（不精剪）</option>
               <option value="60">约 1 分钟</option>
               <option value="180">约 3 分钟</option>
               <option value="300">约 5 分钟</option>
-              <option value="600">约 10 分钟</option>
+              <option value="600" selected>约 10 分钟（默认·剧情精剪）</option>
             </select>
             <div class="hint" id="narDsHint">点「🔎 一键查剧情」会用你配置的 DeepSeek/通义等云端 Key <b>直接拉取剧情摘要并回填左侧</b>（无需手动复制）。未配 Key 或失败时会提示，可用右侧「🌐 打开 DeepSeek」手动查询。</div>
           </div>
@@ -1369,7 +1369,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=89"></script>
+<script src="/static/app.js?v=90"></script>
 </body>
 </html>
 

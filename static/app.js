@@ -5578,7 +5578,10 @@ const BUILTIN_TEMPLATES = {
     desc: '经典电影解说风格，白色字幕黑描边，自动剪辑+配乐',
     tts: {engine:'edge', voice:'zh-CN-YunxiNeural', rate:'+5%'},
     maxSeg: 25, bgm: true, clipRatio: 0.75, autoCut: true,
-    narrStyle: 'movie', detailLevel: 'balanced', targetSec: 'auto',
+    // 2026-11-06 主人反馈「不要的片段一直在」：默认剧情精剪到 ~10 分钟——
+    // 按 LLM 标的剧情重要度保高光（key>advance>transition），低重要度段真剪掉；
+    // 想保留全片用「⭐ 极简旁白（保留全片）」模板，或把目标时长改成「覆盖全片」。
+    narrStyle: 'movie', detailLevel: 'balanced', targetSec: '600',
     subtitle: {fontSize: 22, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 2, alignment: 2, marginV: 50}
   },
   '⭐ 科普讲解': {
