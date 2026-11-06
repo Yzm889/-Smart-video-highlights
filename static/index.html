@@ -1216,14 +1216,18 @@
           <option value="日语女">日语女</option>
         </select></div>
         <div class="field" id="cosyVoiceCloneField" style="display:none; width:100%; flex-direction:column; gap:6px;">
-          <div style="font-size:12px; color:#c9a84c; font-weight:600;">🎙️ 声音克隆（上传3秒以上清晰人声，CosyVoice会克隆这个音色）</div>
+          <div style="font-size:12px; color:#c9a84c; font-weight:600;">🎙️ 声音克隆（选 CosyVoice 引擎后在此录一段，或上传音频文件）</div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <input id="cosyCloneName" placeholder="音色名称，如：我的声音" style="width:140px; padding:6px; border-radius:6px; border:1px solid #ccc;">
+            <button class="btn ghost" id="cosyRecBtn" onclick="toggleCosyRec()" style="padding:6px 12px;">🎙️ 现场录音（15秒）</button>
+            <span id="cosyRecStatus" style="font-size:12px; color:#c9a84c;"></span>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <input type="file" id="cosyCloneAudio" accept="audio/*" style="font-size:12px;">
-            <button class="btn ghost" onclick="addCosyVoice()" style="padding:6px 12px;">➕ 添加克隆音色</button>
+            <button class="btn ghost" onclick="addCosyVoice()" style="padding:6px 12px;">➕ 从音频文件添加</button>
             <span id="cosyCloneStatus" style="font-size:12px; color:#888;"></span>
           </div>
-          <div style="font-size:11px; color:#999;">提示：3-10秒干净人声效果最好，避免背景音乐和噪音。添加后会出现在上方音色列表中。</div>
+          <div style="font-size:11px; color:#999;">提示：点「🎙️ 现场录音」→ 对麦克风自然说话 15 秒 → 点「确定」自动处理 → 提示克隆完毕后，上方音色下拉即可选到它。也可以上传 3-10 秒音频文件。环境安静、不念稿效果最好。</div>
         </div>
         <div class="field"><label for="ttsLocalVoice">音色（edge-tts）</label>
         <select id="ttsLocalVoice" style="min-width:220px"></select></div>
@@ -1382,7 +1386,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=108"></script>
+<script src="/static/app.js?v=109"></script>
 </body>
 </html>
 

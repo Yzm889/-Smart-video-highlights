@@ -5860,13 +5860,10 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         # 下次 json.load 抛异常 → 进度文件报废、用户白跑。已有 _atomic_json_dump 帮手。
         _atomic_json_dump(os.path.join(run_dir, 'tts_state.json'), tts_state)
         if progress:
-            progress['done'] = True
             progress['pct'] = 100
             if not tts_results:
                 progress['error'] = '配音生成失败（所有段落TTS均未成功），请检查TTS引擎配置或网络后重试'
                 progress['phase'] = '❌ 配音生成失败'
-                progress['done'] = True
-                progress['pct'] = 100
             else:
                 progress['phase'] = '配音已生成（%d/%d段），请确认后合成' % (len(tts_results), len([n for n in narr if n.strip()]))
             progress['tts_list'] = [{'index': i, 'text': narr[i] if i < len(narr) else '',
@@ -5881,6 +5878,10 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             progress['diag'] = {'segments': len(segs), 'asr_lines': len(asr) if asr else 0,
                                 'voice_clips': len(tts_results), 'narration': narr,
                                 'awaiting_confirm': True}
+            # 【竞态根治 2026-11-06】done 必须最后置位：tts_list 构建含逐句 probe
+            # （76 句要 10+ 秒），先置 done 会让前端 400ms 轮询抓到「done 但列表空」
+            # 的中间态，把用户钉死在「解说完成」空页面、进不了确认页（真机实测）。
+            progress['done'] = True
             try:
                 cover_path = os.path.join(run_dir, 'cover.jpg')
                 ffmpeg_run(['-y', '-i', video_path, '-vframes', '1', '-q:v', '3', cover_path])

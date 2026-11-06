@@ -544,6 +544,92 @@ function loadCosyVoices(){
   }).catch(()=>{});
 }
 
+// 🎙️ 现场录制 15 秒克隆音色（2026-11-06 主人需求）：选 CosyVoice 引擎后在此录一段，
+// 15 秒自动停止 → 点「确定」自动入库+自动转写 → 提示克隆完毕，音色下拉立即可选
+var _cosyRec = {recorder: null, chunks: [], stream: null, timer: null, t0: 0, blob: null};
+
+function toggleCosyRec(){
+  const btn = document.getElementById('cosyRecBtn');
+  const st = document.getElementById('cosyRecStatus');
+  if(!btn || !st) return;
+  if(_cosyRec.recorder && _cosyRec.recorder.state === 'recording'){ stopCosyRec(); return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    st.textContent = '❌ 当前浏览器不支持录音（请用 Edge/Chrome）'; return;
+  }
+  st.textContent = '⏳ 正在请求麦克风…（浏览器若弹权限询问请点允许）';
+  navigator.mediaDevices.getUserMedia({audio: true}).then(function(stream){
+    _cosyRec.stream = stream;
+    _cosyRec.chunks = []; _cosyRec.blob = null;
+    try { _cosyRec.recorder = new MediaRecorder(stream); }
+    catch(e){ st.textContent = '❌ 录音初始化失败：' + e.message; return; }
+    _cosyRec.recorder.ondataavailable = function(ev){ if(ev.data && ev.data.size) _cosyRec.chunks.push(ev.data); };
+    _cosyRec.recorder.onstop = function(){
+      try { (_cosyRec.stream||{getTracks:function(){return [];}}).getTracks().forEach(function(t){ t.stop(); }); } catch(e){}
+      _cosyRec.stream = null;
+      _cosyRec.blob = new Blob(_cosyRec.chunks, {type: (_cosyRec.chunks[0]||{}).type || 'audio/webm'});
+      const dur = Math.max(1, Math.round((Date.now() - _cosyRec.t0)/1000));
+      btn.textContent = '🎙️ 现场录音（15秒）';
+      if(_cosyRec.blob && _cosyRec.blob.size > 1000){
+        st.innerHTML = '✅ 已录好 ' + dur + ' 秒。'
+          + '<button class="btn ghost" id="cosyRecOk" style="padding:4px 10px;">✅ 确定，开始克隆</button> '
+          + '<button class="btn ghost" id="cosyRecDiscard" style="padding:4px 10px;">✖ 重录</button>';
+        const ok = document.getElementById('cosyRecOk');
+        if(ok) ok.onclick = confirmCosyRec;
+        const dis = document.getElementById('cosyRecDiscard');
+        if(dis) dis.onclick = function(){ _cosyRec.blob = null; st.textContent = '已丢弃，可重新录音'; };
+      } else {
+        st.textContent = '❌ 没录到声音（检查麦克风设备/权限），请重试';
+      }
+    };
+    _cosyRec.recorder.start();
+    _cosyRec.t0 = Date.now();
+    btn.textContent = '⏹ 停止录音';
+    st.textContent = '🔴 录音中… 0/15 秒（对着麦克风自然说话即可，别念稿）';
+    _cosyRec.timer = setInterval(function(){
+      const el = Math.round((Date.now() - _cosyRec.t0)/1000);
+      if(el >= 15){ stopCosyRec(); }
+      else if(st) st.textContent = '🔴 录音中… ' + el + '/15 秒（自然说话即可，别念稿）';
+    }, 250);
+  }).catch(function(e){
+    st.textContent = '❌ 麦克风不可用：' + (e.message || e.name || '权限被拒绝');
+  });
+}
+
+function stopCosyRec(){
+  if(_cosyRec.timer){ clearInterval(_cosyRec.timer); _cosyRec.timer = null; }
+  try { if(_cosyRec.recorder && _cosyRec.recorder.state === 'recording') _cosyRec.recorder.stop(); } catch(e){}
+}
+
+function confirmCosyRec(){
+  const st = document.getElementById('cosyRecStatus');
+  if(!_cosyRec.blob){ if(st) st.textContent = '请先录音'; return; }
+  // 名字：默认「我的音色」，与已有音色重名时自动加后缀
+  let name = ($('cosyCloneName') && $('cosyCloneName').value.trim()) || '我的音色';
+  const sel = $('ttsCosyVoice');
+  const exist = sel ? Array.from(sel.options).map(function(o){ return o.value; }) : [];
+  const base = name; let n = 2;
+  while(exist.indexOf(name) >= 0){ name = base + '_' + n; n++; }
+  if(st) st.textContent = '⏳ 正在入库并自动转写文字稿（约半分钟）…';
+  const reader = new FileReader();
+  reader.onload = function(e){
+    fetch('/api/tts/cosyvoice/add_voice', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name: name, audio: e.target.result})
+    }).then(r=>r.json()).then(res=>{
+      if(res.ok){
+        if(st) st.innerHTML = '✅ <b>克隆完毕！</b>音色「' + escapeHtml(name) + '」已入库——下次配音在上方音色下拉选它即可。';
+        loadCosyVoices();
+        if(sel) sel.value = name;
+        saveTtsLocal();
+        toast('✅ 克隆完毕！音色「'+name+'」已可选用', 'success');
+      } else {
+        if(st) st.textContent = '❌ ' + (res.error || '入库失败');
+      }
+    }).catch(function(err){ if(st) st.textContent = '❌ ' + err.message; });
+  };
+  reader.readAsDataURL(_cosyRec.blob);
+}
+
 // 上传参考音频添加克隆音色
 function addCosyVoice(){
   const name = $('cosyCloneName') ? $('cosyCloneName').value.trim() : '';
@@ -3071,6 +3157,42 @@ function renderWarnings(holder, p){
 }
 
 
+// 【竞态自愈 2026-11-06】后端先置 done、后填 tts_list（逐句 probe 音频时长，
+// 76 句要 10+ 秒），400ms 轮询可能抓到「done 但 tts_list 未填」的中间态——
+// 曾把用户钉死在「解说完成」空页面、无法进确认页（真机实测）。
+// done 且无 file 且有 run_dir → 延迟重拉最多 4 次；拿到即走确认分支；
+// 拿不到给显眼的自救按钮（从 tts_state 恢复，不丢已生成的配音）。
+function _pollDoneHeal(runid, renderCb, statusEl, doneTitleEl){
+  let _retry = 0;
+  const _rePull = function(){
+    fetch('/api/progress?run=' + encodeURIComponent(runid)).then(r=>r.json()).then(function(p2){
+      if(p2 && p2.done && p2.tts_list && p2.tts_list.length){ renderCb(p2); return; }
+      if(++_retry < 4){ setTimeout(_rePull, 1500); return; }
+      if(statusEl){
+        statusEl.innerHTML = '🎙️ 配音已生成完毕，但页面快照缺段数据。<br>'
+          + '<button class="btn" id="_healGoAdjust">📋 去手动调整确认合成</button>';
+        const _b = document.getElementById('_healGoAdjust');
+        if(_b) _b.onclick = function(){ restoreAdjustFromRun(p2 && p2.run_dir || runid); };
+      }
+      if(doneTitleEl) doneTitleEl.textContent = '🎙️ 配音完成，待确认';
+    }).catch(function(){
+      if(++_retry < 4){ setTimeout(_rePull, 1500); }
+      else if(statusEl){ statusEl.textContent = '⚠️ 拉取配音状态失败，请点「🔄 恢复上次进度」继续'; }
+    });
+  };
+  setTimeout(_rePull, 1500);
+}
+
+function restoreAdjustFromRun(runDir){
+  // 从 run 目录的 tts_state 恢复到手动调整页（与「🔄 恢复上次进度」同源）
+  fetch('/api/tts_state?run_dir=' + encodeURIComponent(runDir || '')).then(r=>r.json()).then(function(st){
+    if(!st || !st.ok || !(st.tts_list||[]).length){ toast('恢复失败：' + ((st && st.error) || '没有段数据'), 'error'); return; }
+    renderAdjustPanel(st.tts_list, runDir, 'movie', [], st.video_path || '');
+    if(typeof showStep === 'function') showStep('adjust');
+    toast('已恢复 ' + (st.tts_list||[]).length + ' 段配音，请确认后点「合成视频」', 'success');
+  }).catch(function(e){ toast('恢复失败：' + e.message, 'error'); });
+}
+
 function pollNarrate(runid){
   return new Promise(resolve=>{
     let _errs = 0;
@@ -3097,6 +3219,20 @@ function pollNarrate(runid){
             if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
+          }
+          // 【竞态自愈】done 但 tts_list 空（后端逐句 probe 的窗口期被快照命中）：
+          // 重拉拿到的可能性极高；拿不到给自救按钮。p.file 存在才是真出片。
+          if(p.run_dir && !p.file){
+            _pollDoneHeal(runid, function(p2){
+              $('narStatus').textContent = '🎙️ 配音已生成（'+p2.tts_list.length+'段）→ 请到「⑥ 手动调整」试听确认后点「合成视频」出片';
+              const nd = $('narDiag');
+              if(nd) nd.innerHTML = '🎙️ <b>配音已生成（'+p2.tts_list.length+'段）</b>，视频尚未合成。<br>下一步：在「⑥ 手动调整」逐段试听/修改后，点击「<b>合成视频</b>」按钮产出成片。'; renderCutPlan($('narCutPlan'), p2); renderWarnings($('narWarn'), p2);
+              const nt = $('narDoneTitle'); if(nt) nt.textContent = '🎙️ 配音完成，待合成';
+              renderAdjustPanel(p2.tts_list, p2.run_dir || '', 'nar', p2.script || [], p2.video_file);
+              if(typeof showStep === 'function') showStep('adjust');
+              gDone(); resolve();
+            }, $('narStatus'), $('narDoneTitle'));
+            return;
           }
           $('narStatus').textContent='✅ 完成'; gDone();
           const nDone = $('narDoneTitle'); if(nDone) nDone.textContent='✅ 解说完成';
@@ -3195,6 +3331,19 @@ function pollMovie(runid){
             if(typeof showStep === 'function') showStep('adjust');
             gDone();
             resolve(); return;
+          }
+          // 【竞态自愈】同 pollNarrate：done 但 tts_list 空的中间态快照不再静默丢弃
+          if(p.run_dir && !p.file){
+            _pollDoneHeal(runid, function(p2){
+              $('movieStatus').textContent = '🎙️ 配音已生成（'+p2.tts_list.length+'段）→ 请到「⑥ 手动调整」试听确认后点「合成视频」出片';
+              const mnd = $('movieDiag');
+              if(mnd) mnd.innerHTML = '🎙️ <b>配音已生成（'+p2.tts_list.length+'段）</b>，视频尚未合成。<br>下一步：在「⑥ 手动调整」逐段试听/修改后，点击「<b>合成视频</b>」按钮产出成片。'; renderCutPlan($('movieCutPlan'), p2); renderWarnings($('movieWarn'), p2);
+              const mt = $('movieDoneTitle'); if(mt) mt.textContent = '🎙️ 配音完成，待合成';
+              renderAdjustPanel(p2.tts_list, p2.run_dir || '', 'movie', p2.script || [], p2.video_file);
+              if(typeof showStep === 'function') showStep('adjust');
+              gDone(); resolve();
+            }, $('movieStatus'), $('movieDoneTitle'));
+            return;
           }
           $('movieStatus').textContent = '✅ 完成'; gDone();
           const mDone = $('movieDoneTitle'); if(mDone) mDone.textContent = '✅ 完成';
