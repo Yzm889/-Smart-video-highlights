@@ -23,12 +23,13 @@ _TOKEN = secrets.token_urlsafe(16)   # 每次启动重新生成：本地路径�
 
 
 def _selftest():
-    """构建冒烟：确认重依赖能导入、ffmpeg 可执行。"""
+    """构建冒烟：确认重依赖能导入、ffmpeg 可执行、桌面窗口组件可用。"""
     import faster_whisper  # noqa: F401
     import ctranslate2  # noqa: F401
     import sherpa_onnx  # noqa: F401
     import soundfile  # noqa: F401
     import numpy  # noqa: F401
+    import webview  # noqa: F401  桌面窗口组件（缺了会静默回退网页版）
     import imageio_ffmpeg
     exe = imageio_ffmpeg.get_ffmpeg_exe()
     assert os.path.exists(exe), 'ffmpeg 缺失: ' + exe
@@ -136,7 +137,7 @@ def _launch_app_window(url):
     return 'browser'
 
 
-def _run_desktop_window(port):
+def _run_desktop_window(url):
     """原生桌面窗口（pywebview，Windows 用 Edge WebView2 渲染）。
     关闭窗口 = 退出程序。返回 True=正常走完；False=环境不支持，调用方回退。"""
     try:
@@ -144,7 +145,8 @@ def _run_desktop_window(port):
     except Exception as e:
         print('pywebview 不可用（%s），回退浏览器。' % e)
         return False
-    url = 'http://127.0.0.1:%d/' % port
+    # 【曾犯的错】这里曾写死网页版根地址 '/'——EXE 打开的是网页版而非桌面 UI
+    # （主人实测抓到）。必须加载调用方传入的桌面 UI 地址。
     webview.create_window('一帧成片', url, width=1440, height=900, min_size=(1100, 700))
     webview.start()   # 阻塞直到窗口关闭
     return True
@@ -162,7 +164,7 @@ def main():
     t.start()
     ready = _wait_ready(port)
     print('一帧成片已启动: %s (%s, 就绪=%s)' % (url, '8765' if port == 8765 else '端口%d' % port, ready))
-    if _run_desktop_window(port):
+    if _run_desktop_window(url):
         return
     # 兜底路径（浏览器打开）没有 js_api：令牌不生效，本地路径形态被拒（安全设计）
     # 回退：Edge --app 独立窗口 → 再不行默认浏览器
