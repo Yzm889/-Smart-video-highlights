@@ -4772,6 +4772,60 @@ let _tlZoom = 1;  // 时间轴缩放级别
 let _playSegIndex = -1;  // 当前播放到第几段（按片段顺序连续播放）
 let _lastJumpAt = 0;  // 上次跳转时间戳（跳转后300ms内不检测段结束）
 
+// ---- 配音波形（2026-11-06 计划#3）：每段解说音频的峰值画进时间轴配音轨 ----
+var _waveCache = {};   // audio 文件名 -> peaks 数组（null=已失败别再试）
+
+function _drawSegWave(idx, audioName){
+  var host = document.getElementById('tlaw'+idx);
+  if(!host) return;
+  var peaks = _waveCache[audioName];
+  if(!peaks || !peaks.length) return;
+  var w = Math.max(8, host.clientWidth || 160), h = 30;
+  var cv = host.querySelector('canvas');
+  if(!cv){
+    cv = document.createElement('canvas');
+    cv.style.cssText = 'position:absolute;left:0;bottom:0;width:100%;height:30px;pointer-events:none;opacity:.65;z-index:0';
+    host.appendChild(cv);
+  }
+  cv.width = w; cv.height = h;
+  var ctx = cv.getContext && cv.getContext('2d');
+  if(!ctx) return;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(196,181,253,0.95)';
+  // 像素太窄时按可用像素抽稀（max-pool），细块也能看出起伏
+  var n = peaks.length;
+  var bars = Math.max(3, Math.min(n, Math.floor(w / 2)));
+  var bw = w / bars;
+  for(var i = 0; i < bars; i++){
+    var a = Math.floor(i * n / bars), b = Math.max(a + 1, Math.floor((i + 1) * n / bars));
+    var v = 0.03;
+    for(var j = a; j < b; j++){
+      var pv = parseFloat(peaks[j]) || 0;
+      if(pv > v) v = pv;
+    }
+    if(v > 1) v = 1;
+    var bh = Math.max(1, v * h);
+    ctx.fillRect(i * bw, h - bh, Math.max(1, bw - 0.5), bh);
+  }
+}
+
+function _loadSegWaves(){
+  if(!_adjustState.items || !_adjustState.runDir) return;
+  var rd = _adjustState.runDir;
+  _adjustState.items.forEach(function(it, idx){
+    var key = it && it.audio;
+    if(!key) return;
+    if(_waveCache[key] !== undefined){ _drawSegWave(idx, key); return; }
+    fetch('/api/audio_peaks?run_dir=' + encodeURIComponent(rd) + '&name=' + encodeURIComponent(key) + '&points=180')
+      .then(function(r){ return r.json(); })
+      .then(function(res){
+        _waveCache[key] = (res && res.ok && res.peaks && res.peaks.length) ? res.peaks : null;
+        if(_waveCache[key]) _drawSegWave(idx, key);
+      })
+      .catch(function(){ if(_waveCache[key] === undefined) _waveCache[key] = null; });
+  });
+}
+
 function renderTimeline(){
   const items = _adjustState.items;
   if(!items || items.length === 0) return;
@@ -4855,8 +4909,8 @@ function renderTimeline(){
     else if(vdur > dur + 1) matchColor = 'rgba(245,158,11,0.6)';
     const offsetLabel = offset !== 0 ? (offset > 0 ? ' +'+offset.toFixed(1)+'s' : ' '+offset.toFixed(1)+'s') : '';
     const nvLabel = (it.narr_volume !== undefined && it.narr_volume !== null && it.narr_volume !== 100) ? ' · 🔊'+it.narr_volume+'%' : '';
-    aHtml += '<div class="tl-aseg tl-audio-drag" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:36px;background:rgba(139,92,246,0.15);border-radius:3px;cursor:grab;border:1px dashed '+matchColor+';transition:none">';
-    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:36px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px">🔊 '+dur.toFixed(1)+'s'+offsetLabel+nvLabel+'</span>';
+    aHtml += '<div id="tlaw'+idx+'" class="tl-aseg tl-audio-drag" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:36px;background:rgba(139,92,246,0.15);border-radius:3px;cursor:grab;border:1px dashed '+matchColor+';transition:none">';
+    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:36px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px;z-index:1;text-shadow:0 0 3px rgba(0,0,0,.8)">🔊 '+dur.toFixed(1)+'s'+offsetLabel+nvLabel+'</span>';
     aHtml += '</div>';
     cumVideoForAudio += vdur;
   });
@@ -4875,6 +4929,8 @@ function renderTimeline(){
   for(var ai=0;ai<aSegs.length;ai++){
     aSegs[ai].addEventListener('mousedown', tlStartAudioDrag);
   }
+  // 配音波形：拉每段音频的峰值并画进音轨块（缓存命中重绘、失败静默）
+  try { _loadSegWaves(); } catch(e) {}
 
   // 点击时间轴空白处定位播放头
   if(ruler && !ruler._clickBound){
@@ -6300,7 +6356,7 @@ async function regenSingleTts(idx, btnEl){
     if(result.audio || result.duration) _pushUndo();
     _adjustState.items[idx].text = text;
     _adjustState.items[idx].audio_text = text;   // 音频文字基线同步（合成前改词检测依据）
-    if(result.audio) _adjustState.items[idx].audio = result.audio;
+    if(result.audio){ _adjustState.items[idx].audio = result.audio; _waveCache = {}; }   // 波形缓存随新配音失效
     if(result.duration) _adjustState.items[idx].duration = result.duration;
     _updateUndoButtons();
     if(statusEl){ statusEl.style.color = '#4ade80'; statusEl.textContent = '✅ 已更新';

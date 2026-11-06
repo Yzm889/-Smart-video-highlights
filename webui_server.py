@@ -2890,6 +2890,84 @@ def _ensure_preview_proxy(run_dir, name=None, wait=False):
     return res
 
 
+def _audio_peaks(path, points=180):
+    """音频峰值包络（0~1），供时间轴配音轨画波形。返回 (peaks|None, err)。
+
+    - ffmpeg 先降到 2000Hz 单声道 s16 写**临时文件**再读——ffmpeg_run 的 stdout
+      管道没有排水线程，长音频直接出 stdout 会写满管道缓冲挂死。
+    - 缓存 <音频所在目录>/_peaks/<文件名>.json，键含 mtime+points：重配/重生成自动失效。
+    """
+    import array as _array
+    import json as _json
+    try:
+        points = int(points or 180)
+    except Exception:
+        points = 180
+    points = max(8, min(1000, points))
+    if not os.path.isfile(path):
+        return None, '文件不存在'
+    cdir = os.path.join(os.path.dirname(os.path.abspath(path)), '_peaks')
+    cpath = os.path.join(cdir, os.path.basename(path) + '.json')
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        mt = 0.0
+    try:
+        with open(cpath, encoding='utf-8') as f:
+            c = _json.load(f)
+        if c.get('mtime') == mt and c.get('points') == points and c.get('peaks'):
+            return c['peaks'], ''
+    except Exception:
+        pass
+    os.makedirs(cdir, exist_ok=True)
+    tmp = os.path.join(cdir, os.path.basename(path) + '.raw')
+    rc, _o, e = ffmpeg_run(['-y', '-i', path, '-ac', '1', '-ar', '2000',
+                            '-f', 's16le', tmp], timeout=600)
+    if rc != 0 or not os.path.isfile(tmp):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return None, 'ffmpeg 失败: ' + e.decode('utf-8', 'ignore')[-160:]
+    CELL = 200                      # 0.1s @2000Hz
+    cells = []
+    try:
+        with open(tmp, 'rb') as f:
+            while True:
+                b = f.read(CELL * 2 * 128)
+                if not b:
+                    break
+                b = b[:len(b) // 2 * 2]
+                arr = _array.array('h')
+                arr.frombytes(b)   # Windows/x86 小端 = s16le，无需换序
+                for k in range(0, len(arr), CELL):
+                    v = 0
+                    for x in arr[k:k + CELL]:
+                        ax = -x if x < 0 else x
+                        if ax > v:
+                            v = ax
+                    cells.append(v / 32768.0)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    if not cells:
+        return None, '空音频'
+    n = len(cells)
+    peaks = []
+    for i in range(points):
+        a = i * n // points
+        b = max(a + 1, (i + 1) * n // points)
+        peaks.append(round(max(cells[a:b]), 4))
+    try:
+        with open(cpath, 'w', encoding='utf-8') as f:
+            _json.dump({'mtime': mt, 'points': points, 'peaks': peaks}, f)
+    except Exception:
+        pass
+    return peaks, ''
+
+
 def _save_user_subtitle(sub_obj, video_path):
     """把用户上传的字幕存成「与视频同名的字幕文件」，返回落盘路径或 None。
 
