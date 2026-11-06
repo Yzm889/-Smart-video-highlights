@@ -38,6 +38,13 @@ CosyVoice/
 _dl/
 # ---- 服务日志 ----
 srv_err.txt
+# ---- 音频防泄漏（主人声音/克隆音色绝不入库；models/ 已整目录排除，此为第二道保险）----
+*.wav
+*.m4a
+*.flac
+*.ogg
+# 与本项目无关的外来文件夹（勿提交）
+be6aa-main/
 srv_out.txt
 
 server_err.log
