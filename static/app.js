@@ -498,7 +498,7 @@ function ttsLocalHint(){
   if(cosyField) cosyField.style.display = (eng === 'cosyvoice') ? '' : 'none';
   const cloneField = $('cosyVoiceCloneField');
   if(cloneField) cloneField.style.display = (eng === 'cosyvoice') ? 'flex' : 'none';
-  if(eng === 'cosyvoice') loadCosyVoices();
+  loadCosyVoices();   // 无条件加载克隆音色列表（主人音色等自定义项随时可选，内联/面板共用一份）
   const hint = $('ttsLocalHint');
   if(!hint) return;
   const m = {
@@ -528,7 +528,7 @@ function saveTtsLocal(){
 
 // 加载CosyVoice所有音色（预设+自定义克隆）
 function loadCosyVoices(){
-  fetch('/api/tts/cosyvoice/voices').then(r=>r.json()).then(res=>{
+  fetch('/api/tts/cosyvoice/voices', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}).then(r=>r.json()).then(res=>{
     if(!res.ok || !res.voices) return;
     const sel = $('ttsCosyVoice');
     if(!sel) return;
@@ -541,7 +541,59 @@ function loadCosyVoices(){
     }
     sel.innerHTML = html;
     if(cur) sel.value = cur;
+    const sel2 = $('revoiceVoice');
+    if(sel2){
+      const cur2 = sel2.value;
+      sel2.innerHTML = html;
+      if(cur2) sel2.value = cur2;
+      syncRevoiceSelectors();
+    }
   }).catch(()=>{});
+}
+
+// 换音色重配音的内联选择 ↔ 配音设置面板：两处同源，改一处即持久化
+function syncRevoiceSelectors(){
+  const re = $('revoiceEngine'), rv = $('revoiceVoice');
+  const pe = $('ttsLocalEngine'), pv = $('ttsCosyVoice');
+  if(re && pe && !re.value) re.value = pe.value;
+  if(re && pe && document.getElementById('adjustCard') && document.getElementById('adjustCard').classList.contains('active')){
+    re.value = pe.value;          // 进调整页时跟面板当前值对齐
+  }
+  if(rv && pv && pv.value) rv.value = pv.value;
+  const wrap = rv ? rv.parentElement : null;
+  if(wrap) wrap.style.display = (re && re.value === 'cosyvoice') ? '' : 'none';
+}
+
+function onRevoiceEngineChange(){
+  // 当场选的引擎立即生效：写回配音设置面板 + 持久化（下次自动读取）
+  const re = $('revoiceEngine'), pe = $('ttsLocalEngine');
+  if(re && pe){ pe.value = re.value; }
+  syncRevoiceSelectors();
+  saveTtsLocal();
+  const rv = $('revoiceVoice');
+  if(re && re.value === 'cosyvoice' && rv){
+    const pv = $('ttsCosyVoice');
+    if(pv && rv.value){ pv.value = rv.value; saveTtsLocal(); }
+  }
+}
+
+function onRevoiceEngineChange(){
+  // 当场选的引擎立即生效：写回配音设置面板 + 持久化（下次自动读取）
+  const re = $('revoiceEngine'), pe = $('ttsLocalEngine');
+  if(re && pe){ pe.value = re.value; }
+  syncRevoiceSelectors();
+  saveTtsLocal();
+  const rv = $('revoiceVoice');
+  if(re && re.value === 'cosyvoice' && rv){
+    const pv = $('ttsCosyVoice');
+    if(pv && rv.value){ pv.value = rv.value; saveTtsLocal(); }
+  }
+}
+
+function onRevoiceVoiceChange(){
+  // 当场选的克隆音色立即生效：写回面板 + 持久化
+  const rv = $('revoiceVoice'), pv = $('ttsCosyVoice');
+  if(rv && pv && rv.value){ pv.value = rv.value; saveTtsLocal(); }
 }
 
 // 🎙️ 现场录制 15 秒克隆音色（2026-11-06 主人需求）：选 CosyVoice 引擎后在此录一段，
@@ -4736,6 +4788,11 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
   // 源片真实文件名（可能是 .mkv/.webm 等容器）：预览/时间轴按它拼 /media/ 地址
   if(videoFile) _adjustState.videoFile = videoFile;
   else if(_keepVideoFile) _adjustState.videoFile = _keepVideoFile;
+  // 换音色重配音的内联选择与配音设置面板对齐（进页同步）+ 音色列表填充
+  try { loadCosyVoices(); } catch(e){}
+  try { syncRevoiceSelectors(); } catch(e){}
+  // 换音色重配音的内联选择与配音设置面板对齐（进页同步）
+  try { syncRevoiceSelectors(); } catch(e){}
   // 预览代理：后台确保 720p 副本存在，就绪后预览切副本（合成仍用原片）
   try { _ensureProxy(runDir, _adjustState.videoFile); } catch(e){}
   // 每段音频的「文字基线」：改词检测用。渲染时的 text 即该段音频对应的文稿；
@@ -6845,8 +6902,8 @@ async function revoiceAll(mode){
     idxs.push(i);
   }
   if(!idxs.length){ toast('没有可重配的解说段', 'warning'); return; }
-  const eng = ($('ttsLocalEngine')||{}).value || 'auto';
-  const cv = ($('ttsCosyVoice')||{}).value || '';
+  const eng = ($('revoiceEngine')||{}).value || 'auto';
+  const cv = ($('revoiceVoice')&&$('revoiceVoice').value) ? $('revoiceVoice').value : (($('ttsCosyVoice')||{}).value || '');
   const engLabel = eng === 'cosyvoice' ? ('CosyVoice·' + cv) : (eng === 'auto' ? '自动（微软音优先）' : eng);
   const estMin = Math.max(1, Math.round(idxs.length * (eng === 'cosyvoice' ? 10 : 2) / 60));
   const msg = '将用当前配音设置（引擎：' + engLabel + '）重配 ' + idxs.length + ' 段解说。\n'
@@ -6855,6 +6912,22 @@ async function revoiceAll(mode){
                        : '完成后自动导出一条解说配音 wav（可试听/下载，视频不动，拿去剪辑软件自己对轨）。')
     + '\n继续？';
   if(!confirm(msg)) return;
+  // 当场选的引擎/音色先落盘：/api/tts_single 走服务端配置，不先存第一段就会用旧引擎
+  try{
+    const body = { tts_local: {
+      engine: eng,
+      voice: $('ttsLocalVoice') ? $('ttsLocalVoice').value : 'zh-CN-XiaoxiaoNeural',
+      rate: $('ttsLocalRate') ? $('ttsLocalRate').value.trim() : '+0%',
+      cosy_voice: cv || '中文女',
+      sherpa_model: $('ttsSherpaModel') ? $('ttsSherpaModel').value : ''
+    }};
+    const sr = await fetch('/api/ai/config', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body) });
+    if(!sr.ok) throw new Error('保存配音设置失败（HTTP ' + sr.status + '）');
+  }catch(e){
+    toast('❌ 音色设置未能保存：' + (e.message||e), 'error');
+    _revoiceBusy = false; return;
+  }
   _revoiceBusy = true;
   const status = document.getElementById('adjustStatus');
   let okN = 0, failN = 0;

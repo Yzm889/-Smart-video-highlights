@@ -899,7 +899,16 @@
     <button id="adjustConfirmBtn" class="btn-primary" style="flex:1;padding:12px;font-size:15px">✅ 确认调整，开始合成视频</button>
     <button id="adjustRegenAllBtn" class="btn-secondary" style="padding:12px 20px">🔄 全部重生成</button>
     <div style="flex-basis:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
-      <span style="font-size:12px;color:var(--muted)">🎙️ 换音色重配音（用配音设置里选的引擎/音色，已剪好的分段不动）：</span>
+      <span style="font-size:12px;color:var(--muted)">🎙️ 换音色重配音（已剪好的分段不动，当场选、当场配）：</span>
+      <select id="revoiceEngine" onchange="onRevoiceEngineChange()" style="padding:6px;border-radius:6px;border:1px solid #ccc;font-size:13px;max-width:240px">
+        <option value="auto">自动（edge-tts → 离线模型 → 系统）</option>
+        <option value="edge">🌐 edge-tts（情感+顿挫·免 Key）</option>
+        <option value="cosyvoice">🎭 CosyVoice（质量最高·声音克隆）</option>
+        <option value="chattts">🎙️ ChatTTS（很自然·本地GPU）</option>
+        <option value="sherpa">💾 离线模型（断网可用）</option>
+        <option value="sapi">🪟 系统 SAPI（兑底）</option>
+      </select>
+      <select id="revoiceVoice" onchange="onRevoiceVoiceChange()" style="padding:6px;border-radius:6px;border:1px solid #ccc;font-size:13px;max-width:220px"></select>
       <button class="btn-secondary" onclick="revoiceAll('burn')" style="padding:8px 14px;font-size:13px">🔁 重配音·刻入视频</button>
       <button class="btn-secondary" onclick="revoiceAll('wav')" style="padding:8px 14px;font-size:13px">🎧 重配音·只导出wav</button>
     </div>
@@ -1391,7 +1400,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=110"></script>
+<script src="/static/app.js?v=113"></script>
 </body>
 </html>
 

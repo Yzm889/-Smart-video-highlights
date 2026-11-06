@@ -1118,14 +1118,19 @@ class Handler(BaseHTTPRequestHandler):
                     cur['enabled'] = bool(inc['enabled'])
                 cfg['vlm'] = cur
             if isinstance(data.get('tts_local'), dict):
-                # 本地免费配音：engine(auto|edge|sherpa|sapi) + voice + rate
+                # 本地免费配音：engine(auto|edge|cosyvoice|chattts|sherpa|sapi) + voice + rate
+                # 【2026-11-07】白名单原本漏了 cosyvoice/chattts、也不存 cosy_voice——
+                # 界面上永远无法切换到克隆音色引擎（真机实测踩中），补齐。
                 inc = data['tts_local']
                 cur = dict(cfg.get('tts_local') or {})
                 eng = str(inc.get('engine') or '').strip().lower()
-                if eng in ('auto', 'edge', 'sherpa', 'sapi'):
+                if eng in ('auto', 'edge', 'sherpa', 'sapi', 'cosyvoice', 'chattts'):
                     cur['engine'] = eng
                 if inc.get('voice'):
                     cur['voice'] = str(inc['voice']).strip()
+                cvv = str(inc.get('cosy_voice') or '').strip()
+                if cvv:
+                    cur['cosy_voice'] = cvv
                 mk = str(inc.get('sherpa_model') or '').strip()
                 if mk in _w.SHERPA_TTS_MODELS:
                     cur['sherpa_model'] = mk
