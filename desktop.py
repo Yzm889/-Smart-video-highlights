@@ -92,6 +92,16 @@ class DesktopApi:
         path = res[0]
         return {'path': path, 'name': os.path.basename(path)}
 
+    def open_folder(self, rel):
+        """在资源管理器中打开并选中成片文件（rel 为 OUTDIR 相对路径）。"""
+        import subprocess
+        target = os.path.join(webui_server.OUTDIR, str(rel).replace('/', os.sep))
+        if os.path.exists(target):
+            subprocess.Popen(['explorer', '/select,', target])
+        else:
+            subprocess.Popen(['explorer', os.path.dirname(target) or webui_server.OUTDIR])
+        return {'ok': True}
+
     def pick_music(self):
         import webview
         res = webview.windows[0].create_file_dialog(
@@ -147,7 +157,7 @@ def main():
     S.set_desktop_token(_TOKEN)   # 本地路径直连的会话凭证（网页模式无此令牌）
 
     port = _pick_port()
-    url = 'http://127.0.0.1:%d/' % port
+    url = 'http://127.0.0.1:%d/static/desktop/index.html' % port
     t = threading.Thread(target=S.start_server, args=(port, False), daemon=True)
     t.start()
     ready = _wait_ready(port)

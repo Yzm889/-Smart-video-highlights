@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一帧成片</title>
+<link rel="stylesheet" href="desktop.css">
+</head>
+<body>
+<!-- 应用外壳：左导航 + 主工作区 -->
+<div class="app">
+  <aside class="rail">
+    <div class="rail-brand"><span class="logo">🎬</span><span class="brand-name">一帧成片</span></div>
+    <nav class="rail-steps">
+      <button class="rail-step active" data-view="media"><span class="rs-num">1</span><span class="rs-label">素材</span></button>
+      <button class="rail-step" data-view="story"><span class="rs-num">2</span><span class="rs-label">剧情</span></button>
+      <button class="rail-step" data-view="adjust" id="navAdjust"><span class="rs-num">3</span><span class="rs-label">调整</span></button>
+      <button class="rail-step" data-view="export"><span class="rs-num">4</span><span class="rs-label">导出</span></button>
+    </nav>
+    <div class="rail-foot">
+      <span class="ver" id="verTag">桌面版</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- ═══ 视图 1：素材 ═══ -->
+    <section class="view active" id="view-media">
+      <h1 class="view-title">选择视频</h1>
+      <p class="view-sub">从电脑里选一段电影 / 剧集 / 短片片段（原文件不会被移动或修改）</p>
+      <div class="card drop-card" id="pickCard" tabindex="0">
+        <div class="drop-icon">🎞️</div>
+        <div class="drop-main">
+          <div class="drop-title" id="pickTitle">点击选择视频文件</div>
+          <div class="drop-sub" id="pickMeta">支持 mp4 / mkv / avi / mov 等 · 原生对话框 · 选完免上传</div>
+        </div>
+      </div>
+      <div class="field" id="videoNameField" style="display:none">
+        <label>片名 / 主题（用于搜剧情、生成封面，可留空）</label>
+        <input type="text" id="movieName" placeholder="例如：惩罚者 第一季第一集">
+      </div>
+    </section>
+
+    <!-- ═══ 视图 2：剧情 ═══ -->
+    <section class="view" id="view-story">
+      <h1 class="view-title">写下剧情</h1>
+      <p class="view-sub">告诉 AI 这部片子讲了什么（开头 → 冲突 → 结局，100 字就够）——AI 按剧情挑画面、写解说</p>
+      <div class="field">
+        <label>剧情 / 完整解说稿（二选一）</label>
+        <textarea id="plotText" rows="10" placeholder="例如：深夜的港口，一艘货船悄悄离岸。谁也没有想到，船舱深处藏着一个足以掀翻整座城市的秘密……&#10;&#10;也可以直接粘贴你写好的完整解说稿——AI 一个字不改，只负责按稿找画面配音。"></textarea>
+      </div>
+      <div class="row-tight">
+        <label class="chk"><input type="checkbox" id="optScript"> 上面是写好的完整解说稿（AI 不改一字，只配画面）</label>
+      </div>
+      <div class="row-tight">
+        <label class="chk"><input type="checkbox" id="optBgm" checked> 加背景音乐（低音量铺底，解说时自动闪避）</label>
+      </div>
+      <div class="row-tight">
+        <label class="chk"><input type="checkbox" id="optCut" checked> 剧情精剪（保留高光片段，剪掉过渡填充——成片约 10 分钟）</label>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="btnGenerate" disabled>🎙 生成配音与画面方案</button>
+        <span class="hint-inline" id="genHint">选择视频并填写剧情后开始</span>
+      </div>
+    </section>
+
+    <!-- ═══ 视图 3：调整 ═══ -->
+    <section class="view" id="view-adjust">
+      <div class="adjust-grid">
+        <div class="adj-left">
+          <h1 class="view-title">调整</h1>
+          <div class="video-shell">
+            <video id="pvVideo" controls playsinline></video>
+            <div class="sub-overlay" id="subOverlay"></div>
+          </div>
+          <div class="track-toggles">
+            <button class="tgl on" id="tglNarr">🎙 解说轨：开</button>
+            <button class="tgl on" id="tglOrig">🎬 原声轨：开</button>
+            <span class="hint-inline" id="pvHint">播放时：解说清晰、原声自动压低</span>
+          </div>
+          <div class="progress-wrap" id="genProgress" style="display:none">
+            <div class="pbar"><i id="pfill"></i></div>
+            <div class="pmeta"><span id="pphase">准备中…</span><span id="ppct">0%</span></div>
+          </div>
+          <div class="timeline-card">
+            <div class="tl-head"><span>📊 时间轴</span><span class="hint-inline" id="tlHint">点色块定位 · 点击行对照</span></div>
+            <div class="tl-scroll"><div class="tl-inner" id="tlInner">
+              <div class="tl-ruler" id="tlRuler"></div>
+              <div class="tl-track" id="tlTrack"></div>
+            </div></div>
+          </div>
+        </div>
+        <aside class="adj-right">
+          <div class="cap-head">
+            <span>📝 字幕（点行跳转 · 直接改字 · ✕ 删除）</span>
+            <button class="mini-btn" id="btnAddCap" title="在播放指针处插入新字幕">➕</button>
+          </div>
+          <div class="cap-list" id="capList"></div>
+          <div class="cap-foot">
+            <button class="btn primary" id="btnCompose">🎬 确认配音，合成视频</button>
+            <div class="hint-inline" id="adjStatus">改过字的段落，合成时会自动重新配音</div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ═══ 视图 4：导出 ═══ -->
+    <section class="view" id="view-export">
+      <h1 class="view-title">导出</h1>
+      <div class="export-progress" id="exProgress">
+        <div class="pbar big"><i id="exFill"></i></div>
+        <div class="pmeta"><span id="exPhase">正在合成…</span><span id="exPct">0%</span></div>
+      </div>
+      <div class="export-done" id="exDone" style="display:none">
+        <div class="done-icon">✅</div>
+        <div class="done-title">成片已生成</div>
+        <video id="exPlayer" controls playsinline></video>
+        <div class="done-actions">
+          <button class="btn primary" id="btnOpenFolder">📂 打开所在文件夹</button>
+          <span class="hint-inline" id="exPath"></span>
+        </div>
+      </div>
+      <div class="export-err" id="exErr" style="display:none"></div>
+    </section>
+  </main>
+</div>
+<script src="desktop.js"></script>
+</body>
+</html>

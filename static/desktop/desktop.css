@@ -1,0 +1,141 @@
+/* 一帧成片 · 桌面版 UI（深色 · 现代 · 紧凑） */
+:root{
+  --bg:#0f1117; --bg2:#161a23; --card:#1b2029; --card2:#202634;
+  --line:#2a3040; --line2:#343c4f;
+  --txt:#e8ebf2; --muted:#8b93a7; --dim:#5c6478;
+  --acc:#6c8cff; --acc2:#8b5cf6; --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+  --r:10px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",sans-serif;
+  background:var(--bg);color:var(--txt);font-size:14px;overflow:hidden;user-select:none}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,textarea{font-family:inherit;color:var(--txt)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ── 外壳 ── */
+.app{display:flex;height:100vh}
+.rail{width:172px;flex:none;background:var(--bg2);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:14px 10px}
+.rail-brand{display:flex;align-items:center;gap:8px;padding:4px 8px 18px}
+.logo{font-size:20px}
+.brand-name{font-weight:700;font-size:15px;letter-spacing:.02em}
+.rail-steps{display:flex;flex-direction:column;gap:4px}
+.rail-step{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
+  color:var(--muted);font-size:13.5px;text-align:left;transition:background .15s,color .15s}
+.rail-step:hover{background:var(--card);color:var(--txt)}
+.rail-step.active{background:linear-gradient(135deg,rgba(108,140,255,.18),rgba(139,92,246,.12));
+  color:var(--txt);font-weight:600}
+.rs-num{width:22px;height:22px;flex:none;border-radius:6px;background:var(--line);
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.rail-step.active .rs-num{background:var(--acc);color:#fff}
+.rail-step.done .rs-num{background:var(--ok);color:#06281c}
+.rail-foot{margin-top:auto;padding:8px}
+.ver{font-size:11px;color:var(--dim)}
+
+.main{flex:1;min-width:0;overflow-y:auto;padding:28px 34px}
+.view{display:none;max-width:980px}
+.view.active{display:block;animation:fadein .18s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.view-title{font-size:22px;font-weight:700;margin-bottom:6px}
+.view-sub{color:var(--muted);margin-bottom:20px;font-size:13.5px}
+
+/* ── 通用 ── */
+.card,.field,.drop-card,.timeline-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+.field{padding:14px;margin-bottom:14px}
+.field label,.cap-head span{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
+textarea,input[type=text]{width:100%;background:var(--bg);border:1px solid var(--line2);
+  border-radius:8px;padding:10px 12px;font-size:14px;line-height:1.6;resize:vertical;user-select:text}
+textarea:focus,input[type=text]:focus{outline:none;border-color:var(--acc)}
+.btn{padding:11px 26px;border-radius:9px;font-size:14.5px;font-weight:600;transition:filter .15s,transform .05s}
+.btn.primary{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff}
+.btn.primary:hover:not(:disabled){filter:brightness(1.12)}
+.btn.primary:active{transform:translateY(1px)}
+.btn.primary:disabled{opacity:.35;cursor:not-allowed}
+.mini-btn{padding:3px 9px;border-radius:6px;border:1px solid var(--line2);font-size:13px;color:var(--muted)}
+.mini-btn:hover{color:var(--txt);border-color:var(--acc)}
+.actions{display:flex;align-items:center;gap:14px;margin-top:18px}
+.hint-inline{color:var(--muted);font-size:12.5px}
+.row-tight{margin:8px 0}
+.chk{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--txt);cursor:pointer}
+.chk input{accent-color:var(--acc);width:15px;height:15px}
+
+/* ── 素材页 ── */
+.drop-card{display:flex;align-items:center;gap:18px;padding:34px 28px;margin:18px 0 16px;
+  cursor:pointer;transition:border-color .15s,background .15s;outline:none}
+.drop-card:hover,.drop-card:focus{border-color:var(--acc);background:var(--card2)}
+.drop-icon{font-size:44px}
+.drop-title{font-size:16.5px;font-weight:600;margin-bottom:4px}
+.drop-sub{color:var(--muted);font-size:12.5px}
+
+/* ── 调整页 ── */
+.adjust-grid{display:flex;gap:20px;align-items:flex-start}
+.adj-left{flex:1;min-width:0}
+.adj-right{flex:0 0 380px;max-height:calc(100vh - 120px);display:flex;flex-direction:column;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;position:sticky;top:20px}
+.video-shell{position:relative;border-radius:var(--r);overflow:hidden;background:#000;margin-bottom:10px}
+.video-shell video{width:100%;max-height:420px;display:block;background:#000}
+.sub-overlay{position:absolute;left:0;right:0;bottom:6%;text-align:center;pointer-events:none;
+  font-size:19px;font-weight:600;color:#fff;line-height:1.4;padding:0 4%;display:none;
+  text-shadow:0 0 4px #000,0 0 2px #000,1px 1px 2px #000,-1px 1px 2px #000,1px -1px 2px #000,-1px -1px 2px #000}
+.track-toggles{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.tgl{padding:5px 12px;border-radius:7px;border:1px solid var(--line2);font-size:12.5px;color:var(--muted)}
+.tgl.on{color:var(--txt);border-color:var(--acc);background:rgba(108,140,255,.1)}
+.tgl:not(.on){text-decoration:line-through}
+.progress-wrap{margin-bottom:12px}
+.pbar{height:8px;background:var(--line);border-radius:5px;overflow:hidden}
+.pbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--acc),var(--acc2));
+  border-radius:5px;transition:width .4s}
+.pbar.big{height:12px}
+.pmeta{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted);margin-top:6px}
+.timeline-card{padding:12px}
+.tl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:12.5px;color:var(--muted)}
+.tl-scroll{overflow-x:auto;border-radius:6px;background:var(--bg);border:1px solid var(--line)}
+.tl-inner{position:relative;height:64px;min-width:100%}
+.tl-ruler{position:absolute;top:0;left:0;right:0;height:20px;border-bottom:1px solid var(--line);
+  font-size:9.5px;color:var(--dim);font-family:Consolas,monospace}
+.tl-ruler span{position:absolute;top:2px;border-left:1px solid var(--line2);padding-left:3px;height:100%}
+.tl-track{position:absolute;top:22px;left:0;right:0;bottom:0}
+.tl-block{position:absolute;top:4px;height:34px;border-radius:5px;cursor:pointer;
+  border:1px solid rgba(255,255,255,.18);overflow:hidden;transition:filter .1s}
+.tl-block:hover{filter:brightness(1.25)}
+.tl-block.sel{outline:2px solid var(--warn)}
+.tl-block span{position:absolute;left:5px;top:0;line-height:32px;font-size:10.5px;color:#fff;
+  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:5px}
+.tl-block.skip{opacity:.3;text-decoration:line-through}
+
+/* ── 字幕面板 ── */
+.cap-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;
+  border-bottom:1px solid var(--line);font-size:12.5px;color:var(--muted);flex:none}
+.cap-list{flex:1;overflow-y:auto;padding:8px}
+.cap-row{padding:8px 10px;margin-bottom:6px;border-radius:8px;background:var(--bg);
+  border:1px solid var(--line);cursor:pointer;transition:border-color .12s}
+.cap-row:hover{border-color:var(--acc)}
+.cap-row.sel{border-color:var(--warn)}
+.cap-row.skip{opacity:.4}
+.cap-row .row-top{display:flex;gap:7px;align-items:flex-start}
+.cap-time{flex:none;font-size:10.5px;color:#a5b4fc;font-family:Consolas,monospace;
+  background:rgba(108,140,255,.12);padding:2px 6px;border-radius:4px;margin-top:2px}
+.cap-row textarea{flex:1;min-width:0;background:transparent;border:1px solid transparent;
+  padding:4px 6px;font-size:13px;line-height:1.5;border-radius:5px;resize:none;user-select:text}
+.cap-row textarea:hover{border-color:var(--line2)}
+.cap-row textarea:focus{background:var(--bg);border-color:var(--acc);outline:none}
+.cap-del{flex:none;padding:1px 7px;font-size:12px;color:var(--bad);border-radius:5px;opacity:0;transition:opacity .12s}
+.cap-row:hover .cap-del{opacity:.85}
+.cap-quote{flex:1;font-size:12.5px;color:var(--ok)}
+.cap-foot{padding:10px 12px;border-top:1px solid var(--line);flex:none}
+.cap-foot .btn{width:100%}
+.cap-foot .hint-inline{display:block;margin-top:8px;line-height:1.5}
+
+/* ── 导出页 ── */
+.export-progress{max-width:640px;margin-top:8px}
+.export-progress .pmeta{margin-top:10px}
+.export-done{max-width:720px}
+.done-icon{font-size:42px;margin:8px 0}
+.done-title{font-size:18px;font-weight:700;margin-bottom:14px}
+.export-done video{width:100%;max-height:420px;border-radius:var(--r);background:#000;margin-bottom:14px}
+.done-actions{display:flex;align-items:center;gap:14px}
+.export-err{color:var(--bad);font-size:14px;line-height:1.7;white-space:pre-wrap}

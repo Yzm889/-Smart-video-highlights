@@ -362,7 +362,13 @@ class Handler(BaseHTTPRequestHandler):
     def _get_static_files(self):
         path = _w.urlparse(self.path).path
         name = path[len('/static/'):].split('?')[0]
-        full = os.path.join(_w.STATIC_DIR, os.path.basename(name))
+        # 支持子目录（桌面版 UI 在 static/desktop/ 下），同时保留防穿越：
+        # 规范化后必须仍在 static 目录内，否则 404（拒绝 ../ 等目录逃逸）
+        name = name.replace(chr(92), '/').lstrip('/')
+        full = os.path.normpath(os.path.join(_w.STATIC_DIR, name))
+        if not full.startswith(os.path.normpath(_w.STATIC_DIR) + os.sep):
+            self._send(404, b'not found')
+            return
         if os.path.isfile(full):
             ext = os.path.splitext(full)[1].lower()
             self._send_file(full, MIME.get(ext, 'application/octet-stream'))
