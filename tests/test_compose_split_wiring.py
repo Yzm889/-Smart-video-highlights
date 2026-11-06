@@ -13,8 +13,6 @@ test_compose_skip_wiring.py 同款手法）。
 """
 import json
 
-import pytest
-
 
 class _CutCaptured(Exception):
     pass

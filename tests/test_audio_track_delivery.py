@@ -235,16 +235,20 @@ def test_narr_volume_plumbing_end_to_end():
     mn = _read(os.path.join(ROOT, 'movie_narrator.py'))
     js = _read(JS_PATH)
     # _tt_span 必须解析 5 元组（path, start, end, orig_vol, narr_vol）
+    # 2026-11-06 起还支持 7 元组（第 6/7 位 = 每段淡入/淡出秒数）
     i = vr.index('def _tt_span')
-    assert 'len(item) >= 5' in vr[i:i + 400], '_tt_span 未支持 5 元组'
+    assert 'len(item) >= 5' in vr[i:i + 800], '_tt_span 未支持 5 元组'
+    assert 'len(item) >= 7' in vr[i:i + 800], '_tt_span 未支持 7 元组（淡入淡出）'
     # 混音链 [t*] 必须有 volume 滤镜位
     assert "volume=%.3f" in vr, '混音链缺解说音量滤镜'
     # 解说 .wav 同样要吃到音量（否则时间轴调了、拖进 PR 对不上）
     j = vr.index('def build_voice_track')
     assert 'nv = item[4]' in vr[j:j + 1600], 'build_voice_track 未应用每段音量'
-    # compose 收集 narr_volume 并放进 tts_paths 第 5 位
+    # compose 收集 narr_volume 并放进 tts_paths 第 5 位；
+    # 2026-11-06 起第 6/7 位还带每段淡入淡出秒数
     assert "user_narr_volumes" in mn and "_narr_vol" in mn, 'compose 未收集/传递解说音量'
-    assert "(clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol)" in mn
+    assert "(clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol, _fade[0], _fade[1])" in mn, \
+        'tts_paths 未按 7 元组传递音量与淡入淡出'
     # 前端：payload 带上 narr_volume；右键菜单存在
     assert 'narr_volume:' in js, '合成 payload 未带上每段解说音量'
     assert "id=\"tlCtxMenu\"" in js or "'tlCtxMenu'" in js, '缺时间轴右键菜单'
