@@ -104,7 +104,7 @@
 <div class="layout">
   <div class="wrap">
     <!-- 新手引导（可整体折叠：点标题整体收起/展开，下方每步也可单独点开） -->
-    <div class="card guide active start-tab-content" id="guideCard" data-step="start" data-subtab="guide" style="display:none">
+    <div class="card guide active start-tab-content" id="guideCard" data-step="start" data-subtab="guide">
       <details class="guide-collapse">
         <summary>📖 新手引导 <span class="gc-toggle">点击标题可整体收起/展开，下方每步也可单独点开</span></summary>
         <div class="gc-body">
@@ -187,7 +187,7 @@
           <details class="step">
             <summary><b class="num">4</b> 直接生成</summary>
             <div class="step-body">
-              <p>在「🎬 短片解说 / 🌐 联网解说」→ 纯风景片建议填「视频主题/梗概」→ 点生成（路径自动选择：本地模型免费优先）。</p>
+              <p>点顶部「<b>2 写剧情·选视频</b>」→ 左栏选「🎬 解说出片」→ 写剧情（或贴稿子）、传视频 → 生成（路径自动选择：本地模型免费优先）。</p>
               <span class="ok">效果：本地 Whisper 识别台词 + 本地 qwen 离线改写解说 + 系统免费中文配音，<b>全程不花一分钱、不调任何云端</b>。</span>
             </div>
           </details>
@@ -239,75 +239,13 @@
 
     <!-- 开始页子标签 -->
     <div id="startSubTabs" style="display:flex;gap:4px;margin:8px 0;border-bottom:2px solid var(--border);padding-bottom:0">
-      <button class="start-subtab active" data-subtab="smart" onclick="switchStartTab('smart')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-weight:600">⚡ 一键生成</button>
-      <button class="start-subtab" data-subtab="instruct" onclick="switchStartTab('instruct')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">💬 指令成片</button>
-      <button class="start-subtab" data-subtab="guide" onclick="switchStartTab('guide')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:600">📖 新手引导</button>
+      <button class="start-subtab active" data-subtab="guide" onclick="switchStartTab('guide')" style="padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-weight:600">📖 新手引导</button>
     </div>
 
 <!-- 🤝 人机协同 · 两段式编辑台（新架构） -->
 
-    <!-- 一键智能模式 -->
-    <div class="card start-tab-content" id="smartCard" data-step="start" data-subtab="smart">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <h2 style="margin:0;">⚡ 一键智能生成</h2>
-        <span style="font-size:12px; color:var(--accent); background:rgba(201,168,76,0.12); padding:3px 10px; border-radius:12px; border:1px solid rgba(201,168,76,0.25);">推荐普通用户使用</span>
-      </div>
-      <div class="hint" style="margin-bottom:10px;">上传视频 + 填电影名，自动选模型、搜剧情、配解说、剪画面、烧字幕，一步出片。</div>
-      <div id="smartDrop" class="musdrop" onclick="document.getElementById('smartInput').click()" style="min-height:80px; display:flex; align-items:center; justify-content:center; font-size:15px; cursor:pointer;">
-        🎬 拖入视频文件，或点此选择
-      </div>
-      <input type="file" id="smartInput" accept="video/*" style="display:none" onchange="if(this.files[0])handleSmartVideo(this.files[0]);this.value='';">
-      <div class="hint" id="smartVideoInfo" style="margin-top:6px; display:none; align-items:center; justify-content:space-between;"></div>
-      <div class="row" style="margin-top:10px;">
-        <input type="text" id="smartMovieName" placeholder="电影/动漫名，如：赌圣（不填则自动识别视频内容）" style="flex:1; padding:10px 12px; border-radius:8px; font-size:14px;">
-      </div>
-      <div id="smartAutoConfig" style="margin-top:8px; padding:8px 12px; border-radius:8px; font-size:12px; display:none;">
-        <b>🤖 自动配置：</b><span id="smartConfigText">检测中…</span>
-      </div>
-      <div class="actions" style="margin-top:12px;">
-        <button class="btn" id="smartGo" onclick="smartGenerate()" style="font-size:16px; padding:12px 32px;">⚡ 一键生成解说视频</button>
-        <button class="btn danger" id="smartCancel" onclick="stopRun('smartStatus')" style="display:none;">⏹ 停止</button>
-        <span class="status" id="smartStatus"></span>
-      </div>
-      <div class="bar" id="smartBar"><i></i></div>
-      <div id="smartResult" style="display:none;">
-        <h3 style="margin-top:12px;">✅ 完成</h3>
-        <video id="smartPlayer" controls playsinline style="width:100%;"></video>
-        <div style="margin-top:8px;"><a class="btn ghost" id="smartDl" href="#" download="smart_narration.mp4">💾 保存视频</a></div>
-      </div>
-      <div style="margin-top:10px; text-align:center;">
-        <a href="javascript:void(0)" onclick="toggleProSettings()" style="font-size:13px; color:#1976d2; text-decoration:underline;">⚙️ 需要调参数？展开专业设置</a>
-      </div>
-      <div class="next-step-bar">
-        <button class="next-step-btn" onclick="nextFlowStep()">下一步：上传素材 →</button>
-      </div>
-    </div>
-
 <div id="proSettings">
 
-    <!-- Phase 4 · 指令解析层 -->
-    <div class="card start-tab-content" id="instructCard" data-step="start" data-subtab="instruct" style="display:none">
-      <h2>💬 指令成片（一句话自动路由）</h2>
-      <div class="hint">输入自然语言，自动路由到对应工作流（本地模型免费优先；配置了云端 key 时自动用云端增强）：</div>
-      <div class="row" style="margin-top:8px;">
-        <input type="text" id="instructInput" placeholder="例如：帮我解说《盗梦空间》配这首音乐 / 把这段视频剪个强卡点 / 用春景图合成一个竖屏短视频" style="flex:1; padding:8px 10px; border:1px solid #bcd9c1; border-radius:8px;">
-        <button class="btn" id="instructGo" onclick="runInstruct()">🚀 执行</button>
-        <button class="btn mini ghost" onclick="restoreParams('instruct')" title="回填上次执行的指令">📋 上次</button>
-        <button class="btn danger" id="instructCancel" style="display:none" onclick="cancelRun()">⏹ 取消</button>
-      </div>
-      <div class="hint" id="instructHint">支持：解说《片名》· 解说这段视频 · 强卡点/配乐 · 合成/成片（可带「竖屏/横屏」）。回车直接执行。</div>
-      <div class="bar" id="instructBar"><i></i></div>
-      <div class="hint" id="instructStatus"></div>
-      <div id="instructResult" style="display:none;">
-        <video id="instructPlayer" controls playsinline></video>
-        <span class="modebadge" id="instructMode"></span>
-        <div id="instructPartial" class="partial" style="display:none"></div>
-        <div style="margin-top:12px;"><a class="btn ghost" id="instructDl" href="#" download="instruct.mp4">💾 保存</a>
-        <button class="btn mini ghost" id="instructCoverBtn" style="display:none" onclick="makeCover(_coverCtx.instruct.file, 'coverBoxInstruct', '指令成片')">🖼 生成封面</button></div>
-        <div id="coverBoxInstruct" style="display:none"></div>
-        <div class="hint" id="instructDiag"></div>
-      </div>
-    </div>
 
     <!-- ======== 页面2 · 左栏工具卡 + 右侧功能面板 ========
          三个功能（图文成片/强卡点/解说出片）不再全部平铺堆叠，
@@ -1400,7 +1338,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=114"></script>
+<script src="/static/app.js?v=115"></script>
 </body>
 </html>
 
