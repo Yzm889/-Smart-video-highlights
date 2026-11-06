@@ -898,6 +898,11 @@
   <div id="adjustActions" style="display:none;margin-top:12px;gap:8px">
     <button id="adjustConfirmBtn" class="btn-primary" style="flex:1;padding:12px;font-size:15px">✅ 确认调整，开始合成视频</button>
     <button id="adjustRegenAllBtn" class="btn-secondary" style="padding:12px 20px">🔄 全部重生成</button>
+    <div style="flex-basis:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
+      <span style="font-size:12px;color:var(--muted)">🎙️ 换音色重配音（用配音设置里选的引擎/音色，已剪好的分段不动）：</span>
+      <button class="btn-secondary" onclick="revoiceAll('burn')" style="padding:8px 14px;font-size:13px">🔁 重配音·刻入视频</button>
+      <button class="btn-secondary" onclick="revoiceAll('wav')" style="padding:8px 14px;font-size:13px">🎧 重配音·只导出wav</button>
+    </div>
   </div>
 </div>
 
@@ -1386,7 +1391,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=109"></script>
+<script src="/static/app.js?v=110"></script>
 </body>
 </html>
 

@@ -6826,6 +6826,97 @@ async function regenAllTts(){
   }
 }
 
+// 🔄 换音色重配音（2026-11-07 主人需求）：配音作为独立可替换过程——
+// 用当前配音设置（引擎/音色）逐段重配已剪辑好的片段，分段/剪辑成果不动。
+// mode='burn'：重配完自动合成刻入视频；mode='wav'：重配完单独导出解说 wav
+//（可试听/下载，视频不动，用户拿去剪辑软件自己对轨）。
+var _revoiceBusy = false;
+async function revoiceAll(mode){
+  if(_revoiceBusy){ toast('正在换音色重配音中，请稍候', 'warning'); return; }
+  const items = _adjustState.items || [];
+  const idxs = [];
+  for(let i=0;i<items.length;i++){
+    const it = items[i];
+    if(!it || it.isBroll || it.quote) continue;
+    const skipCb = document.getElementById('adjSkip'+i);
+    if(skipCb && skipCb.checked) continue;
+    const domTxt = (document.getElementById('adjText'+i)||{}).value;
+    if(!((domTxt !== undefined && domTxt !== null && domTxt.trim()) || (it.text||'').trim())) continue;
+    idxs.push(i);
+  }
+  if(!idxs.length){ toast('没有可重配的解说段', 'warning'); return; }
+  const eng = ($('ttsLocalEngine')||{}).value || 'auto';
+  const cv = ($('ttsCosyVoice')||{}).value || '';
+  const engLabel = eng === 'cosyvoice' ? ('CosyVoice·' + cv) : (eng === 'auto' ? '自动（微软音优先）' : eng);
+  const estMin = Math.max(1, Math.round(idxs.length * (eng === 'cosyvoice' ? 10 : 2) / 60));
+  const msg = '将用当前配音设置（引擎：' + engLabel + '）重配 ' + idxs.length + ' 段解说。\n'
+    + (eng === 'cosyvoice' ? 'CosyVoice 每句约 5~13 秒，预计 ' + estMin + ' 分钟左右，期间请勿关闭页面。\n' : '')
+    + (mode === 'burn' ? '完成后自动开始合成视频（新声音刻入已剪辑好的片段）。'
+                       : '完成后自动导出一条解说配音 wav（可试听/下载，视频不动，拿去剪辑软件自己对轨）。')
+    + '\n继续？';
+  if(!confirm(msg)) return;
+  _revoiceBusy = true;
+  const status = document.getElementById('adjustStatus');
+  let okN = 0, failN = 0;
+  try{
+    for(let k=0;k<idxs.length;k++){
+      const i = idxs[k];
+      const it = items[i];
+      if(status) status.textContent = '🔄 换音色重配音：第 ' + (k+1) + '/' + idxs.length + ' 段（第' + (i+1) + '段 · 引擎：' + engLabel + '）…';
+      const domText = (document.getElementById('adjText'+i)||{}).value;
+      const text = (domText !== undefined && domText !== null && domText.trim()) ? domText.trim() : (it.text||'').trim();
+      if(!text){ failN++; continue; }
+      const serverIdx = (it.index !== undefined && it.index !== null) ? it.index : i;
+      try{
+        const r = await fetch('/api/tts_single', { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ text: text, run_dir: _adjustState.runDir, index: serverIdx }) });
+        const out = await r.json();
+        if(!out.ok) throw new Error(out.error || '失败');
+        const result = await pollTaskSimple(out.runid);
+        if(result.error) throw new Error(result.error);
+        it.text = text; it.audio_text = text;
+        if(result.audio) it.audio = result.audio;
+        if(result.duration) it.duration = result.duration;
+        okN++;
+      }catch(e){ failN++; console.warn('[换音色重配音] 第'+(i+1)+'段失败，保留原配音：', e.message); }
+      // 行内音频元素即时换新配音（逐段可试听）
+      if(it.audio){
+        const au = document.getElementById('adjAudio'+i);
+        if(au){ au.src = '/media/'+it.audio+'?t='+Date.now(); try{ au.load(); }catch(e){} }
+      }
+    }
+    _waveCache = {};   // 波形缓存随新配音失效
+    renderAdjustPanel(_adjustState.items, _adjustState.runDir, _adjustState.mode, []);
+    if(status) status.textContent = '🔄 换音色重配音完成：成功 ' + okN + ' 段' + (failN ? ('，失败 ' + failN + ' 段（保留原配音）') : '');
+    if(okN === 0){ toast('❌ 重配音全部失败——请检查配音设置里的引擎/音色/网络', 'error'); _revoiceBusy = false; return; }
+    if(mode === 'burn'){
+      toast('✅ 新配音就绪（'+okN+'段），开始刻入已剪辑好的视频…', 'success');
+      _revoiceBusy = false;
+      confirmAdjustAndCompose();
+      return;
+    }
+    // mode='wav'：单独导出解说配音 wav（视频不动）
+    if(status) status.textContent = '🎧 正在按时间轴导出解说配音 wav…';
+    const r2 = await fetch('/api/export_voice_track', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ run_dir: _adjustState.runDir, items: _adjustState.items.map(function(it){ return {
+        text: it.text||'', audio: it.audio||'', video_start: it.video_start||0, video_end: it.video_end||0,
+        narr_volume: it.narr_volume, fade_in: it.fade_in||0, fade_out: it.fade_out||0,
+        isBroll: !!it.isBroll, quote: !!it.quote }; }) }) });
+    const out2 = await r2.json();
+    if(!out2.ok) throw new Error(out2.error || '导出失败');
+    const url = '/media/' + out2.file + '?t=' + Date.now();
+    if(status) status.innerHTML = '🎧 解说配音 wav 已导出（' + (out2.dur||0).toFixed(1) + ' 秒）——视频未动，拿去剪辑软件自己对轨：<br>'
+      + '<audio controls src="'+url+'" style="width:100%;margin-top:6px"></audio>'
+      + '<a class="btn ghost" href="'+url+'" download="解说配音.wav" style="display:inline-block;margin-top:6px;padding:6px 14px">⬇ 下载解说配音.wav</a>';
+    toast('🎧 解说配音已导出（'+(out2.dur||0).toFixed(1)+'秒）', 'success');
+  }catch(e){
+    toast('❌ ' + (e.message||e), 'error');
+    const st = document.getElementById('adjustStatus');
+    if(st) st.textContent = '❌ ' + (e.message||e);
+  }
+  _revoiceBusy = false;
+}
+
 async function confirmAdjustAndCompose(){
   const btn = document.getElementById('adjustConfirmBtn');
   btn.disabled = true; btn.textContent = '合成中…';

@@ -75,7 +75,8 @@ from ffmpeg_utils import AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS, \
 from video_render import _NAR_CPS, _NAR_MIN_CHARS, _NAR_MAX_CHARS, _NAR_MAX_SPEED, _NAR_MIN_SPEED, \
     _target_chars, _fit_voice, _render_narrate, \
     _merge_spans, _cut_video_by_spans, \
-    _build_subtitle_style, _compose_narration_video  # noqa: F401
+    _build_subtitle_style, _compose_narration_video, \
+    build_voice_track  # noqa: F401
 # 兼容旧命名空间：拆分前下列符号定义在 webui 模块级，保持模块属性可见（长期建议调用方迁到归属模块）
 import cache_utils, ffmpeg_utils  # noqa: F401  (仅用于下方别名，保证 pyflakes 视为 used)
 ANALYSIS_CACHE_DIR = cache_utils.ANALYSIS_CACHE_DIR
@@ -3000,6 +3001,58 @@ def _split_audio_file(path, frac):
     d1 = probe_audio_len(p1) or t1
     d2 = probe_audio_len(p2) or max(0.1, d - t1)
     return p1, p2, round(d1, 3), round(d2, 3), ''
+
+
+def _export_voice_track(run_dir_name, items):
+    """把手动调整页当前的配音按**成片时间轴**铺成一条纯解说 wav（独立交付，视频不动）。
+
+    items 来自前端（改词重配后的最新 audio/text）。每段在成片轴上的起点 =
+    之前所有段画面时长之和（与手动调整页时间轴拼接逻辑一致）。
+    返回 (rel_file, dur, err)。"""
+    try:
+        rd = _safe_dir(OUTDIR, str(run_dir_name or ''))
+    except ValueError:
+        return '', 0.0, '非法 run_dir'
+    if not rd or not os.path.isdir(rd):
+        return '', 0.0, 'run_dir 不存在'
+    tts_paths, cum = [], 0.0
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        try:
+            vs = float(it.get('video_start') or 0)
+            ve = float(it.get('video_end') or 0)
+        except Exception:
+            vs, ve = 0.0, 0.0
+        span = max(0.0, ve - vs)
+        audio = str(it.get('audio') or '')
+        if it.get('isBroll') or it.get('quote') or not audio or span <= 0:
+            cum += span
+            continue
+        ap = os.path.join(rd, os.path.basename(audio))
+        if not os.path.isfile(ap):
+            cum += span
+            continue
+        try:
+            fi = max(0.0, min(5.0, float(it.get('fade_in') or 0.0)))
+            fo = max(0.0, min(5.0, float(it.get('fade_out') or 0.0)))
+        except Exception:
+            fi = fo = 0.0
+        nv = it.get('narr_volume')
+        try:
+            nv_v = None if nv is None else max(0.0, min(2.0, float(nv) / 100.0))
+        except Exception:
+            nv_v = None
+        od, oe = cum, cum + span
+        tts_paths.append((ap, od, oe, None, nv_v, fi, fo))
+        cum += span
+    if not tts_paths or cum <= 0:
+        return '', 0.0, '没有可导出的配音段'
+    out = build_voice_track(tts_paths, rd, cum, out_name='narration_voice_custom.wav')
+    if not out or not os.path.isfile(out):
+        return '', 0.0, '导出失败（ffmpeg）'
+    rel = os.path.relpath(out, OUTDIR).replace('\\', '/')
+    return rel, cum, ''
 
 
 def _save_user_subtitle(sub_obj, video_path):

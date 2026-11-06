@@ -1839,6 +1839,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)[:120]}).encode('utf-8'),
                        'application/json; charset=utf-8')
 
+    def _post_export_voice_track(self):
+        """换音色重配音·独立导出：把当前手动调整的配音按成片时间轴铺成一条 wav。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length) if length else {}
+            if data is None:
+                data = {}
+            rel, dur, err = _w._export_voice_track(data.get('run_dir'), data.get('items') or [])
+            if err:
+                self._send(200, json.dumps({'ok': False, 'error': err}).encode('utf-8'),
+                           'application/json; charset=utf-8')
+                return
+            self._send(200, json.dumps({'ok': True, 'file': rel, 'dur': round(dur, 1)}).encode('utf-8'),
+                       'application/json; charset=utf-8')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:120]}).encode('utf-8'),
+                       'application/json; charset=utf-8')
+
     def _post_tts_single(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -2092,6 +2110,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/audio_split': '_post_audio_split',
         '/api/recommend_segments': '_post_recommend_segments',
         '/api/reveal': '_post_reveal',
+        '/api/export_voice_track': '_post_export_voice_track',
         '/api/tts_single': '_post_tts_single',
         '/api/upload/chunk': '_post_upload_chunk',
         '/api/upload/done': '_post_upload_done',
