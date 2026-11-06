@@ -107,9 +107,13 @@ def ffmpeg_run(args, input_data=None, on_progress=None, timeout=FFMPEG_MAX_SECON
 
                     err_chunks.append(chunk)
 
+                # 超出保留上限后必须继续排水（只丢弃、不再存）：
+                # 若在这里 break 停止读取，ffmpeg 写 stderr 状态行会被管道缓冲卡死——
+                # 实测 4K→720p 预览代理（长任务、无 on_progress）~5 分钟后整条编码
+                # 停摆、输出 0 字节。内存上限不因继续读而失控：超限块直接丢弃。
                 elif on_progress is None:
 
-                    break
+                    pass
 
                 if on_progress is not None:
 
