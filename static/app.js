@@ -4721,14 +4721,23 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
           e.preventDefault();
           deleteAdjustItem(_selectedSeg);
         }
-      } else if(e.code === 'ArrowLeft'){
+      } else if((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && e.shiftKey){
+        // 【键盘操作统一 2026-11-06】裸 ←→ = 上一段/下一段（全局快捷键处理器调
+        // prev/nextAdjustSegment，与本分支互斥）；微移画面收进 Shift 组合键：
+        // Shift+←→ = ±0.5s，Ctrl+Shift+←→ = ±0.1s（旧细步长能力保留）。
         if(_selectedSeg >= 0 && _adjustState.items && _adjustState.items[_selectedSeg]){
           e.preventDefault();
           _pushUndo();
           var it = _adjustState.items[_selectedSeg];
-          var step = e.shiftKey ? 0.1 : 0.5;
-          it.video_start = Math.max(0, (it.video_start || 0) - step);
-          it.video_end = Math.max(it.video_start + 0.5, (it.video_end || 0) - step);
+          var step = (e.ctrlKey || e.metaKey) ? 0.1 : 0.5;
+          var maxDur = _adjustState.videoDuration || 600;
+          if(e.code === 'ArrowLeft'){
+            it.video_start = Math.max(0, (it.video_start || 0) - step);
+            it.video_end = Math.max(it.video_start + 0.5, (it.video_end || 0) - step);
+          }else{
+            it.video_start = Math.min(maxDur - 1, (it.video_start || 0) + step);
+            it.video_end = Math.min(maxDur, (it.video_end || 0) + step);
+          }
           // 更新输入框
           var vsI = document.getElementById('adjVStart'+_selectedSeg);
           var veI = document.getElementById('adjVEnd'+_selectedSeg);
@@ -4736,22 +4745,6 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
           if(veI) veI.value = it.video_end.toFixed(1);
           renderTimeline();
           seekAdjVideo(it.video_start);
-        }
-      } else if(e.code === 'ArrowRight'){
-        if(_selectedSeg >= 0 && _adjustState.items && _adjustState.items[_selectedSeg]){
-          e.preventDefault();
-          _pushUndo();
-          var it2 = _adjustState.items[_selectedSeg];
-          var step2 = e.shiftKey ? 0.1 : 0.5;
-          var maxDur = _adjustState.videoDuration || 600;
-          it2.video_start = Math.min(maxDur - 1, (it2.video_start || 0) + step2);
-          it2.video_end = Math.min(maxDur, (it2.video_end || 0) + step2);
-          var vsI2 = document.getElementById('adjVStart'+_selectedSeg);
-          var veI2 = document.getElementById('adjVEnd'+_selectedSeg);
-          if(vsI2) vsI2.value = it2.video_start.toFixed(1);
-          if(veI2) veI2.value = it2.video_end.toFixed(1);
-          renderTimeline();
-          seekAdjVideo(it2.video_start);
         }
       }
     });
@@ -5270,23 +5263,27 @@ function updatePlayhead(t){
   }
 }
 
-// 上一段 / 下一段（键盘快捷键调用）
-function prevAdjustSegment(){
+// 上一段 / 下一段（←→ 快捷键调用；2026-11-06 计划#4 统一键盘操作：
+// 裸←→=跳段，Shift+←→=微移画面，消除两套监听器同时触发的双重行为）
+function _jumpAdjustSegment(dir){
   if(!_adjustState || !_adjustState.items || !_adjustState.items.length) return;
   var cur = (_selectedSeg === undefined || _selectedSeg < 0) ? 0 : _selectedSeg;
-  if(cur > 0){ _selectedSeg = cur - 1; }
-  seekAdjVideo(_selectedSeg);
+  var ni = Math.max(0, Math.min(cur + dir, _adjustState.items.length - 1));
+  _selectedSeg = ni;
+  _playSegIndex = ni;
+  // 时间轴高亮同步
+  var allSegs = document.querySelectorAll('.tl-vseg');
+  for(var k = 0; k < allSegs.length; k++){ allSegs[k].style.outline = ''; }
+  var el = document.querySelector('.tl-vseg[data-idx="' + ni + '"]');
+  if(el) el.style.outline = '2px solid #fbbf24';
+  // 右侧字幕行同步高亮
+  if(typeof _syncSideList === 'function'){ try{ _syncSideList(ni); }catch(e2){} }
+  seekAdjVideo(ni);
   var hint = document.getElementById('adjustVideoHint');
-  if(hint) hint.textContent = '🎬 第'+(_selectedSeg+1)+'/'+_adjustState.items.length+'段';
+  if(hint) hint.textContent = '🎬 第' + (ni + 1) + '/' + _adjustState.items.length + '段';
 }
-function nextAdjustSegment(){
-  if(!_adjustState || !_adjustState.items || !_adjustState.items.length) return;
-  var cur = (_selectedSeg === undefined || _selectedSeg < 0) ? 0 : _selectedSeg;
-  if(cur < _adjustState.items.length - 1){ _selectedSeg = cur + 1; }
-  seekAdjVideo(_selectedSeg);
-  var hint = document.getElementById('adjustVideoHint');
-  if(hint) hint.textContent = '🎬 第'+(_selectedSeg+1)+'/'+_adjustState.items.length+'段';
-}
+function prevAdjustSegment(){ _jumpAdjustSegment(-1); }
+function nextAdjustSegment(){ _jumpAdjustSegment(1); }
 
 // 设置全局预览音频音量
 function setGlobalAudVol(val){
@@ -7321,9 +7318,12 @@ document.addEventListener('click', function(e){
   const _shortcuts = {
     'Enter': '确认/生成（触发当前步骤主按钮）',
     'Escape': '取消/关闭弹窗',
-    ' ': '播放/暂停预览视频',
+    ' ': '播放/暂停预览视频（手动调整页）',
     'ArrowLeft': '上一段（手动调整页）',
     'ArrowRight': '下一段（手动调整页）',
+    'Shift+←→': '微移选中段画面 ±0.5s（手动调整页）',
+    'Ctrl+Shift+←→': '微移 ±0.1s 细调（手动调整页）',
+    'Delete': '删除选中段（手动调整页）',
     '?': '显示快捷键帮助',
     's': '停止当前任务'
   };
@@ -7349,17 +7349,35 @@ document.addEventListener('click', function(e){
         });
         break;
       case ' ':
-        e.preventDefault();
-        const vid = document.getElementById('adjGlobalVideo');
-        if(vid){
-          if(vid.paused) vid.play(); else vid.pause();
+        {
+          // 【空格双重触发修复 2026-11-06】调整页的空格由页面专属处理器接管
+          // （toggleAdjPlay：从选中段起播）。本全局分支若也 toggle 会先播后停、
+          // 互相抵消——空格在调整页从未真正生效的根因。调整页外不再碰隐藏的
+          // 预览视频（避免其他页面按空格播放出幽灵解说声），也不再拦截滚动。
+          var _adjCardS = document.getElementById('adjustCard');
+          if(_adjCardS && _adjCardS.classList.contains('active')){
+            e.preventDefault();
+          }
         }
         break;
       case 'ArrowLeft':
-        if(typeof prevAdjustSegment === 'function') prevAdjustSegment();
+        // 只在手动调整页激活且无修饰键时跳段；Shift/Ctrl 组合留给「微移画面」分支，别双重触发
+        if(!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey){
+          var _adjCard = document.getElementById('adjustCard');
+          if(_adjCard && _adjCard.classList.contains('active') && typeof prevAdjustSegment === 'function'){
+            e.preventDefault();
+            prevAdjustSegment();
+          }
+        }
         break;
       case 'ArrowRight':
-        if(typeof nextAdjustSegment === 'function') nextAdjustSegment();
+        if(!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey){
+          var _adjCard2 = document.getElementById('adjustCard');
+          if(_adjCard2 && _adjCard2.classList.contains('active') && typeof nextAdjustSegment === 'function'){
+            e.preventDefault();
+            nextAdjustSegment();
+          }
+        }
         break;
       case 's':
         if(e.ctrlKey || e.metaKey){ e.preventDefault(); stopActiveTask(); }
