@@ -14,9 +14,12 @@
 import os
 import sys
 import socket
+import secrets
 import threading
 import time
 import webbrowser
+
+_TOKEN = secrets.token_urlsafe(16)   # 每次启动重新生成：本地路径形态的会话凭证
 
 
 def _selftest():
@@ -70,6 +73,37 @@ def _wait_ready(port, timeout=60):
     return False
 
 
+class DesktopApi:
+    """暴露给界面 JS 的桌面能力（window.pywebview.api.*）。
+    桌面版专属：原生文件对话框、本地路径直连凭证——浏览器里没有这些。"""
+
+    def get_desktop_info(self):
+        return {'token': _TOKEN, 'version': '桌面版'}
+
+    def pick_video(self):
+        import webview
+        res = webview.windows[0].create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=('视频文件 (*.mp4;*.mkv;*.avi;*.mov;*.flv;*.wmv;*.webm;*.m4v;*.ts)',
+                        '所有文件 (*.*)'))
+        if not res:
+            return {}
+        path = res[0]
+        return {'path': path, 'name': os.path.basename(path)}
+
+    def pick_music(self):
+        import webview
+        res = webview.windows[0].create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=('音频文件 (*.mp3;*.wav;*.m4a;*.flac;*.ogg)', '所有文件 (*.*)'))
+        if not res:
+            return {}
+        path = res[0]
+        return {'path': path, 'name': os.path.basename(path)}
+
+
 def _launch_app_window(url):
     """优先 Edge --app 模式（无地址栏的独立应用窗口）；回退默认浏览器。"""
     candidates = []
@@ -92,21 +126,39 @@ def _launch_app_window(url):
     return 'browser'
 
 
+def _run_desktop_window(port):
+    """原生桌面窗口（pywebview，Windows 用 Edge WebView2 渲染）。
+    关闭窗口 = 退出程序。返回 True=正常走完；False=环境不支持，调用方回退。"""
+    try:
+        import webview
+    except Exception as e:
+        print('pywebview 不可用（%s），回退浏览器。' % e)
+        return False
+    url = 'http://127.0.0.1:%d/' % port
+    webview.create_window('一帧成片', url, width=1440, height=900, min_size=(1100, 700))
+    webview.start()   # 阻塞直到窗口关闭
+    return True
+
+
 def main():
     if '--selftest' in sys.argv:
         _selftest()
     import webui_server as S   # 打包入口：导入即初始化全部引擎层
+    S.set_desktop_token(_TOKEN)   # 本地路径直连的会话凭证（网页模式无此令牌）
 
     port = _pick_port()
     url = 'http://127.0.0.1:%d/' % port
     t = threading.Thread(target=S.start_server, args=(port, False), daemon=True)
     t.start()
     ready = _wait_ready(port)
-    how = _launch_app_window(url)
-    print('一帧成片已启动: %s (%s, 界面=%s, 就绪=%s)' % (url, '8765' if port == 8765 else '端口%d' % port, how, ready))
-    print('关闭本窗口或浏览器窗口即可停止服务。')
+    print('一帧成片已启动: %s (%s, 就绪=%s)' % (url, '8765' if port == 8765 else '端口%d' % port, ready))
+    if _run_desktop_window(port):
+        return
+    # 兜底路径（浏览器打开）没有 js_api：令牌不生效，本地路径形态被拒（安全设计）
+    # 回退：Edge --app 独立窗口 → 再不行默认浏览器
+    _launch_app_window(url)
     try:
-        t.join()   # 守住服务；进程被关（窗口 X 不关服务——窗口只是界面）
+        t.join()
     except KeyboardInterrupt:
         pass
 

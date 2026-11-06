@@ -24,6 +24,12 @@ a = Analysis(
         'PIL.ImageDraw',
         'PIL.ImageFont',
         'PIL.ImageFilter',
+        # 桌面窗口（pywebview，Windows 后端走 WebView2/CLR）
+        'webview',
+        'webview.platforms.edgechromium',
+        'webview.platforms.winforms',
+        'clr',
+        'clr_loader',
         # 本地引擎模块（webui_server 直接 import，正常会收；显式列出防漏）
         'ai_providers',
         'movie_narrator',

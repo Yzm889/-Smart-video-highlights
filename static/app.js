@@ -2783,6 +2783,7 @@ const LARGE_VIDEO_BYTES = 2*1024*1024*1024;   // 超过这个只提醒「会比�
 // 调用方一律 `if (videoTooBig(F, $('xxStatus'), '生成')) return;`
 function videoTooBig(file, statusEl, verb){
   if (!file) return false;
+  if (file.isLocalPath) return false;   // 本地直连无 size 概念，且不经上传通道
   const gb = (file.size/1073741824).toFixed(1);
   if (file.size > MAX_VIDEO_BYTES){
     if (statusEl) statusEl.textContent = '❌ 视频过大（' + gb + 'GB，上限 8GB）——'
@@ -2796,6 +2797,10 @@ function videoTooBig(file, statusEl, verb){
 }
 
 async function videoToBody(file){
+  // 桌面版：本地路径直连（免上传，后端凭桌面令牌本地拷贝）
+  if(file.isLocalPath){
+    return { name:file.name, path: file.path, desktop_token: _desktopToken };
+  }
   if(file.size <= INLINE_UPLOAD_MAX){
     return { name:file.name, data: toB64(new Uint8Array(await file.arrayBuffer())) };
   }
@@ -3009,11 +3014,48 @@ function readNarSubtitle(file){
 }
 
 function setNarVideo(file, fromGlobal){
-  if(!file.type.startsWith('video/')){ $('narInfo').textContent='❌ 只支持视频'; return; }
+  if(file.type && !file.type.startsWith('video/')){ $('narInfo').textContent='❌ 只支持视频'; return; }
   NAR_VIDEO = file;
   $('narDrop').textContent = '🎞️ 已选：' + file.name + (fromGlobal ? ' ↻来自素材' : '');
   $('narInfo').textContent = '已选视频，点「生成解说」开始（默认免费配音）。';
   if (!fromGlobal) setGlobalVideo(file);  // 非来自全局时才同步
+}
+// ---- 桌面版专属：本地路径直连（原生对话框选片，零上传秒进工作流）----
+function setNarVideoPath(name, path){
+  NAR_VIDEO = { name: name, path: path, isLocalPath: true };
+  $('narDrop').textContent = '🎞️ 已选：' + name + '（本地直连 · 免上传）';
+  $('narInfo').textContent = '已选本地视频，点「生成解说」开始（桌面版免上传直读）。';
+}
+let _desktopToken = '';
+let _desktopInited = false;
+function initDesktopMode(){
+  if(_desktopInited) return;
+  const api = window.pywebview && window.pywebview.api;
+  if(!api || !api.get_desktop_info) return;
+  _desktopInited = true;
+  api.get_desktop_info().then(function(info){
+    if(!info || !info.token) return;
+    _desktopToken = info.token;
+    window.__desktopMode = true;
+    ['narPickLocalBtn'].forEach(function(id){ const b = document.getElementById(id); if(b) b.style.display = ''; });
+  }).catch(function(e){ console.warn('桌面模式初始化失败', e); });
+}
+window.addEventListener('pywebviewready', initDesktopMode);
+if (window.pywebview) initDesktopMode();
+function pickLocalVideo(){
+  if(!(window.pywebview && window.pywebview.api)) return;
+  window.pywebview.api.pick_video().then(function(r){
+    if(r && r.path) setNarVideoPath(r.name || r.path.split(/[\/]/).pop(), r.path);
+  }).catch(function(e){ console.warn('选片失败', e); });
+}
+function pickLocalMusic(){
+  if(!(window.pywebview && window.pywebview.api)) return;
+  window.pywebview.api.pick_music().then(function(r){
+    if(!r || !r.path) return;
+    window.MUSIC = { name: r.name, path: r.path, isLocalPath: true };
+    const mi = document.getElementById('musicInfo');
+    if(mi) mi.textContent = '已选本地音乐：' + r.name + '（免上传直连）';
+  }).catch(function(e){ console.warn('选乐失败', e); });
 }
 // ---- 🔎 DeepSeek 直达：复制「查剧情」提问模板 + 打开 DeepSeek，方便搜剧情概况 ----
 function _deepSeekPrompt(which){

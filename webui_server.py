@@ -141,6 +141,7 @@ if not logging.getLogger('framecut').handlers:
 # 禁止在模块 import 期做重活（字体扫描/目录遍历等一律惰性）。
 # ===========================================================================
 HERE = os.path.dirname(os.path.abspath(__file__))
+DESKTOP_TOKEN = ''     # 桌面版启动器生成的会话令牌：本地路径形态的请求必须携带
 PLANS = {}             # runid -> 人机协同「规划方案」（分析结果，等待用户确认/微调后再渲染）
 import threading as _threading
 OUTDIR = os.path.join(HERE, 'webui_output')
@@ -3125,12 +3126,24 @@ def _parse_subtitle_quick(path):
 
 
 def _resolve_upload_video(vobj, run_dir, prefix='src'):
-    """视频对象统一落盘到 run_dir，两种形态并存：
+    """视频对象统一落盘到 run_dir，三种形态并存：
     {name, data(base64)} 旧路径（小文件）；{name, upload_id} 分片上传（大文件——
-    复制合并成品到任务目录，保留上传源以便重复分析）。返回本地文件路径；无效返回 None。"""
+    复制合并成品到任务目录，保留上传源以便重复分析）；
+    {name, path, desktop_token} 桌面版本地路径直连（免上传；必须携带启动器注入的
+    会话令牌——否则任意网页都能借本服务读取本地文件，安全红线）。返回本地文件路径；无效返回 None。"""
     if not vobj:
         return None
     ext = os.path.splitext(vobj.get('name') or 'x.mp4')[1] or '.mp4'
+    if vobj.get('path') is not None and vobj.get('desktop_token'):
+        # 桌面版专属形态：令牌匹配 + 绝对路径 + 文件真实存在，三者缺一不可
+        if not DESKTOP_TOKEN or vobj['desktop_token'] != DESKTOP_TOKEN:
+            return None
+        src = str(vobj['path'])
+        if not os.path.isabs(src) or not os.path.isfile(src):
+            return None
+        fp = os.path.join(run_dir, prefix + ext)
+        shutil.copy2(src, fp)
+        return fp
     if vobj.get('mlib'):
         src = _material_path(vobj.get('mlib'))
         if not src:
@@ -5260,6 +5273,11 @@ _start_next_queued = getattr(_workflows_mod, '_start_next_queued', None)
 import handler as _handler_mod  # noqa: E402
 Handler = getattr(_handler_mod, 'Handler', None)
 start_server = getattr(_handler_mod, 'start_server', None)
+
+def set_desktop_token(token):
+    """桌面版启动器在起服务前注入会话令牌；网页（浏览器）模式下保持空 = 拒绝本地路径形态。"""
+    global DESKTOP_TOKEN
+    DESKTOP_TOKEN = str(token or '')
 _content_disposition = getattr(_handler_mod, '_content_disposition', None)
 _evict_finished_progress = getattr(_handler_mod, '_evict_finished_progress', None)
 _kill_all_child_processes = getattr(_handler_mod, '_kill_all_child_processes', None)

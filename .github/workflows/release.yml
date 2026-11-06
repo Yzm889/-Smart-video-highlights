@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.11'   # 桌面窗口（pywebview/CLR）在 3.11 支持最稳
 
       # 只装主程序运行所需（不装 torch：CosyVoice/ChatTTS 走各自 venv 子进程）
       - name: 安装依赖
@@ -26,7 +26,7 @@ jobs:
             numpy Pillow psutil soundfile imageio-ffmpeg `
             faster-whisper ctranslate2 sherpa-onnx `
             tokenizers huggingface-hub requests `
-            pyinstaller
+            pywebview pyinstaller
 
       - name: 打包 EXE
         run: pyinstaller FrameCut.spec --noconfirm

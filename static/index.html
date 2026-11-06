@@ -395,6 +395,7 @@
     <div id="narrGuide" class="narr-guide"></div>
     <div id="narDrop" class="musdrop">🎞️ 拖入一段电影/动漫/短片片段</div>
     <input type="file" id="narInput" accept="video/*" style="display:none">
+    <button class="btn-secondary" id="narPickLocalBtn" style="display:none;margin-top:6px;width:100%;padding:8px" onclick="pickLocalVideo()" title="桌面版专属：弹原生文件选择框，选完直接开工，不用等待上传">📁 从电脑选择视频（桌面版 · 免上传秒开工）</button>
     <!-- 字幕导入：这是「看懂剧情 + 对齐时间轴」的关键输入。
          有了字幕就不用 Whisper 猜台词（准确、快、不占显存），
          画面抽样也会按台词时间轴落点，VLM 才不会一直在看空镜。 -->
@@ -1338,7 +1339,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=115"></script>
+<script src="/static/app.js?v=117"></script>
 </body>
 </html>
 
