@@ -2968,6 +2968,40 @@ def _audio_peaks(path, points=180):
     return peaks, ''
 
 
+def _split_audio_file(path, frac):
+    """把音频按 frac 比例切成两个 WAV（分割片段用）。返回 (p1, p2, d1, d2, err)。
+
+    与前端同一比例切音频+文字，两段各自可独立调整/删除/改词重配。"""
+    try:
+        frac = float(frac)
+    except Exception:
+        return None, None, 0.0, 0.0, '非法分割比例'
+    frac = max(0.1, min(0.9, frac))
+    if not os.path.isfile(path):
+        return None, None, 0.0, 0.0, '音频不存在'
+    d = probe_audio_len(path) or 0.0
+    if d < 1.0:
+        return None, None, 0.0, 0.0, '音频太短（<1s），不值得分割'
+    t1 = round(d * frac, 3)
+    base = os.path.splitext(os.path.basename(path))[0]
+    out_dir = os.path.dirname(os.path.abspath(path))
+    p1 = os.path.join(out_dir, base + '_s1.wav')
+    p2 = os.path.join(out_dir, base + '_s2.wav')
+    rc1, _o, e1 = ffmpeg_run(['-y', '-i', path, '-t', str(t1), '-c:a', 'pcm_s16le', p1], timeout=300)
+    rc2, _o, e2 = ffmpeg_run(['-y', '-i', path, '-ss', str(t1), '-c:a', 'pcm_s16le', p2], timeout=300)
+    if rc1 != 0 or rc2 != 0 or not os.path.isfile(p1) or not os.path.isfile(p2):
+        for p in (p1, p2):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return None, None, 0.0, 0.0, 'ffmpeg 切割失败: ' + (
+            e1.decode('utf-8', 'ignore')[-100:] or e2.decode('utf-8', 'ignore')[-100:])
+    d1 = probe_audio_len(p1) or t1
+    d2 = probe_audio_len(p2) or max(0.1, d - t1)
+    return p1, p2, round(d1, 3), round(d2, 3), ''
+
+
 def _save_user_subtitle(sub_obj, video_path):
     """把用户上传的字幕存成「与视频同名的字幕文件」，返回落盘路径或 None。
 

@@ -1805,6 +1805,40 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': '当前系统不支持自动打开文件管理器',
                                         'path': full}).encode('utf-8'), 'application/json')
 
+    def _post_audio_split(self):
+        """分割片段：把某段配音按 frac 比例切成两个 wav，返回新文件与时长。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            data = self._read_json(length) if length else {}
+            if data is None:
+                data = {}
+            try:
+                rd = _w._safe_dir(_w.OUTDIR, str(data.get('run_dir') or ''))
+            except ValueError:
+                rd = None
+            name = os.path.basename(str(data.get('name') or ''))
+            if not rd or not name:
+                self._send(400, json.dumps({'ok': False, 'error': 'missing/非法 run_dir 或 name'}).encode('utf-8'),
+                           'application/json; charset=utf-8')
+                return
+            fp = os.path.join(rd, name)
+            if not os.path.isfile(fp):
+                self._send(404, json.dumps({'ok': False, 'error': '音频不存在'}).encode('utf-8'),
+                           'application/json; charset=utf-8')
+                return
+            p1, p2, d1, d2, err = _w._split_audio_file(fp, data.get('frac', 0.5))
+            if p1 is None:
+                self._send(200, json.dumps({'ok': False, 'error': err or '切割失败'}).encode('utf-8'),
+                           'application/json; charset=utf-8')
+                return
+            out = {'ok': True, 'd1': d1, 'd2': d2}
+            for key, p in (('a1', p1), ('a2', p2)):
+                out[key] = os.path.relpath(p, _w.OUTDIR).replace('\\', '/')
+            self._send(200, json.dumps(out).encode('utf-8'), 'application/json; charset=utf-8')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:120]}).encode('utf-8'),
+                       'application/json; charset=utf-8')
+
     def _post_tts_single(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -2055,6 +2089,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/tts/test': '_post_tts_test',
         '/api/tts_regen_all': '_post_tts_regen_all',
         '/api/regen_segment': '_post_regen_segment',
+        '/api/audio_split': '_post_audio_split',
         '/api/recommend_segments': '_post_recommend_segments',
         '/api/reveal': '_post_reveal',
         '/api/tts_single': '_post_tts_single',

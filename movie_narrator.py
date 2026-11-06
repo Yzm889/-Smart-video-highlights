@@ -5573,6 +5573,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         user_audio_offsets = {}
         user_orig_volumes = {}  # 每段原视频音量（0-100）
         user_narr_volumes = {}  # 每段解说音量（0-200 百分比，None=默认 100%）
+        user_fades = {}         # 每段配音淡入/淡出秒数（0~5，混音端 afade）
         for item in adjusted_items:
             old_i = item.get('index', 0)
             if old_i in skip_set:
@@ -5591,6 +5592,14 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             if nv is not None:
                 # 每段解说音量（百分比 0~200，混音时 ÷100 成倍率）
                 user_narr_volumes[old_i] = max(0, min(200, float(nv)))
+            _fi_ = item.get('fade_in')
+            _fo_ = item.get('fade_out')
+            if _fi_ or _fo_:
+                try:
+                    user_fades[old_i] = (max(0.0, min(5.0, float(_fi_ or 0.0))),
+                                         max(0.0, min(5.0, float(_fo_ or 0.0))))
+                except Exception:
+                    pass
         # 重建segs和narr_map（只保留未跳过的段对应的画面）
         if narr_map and len(narr_map) == len(segs):
             new_segs = []
@@ -5644,6 +5653,10 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         _log.info('[DIAG] 用户手动调整了%d段画面时间，视频时长%.1f秒，共%d段画面' % (len(user_video_spans), video_dur, len(segs)))
         for old_i, (vs, ve) in user_video_spans.items():
             new_i = old_to_new.get(old_i, old_i)
+            # 【分割/插入 2026-11-06】新增解说段的位置可能 ≥ len(segs)：
+            # 先补占位再覆盖——原实现直接「索引越界跳过」，新段画面落到 (0,10) 兑底
+            while len(segs) <= new_i:
+                segs.append((max(0.0, float(vs)), max(0.1, float(ve))))
             if 0 <= new_i < len(segs):
                 if ve > vs and vs >= 0 and (video_dur == 0 or ve <= video_dur + 1):
                     segs[new_i] = (vs, min(ve, video_dur) if video_dur else ve)
@@ -5684,11 +5697,23 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                         else:
                             _log.info('[DIAG] B-roll段插入: %.1f-%.1f秒' % (vs, ve))
                 else:
-                    if seg_idx < len(segs):
+                    # 【分割/插入 2026-11-06】解说段文字与画面直接取用户条目本身：
+                    # 有插入段时按序取 narr[seg_idx]/segs[seg_idx] 会错位
+                    # （后一段文字被串成空串、画面被串成插入段的范围）。
+                    # 条目缺字段时回退旧的按序取法（老任务兼容）。
+                    _txt_i = str(it.get('text', '') or '')
+                    _vs_i = it.get('video_start')
+                    _ve_i = it.get('video_end')
+                    if (_vs_i is not None and _ve_i is not None
+                            and float(_ve_i) > float(_vs_i)):
+                        new_segs.append((float(_vs_i), float(_ve_i)))
+                    elif seg_idx < len(segs):
                         new_segs.append(segs[seg_idx])
                     else:
                         new_segs.append((0.0, 1.0))
-                    if seg_idx < len(narr):
+                    if _txt_i.strip():
+                        new_narr.append(_txt_i)
+                    elif seg_idx < len(narr):
                         new_narr.append(narr[seg_idx])
                     else:
                         new_narr.append('')
@@ -5747,18 +5772,23 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         _offset = 0.0
         _orig_vol = None
         _narr_vol = None
+        _fade = (0.0, 0.0)
         if adjusted_items and i in _rev_map:
             _offset = user_audio_offsets.get(_rev_map[i], 0.0)
             _orig_vol = user_orig_volumes.get(_rev_map[i])
             if _rev_map[i] in user_narr_volumes:
                 _narr_vol = user_narr_volumes[_rev_map[i]] / 100.0
+            if _rev_map[i] in user_fades:
+                _fade = user_fades[_rev_map[i]]
         if _offset != 0:
             _log.info('[DIAG] 第%d段配音偏移%.1f秒' % (i+1, _offset))
         if _orig_vol is not None:
             _log.info('[DIAG] 第%d段原片音量%.0f%%' % (i+1, _orig_vol))
         if _narr_vol is not None:
             _log.info('[DIAG] 第%d段解说音量%.0f%%' % (i+1, _narr_vol * 100))
-        tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol))
+        if _fade[0] or _fade[1]:
+            _log.info('[DIAG] 第%d段配音淡入%.1fs/淡出%.1fs' % (i+1, _fade[0], _fade[1]))
+        tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol, _fade[0], _fade[1]))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
         voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
     _log.info('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))

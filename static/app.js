@@ -4909,8 +4909,9 @@ function renderTimeline(){
     else if(vdur > dur + 1) matchColor = 'rgba(245,158,11,0.6)';
     const offsetLabel = offset !== 0 ? (offset > 0 ? ' +'+offset.toFixed(1)+'s' : ' '+offset.toFixed(1)+'s') : '';
     const nvLabel = (it.narr_volume !== undefined && it.narr_volume !== null && it.narr_volume !== 100) ? ' · 🔊'+it.narr_volume+'%' : '';
+    const fadeLabel = ((it.fade_in || 0) > 0 || (it.fade_out || 0) > 0) ? ' · 🌊'+(it.fade_in||0)+'s/'+(it.fade_out||0)+'s' : '';
     aHtml += '<div id="tlaw'+idx+'" class="tl-aseg tl-audio-drag" data-idx="'+idx+'" style="position:absolute;left:'+left+'%;top:3px;width:'+w+'%;height:36px;background:rgba(139,92,246,0.15);border-radius:3px;cursor:grab;border:1px dashed '+matchColor+';transition:none">';
-    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:36px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px;z-index:1;text-shadow:0 0 3px rgba(0,0,0,.8)">🔊 '+dur.toFixed(1)+'s'+offsetLabel+nvLabel+'</span>';
+    aHtml += '<span style="position:absolute;left:8px;top:0;line-height:36px;font-size:10px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:8px;z-index:1;text-shadow:0 0 3px rgba(0,0,0,.8)">🔊 '+dur.toFixed(1)+'s'+offsetLabel+nvLabel+fadeLabel+'</span>';
     aHtml += '</div>';
     cumVideoForAudio += vdur;
   });
@@ -5700,6 +5701,17 @@ function _tlCtxClose(){
   if(m) m.style.display = 'none';
   document.removeEventListener('click', _tlCtxClose, true);
 }
+// 淡入/淡出秒数选项（右键菜单共用；0=关）
+function _fadeOptsHtml(cur){
+  const opts = [[0,'无'],[0.3,'0.3s'],[0.5,'0.5s'],[1,'1s'],[1.5,'1.5s'],[2,'2s']];
+  let h = '';
+  const cv = parseFloat(cur) || 0;
+  for(const o of opts){
+    h += '<option value="'+o[0]+'"'+(cv===o[0]?' selected':'')+'>'+o[1]+'</option>';
+  }
+  return h;
+}
+
 function _tlCtxOpen(idx, x, y){
   _tlCtxFor = idx;
   let m = document.getElementById('tlCtxMenu');
@@ -5719,9 +5731,17 @@ function _tlCtxOpen(idx, x, y){
     + 'border:1px solid ' + (it.quote ? '#34d399' : 'var(--border,#444)') + ';'
     + 'color:' + (it.quote ? '#34d399' : 'var(--text,#eee)') + ';border-radius:5px">'
     + (it.quote ? '🗣 恢复为解说段' : '🎬 设为原声引用（保留原声，不配解说）') + '</button>'
+    + '<button id="tlCtxSplit" style="width:100%;padding:5px;font-size:12px;cursor:pointer;margin-bottom:8px;'
+    + 'background:rgba(59,130,246,.08);border:1px solid var(--border,#444);color:var(--text,#eee);border-radius:5px">'
+    + '✂️ 从播放头分割（一段拆两段）</button>'
     + '<div style="margin-bottom:8px;">🔊 解说音量 <b id="tlCtxNvVal">' + nv + '%</b><br>'
     + '<input type="range" id="tlCtxNv" min="0" max="200" step="5" value="' + nv + '" style="width:100%">'
     + '<span style="color:var(--muted);font-size:10px">100%=原声；合成与解说 .wav 同步生效</span></div>'
+    + '<div style="margin-bottom:8px;">🌊 淡入/淡出（秒）<span style="color:var(--muted);font-size:10px">合成与解说 .wav 同步生效</span><br>'
+    + '<select id="tlCtxFi" style="width:48%;padding:3px;font-size:12px;background:var(--bg,#222);color:var(--text,#eee);border:1px solid var(--border,#444);border-radius:4px">'
+    + _fadeOptsHtml(it.fade_in) + '</select>'
+    + '<select id="tlCtxFo" style="width:48%;padding:3px;font-size:12px;background:var(--bg,#222);color:var(--text,#eee);border:1px solid var(--border,#444);border-radius:4px;margin-left:4%">'
+    + _fadeOptsHtml(it.fade_out) + '</select></div>'
     + '<div style="margin-bottom:8px;">🎞 原声音量（此段画面） <b id="tlCtxOvVal">' + ov + '%</b><br>'
     + '<input type="range" id="tlCtxOv" min="0" max="100" step="5" value="' + ov + '" style="width:100%"></div>'
     + '<div style="border-top:1px solid var(--border,#444);padding-top:6px;display:flex;gap:6px;">'
@@ -5749,6 +5769,16 @@ function _tlCtxOpen(idx, x, y){
     const ovInput = document.getElementById('adjOrigVol' + idx);
     if(ovInput) ovInput.value = v;
   };
+  document.getElementById('tlCtxFi').onchange = function(){
+    _pushUndo();
+    _adjustState.items[idx].fade_in = parseFloat(this.value) || 0;
+    renderTimeline();
+  };
+  document.getElementById('tlCtxFo').onchange = function(){
+    _pushUndo();
+    _adjustState.items[idx].fade_out = parseFloat(this.value) || 0;
+    renderTimeline();
+  };
   document.getElementById('tlCtxQuote').onclick = function(){
     _pushUndo();
     const it2 = _adjustState.items[idx];
@@ -5758,9 +5788,79 @@ function _tlCtxOpen(idx, x, y){
     renderTimeline();
     toast(it2.quote ? '🎬 已设为原声引用：这段保留原片声音，不配解说' : '🗣 已恢复为解说段', 'success');
   };
+  document.getElementById('tlCtxSplit').onclick = function(){
+    _tlCtxClose();
+    splitAdjustSegment(idx);
+  };
   document.getElementById('tlCtxSkip').onclick = function(){ _tlCtxClose(); deleteAdjustItem(idx); };
   document.getElementById('tlCtxCloseBtn').onclick = _tlCtxClose;
 }
+
+// ✂️ 分割片段（2026-11-06 计划#5）：从播放头把一段拆成两段——
+// 配音按比例切成两个新 wav（后端 /api/audio_split），文字按同一比例在最近标点处断开，
+// 两段各自独立调整/删除/改词重配。B-roll/原声引用段无配音，不参与分割。
+async function splitAdjustSegment(idx){
+  const it = _adjustState.items[idx];
+  if(!it) return;
+  if(it.isBroll || it.quote){ toast('B-roll/原声引用段没有配音，请直接拖拽调整范围', 'warning'); return; }
+  if(!it.audio){ toast('该段没有配音文件，无法分割', 'warning'); return; }
+  const vs = it.video_start || 0, ve = it.video_end || 0;
+  if(ve - vs < 1.6){ toast('这段画面太短（<1.6s），不值得分割', 'warning'); return; }
+  const video = document.getElementById('adjGlobalVideo');
+  const t = (video && isFinite(video.currentTime)) ? video.currentTime : (vs + ve) / 2;
+  if(!(t > vs + 0.4 && t < ve - 0.4)){
+    toast('请先把播放头停在要分割的位置（段内、离两端至少 0.4s）', 'warning'); return;
+  }
+  toast('✂️ 正在切割配音…', 'info');
+  try{
+    const r = await fetch('/api/audio_split', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ run_dir: _adjustState.runDir, name: it.audio, frac: (t - vs) / (ve - vs) }) });
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '切割失败');
+    // 文字按同一比例等比断开，向最近标点吸附（±20% 字数范围内）
+    const txt = (it.text || '').trim();
+    let cut = Math.round(txt.length * ((t - vs) / (ve - vs)));
+    const WIN = Math.max(2, Math.floor(txt.length * 0.2));
+    let best = -1;
+    for(let k = Math.max(1, cut - WIN); k <= Math.min(txt.length - 1, cut + WIN); k++){
+      if('，。！？；、：,.!? '.indexOf(txt.charAt(k)) >= 0){
+        if(best < 0 || Math.abs(k - cut) < Math.abs(best - cut)) best = k;
+      }
+    }
+    if(best >= 0) cut = best + 1;
+    const t1 = txt.slice(0, cut).trim(), t2 = txt.slice(cut).trim();
+    _pushUndo();
+    // 前半段：保留淡入，丢淡出（后半段重开）
+    it.video_end = t;
+    it.audio = out.a1;
+    it.duration = out.d1;
+    if(t1){ it.text = t1; it.audio_text = t1; }
+    it.fade_out = 0;
+    // 后半段：全新条目（index 取全局最大+1，避免重配 TTS 时撞文件名）
+    let mx = -1;
+    _adjustState.items.forEach(function(x){ const n = parseInt(x && x.index); if(!isNaN(n) && n > mx) mx = n; });
+    const ni = {
+      index: mx + 1,
+      text: t2, audio_text: t2,
+      audio: out.a2, duration: out.d2,
+      video_start: t, video_end: ve,
+      audio_offset: 0,
+      orig_volume: it.orig_volume,
+      narr_volume: it.narr_volume,
+      fade_in: 0, fade_out: 0,
+      isBroll: false, quote: false
+    };
+    _adjustState.items.splice(idx + 1, 0, ni);
+    _selectedSeg = idx + 1; _playSegIndex = idx + 1;
+    _rerenderAdjustList();
+    renderTimeline();
+    scheduleAutoSave();
+    toast('✂️ 已分割：第' + (idx + 1) + '段 → 两段（画面/配音/文字各自独立）', 'success');
+  }catch(e){
+    toast('❌ 分割失败：' + (e.message || e), 'error');
+  }
+}
+
 // 右键入口：事件委托在时间轴容器上（色块会随 renderTimeline 重建）
 (function(){
   const tc = document.getElementById('timelineInner');
@@ -6599,6 +6699,8 @@ async function confirmAdjustAndCompose(){
       audio_offset: _adjustState.items[i].audio_offset || 0,
       orig_volume: vol ? parseFloat(vol.value) : (_adjustState.items[i].orig_volume !== undefined ? _adjustState.items[i].orig_volume : 0),
       narr_volume: _adjustState.items[i].narr_volume !== undefined ? _adjustState.items[i].narr_volume : null,
+      fade_in: _adjustState.items[i].fade_in || 0,
+      fade_out: _adjustState.items[i].fade_out || 0,
       isBroll: !!_adjustState.items[i].isBroll,
       quote: !!_adjustState.items[i].quote
     });
