@@ -194,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('X-Content-Type-Options', 'nosniff')
                 # CSP 必须挂在真正承载文档的响应上：首页 index.html 走 _send_file 而非 _send，
                 # 只在 _send 里加则策略根本不会生效（浏览器只认文档响应的 CSP）。
+                # 【2026-11-07】Range 路径同样必须带 no-cache：曾漏掉导致浏览器缓存旧版
+                # index.html——代码更新后用户界面不更新（按钮/新功能消失，真机实测）。
+                self.send_header('Cache-Control', 'no-cache')
                 self.send_header('Content-Security-Policy', CSP_POLICY)
                 if attachment:
                     self.send_header('Content-Disposition',
