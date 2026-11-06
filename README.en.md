@@ -4,6 +4,15 @@ A **locally running, AI-powered** video creation tool. Upload images/videos + ch
 
 > ⚡ All intelligent beat detection, scene analysis, and music alignment are performed **locally** – no API credits consumed.
 
+## 📦 Desktop Edition (Recommended — no Python needed)
+
+**Download and run**: [⬇️ FrameCut v1.1.0 (Windows x64)](https://github.com/Yzm889/-Smart-video-highlights/releases/latest)
+
+- Unzip and double-click `FrameCut.exe` — a **standalone desktop window**, no command line, no browser juggling
+- First run: follow the in-app guide to install Ollama + models; AI models auto-download when needed
+- 100% local: free, private, works offline
+- Source-code setup below 👇
+
 <p align="center">
   <img src="demo.gif" alt="FrameCut demo" width="400">
 </p>

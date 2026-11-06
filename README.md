@@ -1,6 +1,16 @@
 # 一帧成片 · FrameCut
 
 [English version](README.en.md)
+
+## 📦 桌面版下载（推荐 · 无需装 Python）
+
+**双击即用**：[⬇️ 下载一帧成片 v1.1.0（Windows 64 位）](https://github.com/Yzm889/-Smart-video-highlights/releases/latest)
+
+- 解压后双击 `FrameCut.exe` —— **独立桌面窗口**，无命令行、无浏览器操作
+- 首次使用点「📖 新手引导」装模型；本地文件**免上传直读**（桌面版专属）
+- 本地运行：不花一分钱、不上传素材、断网也能出片
+- 想用源码运行或参与开发？往下看 👇
+
 一个**本地运行、AI 智能**的短视频创作工具。上传图片 / 视频 + 选一首音乐，自动生成**强卡点**短片——画面切换点精确匹对到音乐鼓点；并内置完整的**电影剧情解说**流水线（场景分段 → AI 写连贯解说稿 → 配音 → 字幕 → 混音出片），支持 AI 看图写文案 + 中文配音 + 字幕烧录。
 
 > ⚡ 智能强卡点、场景/动作分析、节拍对齐全部**本地计算**，不消耗 API 余额。
@@ -35,7 +45,7 @@
 - 🖼 **自动封面生成**：智能选帧（对比度+边缘能量打分）+ 大字标题合成封面，三种版式可换帧
 - 🧹 **磁盘自动清理**：run_dir / 预热目录 / 上传残片纳入 6h 周期自动回收；分析缓存按「指纹+参数+版本」落盘（200 条上限自动清最旧）
 - 🕘 最近生成历史、可取消合成（ffmpeg 立即终止 + 协作式标志）、竖屏发布规格、多种转场
-- 🧪 **回归保障**：全量 **576 个测试**（0 失败）+ flake8 零告警门禁 + GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
+- 🧪 **回归保障**：全量 **746 个测试**（0 失败）+ flake8 零告警门禁 + GitHub Actions CI（Python 3.9 / 3.11 双矩阵）
 
 ## 📁 目录结构
 
@@ -54,7 +64,7 @@
 ├── text_utils.py          # 文本工具（解说稿清洗/切句/对齐）
 ├── bili_downloader.py     # B 站素材：搜索/下载（playurl 直连 + yt-dlp 兜底）
 ├── static/                # 前端页面（index.html / style.css / app.js）
-├── tests/                 # 回归测试（308 用例，pytest）
+├── tests/                 # 回归测试（746 用例，pytest）
 ├── .github/workflows/     # CI：flake8 --select=F 门禁 + pytest（Python 3.9/3.11 双矩阵）
 ├── ai_config.example.json # AI 配置模板（复制为 ai_config.json 使用）
 ├── requirements.txt       # Python 运行依赖
