@@ -2754,6 +2754,142 @@ def _upload_final_path(upload_id, name):
     return fp if os.path.isfile(fp) else None
 
 
+# ---------------------------------------------------------------------------
+# 预览代理（2026-11-06 计划#2「4K 预览卡/seek 慢」）：预览用 720p 轻量副本，合成仍用原片
+# ---------------------------------------------------------------------------
+_PREVIEW_PROXY_JOBS = {}          # run_dir -> {'status': 'building'|'ready'|'error'|'none', 'error': str}
+_PREVIEW_PROXY_LOCK = threading.Lock()
+_PREVIEW_PROXY_MAX_H = 720        # 预览副本目标高度上限（只缩不放，≤720p 的源片直接用原片）
+
+
+def _probe_video_height(path):
+    """探测视频高度（解码 1 帧到 null，从 stderr 解析 WxH）。失败返回 0。"""
+    try:
+        import re as _re
+        rc, _o, e = ffmpeg_run(['-hide_banner', '-i', path, '-map', '0:v:0',
+                                '-frames:v', '1', '-f', 'null', '-'], timeout=120)
+        if rc != 0:
+            return 0
+        m = _re.search(r'(\d{2,5})x(\d{2,5})', e.decode('utf-8', 'ignore'))
+        return int(m.group(2)) if m else 0
+    except Exception:
+        return 0
+
+
+def _build_preview_proxy(src, dst):
+    """生成 720p 预览副本（H.264 ultrafast + faststart，保留音轨）。返回 (ok, err)。
+
+    写 .part 再原子改名：半截文件绝不能顶着 proxy.mp4 的名字被预览拿到。"""
+    tmp = dst + '.part'
+    try:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        # scale=-2:min(720,ih)：只缩不放；宽度自动取偶。逗号必须转义（滤镜图分隔符）
+        cmd = ['-y', '-i', src, '-map', '0:v:0',
+               '-vf', r'scale=-2:min(720\,ih)',
+               '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '27',
+               '-pix_fmt', 'yuv420p',
+               '-map', '0:a:0?', '-c:a', 'aac', '-b:a', '96k',
+               '-movflags', '+faststart',
+               '-f', 'mp4',                      # 输出是 .part 中间名，必须显式给封装格式
+               tmp]
+        rc, _o, e = ffmpeg_run(cmd, timeout=7200)
+        if rc != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return False, 'ffmpeg 失败: ' + e.decode('utf-8', 'ignore')[-200:]
+        os.replace(tmp, dst)
+        return True, ''
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False, str(e)[:200]
+
+
+def _ensure_preview_proxy(run_dir, name=None, wait=False):
+    """确保 run_dir 有 720p 预览副本（没有就后台生成）。返回 dict：
+
+    {ok, mode: 'proxy'|'original', ready: bool, file: 'proxy.mp4'|'', error: str}
+    - mode=original：源片本身 ≤720p（或无视频流/找不到源片），预览直接用原片
+    - wait=True：同步等构建完（单测用）；默认后台线程、立即返回 ready=False
+    """
+    res = {'ok': True, 'mode': 'original', 'ready': True, 'file': '', 'error': ''}
+    try:
+        rd = _safe_dir(OUTDIR, str(run_dir or ''))
+    except ValueError:
+        res['ok'] = False
+        res['error'] = '非法 run_dir'
+        return res
+    if not rd or not os.path.isdir(rd):
+        res['ok'] = False
+        res['error'] = 'run_dir 不存在'
+        return res
+    src = ''
+    if name:
+        cand = os.path.join(rd, os.path.basename(str(name)))
+        if os.path.isfile(cand):
+            src = cand
+    if not src:
+        for fn in sorted(os.listdir(rd)):
+            if fn.startswith('src.') and os.path.isfile(os.path.join(rd, fn)):
+                src = os.path.join(rd, fn)
+                break
+    if not src:
+        res['ready'] = False
+        res['error'] = '未找到源片'
+        return res
+    dst = os.path.join(rd, 'proxy.mp4')
+    # 已有且不比源片旧 → 直接用（源片重传/被替换后 mtime 更新会触发重建）
+    if os.path.isfile(dst) and os.path.getmtime(dst) >= os.path.getmtime(src) - 1:
+        with _PREVIEW_PROXY_LOCK:
+            _PREVIEW_PROXY_JOBS[rd] = {'status': 'ready'}
+        res.update({'mode': 'proxy', 'file': 'proxy.mp4'})
+        return res
+    h = _probe_video_height(src)
+    if h <= 0:
+        res['ready'] = False
+        res['error'] = '无法读取视频分辨率'
+        return res
+    if h <= _PREVIEW_PROXY_MAX_H:
+        with _PREVIEW_PROXY_LOCK:
+            _PREVIEW_PROXY_JOBS[rd] = {'status': 'none'}
+        return res                                   # 原片本身就不重，直接预览
+    with _PREVIEW_PROXY_LOCK:
+        job = _PREVIEW_PROXY_JOBS.get(rd)
+        if job and job.get('status') == 'building':
+            res.update({'mode': 'proxy', 'ready': False})
+            return res                               # 已在生成，别重复起线程
+        _PREVIEW_PROXY_JOBS[rd] = {'status': 'building'}
+
+    def _work():
+        ok, err = _build_preview_proxy(src, dst)
+        with _PREVIEW_PROXY_LOCK:
+            _PREVIEW_PROXY_JOBS[rd] = {'status': 'ready' if ok else 'error', 'error': err}
+
+    th = threading.Thread(target=_work, daemon=True, name='preview-proxy')
+    th.start()
+    if wait:
+        th.join(timeout=600)
+        with _PREVIEW_PROXY_LOCK:
+            st = _PREVIEW_PROXY_JOBS.get(rd) or {}
+        if st.get('status') == 'ready':
+            res.update({'mode': 'proxy', 'ready': True, 'file': 'proxy.mp4'})
+        elif st.get('status') == 'error':
+            res.update({'mode': 'proxy', 'ready': False, 'error': st.get('error') or '生成失败'})
+        else:
+            res.update({'mode': 'proxy', 'ready': False})
+    else:
+        res.update({'mode': 'proxy', 'ready': False})
+    return res
+
+
 def _save_user_subtitle(sub_obj, video_path):
     """把用户上传的字幕存成「与视频同名的字幕文件」，返回落盘路径或 None。
 

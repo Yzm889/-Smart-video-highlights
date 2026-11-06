@@ -4580,11 +4580,15 @@ function renderAdjustPanel(ttsList, runDir, mode, script, videoFile){
   if(!_suppressUndoReset){ _undoStack = []; _redoStack = []; _pendingSnapshot = null; }
   var _keepVideoDur = _adjustState.videoDuration;
   var _keepVideoFile = _adjustState.videoFile;
+  var _keepProxyFile = _adjustState.proxyFile;      // 预览副本标记跨重绘保留（重绘不重生成）
   _adjustState = { runDir: runDir, mode: mode, items: JSON.parse(JSON.stringify(ttsList)), changed: {} };
   if(_keepVideoDur) _adjustState.videoDuration = _keepVideoDur;  // 跨重绘保留源片时长
+  if(_keepProxyFile) _adjustState.proxyFile = _keepProxyFile;
   // 源片真实文件名（可能是 .mkv/.webm 等容器）：预览/时间轴按它拼 /media/ 地址
   if(videoFile) _adjustState.videoFile = videoFile;
   else if(_keepVideoFile) _adjustState.videoFile = _keepVideoFile;
+  // 预览代理：后台确保 720p 副本存在，就绪后预览切副本（合成仍用原片）
+  try { _ensureProxy(runDir, _adjustState.videoFile); } catch(e){}
   // 每段音频的「文字基线」：改词检测用。渲染时的 text 即该段音频对应的文稿；
   // regenSingleTts 成功后同步更新。合成前据此自动重配改词段（否则新字幕配旧声）。
   // 【必须写在 items 深拷贝之后】：曾写在 ttsList 上（源数组），拷贝出的
@@ -5725,7 +5729,18 @@ function _applyPreviewNarrVolume(idx){
   try { el.volume = (nv === undefined || nv === null) ? 1 : Math.max(0, Math.min(1, nv / 100)); } catch(e){}
 }
 
+var _proxyAskedRun = '';          // 已为哪个 run 目录问过代理（防重复拉起轮询）
+var _proxyTimer = null;           // 代理就绪轮询
+
 function _adjVideoUrl(){
+  // 【预览代理 2026-11-06】大分辨率源片预览用 720p 轻量副本（合成仍用原片）：
+  // 4K 原片直接喟 <video>，起播/seek 都慢；副本由后端后台生成，就绪后仅在
+  // 暂停态热切换（播放中不换源，避免加载竞态）。
+  if(_adjustState.proxyFile){
+    var rd = (_adjustState.runDir || '').replace(/\\/g, '/');
+    var rel = rd ? rd + '/' + _adjustState.proxyFile : _adjustState.proxyFile;
+    return '/media/' + encodeURIComponent(rel).replace(/%2F/g, '/');
+  }
   // 源片可能是 mkv/webm 等任意容器：曾把地址写死成 src.mp4，4K MKV 任务
   // （实存 src.mkv）预览全 404。优先用后端下发的真实文件名，旧任务回退 src.mp4。
   // 兼容两种形态：相对 OUTDIR 的带目录路径（progress.video_file）或纯文件名
@@ -5734,6 +5749,52 @@ function _adjVideoUrl(){
   if(!rel) rel = (_adjustState.runDir || '').replace(/\\/g, '/') + '/src.mp4';
   else if(rel.indexOf('/') < 0) rel = (_adjustState.runDir || '').replace(/\\/g, '/') + '/' + rel;
   return '/media/' + encodeURIComponent(rel).replace(/%2F/g, '/');
+}
+
+function _applyProxyFile(file){
+  if(!file || _adjustState.proxyFile === file) return;
+  _adjustState.proxyFile = file;
+  var video = document.getElementById('adjGlobalVideo');
+  if(video && video.paused){
+    var wantUrl = _adjVideoUrl();
+    if(video.dataset.mediaUrl !== wantUrl){
+      video.src = wantUrl;
+      video.dataset.mediaUrl = wantUrl;
+      try { video.load(); } catch(e){}
+    }
+  }
+  toast('已生成 720p 预览副本，预览更流畅（合成仍用原片）', 'info');
+}
+
+function _ensureProxy(runDir, videoFile){
+  // 调整页加载时问一次后端；副本没好就轮询，就绪/出错/换任务即停。
+  if(!runDir){ return; }
+  if(_proxyAskedRun === runDir && _adjustState.proxyFile){ return; }
+  if(_proxyAskedRun !== runDir){
+    _proxyAskedRun = runDir;
+    _adjustState.proxyFile = '';
+    if(_proxyTimer){ clearInterval(_proxyTimer); _proxyTimer = null; }
+  }
+  var url = '/api/preview_proxy?run_dir=' + encodeURIComponent(runDir);
+  if(videoFile) url += '&name=' + encodeURIComponent(videoFile);
+  fetch(url).then(function(r){ return r.json(); }).then(function(res){
+    if(!res || !res.ok) return;
+    if(res.mode === 'original'){ _adjustState.proxyFile = ''; return; }
+    if(res.ready && res.file){ _applyProxyFile(res.file); return; }
+    if(res.error){ return; }                       // 生成失败/无法读分辨率：保持原片
+    if(_proxyTimer) return;                        // 已在轮询
+    var deadline = Date.now() + 10 * 60 * 1000;    // 最多跟 10 分钟
+    _proxyTimer = setInterval(function(){
+      fetch(url).then(function(r){ return r.json(); }).then(function(res2){
+        if(res2 && res2.ok && res2.ready && res2.file){
+          clearInterval(_proxyTimer); _proxyTimer = null;
+          _applyProxyFile(res2.file);
+        } else if((res2 && res2.error) || Date.now() > deadline){
+          clearInterval(_proxyTimer); _proxyTimer = null;
+        }
+      }).catch(function(){});
+    }, 4000);
+  }).catch(function(){});
 }
 function previewVideoSegment(idx){
   const vs = parseFloat(document.getElementById('adjVStart'+idx).value) || 0;

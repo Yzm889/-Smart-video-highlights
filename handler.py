@@ -538,6 +538,19 @@ class Handler(BaseHTTPRequestHandler):
             kind, msg = _classify_exception(e)
             self._send_err(500, kind, msg, stage='读取 tts_state.json', detail=str(e))
 
+    def _get_preview_proxy(self):
+        """预览代理：确保 run_dir 有 720p 副本（没有就后台生成），返回是否就绪。
+        前端拿到 ready=true 且 mode=proxy 后才把预览地址切到 /media/<run>/proxy.mp4。"""
+        try:
+            qs = _w.parse_qs(_w.urlparse(self.path).query)
+            run_dir = (qs.get('run_dir') or [''])[0]
+            name = (qs.get('name') or [''])[0]
+            out = _w._ensure_preview_proxy(run_dir, name=name or None)
+            self._send(200, json.dumps(out).encode('utf-8'), 'application/json; charset=utf-8')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:120]}).encode('utf-8'),
+                       'application/json; charset=utf-8')
+
     def _get_video_frame(self):
         try:
             qs = _w.parse_qs(_w.urlparse(self.path).query)
@@ -1943,6 +1956,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/tts_recent': '_get_tts_recent',
         '/api/tts_reset': '_get_tts_reset',
         '/api/tts_state': '_get_tts_state',
+        '/api/preview_proxy': '_get_preview_proxy',
         '/api/video_frame': '_get_video_frame',
         '/api/vlm/status': '_get_vlm_status',
         '/api/whisper/status': '_get_whisper_status',
