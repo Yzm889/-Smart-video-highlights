@@ -2,127 +2,142 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>一帧成片</title>
 <link rel="stylesheet" href="desktop.css">
 </head>
 <body>
-<!-- 应用外壳：左导航 + 主工作区 -->
-<div class="app">
-  <aside class="rail">
-    <div class="rail-brand"><span class="logo">🎬</span><span class="brand-name">一帧成片</span></div>
-    <nav class="rail-steps">
-      <button class="rail-step active" data-view="media"><span class="rs-num">1</span><span class="rs-label">素材</span></button>
-      <button class="rail-step" data-view="story"><span class="rs-num">2</span><span class="rs-label">剧情</span></button>
-      <button class="rail-step" data-view="adjust" id="navAdjust"><span class="rs-num">3</span><span class="rs-label">调整</span></button>
-      <button class="rail-step" data-view="export"><span class="rs-num">4</span><span class="rs-label">导出</span></button>
-    </nav>
-    <div class="rail-foot">
-      <span class="ver" id="verTag">桌面版</span>
+<!-- 菜单栏 -->
+<div class="menubar">
+  <div class="menu" data-menu="file"><span>文件</span>
+    <div class="menu-dd">
+      <div class="mi" data-act="new">新建项目 <span class="hk">Ctrl+N</span></div>
+      <div class="mi" data-act="openfolder">打开成片所在文件夹</div>
+      <div class="sep"></div>
+      <div class="mi" data-act="exit">退出</div>
     </div>
-  </aside>
+  </div>
+  <div class="menu" data-menu="edit"><span>编辑</span>
+    <div class="menu-dd">
+      <div class="mi" data-act="undo">撤销 <span class="hk">Ctrl+Z</span></div>
+      <div class="mi" data-act="redo">重做 <span class="hk">Ctrl+Y</span></div>
+      <div class="sep"></div>
+      <div class="mi" data-act="addcap">在指针处添加字幕</div>
+      <div class="mi" data-act="delcap">删除选中段 <span class="hk">Del</span></div>
+    </div>
+  </div>
+  <div class="menu" data-menu="view"><span>视图</span>
+    <div class="menu-dd">
+      <div class="mi" data-act="tgnarr">解说轨：开</div>
+      <div class="mi" data-act="tgorig">原声轨：开</div>
+    </div>
+  </div>
+  <div class="menu" data-menu="help"><span>帮助</span>
+    <div class="menu-dd">
+      <div class="mi" data-act="about">关于一帧成片</div>
+    </div>
+  </div>
+  <span class="menu-title">一帧成片</span>
+</div>
 
-  <main class="main">
-    <!-- ═══ 视图 1：素材 ═══ -->
-    <section class="view active" id="view-media">
-      <h1 class="view-title">选择视频</h1>
-      <p class="view-sub">从电脑里选一段电影 / 剧集 / 短片片段（原文件不会被移动或修改）</p>
-      <div class="card drop-card" id="pickCard" tabindex="0">
-        <div class="drop-icon">🎞️</div>
-        <div class="drop-main">
-          <div class="drop-title" id="pickTitle">点击选择视频文件</div>
-          <div class="drop-sub" id="pickMeta">支持 mp4 / mkv / avi / mov 等 · 原生对话框 · 选完免上传</div>
-        </div>
-      </div>
-      <div class="field" id="videoNameField" style="display:none">
-        <label>片名 / 主题（用于搜剧情、生成封面，可留空）</label>
-        <input type="text" id="movieName" placeholder="例如：惩罚者 第一季第一集">
-      </div>
-    </section>
+<!-- 工具栏 -->
+<div class="toolbar">
+  <span class="proj-name" id="projName">未打开项目</span>
+  <span class="tb-sep"></span>
+  <button class="tb-btn primary" id="tbGenerate">🎙 生成</button>
+  <button class="tb-btn" id="tbCompose" disabled>🎬 合成视频</button>
+  <span class="tb-flex"></span>
+  <button class="tb-btn tgl on" id="tbNarr" title="整条解说配音轨开关">🎙 解说轨</button>
+  <button class="tb-btn tgl on" id="tbOrig" title="整条原片声音轨开关">🎬 原声轨</button>
+</div>
 
-    <!-- ═══ 视图 2：剧情 ═══ -->
-    <section class="view" id="view-story">
-      <h1 class="view-title">写下剧情</h1>
-      <p class="view-sub">告诉 AI 这部片子讲了什么（开头 → 冲突 → 结局，100 字就够）——AI 按剧情挑画面、写解说</p>
+<!-- 主工作区 -->
+<div class="work">
+  <!-- 新建项目（无项目时显示） -->
+  <div class="newproj" id="newProj">
+    <div class="np-card">
+      <div class="np-logo">🎬</div>
+      <div class="np-title">新建解说项目</div>
+      <div class="np-sub">选择一段本地视频，写下剧情——AI 按剧情挑画面、写解说、配音，全程本地免费</div>
+      <button class="np-pick" id="npPick">
+        <span class="np-pick-icon">📁</span>
+        <span id="npPickLabel">从电脑选择视频</span>
+      </button>
       <div class="field">
-        <label>剧情 / 完整解说稿（二选一）</label>
-        <textarea id="plotText" rows="10" placeholder="例如：深夜的港口，一艘货船悄悄离岸。谁也没有想到，船舱深处藏着一个足以掀翻整座城市的秘密……&#10;&#10;也可以直接粘贴你写好的完整解说稿——AI 一个字不改，只负责按稿找画面配音。"></textarea>
+        <label>片名 / 主题（用于搜剧情、生成封面，可留空）</label>
+        <input type="text" id="npName" placeholder="例如：惩罚者 第一季第一集">
       </div>
-      <div class="row-tight">
-        <label class="chk"><input type="checkbox" id="optScript"> 上面是写好的完整解说稿（AI 不改一字，只配画面）</label>
+      <div class="field">
+        <label>剧情（开头 → 冲突 → 结局，100 字就够）或粘贴完整解说稿</label>
+        <textarea id="npPlot" rows="7" placeholder="例如：深夜的港口，一艘货船悄悄离岸……"></textarea>
       </div>
-      <div class="row-tight">
-        <label class="chk"><input type="checkbox" id="optBgm" checked> 加背景音乐（低音量铺底，解说时自动闪避）</label>
+      <div class="np-opts">
+        <label class="chk"><input type="checkbox" id="npScript"> 这是写好的完整解说稿（AI 不改一字）</label>
+        <label class="chk"><input type="checkbox" id="npCut" checked> 剧情精剪（保留高光，剪掉填充——成片约 10 分钟）</label>
+        <label class="chk"><input type="checkbox" id="npBgm"> 加背景音乐（解说时自动闪避）</label>
       </div>
-      <div class="row-tight">
-        <label class="chk"><input type="checkbox" id="optCut" checked> 剧情精剪（保留高光片段，剪掉过渡填充——成片约 10 分钟）</label>
-      </div>
-      <div class="actions">
-        <button class="btn primary" id="btnGenerate" disabled>🎙 生成配音与画面方案</button>
-        <span class="hint-inline" id="genHint">选择视频并填写剧情后开始</span>
-      </div>
-    </section>
+      <button class="btn primary big" id="npGo" disabled>🎙 开始生成</button>
+      <div class="np-hint" id="npHint">选择视频并填写剧情后开始</div>
+    </div>
+  </div>
 
-    <!-- ═══ 视图 3：调整 ═══ -->
-    <section class="view" id="view-adjust">
-      <div class="adjust-grid">
-        <div class="adj-left">
-          <h1 class="view-title">调整</h1>
-          <div class="video-shell">
-            <video id="pvVideo" controls playsinline></video>
-            <div class="sub-overlay" id="subOverlay"></div>
-          </div>
-          <div class="track-toggles">
-            <button class="tgl on" id="tglNarr">🎙 解说轨：开</button>
-            <button class="tgl on" id="tglOrig">🎬 原声轨：开</button>
-            <span class="hint-inline" id="pvHint">播放时：解说清晰、原声自动压低</span>
-          </div>
-          <div class="progress-wrap" id="genProgress" style="display:none">
-            <div class="pbar"><i id="pfill"></i></div>
-            <div class="pmeta"><span id="pphase">准备中…</span><span id="ppct">0%</span></div>
-          </div>
-          <div class="timeline-card">
-            <div class="tl-head"><span>📊 时间轴</span><span class="hint-inline" id="tlHint">点色块定位 · 点击行对照</span></div>
-            <div class="tl-scroll"><div class="tl-inner" id="tlInner">
-              <div class="tl-ruler" id="tlRuler"></div>
-              <div class="tl-track" id="tlTrack"></div>
-            </div></div>
-          </div>
-        </div>
-        <aside class="adj-right">
-          <div class="cap-head">
-            <span>📝 字幕（点行跳转 · 直接改字 · ✕ 删除）</span>
-            <button class="mini-btn" id="btnAddCap" title="在播放指针处插入新字幕">➕</button>
-          </div>
-          <div class="cap-list" id="capList"></div>
-          <div class="cap-foot">
-            <button class="btn primary" id="btnCompose">🎬 确认配音，合成视频</button>
-            <div class="hint-inline" id="adjStatus">改过字的段落，合成时会自动重新配音</div>
-          </div>
-        </aside>
+  <!-- 编辑器（项目加载后） -->
+  <div class="editor" id="editor" style="display:none">
+    <div class="ed-left">
+      <div class="panel-head">字幕 <span class="ph-sub" id="capCount"></span></div>
+      <div class="cap-tools">
+        <button class="mini-btn" id="capAdd">➕ 在指针处添加</button>
+        <button class="mini-btn" id="capDel">🗑 删除选中</button>
       </div>
-    </section>
-
-    <!-- ═══ 视图 4：导出 ═══ -->
-    <section class="view" id="view-export">
-      <h1 class="view-title">导出</h1>
-      <div class="export-progress" id="exProgress">
-        <div class="pbar big"><i id="exFill"></i></div>
-        <div class="pmeta"><span id="exPhase">正在合成…</span><span id="exPct">0%</span></div>
-      </div>
-      <div class="export-done" id="exDone" style="display:none">
-        <div class="done-icon">✅</div>
-        <div class="done-title">成片已生成</div>
+      <div class="cap-list" id="capList"></div>
+    </div>
+    <div class="ed-center">
+      <div class="export-panel" id="exportPanel" style="display:none">
+        <div class="done-title">✅ 成片已生成</div>
         <video id="exPlayer" controls playsinline></video>
         <div class="done-actions">
-          <button class="btn primary" id="btnOpenFolder">📂 打开所在文件夹</button>
+          <button class="tb-btn primary" id="btnOpenFolder">📂 打开所在文件夹</button>
           <span class="hint-inline" id="exPath"></span>
         </div>
       </div>
-      <div class="export-err" id="exErr" style="display:none"></div>
-    </section>
-  </main>
+      <div class="video-shell" id="videoShell">
+        <video id="pvVideo" playsinline></video>
+        <div class="sub-overlay" id="subOverlay"></div>
+      </div>
+      <div class="tl-card">
+        <div class="tl-head"><span>时间轴</span><span class="hint-inline">空格播放 · ←→ 跳转 · 点色块选中</span></div>
+        <div class="tl-scroll" id="tlScroll"><div class="tl-inner" id="tlInner">
+          <div class="tl-ruler" id="tlRuler"></div>
+          <div class="tl-track" id="tlTrack"></div>
+          <div class="tl-playhead" id="tlPlayhead"></div>
+        </div></div>
+      </div>
+    </div>
+    <div class="ed-right">
+      <div class="panel-head">检查器 <span class="ph-sub" id="insSeg"></span></div>
+      <div class="ins-body" id="insBody">
+        <div class="ins-empty">点选一段字幕</div>
+      </div>
+    </div>
+  </div>
 </div>
+
+<!-- 状态栏 -->
+<div class="statusbar">
+  <span id="stState">● 就绪</span>
+  <span id="stSeg"></span>
+  <span class="sb-flex"></span>
+  <span id="stTime">00:00.0</span>
+</div>
+
+<!-- 生成进度浮层 -->
+<div class="modal-mask" id="genMask" style="display:none">
+  <div class="modal">
+    <div class="modal-title" id="gmTitle">正在生成…</div>
+    <div class="pbar big"><i id="gmFill"></i></div>
+    <div class="modal-meta" id="gmMeta">准备中</div>
+  </div>
+</div>
+
 <script src="desktop.js"></script>
 </body>
 </html>
