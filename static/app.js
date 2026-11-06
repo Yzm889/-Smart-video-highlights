@@ -4986,32 +4986,37 @@ function _drawSegWave(idx, audioName){
   if(!host) return;
   var peaks = _waveCache[audioName];
   if(!peaks || !peaks.length) return;
-  var w = Math.max(8, host.clientWidth || 160), h = 30;
+  var rect = host.getBoundingClientRect();
+  var w = Math.max(8, Math.round(rect.width)), h = 20;
+  var dpr = window.devicePixelRatio || 1;
   var cv = host.querySelector('canvas');
   if(!cv){
     cv = document.createElement('canvas');
-    cv.style.cssText = 'position:absolute;left:0;bottom:0;width:100%;height:30px;pointer-events:none;opacity:.65;z-index:0';
+    cv.style.cssText = 'position:absolute;left:0;bottom:0;width:100%;height:20px;pointer-events:none;opacity:.5;z-index:0';
     host.appendChild(cv);
   }
-  cv.width = w; cv.height = h;
+  // 【高清绘制】按设备像素比设置画布分辨率（高分屏/系统缩放下 1:1 绘制会拉伸发虚，
+  // 主人实测「配音轴模糊」的根源），逻辑坐标用 setTransform 缩放回来
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
   var ctx = cv.getContext && cv.getContext('2d');
   if(!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = 'rgba(196,181,253,0.95)';
-  // 像素太窄时按可用像素抽稀（max-pool），细块也能看出起伏
+  ctx.fillStyle = 'rgba(124,58,237,0.55)';
+  // 低密度细线条：每 4px 一根、留白间隔——只提示起伏，不糊成一片
   var n = peaks.length;
-  var bars = Math.max(3, Math.min(n, Math.floor(w / 2)));
+  var bars = Math.max(3, Math.min(n, Math.floor(w / 4)));
   var bw = w / bars;
   for(var i = 0; i < bars; i++){
     var a = Math.floor(i * n / bars), b = Math.max(a + 1, Math.floor((i + 1) * n / bars));
-    var v = 0.03;
+    var v = 0.02;
     for(var j = a; j < b; j++){
       var pv = parseFloat(peaks[j]) || 0;
       if(pv > v) v = pv;
     }
     if(v > 1) v = 1;
     var bh = Math.max(1, v * h);
-    ctx.fillRect(i * bw, h - bh, Math.max(1, bw - 0.5), bh);
+    ctx.fillRect(i * bw + 0.5, h - bh, Math.max(1, bw - 1.5), bh);
   }
 }
 
@@ -5029,6 +5034,16 @@ function _loadSegWaves(){
         if(_waveCache[key]) _drawSegWave(idx, key);
       })
       .catch(function(){ if(_waveCache[key] === undefined) _waveCache[key] = null; });
+  });
+}
+
+// 窗口尺寸/缩放变化时重画波形（旧画布被 CSS 拉伸会发虚）
+if(!window._waveResizeBound){
+  window._waveResizeBound = true;
+  var _waveResizeT = null;
+  window.addEventListener('resize', function(){
+    if(_waveResizeT) clearTimeout(_waveResizeT);
+    _waveResizeT = setTimeout(function(){ try{ _loadSegWaves(); }catch(e){} }, 300);
   });
 }
 
