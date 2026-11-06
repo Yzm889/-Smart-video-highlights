@@ -2788,7 +2788,7 @@ def _build_preview_proxy(src, dst):
             except OSError:
                 pass
         # scale=-2:min(720,ih)：只缩不放；宽度自动取偶。逗号必须转义（滤镜图分隔符）
-        cmd = ['-y', '-i', src, '-map', '0:v:0',
+        cmd = ['-y', '-hide_banner', '-nostats', '-i', src, '-map', '0:v:0',
                '-vf', r'scale=-2:min(720\,ih)',
                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '27',
                '-pix_fmt', 'yuv420p',
