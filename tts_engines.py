@@ -528,11 +528,18 @@ def _cosyvoice_prompt_text(ref_wav):
         import numpy as np
         import imageio_ffmpeg
         from faster_whisper import WhisperModel
-        if _COSY_ASR['model'] is None:
+        # 参考音文字稿质量直接决定克隆发音：tiny 实测转写误差大（主人录音
+        # 转出「這如我輕輕地來…雲菜」级别的乱码稿），large-v3 同一段转得干净准确。
+        # 优先本机 large-v3（ASR 同款、CPU int8，短参考音加载+识别约 20s、
+        # 结果缓存为侧车文件只算一次），机器上没有再退 tiny。
+        wdir = os.path.join(HERE, 'models', 'whisper', 'large-v3')
+        if not os.path.isdir(wdir):
             wdir = os.path.join(HERE, 'models', 'whisper', 'tiny')
-            if not os.path.isdir(wdir):
-                return ''
+        if not os.path.isdir(wdir):
+            return ''
+        if _COSY_ASR['model'] is None or _COSY_ASR.get('dir') != wdir:
             _COSY_ASR['model'] = WhisperModel(wdir, device='cpu', compute_type='int8')
+            _COSY_ASR['dir'] = wdir
         exe = imageio_ffmpeg.get_ffmpeg_exe()
         raw = subprocess.run([exe, '-i', ref_wav, '-f', 'f32le', '-ac', '1', '-ar', '16000', '-'],
                              capture_output=True, timeout=60).stdout
