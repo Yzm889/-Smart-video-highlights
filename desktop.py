@@ -1,0 +1,115 @@
+# -*- coding: utf-8 -*-
+"""一帧成片 · 桌面版启动器（PyInstaller 打包入口）。
+
+双击 EXE 后的行为：
+  1. 起本地服务（127.0.0.1，优先 8765，被占用则自动换空闲端口）
+  2. 等服务就绪
+  3. 用 Edge 的 --app 模式打开无边框应用窗口（Win10/11 自带 Edge，无需浏览器
+     操作；检测不到 Edge 时回退默认浏览器）
+  4. 主线程守着服务直到窗口关闭/进程退出
+
+另提供 --selftest：验证打包环境里重依赖（faster-whisper/ctranslate2/sherpa-onnx
+等）能否导入，供构建流水线做冒烟检查，不启动服务。
+"""
+import os
+import sys
+import socket
+import threading
+import time
+import webbrowser
+
+
+def _selftest():
+    """构建冒烟：确认重依赖能导入、ffmpeg 可执行。"""
+    import faster_whisper  # noqa: F401
+    import ctranslate2  # noqa: F401
+    import sherpa_onnx  # noqa: F401
+    import soundfile  # noqa: F401
+    import numpy  # noqa: F401
+    import imageio_ffmpeg
+    exe = imageio_ffmpeg.get_ffmpeg_exe()
+    assert os.path.exists(exe), 'ffmpeg 缺失: ' + exe
+    print('SELFTEST OK | ffmpeg =', exe)
+    sys.exit(0)
+
+
+def _port_free(port):
+    s = socket.socket()
+    try:
+        s.bind(('127.0.0.1', port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _pick_port():
+    """优先 8765（与网页版一致）；被占用则找空闲端口（不跟别的实例抢）。"""
+    for port in (8765, 8766, 8767):
+        if _port_free(port):
+            return port
+    s = socket.socket()
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _wait_ready(port, timeout=60):
+    """轮询服务就绪（超时也不放弃启动窗口——加载慢总比白屏好）。"""
+    import urllib.request
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:%d/' % port, timeout=3) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            time.sleep(0.5)
+    return False
+
+
+def _launch_app_window(url):
+    """优先 Edge --app 模式（无地址栏的独立应用窗口）；回退默认浏览器。"""
+    candidates = []
+    pf86 = os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')
+    pf = os.environ.get('ProgramFiles', r'C:\Program Files')
+    candidates.append(os.path.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'))
+    candidates.append(os.path.join(pf, 'Microsoft', 'Edge', 'Application', 'msedge.exe'))
+    local = os.environ.get('LOCALAPPDATA')
+    if local:
+        candidates.append(os.path.join(local, 'Google', 'Chrome', 'Application', 'chrome.exe'))
+    for exe in candidates:
+        if os.path.exists(exe):
+            try:
+                subprocess.Popen([exe, '--app=' + url, '--window-size=1440,900'],
+                                 close_fds=True)
+                return 'app-window'
+            except Exception:
+                pass
+    webbrowser.open(url)
+    return 'browser'
+
+
+def main():
+    if '--selftest' in sys.argv:
+        _selftest()
+    import webui_server as S   # 打包入口：导入即初始化全部引擎层
+
+    port = _pick_port()
+    url = 'http://127.0.0.1:%d/' % port
+    t = threading.Thread(target=S.start_server, args=(port, False), daemon=True)
+    t.start()
+    ready = _wait_ready(port)
+    how = _launch_app_window(url)
+    print('一帧成片已启动: %s (%s, 界面=%s, 就绪=%s)' % (url, '8765' if port == 8765 else '端口%d' % port, how, ready))
+    print('关闭本窗口或浏览器窗口即可停止服务。')
+    try:
+        t.join()   # 守住服务；进程被关（窗口 X 不关服务——窗口只是界面）
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,53 @@
+# 一帧成片 · Windows 桌面版自动发布
+# 触发：推送 v* 标签（如 v1.0.0）→ 构建 EXE → 挂到 GitHub Release
+name: release-windows
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # 创建 Release 需要
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # 只装主程序运行所需（不装 torch：CosyVoice/ChatTTS 走各自 venv 子进程）
+      - name: 安装依赖
+        run: |
+          pip install --no-cache-dir `
+            numpy Pillow psutil soundfile imageio-ffmpeg `
+            faster-whisper ctranslate2 sherpa-onnx `
+            tokenizers huggingface-hub requests `
+            pyinstaller
+
+      - name: 打包 EXE
+        run: pyinstaller FrameCut.spec --noconfirm
+
+      - name: 冒烟自检
+        run: dist\FrameCut\FrameCut.exe --selftest
+
+      - name: 打 zip（排除 models：模型由应用运行时下载）
+        shell: pwsh
+        run: |
+          if (Test-Path dist\FrameCut\_internal\models) { Remove-Item dist\FrameCut\_internal\models -Force }
+          Compress-Archive -Path dist\FrameCut -DestinationPath "FrameCut-windows-x64-${{ github.ref_name }}.zip"
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 一帧成片 ${{ github.ref_name }}
+          body: |
+            双击 FrameCut.exe 即可使用（首启自动打开应用窗口）。
+
+            - 首次使用：进入「📖 新手引导」装 Ollama + 拉模型（或右上角 AI 配置）
+            - AI 模型（Whisper 等）不打包在内，应用会在需要时自动下载到本目录
+            - 解压后整个 FrameCut 文件夹放任意位置，删掉即卸载
+          files: FrameCut-windows-x64-${{ github.ref_name }}.zip
