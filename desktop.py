@@ -97,6 +97,13 @@ class DesktopApi:
     def open_folder(self, rel):
         """在资源管理器中打开并选中成片文件（rel 为 OUTDIR 相对路径）。"""
         import subprocess
+        # 【v1.4.7 修的真缺陷】这里原来直接用 webui_server.OUTDIR，但本函数没有
+        # import webui_server（main 里那句是 main 的局部变量，不是模块全局），
+        # 于是每次调用都抛 NameError；前端 open_folder(...).catch(()=>{}) 又把它
+        # 吞了，主人看到的就是「点『打开文件夹』没反应」。改成函数内惰性导入，
+        # 与 has_config / migrate_from 保持同一写法（不把 webui_server 提到模块
+        # 顶层，否则 --selftest 和冷启动都会被引擎初始化拖慢）。
+        import webui_server
         target = os.path.join(webui_server.OUTDIR, str(rel).replace('/', os.sep))
         if os.path.exists(target):
             subprocess.Popen(['explorer', '/select,', target])
@@ -260,6 +267,10 @@ class DesktopApi:
 
 def _launch_app_window(url):
     """优先 Edge --app 模式（无地址栏的独立应用窗口）；回退默认浏览器。"""
+    # 【v1.4.7 修】本函数用了 subprocess 却没导入（模块顶层没导入它），
+    # NameError 被下面的 except Exception 吃掉，于是 --app 窗口永远不生效、
+    # 静默退回默认浏览器（带地址栏，不像应用）。补函数内导入，保持懒加载风格。
+    import subprocess
     candidates = []
     pf86 = os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')
     pf = os.environ.get('ProgramFiles', r'C:\Program Files')
