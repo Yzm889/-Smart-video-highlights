@@ -3,12 +3,23 @@
 # 构建: pyinstaller FrameCut.spec --noconfirm
 # 产物: dist/FrameCut/FrameCut.exe（整个目录即绿色版，可 zip 分发）
 
+from PyInstaller.utils.hooks import collect_data_files
+
+# 【v1.4.8 修的真缺陷】faster_whisper 1.2.x 的 VAD 模型是**数据文件**
+# （faster_whisper/assets/silero_vad_v6.onnx），不在模块图里，少了它运行时直接：
+#   NoSuchFile: [ONNXRuntimeError] : 3 : NO_SUCHFILE :
+#   Load model from ...\_internal\faster_whisper\assets\silero_vad_v6.onnx failed
+# 后果：**打包版里 Whisper 转写全废**，只以 warning 形式提示「ASR 转写失败」，
+# 有字幕的用户完全无感（字幕优先于 ASR），没字幕的用户等于没有台词轨。
+# 之前只 datas=[('static','static')]，现补上 faster_whisper 的全部数据文件。
+_whisper_datas = collect_data_files('faster_whisper')
+
 a = Analysis(
     ['desktop.py'],
     pathex=[],
     binaries=[],
     # 静态前端资源打进包内（服务按 HERE/static 寻址；frozen 下 HERE=包目录）
-    datas=[('static', 'static')],
+    datas=[('static', 'static')] + _whisper_datas,
     hiddenimports=[
         # 重依赖的次级导入，模块图常跟不全（缺一个运行时就是 err/弹窗）
         'faster_whisper',
