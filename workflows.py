@@ -611,6 +611,23 @@ def dispatch_movie_compose(req, prog):
         run_dir = _w._safe_dir(_w.OUTDIR, run_dir_name)
         if not os.path.exists(os.path.join(run_dir, 'tts_state.json')):
             raise RuntimeError('配音状态不存在，请先生成配音')
+        # 【v1.4.8 修】_spawn 会给每个任务预建一个 run-N-时间戳 目录，但合成是复用
+        # 配音阶段的 run_dir，于是每合成一次就在 webui_output 下留一个空目录（实测
+        # 0 文件 0 字节，攒久了很脏）。这里：真正的产物目录是 run_dir，把预建的空目录
+        # 收掉（只在确实为空时 rmdir，非空/被占用就原样留着 —— 绝不删数据），
+        # 并把 prog['run_dir'] 改成真实目录，历史记录才会指向成片所在处。
+        _pre = prog.get('run_dir') or ''
+        try:
+            if (_pre and os.path.isdir(_pre)
+                    and os.path.abspath(_pre) != os.path.abspath(run_dir)
+                    and not os.listdir(_pre)):
+                os.rmdir(_pre)
+        except OSError:
+            pass
+        # 与 movie_narrator 收尾处的约定一致：对外只暴露目录名（basename），
+        # 因为 /api/tts_state、/api/preview_proxy 等接口用 _safe_dir 校验，
+        # 绝对路径会被判「非法 run_dir」——前端拿到绝对路径就调不动后续接口了。
+        prog['run_dir'] = os.path.basename(run_dir)
         music_path = _w._resolve_music(req.get('music'))
         adjusted = req.get('items')
         skip = req.get('skip') or []
