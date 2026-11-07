@@ -308,7 +308,6 @@ class Handler(BaseHTTPRequestHandler):
                 _w._save_active_task(runid, phase=prog.get('phase',''), pct=prog.get('pct',0),
                                      run_dir=run_dir, task_type=getattr(fn, '__name__', 'unknown'))
                 # 监听prog变化，实时更新活动任务状态
-                _orig_phase = prog.get('phase', '')
                 class _ProgProxy(dict):
                     def __setitem__(self, k, v):
                         super().__setitem__(k, v)
@@ -735,7 +734,7 @@ class Handler(BaseHTTPRequestHandler):
             st = json.load(open(state_path, encoding='utf-8'))
         except Exception as e:
             kind, msg = _classify_exception(e)
-            self._send_err(500, kind, f'状态读取失败', stage='解析 state.json',
+            self._send_err(500, kind, '状态读取失败', stage='解析 state.json',
                            detail=str(e), hint='state.json 可能写坏了。可以备份后删除让下次重跑重新生成。')
             return
         narr = st.get('narr', [])
