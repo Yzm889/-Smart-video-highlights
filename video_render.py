@@ -1312,7 +1312,8 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         # 非法，会整链报错再降到「丢弃配音」兜底也救不了）。直接交付画面。
         final = os.path.join(run_dir, 'final.mp4')
         rc, o, e = ffmpeg_run(['-y', '-i', base_video, '-c:v', 'copy', '-c:a', 'aac',
-                               '-b:a', '160k', '-movflags', '+faststart', final])
+                               '-b:a', '160k', '-ar', '44100', '-ac', '2',
+                               '-movflags', '+faststart', final])
         if rc == 0 and os.path.exists(final):
             return final
         raise RuntimeError('成片失败（无可混音频输入）: ' + e.decode('utf-8', 'ignore')[-200:])
@@ -1328,7 +1329,13 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     final = os.path.join(run_dir, 'final.mp4')
     for _label, _fp in (('loudnorm', fparts_loudnorm), ('no_loudnorm', fparts_safety)):
         cmd = inputs + ['-filter_complex', ';'.join(_fp), '-map', '0:v:0', '-map', '[aout]',
-                        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final]
+                        # 【v1.4.7 修】原来这里只写 -c:a aac，采样率跟着滤镜输出漂，
+                        # 实测 20 分钟片出片是 96000 Hz（narr 源是 22050，链上明明
+                        # aresample=44100，loudnorm 会把内部 192k 协商出来）。
+                        # 96k AAC 在电视/车机/部分手机解码器上兼容差，且与同文件
+                        # 其它 4 处（453/485/909/714 行）不一致。统一钉死 44.1k 立体声。
+                        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+                        '-ar', '44100', '-ac', '2', '-movflags', '+faststart', final]
         rc, o, e = ffmpeg_run(cmd)
         if rc == 0 and os.path.exists(final):
             return final
@@ -1342,7 +1349,8 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         _log.info(f'[DIAG] 音频链 {_label} 失败，尝试下一级降级')
     # 兜底：丢弃配音，仅保留原声/画面的简单封装（保留旧行为以保证「能出片」）
     fb = os.path.join(run_dir, 'final.mp4')
-    rc2, o2, e2 = ffmpeg_run(['-y', '-i', base_video, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', fb])
+    rc2, o2, e2 = ffmpeg_run(['-y', '-i', base_video, '-c:v', 'copy', '-c:a', 'aac',
+                              '-b:a', '160k', '-ar', '44100', '-ac', '2', fb])
     if rc2 == 0 and os.path.exists(fb):
         # 【防静默掉级】解说配音明明存在，兜底产物却没有音轨（base_video 是烧字幕的
         # -an 产物）——交付无声片是事故不是降级。抛错把两级失败的真实 stderr 带给用户。
