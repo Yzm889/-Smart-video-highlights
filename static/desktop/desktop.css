@@ -316,3 +316,17 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
   background:var(--acc);color:#fff;font-weight:600}
 .env-btn:hover{filter:brightness(1.15)}
 .env-btn.ghost{background:none;border:1px solid var(--line2);color:var(--muted)}
+
+/* ── 参数预设（同一影片反复重做时一键套用，避免每次重填 30+ 字段）── */
+.preset-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:10px 12px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.preset-label{font-size:11.5px;color:var(--muted);flex:none}
+.preset-bar select{flex:1 1 160px;min-width:140px;background:var(--bg);
+  border:1px solid var(--line);border-radius:6px;color:var(--txt);
+  padding:5px 8px;font-size:11.5px;color-scheme:dark}
+.preset-bar select:focus{outline:none;border-color:var(--acc)}
+.preset-btn{flex:none;padding:5px 10px;border-radius:6px;font-size:11.5px;
+  background:var(--acc);color:#fff;cursor:pointer;transition:filter .13s var(--ease)}
+.preset-btn:hover{filter:brightness(1.15)}
+.preset-del{background:none;border:1px solid var(--line2);color:var(--muted)}
+.preset-hint{font-size:11px;color:var(--muted);flex-basis:100%}

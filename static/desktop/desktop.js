@@ -5,6 +5,36 @@
 
 const $ = id => document.getElementById(id);
 
+/* ── 脚本初始化错误出口（已知坑 #3）──
+   顶层大量 $('id').addEventListener(...) 直接绑定：只要某个 id 在 HTML 里不存在，
+   就会抛 TypeError，导致该行之后**全部顶层代码静默死亡**——界面不报错、按钮全没反应，
+   主人只能看到「点了没反应」。这里把漏网的初始化异常变成可见提示 + 控制台堆栈。
+   配合 tests/test_desktop_dom_ids.py 的 CI 静态对账，双保险。 */
+let _bootErrors = 0;
+function _bootFail(msg){
+  _bootErrors++;
+  try { console.error('[FrameCut 启动错误]', msg); } catch(e) {}
+  try {
+    const w = document.createElement('div');
+    w.style.cssText = 'position:fixed;z-index:99999;left:12px;right:12px;bottom:12px;'
+      + 'padding:10px 14px;background:#7a1f1f;color:#fff;border-radius:8px;'
+      + 'font:13px/1.5 system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.35)';
+    w.setAttribute('role', 'alert');
+    w.textContent = '脚本初始化出错（部分按钮可能无反应）：' + msg
+      + '　请截图反馈，并按 Ctrl+R 重载。';
+    document.body.appendChild(w);
+  } catch(e) {}
+}
+window.addEventListener('error', ev => {
+  if(!_bootErrors) _bootFail(ev.message || '未知脚本错误');
+  else try { console.error('[FrameCut 运行错误]', ev.message); } catch(e) {}
+});
+window.addEventListener('unhandledrejection', ev => {
+  const r = ev.reason;
+  try { console.error('[FrameCut 未处理的异步错误]', r); } catch(e) {}
+  if(!_bootErrors) _bootFail('异步操作失败：' + (r && r.message ? r.message : String(r)));
+});
+
 /* ── 状态 ── */
 let _video = null;            // {name, path, isLocalPath}
 let _token = '';
@@ -486,6 +516,73 @@ $('npAdvToggle').addEventListener('click', () => {
 });
 ADV_IDS.forEach(id => { const el = $(id); if(el) el.addEventListener('change', advSave); });
 advLoad();
+
+/* ── 参数预设（同一影片反复重做 5+ 次、每次 30+ 字段的痛点）──
+   只做命名保存 / 一键套用 / 删除，复用 ADV_IDS 与 advSave，
+   不动 _advParams() 与任何后端接口；纯 localStorage，无新依赖。 */
+const PRESET_KEY = 'framecut_param_presets';
+function presetAll(){
+  try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}') || {}; }
+  catch(e){ return {}; }
+}
+function presetWrite(all){
+  try { localStorage.setItem(PRESET_KEY, JSON.stringify(all)); return true; }
+  catch(e){ toast('预设保存失败：本地存储不可用', 'bad'); return false; }
+}
+function presetCurrent(){
+  const v = {};
+  ADV_IDS.forEach(id => { const el = $(id); if(el) v[id] = el.value; });
+  return v;
+}
+function presetFill(){
+  const sel = $('presetSel'), all = presetAll();
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">（上次使用的参数）</option>';
+  Object.keys(all).sort().forEach(name => {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name;
+    sel.appendChild(o);
+  });
+  if(all[keep] !== undefined) sel.value = keep;
+}
+function presetHint(msg){
+  const h = $('presetHint');
+  if(h){ h.textContent = msg || ''; }
+}
+$('presetSave').addEventListener('click', () => {
+  const name = (window.prompt('给这套参数起个名字（如：惩罚者·竖版快剪）') || '').trim();
+  if(!name) return;
+  const all = presetAll();
+  const overwrite = all[name] !== undefined;
+  all[name] = presetCurrent();
+  if(!presetWrite(all)) return;
+  presetFill();
+  $('presetSel').value = name;
+  presetHint((overwrite ? '已更新' : '已保存') + '「' + name + '」· 含 '
+    + Object.keys(all[name]).length + ' 个参数');
+  toast((overwrite ? '已更新' : '已保存') + '预设：' + name, 'ok');
+});
+$('presetSel').addEventListener('change', () => {
+  const name = $('presetSel').value, all = presetAll();
+  if(!name || !all[name]){ presetHint(''); return; }
+  const v = all[name];
+  ADV_IDS.forEach(id => { const el = $(id); if(el && v[id] !== undefined) el.value = v[id]; });
+  advSave();                       // 套用后同步「上次参数」，重开窗口仍是这套
+  presetHint('已套用「' + name + '」· 下次生成即生效');
+  toast('已套用预设：' + name, 'ok');
+});
+$('presetDel').addEventListener('click', () => {
+  const name = $('presetSel').value, all = presetAll();
+  if(!name || !all[name]){ toast('请先选择一个预设', 'bad'); return; }
+  if(!window.confirm('删除预设「' + name + '」？')) return;
+  delete all[name];
+  if(!presetWrite(all)) return;
+  presetFill();
+  $('presetSel').value = '';
+  presetHint('已删除「' + name + '」');
+  toast('已删除预设：' + name, 'ok');
+});
+presetFill();
 
 /* ── 查剧情（与网页版同一条 /api/deepseek_plot 链，仅加 UI 入口） ── */
 $('npPlotLookup').addEventListener('click', async () => {
@@ -2129,6 +2226,17 @@ $('exFolder').addEventListener('click', () => {
 });
 $('exBack').addEventListener('click', () => switchView('adjust'));
 $('exNew').addEventListener('click', () => newProject());
+
+/* ── 新版本自检（候选 B，非阻塞）──
+   启动 2 秒后才查一次；后端 3s 超时且断网静默，所以这里任何异常都不打扰主人。
+   只提示、不自动下载、不改配置。 */
+setTimeout(() => {
+  fetch('/api/version_check').then(r => r.json()).then(v => {
+    if(v && v.ok && v.has_update){
+      toast('发现新版本 ' + v.latest + '（当前 ' + v.current + '），可在 GitHub Releases 下载', 'ok');
+    }
+  }).catch(() => {});
+}, 2000);
 
 /* ── 启动 ── */
 setStatus('就绪');

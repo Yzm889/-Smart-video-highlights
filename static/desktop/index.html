@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css">
+<link rel="stylesheet" href="desktop.css?v=2">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -124,6 +124,13 @@
       </div>
       <button class="np-adv-toggle" id="npAdvToggle">⚙ 高级设置（时长 · 字幕 · 导出交付）<span class="adv-arrow" id="npAdvArrow">展开 ▾</span></button>
       <div class="adv-body" id="npAdvBody" style="display:none">
+        <div class="preset-bar">
+          <span class="preset-label">参数预设</span>
+          <select id="presetSel" aria-label="选择参数预设"><option value="">（上次使用的参数）</option></select>
+          <button type="button" id="presetSave" class="preset-btn">保存为预设</button>
+          <button type="button" id="presetDel" class="preset-btn preset-del">删除</button>
+          <span id="presetHint" class="preset-hint"></span>
+        </div>
         <div class="adv-grid">
           <div class="adv-item"><label>目标成片时长</label>
             <select id="advTarget"><option value="0">全片（不压时长）</option><option value="600">约 10 分钟</option><option value="300">约 5 分钟</option><option value="60">约 1 分钟</option></select></div>
@@ -380,6 +387,6 @@
   </div>
 </div>
 
-<script src="desktop.js"></script>
+<script src="desktop.js?v=2"></script>
 </body>
 </html>
