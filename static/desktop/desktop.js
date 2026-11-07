@@ -138,7 +138,8 @@ if(window.pywebview) initDesktop();
    渐进渲染：各接口独立落地、各自刷新——快行先显示，不被慢探测（模型 ping 可达 10s+）拖住。
    【曾犯的错】v1 把整卡渲染压在 Promise.all 后面，冷启动时"检查中…"卡半分钟还锁死重试。 */
 const _envData = {local: null, wsp: null, vlm: null, ai: null};
-let _envActive = false;   // 有拉取/下载任务时 2.5s 加密轮询
+let _envActive = false;   // 有拉取/下载/安装任务时 2.5s 加密轮询
+let _envAutoEnabled = false;   // 已自动打开「启用本地模型」开关（一次）
 
 function _envGet(u){
   const c = new AbortController();
@@ -159,18 +160,39 @@ function renderEnv(){
   const rows = [];
   const lm = (L && L.model) || 'qwen3:8b';
 
-  // ① Ollama 引擎（AI 运行时）
-  const ollamaUp = !!(L && L.ready);
-  rows.push('<div class="env-row"><div class="en-name">Ollama 本地引擎<small>AI 运行时（免费 · 全程本地）</small></div>'
-    + (!L ? chk() : (ollamaUp ? okB('运行中') : noB('未就绪') + btn('install', '安装/启动'))) + '</div>');
+  // ① Ollama 引擎：服务真实状态（与配置解耦，直探 11434）
+  //   【实测踩中】旧版拿配置 ping 当服务状态——EXE 无配置快照时 enabled=false，
+  //   Ollama 明明在跑也显示未就绪，还会误触 1.5GB 重装（已装环境重装必失败）。
+  const ollamaUp = !!(L && L.ollama_running);
+  if(L && L.ollama_installing){
+    rows.push('<div class="env-row"><div class="en-name">Ollama ' + (L.ollama_install_phase || '处理中') + '<small>'
+      + (L.ollama_install_msg || '') + '</small></div>' + wB((L.ollama_install_pct || 0) + '%') + '</div>');
+  } else {
+    rows.push('<div class="env-row"><div class="en-name">Ollama 本地引擎<small>AI 运行时（免费 · 全程本地）</small></div>'
+      + (!L ? chk() : (ollamaUp ? okB('运行中')
+        : ((L && L.ollama_installed) ? noB('已安装·未运行') + btn('install', '启动')
+                                     : noB('未安装') + btn('install', '安装（约1.5GB）')))) + '</div>');
+  }
 
-  // ② 文字大脑（写解说稿，必装）
+  // ② 文字大脑（写解说稿，必装）：看模型是否真在 Ollama 里，不依赖配置开关
+  let txtOk = false;
   if(L && L.pulling){
     rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + (L.pull_model || lm) + '<small>' + (L.pull_msg || '拉取中') + '</small></div>' + wB((L.pull_pct || 0) + '%') + '</div>');
+  } else if(!L){
+    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + lm + '<small>写解说稿的核心（约 4.7GB，一次下载）</small></div>' + chk() + '</div>');
   } else {
-    const txtOk = !!(L && L.ready && L.infer_ok !== false);
-    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + lm + '<small>写解说稿的核心（约 4.7GB，一次下载）</small></div>'
-      + (!L ? chk() : (txtOk ? okB('就绪') : noB('未拉取') + btn('pulltext', '拉取'))) + '</div>');
+    txtOk = (L.installed || []).some(m => (m || '').split(':')[0] === lm.split(':')[0]);
+    const sub = txtOk ? (L.enabled ? '写解说稿的核心' : '写解说稿的核心 · 已自动启用本地模型')
+                      : (ollamaUp ? '约 4.7GB，一次下载' : '先启动上方 Ollama');
+    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + lm + '<small>' + sub + '</small></div>'
+      + (txtOk ? okB('就绪') : (ollamaUp ? noB('未拉取') + btn('pulltext', '拉取') : wB('等待'))) + '</div>');
+    // 模型已在而配置开关没开（EXE 首跑无配置快照）：自动打开，否则生成链路不走本地
+    if(txtOk && L.enabled === false && !_envAutoEnabled){
+      _envAutoEnabled = true;
+      fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({local: {enabled: true, base_url: 'http://localhost:11434/v1', model: lm}})})
+        .catch(() => { _envAutoEnabled = false; });
+    }
   }
 
   // ③ 看图模型（可选）
@@ -198,13 +220,13 @@ function renderEnv(){
   rows.push('<div class="env-row"><div class="en-name">配音引擎<small>' + ((vc && vc.ready && vc.label) ? vc.label : ((vc && vc.reason) || '检测中')) + '</small></div>'
     + (!A ? chk() : (vc ? (vc.ready ? okB('就绪') : noB('未就绪')) : wB('…'))) + '</div>');
 
-  const coreOk = ollamaUp && !!(L && L.ready && L.infer_ok !== false) && !!(W && W.ready);
+  const coreOk = ollamaUp && txtOk && !!(W && W.ready);
   rows.unshift('<div class="env-row" style="border-color:' + (coreOk ? 'var(--ok)' : 'var(--warn)') + '">'
     + '<div class="en-name" style="font-size:13px">' + (coreOk
       ? '✅ 环境就绪——选片，开始创作'
       : '⏳ 还差以下组件（点按钮自动完成，约需几分钟）') + '</div></div>');
   box.innerHTML = rows.join('');
-  _envActive = !!(L && L.pulling) || !!(W && W.downloading) || !!(V && V.pulling);
+  _envActive = !!(L && L.pulling) || !!(W && W.downloading) || !!(V && V.pulling) || !!(L && L.ollama_installing);
 }
 
 function refreshEnv(){

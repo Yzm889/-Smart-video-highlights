@@ -1003,13 +1003,22 @@ class Handler(BaseHTTPRequestHandler):
             infer_ok, infer_msg = _w.local_llm_infer_probe()
         except Exception as e:
             infer_ok, infer_msg = False, str(e)[:160]
+        _ost = _w.ollama_service_state()
+        _oi = _w.OLLAMA_INSTALL
         self._send(200, json.dumps({'ok': True, 'enabled': _w.local_llm_enabled(), 'ready': bool(ok),
                                     'message': msg, 'model': _w.local_llm_cfg()['model'],
                                     'infer_ok': bool(infer_ok), 'infer_msg': infer_msg,
                                     'installed': _w._installed_local_models(),
                                     'pulling': _w.LOCAL_PULL['running'], 'pull_model': _w.LOCAL_PULL['model'],
                                     'pull_ok': _w.LOCAL_PULL['ok'], 'pull_msg': _w.LOCAL_PULL['msg'],
-                                    'pull_pct': _w.LOCAL_PULL.get('pct', 0)}).encode('utf-8'),
+                                    'pull_pct': _w.LOCAL_PULL.get('pct', 0),
+                                    # Ollama 服务真实状态（与配置解耦）+ 一键安装/启动进度
+                                    'ollama_installed': _ost['installed'], 'ollama_running': _ost['running'],
+                                    'ollama_installing': _oi['running'],
+                                    'ollama_install_pct': _oi.get('pct', 0),
+                                    'ollama_install_phase': _oi.get('phase', ''),
+                                    'ollama_install_ok': _oi['ok'],
+                                    'ollama_install_msg': _oi['msg']}).encode('utf-8'),
                        'application/json')
 
     def _get_ai_test(self):

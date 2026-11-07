@@ -715,13 +715,76 @@ def _system_proxy():
     return None
 
 
+def ollama_exe_path():
+    """找 ollama.exe：PATH → 已知安装位置。找到返回路径，否则 ''。"""
+    import shutil, os
+    p1 = shutil.which('ollama')
+    if p1:
+        return p1
+    for cand in (os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Programs\Ollama\ollama.exe'),
+                 os.path.join(os.environ.get('ProgramFiles', ''), r'Ollama\ollama.exe'),
+                 os.path.join(os.environ.get('ProgramFiles(x86)', ''), r'Ollama\ollama.exe')):
+        if cand and os.path.isfile(cand):
+            return cand
+    return ''
+
+
+def ollama_service_state():
+    """Ollama 服务真实状态（与 local 配置解耦——配置未启用不代表服务没在跑）。
+    installed：ollama.exe 存在；running：11434 直接响应。"""
+    import urllib.request, os
+    exe = ollama_exe_path()
+    running = False
+    try:
+        with urllib.request.urlopen('http://localhost:11434/api/tags', timeout=2):
+            running = True
+    except Exception:
+        running = False
+    return {'installed': bool(exe) or running, 'running': running, 'exe': exe}
+
+
+def start_ollama_service(exe):
+    """启动 ollama serve（detached，不阻塞调用线程）。返回是否成功发出。"""
+    import subprocess, os
+    try:
+        flags = 0
+        if os.name == 'nt':
+            flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'DETACHED_PROCESS', 0)
+        subprocess.Popen([exe, 'serve'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=flags, close_fds=True)
+        return True
+    except Exception:
+        return False
+
+
 def dispatch_ollama_install(req, prog):
     """下载 OllamaSetup.exe（gh-proxy.com 国内加速）→ 静默安装 → 等 11434 起来。"""
     import subprocess, tempfile, os, time
     import urllib.request
     P = OLLAMA_INSTALL  # 直接用全局 dict 作进度容器，前端 GET 读的就是它
-    P.update(running=True, ok=False, msg='', pct=0, phase='准备下载...', cancel=False)
+    P.update(running=True, ok=False, msg='', pct=0, phase='检查 Ollama 状态...', cancel=False)
     try:
+        # 【实测踩中】本机已装 Ollama 时重跑安装器会 exit 1（文件占用/初始化失败），
+        # 且白下 1.5GB。先分流：在跑→直接就绪；装了没跑→启动服务；真没装才下载安装。
+        st = ollama_service_state()
+        if st['running']:
+            P.update(ok=True, msg='Ollama 已在运行', pct=100, phase='就绪')
+            return
+        if st['installed']:
+            P['phase'] = 'Ollama 已安装，正在启动服务...'
+            P['pct'] = 50
+            start_ollama_service(st['exe'])
+            import time as _t
+            for _ in range(20):
+                try:
+                    import urllib.request as _u
+                    _u.urlopen('http://localhost:11434/api/tags', timeout=2)
+                    P.update(ok=True, msg='Ollama 服务已启动', pct=100, phase='就绪')
+                    return
+                except Exception:
+                    _t.sleep(1)
+            raise RuntimeError('Ollama 服务启动超时（可手动打开 Ollama 程序再点刷新）')
         url = 'https://gh-proxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
         P['phase'] = '下载 OllamaSetup.exe（~1.5GB，gh-proxy 加速）...'
         exe = os.path.join(tempfile.gettempdir(), 'OllamaSetup.exe')

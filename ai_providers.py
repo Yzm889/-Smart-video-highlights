@@ -780,7 +780,8 @@ def local_llm_cfg():
     return {
         'enabled': cfg.get('enabled', False),
         'base_url': (cfg.get('base_url') or 'http://localhost:11434/v1').rstrip('/'),
-        'model': cfg.get('model') or 'qwen2.5:latest',
+        # 默认与桌面版装机引导一致（2026-11-07：EXE 无配置快照时旧默认 qwen2.5 会拉错模型）
+        'model': cfg.get('model') or 'qwen3:8b',
         'api_key': cfg.get('api_key') or '',
     }
 
