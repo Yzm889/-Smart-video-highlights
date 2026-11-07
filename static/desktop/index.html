@@ -6,6 +6,25 @@
 <link rel="stylesheet" href="desktop.css">
 </head>
 <body>
+<!-- SVG 图标库（线性 · currentColor 跟随变色） -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.5"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></symbol>
+  <symbol id="i-subtitle" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+</svg>
+
 <!-- 菜单栏 -->
 <div class="menubar">
   <div class="menu" data-menu="file"><span>文件</span>
@@ -44,14 +63,14 @@
 <div class="toolbar">
   <span class="proj-name" id="projName">未打开项目</span>
   <span class="tb-sep"></span>
-  <button class="tb-btn primary" id="tbGenerate">🎙 生成方案</button>
-  <button class="tb-btn" id="tbCompose" disabled>🎬 合成视频</button>
+  <button class="tb-btn primary" id="tbGenerate"><svg class="ic"><use href="#i-mic"/></svg>生成方案</button>
+  <button class="tb-btn" id="tbCompose" disabled><svg class="ic"><use href="#i-film"/></svg>合成视频</button>
   <span class="tb-flex"></span>
-  <button class="tb-btn" id="tbSrt" title="导入 SRT 字幕文件（字幕是命脉：剧情理解准+时间轴零偏差）">📄 导入字幕</button>
-  <button class="tb-btn" id="tbMusic" title="选择本地音乐文件（加配乐）">🎵 配乐</button>
-  <button class="tb-btn tgl on" id="tbNarr" title="整条解说配音轨开关">🎙 解说轨</button>
-  <button class="tb-btn tgl on" id="tbOrig" title="整条原片声音轨开关">🎬 原声轨</button>
-  <button class="tb-btn" id="tbSettings" title="AI 配置：Key / 模型 / Whisper 下载">⚙ 设置</button>
+  <button class="tb-btn" id="tbSrt" title="导入 SRT 字幕文件（字幕是命脉：剧情理解准+时间轴零偏差）"><svg class="ic"><use href="#i-subtitle"/></svg>导入字幕</button>
+  <button class="tb-btn" id="tbMusic" title="选择本地音乐文件（加配乐）"><svg class="ic"><use href="#i-music"/></svg>配乐</button>
+  <button class="tb-btn tgl on" id="tbNarr" title="整条解说配音轨开关"><svg class="ic"><use href="#i-mic"/></svg>解说轨</button>
+  <button class="tb-btn tgl on" id="tbOrig" title="整条原片声音轨开关"><svg class="ic"><use href="#i-volume"/></svg>原声轨</button>
+  <button class="tb-btn" id="tbSettings" title="AI 配置：Key / 模型 / 配音音色 / Whisper 下载"><svg class="ic"><use href="#i-settings"/></svg>设置</button>
 </div>
 
 <!-- 主工作区 -->
@@ -71,14 +90,14 @@
         <div class="recent-list" id="recentList"></div>
       </div>
       <button class="np-pick" id="npPick">
-        <span class="np-pick-icon">📁</span>
+        <svg class="ic ic-big"><use href="#i-folder"/></svg>
         <span id="npPickLabel">从电脑选择视频</span>
       </button>
       <div class="field">
         <label>片名 / 主题（用于搜剧情，可留空）</label>
         <div class="np-name-row">
           <input type="text" id="npName" placeholder="例如：惩罚者 第一季第一集">
-          <button class="mini-btn" id="npPlotLookup" title="按片名用 AI 检索剧情梗概，填入下方剧情框">🔎 查剧情</button>
+          <button class="mini-btn" id="npPlotLookup" title="按片名用 AI 检索剧情梗概，填入下方剧情框"><svg class="ic"><use href="#i-search"/></svg>查剧情</button>
         </div>
       </div>
       <div class="field">
@@ -134,8 +153,8 @@
     <div class="ed-left">
       <div class="panel-head">字幕 <span class="ph-sub" id="capCount"></span></div>
       <div class="cap-tools">
-        <button class="mini-btn" id="capAdd">➕ 指针处添加</button>
-        <button class="mini-btn" id="capDel">🗑 删除选中</button>
+        <button class="mini-btn" id="capAdd"><svg class="ic"><use href="#i-plus"/></svg>指针处添加</button>
+        <button class="mini-btn" id="capDel"><svg class="ic"><use href="#i-trash"/></svg>删除选中</button>
       </div>
       <div class="cap-list" id="capList"></div>
     </div>
@@ -145,7 +164,9 @@
         <div class="sub-overlay" id="subOverlay"></div>
       </div>
       <div class="tl-card" id="tlCard">
-        <div class="tl-head"><span>时间轴</span><span class="hint-inline">空格播放 · ←→ 跳转 · 点色块选中</span></div>
+        <div class="tl-head"><span>时间轴</span>
+          <span class="hint-inline">空格播放 · ←→ 跳转 · 点色块选中 · 点空白处定位</span>
+          <span class="tl-zoom"><button class="mini-btn" id="tlZoomOut" title="缩小">−</button><span id="tlZoomVal"></span><button class="mini-btn" id="tlZoomIn" title="放大">＋</button></span></div>
         <div class="tl-scroll" id="tlScroll"><div class="tl-inner" id="tlInner">
           <div class="tl-ruler" id="tlRuler"></div>
           <div class="tl-track" id="tlTrack"></div>
@@ -158,16 +179,16 @@
         <video id="exPlayer" controls playsinline></video>
         <div class="ex-meta" id="exPath"></div>
         <div class="ex-actions">
-          <button class="tb-btn" id="exFolder">📂 打开所在文件夹</button>
-          <button class="tb-btn" id="exBack">✏️ 继续调整</button>
-          <button class="tb-btn" id="exNew">🆕 新建项目</button>
+          <button class="tb-btn" id="exFolder"><svg class="ic"><use href="#i-folder"/></svg>打开所在文件夹</button>
+          <button class="tb-btn" id="exBack"><svg class="ic"><use href="#i-edit"/></svg>继续调整</button>
+          <button class="tb-btn" id="exNew"><svg class="ic"><use href="#i-plus"/></svg>新建项目</button>
         </div>
       </div>
     </div>
     <div class="ed-right">
       <div class="panel-head">检查器</div>
       <div class="ins-body" id="insBody">
-        <div class="ins-empty">点选一段字幕</div>
+        <div class="empty-state">点选一段字幕<small>在这里调音量、改画面范围、设原声引用</small></div>
       </div>
     </div>
   </div>
@@ -189,14 +210,14 @@
     <div class="modal-title" id="gmTitle">正在生成…</div>
     <div class="pbar big"><i id="gmFill"></i></div>
     <div class="modal-meta" id="gmMeta">准备中</div>
-    <button class="tb-btn" id="gmCancel" style="margin-top:16px">⏹ 取消生成</button>
+    <button class="tb-btn" id="gmCancel" style="margin-top:16px"><svg class="ic"><use href="#i-stop"/></svg>取消生成</button>
   </div>
 </div>
 
 <!-- 设置对话框 -->
 <div class="modal-mask" id="settingsMask" style="display:none">
   <div class="modal settings">
-    <div class="modal-title">⚙ 设置 <button class="mini-btn" id="settingsClose" style="float:right">✕</button></div>
+    <div class="modal-title">设置 <button class="mini-btn" id="settingsClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
     <div class="set-grid">
       <div class="set-sec">
         <div class="set-h">云端 Key（可选 · 配了自动用云端增强）</div>
@@ -232,7 +253,7 @@
         <div class="set-h">Whisper 台词识别模型</div>
         <div class="set-row">
           <select id="setWhisperModel"></select>
-          <button class="mini-btn" id="btnWhisperDl">📥 下载选中模型</button>
+          <button class="mini-btn" id="btnWhisperDl"><svg class="ic"><use href="#i-download"/></svg>下载选中模型</button>
         </div>
         <div class="hint" id="whisperDlStatus"></div>
       </div>
@@ -246,7 +267,7 @@
 <!-- 成片历史 -->
 <div class="modal-mask" id="histMask" style="display:none">
   <div class="modal hist">
-    <div class="modal-title">🕘 成片历史 <button class="mini-btn" id="histClose" style="float:right">✕</button></div>
+    <div class="modal-title">成片历史 <button class="mini-btn" id="histClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
     <div id="histList"><div class="ins-empty">加载中…</div></div>
   </div>
 </div>

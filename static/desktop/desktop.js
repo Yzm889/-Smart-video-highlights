@@ -30,20 +30,24 @@ const _fmt = sec => {
   return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
 };
 function toast(msg, kind){
-  let t = document.getElementById('dtoast');
-  if(!t){
-    t = document.createElement('div');
-    t.id = 'dtoast';
-    t.style.cssText = 'position:fixed;bottom:40px;left:50%;transform:translateX(-50%);' +
-      'background:#2d2d2d;color:var(--txt);padding:9px 20px;border-radius:6px;font-size:13px;' +
-      'z-index:500;border:1px solid var(--line);box-shadow:0 6px 18px rgba(0,0,0,.5);transition:opacity .3s';
-    document.body.appendChild(t);
+  let wrap = document.getElementById('toastWrap');
+  if(!wrap){
+    wrap = document.createElement('div');
+    wrap.id = 'toastWrap';
+    wrap.className = 'toast-wrap';
+    document.body.appendChild(wrap);
   }
+  while(wrap.children.length >= 3) wrap.removeChild(wrap.firstChild);
+  const t = document.createElement('div');
+  t.className = 'toast' + (kind === 'bad' ? ' bad' : (kind === 'ok' || /✅/.test(msg) ? ' ok' : ''));
+  t.setAttribute('role', 'alert');
   t.textContent = msg;
-  t.style.borderColor = kind === 'bad' ? 'var(--bad)' : 'var(--line)';
-  t.style.opacity = '1';
-  clearTimeout(t._h);
-  t._h = setTimeout(() => t.style.opacity = '0', 2600);
+  wrap.appendChild(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 260); }, 2600);
+}
+function setBtnIcon(id, icon, text){
+  const b = $(id);
+  if(b) b.innerHTML = '<svg class="ic"><use href="#' + icon + '"/></svg>' + text;
 }
 function setStatus(s, kind){
   const el = $('stState');
@@ -80,6 +84,14 @@ document.querySelectorAll('.menu').forEach(m => {
 });
 document.addEventListener('click', () =>
   document.querySelectorAll('.menu').forEach(x => x.classList.remove('open')));
+document.querySelectorAll('.menu').forEach(m => {   // 已展开时划过即切换（桌面软件惯例）
+  m.addEventListener('mouseenter', () => {
+    if(document.querySelector('.menu.open') && !m.classList.contains('open')){
+      document.querySelectorAll('.menu').forEach(x => x.classList.remove('open'));
+      m.classList.add('open');
+    }
+  });
+});
 const _acts = {
   new(){ newProject(); },
   openfolder(){ openOutFolder(); },
@@ -101,9 +113,9 @@ document.querySelectorAll('.mi').forEach(mi => {
 });
 function refreshMenus(){
   document.querySelector('[data-act="tgnarr"]').textContent =
-    '解说轨：' + (_narrOn ? '开' : '禁音');
+    '解说轨：' + (_narrOn ? '✓ 开' : '禁音');
   document.querySelector('[data-act="tgorig"]').textContent =
-    '原声轨：' + (_origOn ? '开' : '禁音');
+    '原声轨：' + (_origOn ? '✓ 开' : '禁音');
 }
 
 /* ── 桌面模式初始化 ── */
@@ -422,6 +434,10 @@ function _engineSummary(){
 /* ── 字幕面板（左） ── */
 function renderCaps(){
   const list = $('capList');
+  if(!_items.length){
+    list.innerHTML = '<div class="empty-state">生成后，字幕段会出现在这里<small>也可播放到任意位置点「指针处添加」</small></div>';
+    return;
+  }
   list.innerHTML = _items.map((it, i) => {
     const vs = it.video_start || 0;
     const sel = i === _sel ? ' sel' : '';
@@ -498,7 +514,10 @@ function selectSeg(i){
 function renderInspector(i){
   const it = _items[i];
   const body = $('insBody');
-  if(!it){ body.innerHTML = '<div class="ins-empty">点选一段字幕</div>'; return; }
+  if(!it){
+    body.innerHTML = '<div class="empty-state">点选一段字幕<small>在这里调音量、改画面范围、设原声引用</small></div>';
+    return;
+  }
   if(it.quote){
     body.innerHTML = '<div class="ins-empty" style="color:var(--ok)">🎬 原声引用段<br>保留原片声音</div>'
       + '<div class="ins-sep"></div>'
@@ -540,10 +559,13 @@ function renderInspector(i){
 
 /* ── 时间轴 ── */
 const TL_COLORS = ['#569cd6','#c586c0','#ce9178','#dcdcaa','#4ec9b0','#9cdcfe','#f48771','#6a9955'];
+let _pxPerSec = 12;   // 缩放：4~80
 function renderTimeline(){
   const inner = $('tlInner');
   const total = Math.max(10, Math.ceil(_vdur));
-  inner.style.width = Math.max(600, total * 12) + 'px';
+  inner.style.width = Math.max(600, total * _pxPerSec) + 'px';
+  const zv = $('tlZoomVal');
+  if(zv) zv.textContent = Math.round(_pxPerSec) + 'px/s';
   let ruler = '';
   const step = total > 600 ? 60 : total > 180 ? 30 : total > 60 ? 10 : 5;
   for(let t = 0; t <= total; t += step){
@@ -556,9 +578,10 @@ function renderTimeline(){
     const vd = Math.max(0.1, (it.video_end || 0) - (it.video_start || 0));
     const left = cum / total * 100, w = vd / total * 100;
     const cls = (it.quote ? ' quote' : '') + (it._skip ? ' skip' : '') + (i === _sel ? ' sel' : '');
-    html += '<div class="tl-block' + cls + '" data-i="' + i + '" style="left:' + left + '%;width:'
+    const tip = _esc(_clean(it.text).slice(0, 60)) || (it.quote ? '原声引用' : '');
+    html += '<div class="tl-block' + cls + '" data-i="' + i + '" title="' + tip + '" style="left:' + left + '%;width:'
       + w + '%;background:' + (it.quote ? '#10b981' : TL_COLORS[i % TL_COLORS.length]) + '">'
-      + '<span>' + (it.quote ? '🎬' : '#' + (i + 1)) + '</span></div>';
+      + '<span>' + (it.quote ? '原声' : '#' + (i + 1)) + '</span></div>';
     cum += vd;
   });
   $('tlTrack').innerHTML = html;
@@ -567,6 +590,32 @@ function renderTimeline(){
   });
   updatePlayhead();
 }
+(function(){
+  const sc = $('tlScroll');
+  let scrubbing = false;
+  const seekAt = e => {
+    const rect = sc.getBoundingClientRect();
+    const x = e.clientX - rect.left + sc.scrollLeft;
+    const total = Math.max(10, _vdur || 0);
+    const t = Math.max(0, Math.min(total, x / _pxPerSec));
+    const v = $('pvVideo');
+    if(v && v.duration) v.currentTime = Math.min(t, Math.max(0, v.duration - 0.05));
+  };
+  sc.addEventListener('mousedown', e => {
+    if(e.target.closest('.tl-block')) return;   // 色块点击仍是选中
+    scrubbing = true;
+    seekAt(e);
+  });
+  window.addEventListener('mousemove', e => { if(scrubbing) seekAt(e); });
+  window.addEventListener('mouseup', () => scrubbing = false);
+  const zm = dir => {
+    _pxPerSec = Math.max(4, Math.min(80, _pxPerSec * (dir > 0 ? 1.4 : 1 / 1.4)));
+    renderTimeline();
+  };
+  const zi = $('tlZoomIn'), zo = $('tlZoomOut');
+  if(zi) zi.addEventListener('click', () => zm(1));
+  if(zo) zo.addEventListener('click', () => zm(-1));
+})();
 function updatePlayhead(){
   const v = $('pvVideo');
   const ph = $('tlPlayhead');
@@ -682,7 +731,7 @@ function toggleNarrTrack(){
   _narrOn = !_narrOn;
   const b = $('tbNarr');
   b.classList.toggle('on', _narrOn);
-  b.textContent = _narrOn ? '🎙 解说轨' : '🎙 解说轨✕';
+  setBtnIcon('tbNarr', 'i-mic', _narrOn ? '解说轨' : '解说轨✕');
   _items.forEach((it, i) => applyNarrVolume(i));
   const el = _narrElFor(_curSeg);
   if(el) el.muted = !_narrOn;
@@ -692,7 +741,7 @@ function toggleOrigTrack(){
   _origOn = !_origOn;
   const b = $('tbOrig');
   b.classList.toggle('on', _origOn);
-  b.textContent = _origOn ? '🎬 原声轨' : '🎬 原声轨✕';
+  setBtnIcon('tbOrig', 'i-volume', _origOn ? '原声轨' : '原声轨✕');
   const v = $('pvVideo');
   if(v) v.muted = !_origOn;
   refreshMenus();
@@ -747,6 +796,13 @@ function delSelected(){
 document.addEventListener('keydown', e => {
   const inField = /INPUT|TEXTAREA/.test((e.target.tagName || ''));
   if(e.ctrlKey && e.key === 'n'){ e.preventDefault(); newProject(); return; }
+  if(e.key === 'Escape'){
+    ['settingsMask', 'histMask'].forEach(id => {
+      const m = $(id);
+      if(m && m.style.display !== 'none') m.style.display = 'none';
+    });
+    return;
+  }
   if(inField) return;
   if(e.code === 'Space'){ e.preventDefault(); togglePlay(); }
   else if(e.key === 'ArrowLeft'){ const v = $('pvVideo'); if(v) v.currentTime = Math.max(0, v.currentTime - 1); }
@@ -802,8 +858,7 @@ function importSrt(){
     return window.pywebview.api.read_text_file(r.path).then(t => {
       if(!t.ok) throw new Error(t.error || '读取失败');
       _srt = {name: name, text: t.text};
-      const b = $('tbSrt');
-      if(b) b.textContent = '📄 字幕 ✓';
+      setBtnIcon('tbSrt', 'i-subtitle', '字幕 ✓');
       toast('字幕已导入：' + name);
     });
   }).catch(e => toast('字幕导入失败：' + e.message, 'bad'));
@@ -816,8 +871,7 @@ function pickLocalMusic(){
   window.pywebview.api.pick_music().then(r => {
     if(!r || !r.path) return;
     _music = {name: r.name, path: r.path, isLocalPath: true};
-    const b = $('tbMusic');
-    if(b) b.textContent = '🎵 ' + _music.name.slice(0, 14);
+    setBtnIcon('tbMusic', 'i-music', _music.name.slice(0, 14));
     const bg = $('npBgm'); if(bg) bg.checked = true;
     toast('配乐已选：' + _music.name);
   }).catch(e => toast('选乐失败：' + e.message, 'bad'));
@@ -991,8 +1045,8 @@ function openHistory(){
         + '<small>' + _esc(h.time || '') + (h.duration ? ' · ' + h.duration + 's' : '') + '</small></div>'
         + '<div class="hist-acts">'
         + (h.missing ? '' : '<button class="mini-btn" data-play="' + i + '">▶ 播放</button>'
-                        + '<button class="mini-btn" data-folder="' + i + '">📂 位置</button>')
-        + '<button class="mini-btn" data-del="' + i + '">🗑</button></div></div>';
+                        + '<button class="mini-btn" data-folder="' + i + '" title="打开所在文件夹"><svg class="ic"><use href="#i-folder"/></svg></button>')
+        + '<button class="mini-btn" data-del="' + i + '" title="删除这条记录"><svg class="ic"><use href="#i-trash"/></svg></button></div></div>';
     }).join('');
     $('histList').querySelectorAll('[data-play]').forEach(b => b.addEventListener('click', () => {
       const h = _histItems[+b.dataset.play];

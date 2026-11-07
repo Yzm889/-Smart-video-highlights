@@ -1,10 +1,12 @@
 /* 一帧成片 · 桌面版 v2 —— 固定应用骨架 · 密排版 · NLE 工作站布局 */
 :root{
+  color-scheme:dark;   /* 原生控件（select 弹层/滚动条/勾选框）按深色渲染 */
   --bg:#141414; --panel:#1e1e1e; --panel2:#252526; --line:#333;
   --line2:#3f3f46; --card:#1b1b1f; --r:10px;
   --txt:#d4d4d4; --muted:#9d9d9d; --dim:#6a6a6a;
   --acc:#0a84ff; --acc-dim:#0a84ff33; --ok:#4ec9b0; --warn:#dcdcaa; --bad:#f48771;
   --head-h:26px; --tb-h:38px; --sb-h:24px;
+  --ease:cubic-bezier(.2,.9,.3,1);
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden}
@@ -14,21 +16,35 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:#3c3c3c;border:2px solid var(--panel);border-radius:5px}
+::-webkit-scrollbar-thumb:hover{background:#4a4a4a}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* ── 运动体系：统一过渡 / 按压态 / 焦点环 ── */
+.tb-btn,.mini-btn,.env-btn,.ins-quote-btn,.np-adv-toggle{transition:background .13s var(--ease),border-color .13s var(--ease),color .13s var(--ease),filter .13s var(--ease)}
+.menu>span,.mi,.cap-row,.tl-block,.recent-row,.hist-row,.np-pick,.env-row{transition:background .13s var(--ease),border-color .13s var(--ease),color .13s var(--ease)}
+.tb-btn:active,.mini-btn:active,.env-btn:active,.ins-quote-btn:active,.np-adv-toggle:active{filter:brightness(.85)}
+button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outline-offset:-1px;border-radius:4px}
+
+/* ── SVG 图标 ── */
+.ic{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round;vertical-align:-2.5px;margin-right:5px;flex:none}
+.ic-big{width:22px;height:22px;margin-right:9px;vertical-align:-5px}
 
 /* ── 菜单栏 ── */
 .menubar{height:var(--head-h);flex:none;background:var(--panel);border-bottom:1px solid var(--line);
   display:flex;align-items:center;padding:0 4px;position:relative}
 .menu{position:relative}
 .menu>span{display:inline-block;padding:4px 10px;font-size:12.5px;color:var(--txt);cursor:default;border-radius:4px}
-.menu:hover>span{background:#2d2d2d}
-.menu-dd{display:none;position:absolute;top:100%;left:0;min-width:230px;background:var(--panel2);
-  border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.5);padding:4px;z-index:100}
+.menu:hover>span,.menu.open>span{background:#2d2d2d}
+.menu-dd{display:none;position:absolute;top:100%;left:0;min-width:240px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.5);padding:4px;z-index:100;
+  animation:ddIn .13s ease-out}
 .menu.open .menu-dd{display:block}
-.mi{display:flex;justify-content:space-between;padding:6px 12px;font-size:12.5px;border-radius:4px;cursor:pointer}
-.mi:hover{background:var(--acc);color:#fff}
+@keyframes ddIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.mi{display:flex;justify-content:space-between;padding:6px 14px;font-size:12.5px;border-radius:4px;cursor:pointer}
+.mi:hover{background:#3a3a3a;color:var(--txt)}
 .mi .hk{color:var(--dim);margin-left:18px}
-.mi:hover .hk{color:#cfe0ff}
+.mi:hover .hk{color:var(--dim)}
 .sep{height:1px;background:var(--line);margin:4px 6px}
 .menu-title{margin-left:auto;margin-right:10px;font-size:11.5px;color:var(--dim);letter-spacing:.05em}
 
@@ -151,7 +167,12 @@ input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
 /* 时间轴 */
 .tl-card{flex:1;min-height:0;display:flex;flex-direction:column;border-top:1px solid var(--line);background:var(--panel)}
 .tl-head{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;flex:none;
-  font-size:12px;color:var(--muted)}
+  font-size:12px;color:var(--muted);gap:10px}
+.tl-zoom{display:flex;align-items:center;gap:6px;flex:none}
+.tl-zoom .mini-btn{padding:1px 8px;font-size:12px}
+#tlZoomVal{font-size:10.5px;color:var(--dim);min-width:46px;text-align:center;
+  font-variant-numeric:tabular-nums}
+.cap-time,.tl-ruler,#stTime,.ins-range .rv{font-variant-numeric:tabular-nums}
 .tl-scroll{flex:1;overflow-x:auto;overflow-y:hidden;position:relative}
 .tl-inner{position:relative;height:100%;min-width:100%}
 .tl-ruler{position:absolute;top:0;left:0;right:0;height:18px;border-bottom:1px solid var(--line);
@@ -174,6 +195,8 @@ input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
 /* 右：检查器 */
 .ins-body{padding:12px;font-size:12.5px;overflow-y:auto}
 .ins-empty{color:var(--dim);text-align:center;padding:20px 0}
+.empty-state{color:var(--dim);text-align:center;padding:28px 14px;font-size:12.5px;line-height:1.8}
+.empty-state small{display:block;color:#585858;font-size:11px;margin-top:4px}
 .ins-row{margin-bottom:14px}
 .ins-row label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
 .ins-row input[type=text],.ins-row input[type=number]{width:100%;background:var(--bg);
@@ -213,6 +236,8 @@ input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
 .modal{width:460px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:22px;
   max-height:80vh;overflow-y:auto}
 .modal-title{font-size:15px;font-weight:600;margin-bottom:16px}
+.modal-mask .modal{animation:popIn .18s cubic-bezier(.2,.9,.3,1.15)}
+@keyframes popIn{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:none}}
 .modal .pbar{height:10px}
 .pbar{background:#3a3a3a;border-radius:5px;overflow:hidden}
 .pbar.big{height:12px}
@@ -231,6 +256,18 @@ input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
   padding:6px;color:var(--txt);font-size:12.5px}
 .set-actions{margin-top:16px;text-align:right}
 .hint{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5}
+
+/* ── Toast 提示 ── */
+.toast-wrap{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);
+  display:flex;flex-direction:column;align-items:center;gap:8px;z-index:600;pointer-events:none}
+.toast{background:#2b2b31;color:var(--txt);padding:9px 18px;border-radius:8px;font-size:13px;
+  border:1px solid var(--line);box-shadow:0 6px 18px rgba(0,0,0,.5);max-width:70vw;
+  animation:toastIn .22s cubic-bezier(.2,.9,.3,1.2)}
+.toast.ok{border-color:rgba(78,201,176,.55)}
+.toast.bad{border-color:rgba(248,113,113,.6)}
+.toast.out{animation:toastOut .25s forwards}
+@keyframes toastIn{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:none}}
+@keyframes toastOut{to{opacity:0;transform:translateY(6px)}}
 
 /* ── 环境检查卡 ── */
 .env-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
