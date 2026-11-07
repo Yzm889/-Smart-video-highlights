@@ -239,8 +239,25 @@ def parse_subtitle_file(path):
     import re as _re
     segs = []
     try:
-        with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
-            lines = f.read().splitlines()
+        with open(path, 'rb') as f:
+            raw = f.read()
+        # 字幕编码不统一：UTF-8(可带 BOM) / GB18030(中文外挂字幕，兼容 GBK、
+        # GB2312) / UTF-16(带 BOM)。逐个严格解码，首个成功的即为正确编码；
+        # 全失败才退回原行为(utf-8-sig + errors=ignore)，保证不抛异常。
+        # 修正：此前硬编码 utf-8-sig + errors=ignore，会把 GB18030 中文字幕
+        # 的字节整段吞掉，文本变乱码、部分条目因空文本被静默丢弃。
+        encs = ('utf-16',) if raw.startswith((b'\xff\xfe', b'\xfe\xff')) else ()
+        encs = encs + ('utf-8-sig', 'gb18030')
+        text = None
+        for enc in encs:
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            text = raw.decode('utf-8-sig', errors='ignore')
+        lines = text.splitlines()
     except Exception:
         return []
     # ASS/SSA：Dialogue: 起始,结束,...,文本
