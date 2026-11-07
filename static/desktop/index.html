@@ -98,17 +98,28 @@
       <div class="cap-list" id="capList"></div>
     </div>
     <div class="ed-center">
-      <div class="video-shell">
+      <div class="video-shell" id="videoShell">
         <video id="pvVideo" playsinline></video>
         <div class="sub-overlay" id="subOverlay"></div>
       </div>
-      <div class="tl-card">
+      <div class="tl-card" id="tlCard">
         <div class="tl-head"><span>时间轴</span><span class="hint-inline">空格播放 · ←→ 跳转 · 点色块选中</span></div>
         <div class="tl-scroll" id="tlScroll"><div class="tl-inner" id="tlInner">
           <div class="tl-ruler" id="tlRuler"></div>
           <div class="tl-track" id="tlTrack"></div>
           <div class="tl-playhead" id="tlPlayhead"></div>
         </div></div>
+      </div>
+      <!-- 导出面板（合成成功后替换预览区） -->
+      <div class="export-panel" id="exportPanel" style="display:none">
+        <div class="ex-head">✅ 成片已生成</div>
+        <video id="exPlayer" controls playsinline></video>
+        <div class="ex-meta" id="exPath"></div>
+        <div class="ex-actions">
+          <button class="tb-btn" id="exFolder">📂 打开所在文件夹</button>
+          <button class="tb-btn" id="exBack">✏️ 继续调整</button>
+          <button class="tb-btn" id="exNew">🆕 新建项目</button>
+        </div>
       </div>
     </div>
     <div class="ed-right">
@@ -136,6 +147,7 @@
     <div class="modal-title" id="gmTitle">正在生成…</div>
     <div class="pbar big"><i id="gmFill"></i></div>
     <div class="modal-meta" id="gmMeta">准备中</div>
+    <button class="tb-btn" id="gmCancel" style="margin-top:16px">⏹ 取消生成</button>
   </div>
 </div>
 

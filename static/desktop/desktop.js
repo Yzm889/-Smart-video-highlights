@@ -14,6 +14,8 @@ let _items = [];              // 字幕段
 let _sel = -1;                // 选中的数组下标
 let _narrOn = true, _origOn = true;
 let _pollTimer = null;
+let _pollRunId = '';         // 当前生成任务（供取消）
+let _lastExport = '';         // 最近一次合成成片（供打开文件夹）
 let _undoStack = [], _redoStack = [];
 let _projName = '';
 
@@ -46,7 +48,7 @@ function toast(msg, kind){
 function setStatus(s, kind){
   const el = $('stState');
   el.textContent = '● ' + s;
-  el.className = kind === 'bad' ? 'bad' : (kind === 'ok' ? 'ok' : '');
+  el.className = kind === 'bad' ? 'bad' : (kind === 'ok' ? 'ok' : (kind === 'warn' ? 'warn' : ''));
   el.id = 'stState';
 }
 
@@ -56,10 +58,14 @@ function showEditor(on){
   $('newProj').style.display = on ? 'none' : 'flex';
 }
 function switchView(v){
-  /* 新架构无独立 view 分区：adjust/export = 显示编辑器三栏；
-     media/story = 显示新建项目卡。保留函数名以兼容调用点。 */
-  if(v === 'adjust'){ showEditor(true); return; }
-  if(v === 'export'){ showEditor(true); return; }
+  /* adjust = 编辑器（预览+时间轴）；export = 导出面板替换预览区；
+     其余 = 新建项目卡。保留函数名以兼容调用点。 */
+  const inExport = v === 'export';
+  const vs = $('videoShell'), tl = $('tlCard'), ep = $('exportPanel');
+  if(vs) vs.style.display = inExport ? 'none' : '';
+  if(tl) tl.style.display = inExport ? 'none' : '';
+  if(ep) ep.style.display = inExport ? 'flex' : 'none';
+  if(v === 'adjust' || inExport){ showEditor(true); return; }
   showEditor(false);
 }
 
@@ -246,6 +252,9 @@ function acceptVideo(name, path){
 }
 $('npPlot').addEventListener('input', updateNewProj);
 $('npScript').addEventListener('change', updateNewProj);
+$('npBgm').addEventListener('change', () => {
+  if($('npBgm').checked && !_music && window.pywebview && window.pywebview.api) pickLocalMusic();
+});
 
 $('npGo').addEventListener('click', async () => {
   const btn = $('npGo');
@@ -272,7 +281,7 @@ $('npGo').addEventListener('click', async () => {
     }
   };
   if(_srt) body.subtitle_file = {name: _srt.name, text: _srt.text};
-  if(_music) body.music = {name: _music.name, path: _music.path, desktop_token: _token};
+  if(_music && $('npBgm').checked) body.music = {name: _music.name, path: _music.path, desktop_token: _token};
   try {
     const r = await fetch('/api/movie_tts', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -287,6 +296,7 @@ $('npGo').addEventListener('click', async () => {
 });
 function pollTTS(runid){
   _runDir = runid;
+  _pollRunId = runid;
   if(_pollTimer) clearInterval(_pollTimer);
   _pollTimer = setInterval(async () => {
     try {
@@ -317,9 +327,20 @@ function openEditor(){
   showEditor(true);
   switchView('adjust');
 }
+$('gmCancel').addEventListener('click', async () => {
+  if(_pollRunId){
+    try { await fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({runid: _pollRunId})}); } catch(e){ /* 尽力取消 */ }
+  }
+  if(_pollTimer) clearInterval(_pollTimer);
+  $('genMask').style.display = 'none';
+  $('npGo').disabled = false;
+  toast('已取消生成');
+});
 
 /* ── 加载调整数据 ── */
 async function loadAdjustItems(runDir){
+  _runDir = runDir;   // 恢复项目/最近任务进来时也要有 _runDir（否则合成守卫拦截）
   const r = await fetch('/api/tts_state?run_dir=' + encodeURIComponent(runDir));
   const st = await r.json();
   if(!st.ok) throw new Error(st.error || '读取方案失败');
@@ -334,6 +355,15 @@ async function loadAdjustItems(runDir){
   _sel = -1;
   renderCaps(); ensureNarrElements(); renderTimeline(); setupPreview();
   $('capCount').textContent = '· ' + _items.length + ' 段';
+  $('tbCompose').disabled = false;
+  $('stEngine').textContent = _engineSummary();
+}
+function _engineSummary(){
+  const parts = [];
+  if(_envData.local && _envData.local.model) parts.push('大脑 ' + _envData.local.model);
+  const v = _envData.ai && _envData.ai.voice;
+  if(v && v.ready && v.label) parts.push(v.label);
+  return parts.join(' · ');
 }
 
 /* ── 字幕面板（左） ── */
@@ -366,7 +396,15 @@ function renderCaps(){
       if(_items[i]) _items[i].text = ta.value;
     });
     ta.addEventListener('keydown', e => e.stopPropagation());
-    ta.addEventListener('change', () => scheduleStatus());
+    ta._snap = JSON.stringify(_items);
+    ta.addEventListener('change', () => {
+      if(ta._snap && ta._snap !== JSON.stringify(_items)){
+        _undoStack.push(ta._snap);
+        if(_undoStack.length > 50) _undoStack.shift();
+        _redoStack = [];
+      }
+      scheduleStatus();
+    });
   });
   list.querySelectorAll('[data-del]').forEach(b => {
     b.addEventListener('click', () => {
@@ -383,8 +421,8 @@ function scheduleStatus(){
   clearTimeout(_statusTimer);
   _statusTimer = setTimeout(() => {
     const n = _items.filter((it, i) =>
-      !_items[i]._skip && _clean(it.text) !== (it.audio_text || '').trim()).length;
-    $('stState').textContent = n ? '● ' + n + ' 段改词待重配（合成时自动）' : '● 就绪';
+      !_items[i]._skip && _clean(it.text) !== _clean(it.audio_text || '')).length;
+    setStatus(n ? n + ' 段改词待重配（合成时自动）' : '就绪', n ? 'warn' : '');
   }, 300);
 }
 
@@ -665,6 +703,9 @@ document.addEventListener('keydown', e => {
   else if(e.ctrlKey && e.key === 'y'){ e.preventDefault(); redoAdjust(); }
 });
 
+$('capAdd').addEventListener('click', addCaptionAtPlayhead);
+$('capDel').addEventListener('click', delSelected);
+
 /* ── 新建/导出/打开文件夹 ── */
 function newProject(){
   _pushUndo();
@@ -692,7 +733,7 @@ function openOutFolder(){
     toast('成片在 webui_output 目录');
   }
 }
-$('tbCompose').addEventListener('click', () => { if(_items.length) switchView('adjust'); });
+$('tbCompose').addEventListener('click', composeAll);
 $('tbGenerate').addEventListener('click', () => {
   if(!_video || !$('npPlot').value.trim()){ switchView('story'); return; }
   $('npGo').click();
@@ -724,6 +765,7 @@ function pickLocalMusic(){
     _music = {name: r.name, path: r.path, isLocalPath: true};
     const b = $('tbMusic');
     if(b) b.textContent = '🎵 ' + _music.name.slice(0, 14);
+    const bg = $('npBgm'); if(bg) bg.checked = true;
     toast('配乐已选：' + _music.name);
   }).catch(e => toast('选乐失败：' + e.message, 'bad'));
 }
@@ -798,8 +840,9 @@ function renderWhisperOptions(){
 }
 
 /* ── 合成（含改词自动重配） ── */
-$('btnCompose').addEventListener('click', async () => {
-  const btn = $('btnCompose');
+async function composeAll(){
+  if(!_runDir || !_items.length){ toast('请先生成或打开一个项目', 'bad'); return; }
+  const btn = $('tbCompose');
   btn.disabled = true;
   const skip = [], items = [];
   _items.forEach((it, i) => {
@@ -813,7 +856,7 @@ $('btnCompose').addEventListener('click', async () => {
   // 改词段自动重配
   const changed = items.filter(x => {
     const it = _items.find(z => z.index === x.index);
-    return it && !it.quote && x.text.trim() && x.text.trim() !== (it.audio_text || '').trim();
+    return it && !it.quote && x.text.trim() && _clean(x.text) !== _clean(it.audio_text || '');
   });
   try {
     for(const c of changed){
@@ -846,7 +889,7 @@ $('btnCompose').addEventListener('click', async () => {
     setStatus('合成失败', 'bad');
     toast('合成失败：' + e.message, 'bad');
   }
-});
+}
 function pollTask(runid){
   return new Promise((resolve, reject) => {
     const iv = setInterval(async () => {
@@ -882,17 +925,21 @@ function pollCompose(runid){
   }, 1200);
 }
 function openExport(file){
+  _lastExport = file;
+  const pv = $('pvVideo'); if(pv) pv.pause();
   switchView('export');
-  $('exportPanel').style.display = 'block';   // 导出视图替换预览区
-  $('videoShell').style.display = 'none';
   $('exPlayer').src = '/media/' + file;
   $('exPath').textContent = file;
-  if(window.pywebview && window.pywebview.api)
-    window.pywebview.api.open_folder(file).catch(() => {});
-  const btn = $('btnCompose');
+  const btn = $('tbCompose');
   btn.disabled = false;
-  btn.textContent = '🎬 合成视频';
 }
+$('exFolder').addEventListener('click', () => {
+  if(window.pywebview && window.pywebview.api && _lastExport){
+    window.pywebview.api.open_folder(_lastExport).catch(() => {});
+  } else toast('成片在 webui_output 目录');
+});
+$('exBack').addEventListener('click', () => switchView('adjust'));
+$('exNew').addEventListener('click', () => newProject());
 
 /* ── 启动 ── */
 setStatus('就绪');

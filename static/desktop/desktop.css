@@ -162,6 +162,16 @@ input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
 .sb-flex{flex:1}
 #stState.ok{color:var(--ok)}
 #stState.bad{color:var(--bad)}
+#stState.warn{color:var(--warn)}
+
+/* ── 导出面板 ── */
+.export-panel{flex:1;min-height:0;flex-direction:column;align-items:center;justify-content:center;
+  gap:12px;padding:20px;background:var(--bg)}
+.export-panel video{max-width:100%;max-height:60vh;background:#000;border-radius:8px}
+.ex-head{font-size:15px;font-weight:600;color:var(--ok)}
+.ex-meta{font-size:11.5px;color:var(--dim);max-width:90%;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.ex-actions{display:flex;gap:10px}
 
 /* ── 浮层与对话框 ── */
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;
@@ -170,6 +180,9 @@ input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
   max-height:80vh;overflow-y:auto}
 .modal-title{font-size:15px;font-weight:600;margin-bottom:16px}
 .modal .pbar{height:10px}
+.pbar{background:#3a3a3a;border-radius:5px;overflow:hidden}
+.pbar.big{height:12px}
+.pbar i{display:block;height:100%;width:0;background:var(--acc);transition:width .4s}
 .modal-meta{margin-top:10px;font-size:12.5px;color:var(--muted)}
 .modal.settings{width:620px}
 .set-grid{display:grid;gap:16px}
