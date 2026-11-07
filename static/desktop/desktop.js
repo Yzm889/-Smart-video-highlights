@@ -538,6 +538,16 @@ $('gmCancel').addEventListener('click', async () => {
   $('npGo').disabled = false;
   toast('已取消生成');
 });
+$('sbCancel').addEventListener('click', async () => {
+  if(!_pollRunId) return;
+  try { await fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({runid: _pollRunId})}); } catch(e){ /* 尽力取消 */ }
+  if(_pollTimer) clearInterval(_pollTimer);
+  $('sbCancel').style.display = 'none';
+  const btn = $('tbCompose'); btn.disabled = false;
+  setStatus('已取消合成', 'warn');
+  toast('已取消合成');
+});
 
 /* ── 加载调整数据 ── */
 async function loadAdjustItems(runDir){
@@ -555,9 +565,42 @@ async function loadAdjustItems(runDir){
   if(st.video_path) _videoFile = runDir.replace(/\\/g, '/') + '/' + st.video_path;
   _sel = -1;
   renderCaps(); ensureNarrElements(); renderTimeline(); setupPreview();
+  _proxyFile = ''; _stopProxyPoll();
+  ensureProxy();
   $('capCount').textContent = '· ' + _items.length + ' 段';
   $('tbCompose').disabled = false;
   $('stEngine').textContent = _engineSummary();
+}
+
+/* ── 4K 预览代理（720p 副本，合成始终用原片） ── */
+let _proxyFile = '', _proxyTimer = null;
+function _stopProxyPoll(){ if(_proxyTimer){ clearInterval(_proxyTimer); _proxyTimer = null; } }
+function _applyProxyFile(f){
+  if(!f || f === _proxyFile) return;
+  _proxyFile = f;
+  const v = $('pvVideo');
+  if(!v) return;
+  v.pause();                                   // 只在暂停态热切换，避免播放中换源
+  v.src = '/media/' + _runDir.replace(/\\/g, '/') + '/' + f;
+}
+function ensureProxy(){
+  if(!_runDir) return;
+  const ask = () => fetch('/api/preview_proxy?run_dir=' + encodeURIComponent(_runDir)
+    + '&name=' + encodeURIComponent((_videoFile || '').split('/').pop()))
+    .then(r => r.json()).catch(() => null);
+  ask().then(res => {
+    if(!res || !res.ok) return;                            // 异常：静默用原片
+    if(res.mode === 'original') return;                    // ≤720p：原片足够
+    if(res.ready && res.file){ _applyProxyFile(res.file); return; }
+    if(_proxyTimer) clearInterval(_proxyTimer);
+    let n = 0;
+    _proxyTimer = setInterval(() => {                      // 后台转码中，4s 轮询（上限 10 分钟）
+      if(++n > 150){ _stopProxyPoll(); return; }
+      ask().then(r2 => {
+        if(r2 && r2.ready && r2.file){ _stopProxyPoll(); _applyProxyFile(r2.file); }
+      }).catch(() => {});
+    }, 4000);
+  });
 }
 function _engineSummary(){
   const parts = [];
@@ -1829,6 +1872,7 @@ async function composeAll(){
   if(!_runDir || !_items.length){ toast('请先生成或打开一个项目', 'bad'); return; }
   const btn = $('tbCompose');
   btn.disabled = true;
+  const sc = $('sbCancel'); if(sc) sc.style.display = '';
   const skip = [], items = [];
   _items.forEach((it, i) => {
     if(it._skip){ skip.push(it.index); return; }
@@ -1870,6 +1914,7 @@ async function composeAll(){
     pollCompose(out.runid);
   } catch(e){
     btn.disabled = false;
+    const sc = $('sbCancel'); if(sc) sc.style.display = 'none';
     setStatus('合成失败', 'bad');
     toast('合成失败：' + e.message, 'bad');
   }
@@ -1889,11 +1934,14 @@ function pollTask(runid){
 }
 function pollCompose(runid){
   if(_pollTimer) clearInterval(_pollTimer);
+  _pollRunId = runid;
+  const sc = $('sbCancel'); if(sc) sc.style.display = '';
   setStatus('合成中…');
   _pollTimer = setInterval(async () => {
     try {
       const r = await fetch('/api/progress?run=' + runid);
       const p = await r.json();
+      const sc = $('sbCancel'); if(sc) sc.style.display = 'none';
       if(p.error){
         clearInterval(_pollTimer);
         setStatus('合成失败', 'bad');
@@ -1914,6 +1962,12 @@ function openExport(file){
   switchView('export');
   $('exPlayer').src = '/media/' + file;
   $('exPath').textContent = file;
+  const srt = $('exSrt');
+  if(srt){
+    const runRel = file.split('/').slice(0, -1).join('/');
+    srt.href = '/media/' + runRel + '/narr.srt';
+    srt.style.display = (_advParams().subtitle.burn ? 'none' : 'inline-block');
+  }
   const btn = $('tbCompose');
   btn.disabled = false;
 }

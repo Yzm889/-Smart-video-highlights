@@ -184,7 +184,7 @@
       </div>
       <!-- 导出面板（合成成功后替换预览区） -->
       <div class="export-panel" id="exportPanel" style="display:none">
-        <div class="ex-head">✅ 成片已生成</div>
+        <div class="ex-head">✅ 成片已生成 <a id="exSrt" href="#" target="_blank" style="display:none;margin-left:10px;font-size:12px;color:var(--acc)">📄 字幕文件（narr.srt）</a></div>
         <video id="exPlayer" controls playsinline></video>
         <div class="ex-meta" id="exPath"></div>
         <div class="ex-actions">
@@ -210,6 +210,8 @@
   <span id="stSeg"></span>
   <span class="sb-flex"></span>
   <span id="stEngine"></span>
+  <span class="sb-flex"></span>
+  <button class="mini-btn" id="sbCancel" style="display:none">⏹ 取消合成</button>
   <span class="sb-flex"></span>
   <span id="stTime">00:00.0</span>
 </div>
