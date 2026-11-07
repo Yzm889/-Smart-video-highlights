@@ -119,21 +119,45 @@ function refreshMenus(){
     '原声轨：' + (_origOn ? '✓ 开' : '禁音');
 }
 
-/* ── 桌面模式初始化 ── */
+/* ── 桌面模式初始化：桥重试 60s + 模式徽章永远可见
+   【主人实测踩中】EXE 里桥未连上时页面静默退化成上传模式——
+   选片变上传 5GB。现在：初始化持续重试；模式显示在状态栏；选片前先确保桥就绪 */
 let _desktopInited = false;
+function _setModeBadge(){
+  const b = $('sbMode');
+  if(!b) return;
+  if(_isDesktop){ b.textContent = '● 桌面直连'; b.className = 'mode-ok'; }
+  else if(window.pywebview){ b.textContent = '● 桥连接中…'; b.className = 'mode-warn'; }
+  else { b.textContent = '● 浏览器模式（原生选片不可用）'; b.className = 'mode-warn'; }
+}
 function initDesktop(){
   if(_desktopInited) return;
   const api = window.pywebview && window.pywebview.api;
-  if(!api || !api.get_desktop_info) return;
-  _desktopInited = true;
+  if(!api || !api.get_desktop_info){ _setModeBadge(); return; }
   api.get_desktop_info().then(info => {
-    if(!info || !info.token) return;
+    if(!info || !info.token){ _setModeBadge(); return; }
     _token = info.token;
     _isDesktop = true;
-  }).catch(e => console.warn('桌面初始化失败', e));
+    _setModeBadge();
+  }).catch(e => { _setModeBadge(); console.warn('桌面初始化失败', e); });
 }
 window.addEventListener('pywebviewready', initDesktop);
 if(window.pywebview) initDesktop();
+let _initTries = 0;
+const _initRetry = setInterval(() => {
+  if(_isDesktop){ clearInterval(_initRetry); _setModeBadge(); return; }
+  if(window.pywebview && window.pywebview.api) initDesktop();
+  if(++_initTries > 120) clearInterval(_initRetry);
+}, 500);
+setTimeout(_setModeBadge, 100);
+async function _ensureBridge(){
+  if(_isDesktop) return true;
+  if(window.pywebview && window.pywebview.api){
+    initDesktop();
+    for(let i = 0; i < 6 && !_isDesktop; i++){ await new Promise(r => setTimeout(r, 500)); }
+  }
+  return _isDesktop && !!(window.pywebview && window.pywebview.api);
+}
 
 /* ── 升级导入横幅（新包首跑、EXE 内） ── */
 setTimeout(async () => {
@@ -303,7 +327,7 @@ function updateNewProj(){
     : $('npScript').checked ? '将按稿找画面配音（文字不改）' : 'AI 按剧情写解说、挑画面';
 }
 $('npPick').addEventListener('click', async () => {
-  if(_isDesktop && window.pywebview && window.pywebview.api){
+  if(await _ensureBridge()){
     try {
       const r = await window.pywebview.api.pick_video();
       if(r && r.path) acceptVideo(r.name || r.path.split(/[\\/]/).pop(), r.path);
@@ -1304,8 +1328,8 @@ function _syncSrtUi(){
   const lbl = $('npSrtLabel');
   if(lbl) lbl.innerHTML = '✅ 已导入 <b>' + _esc((_srt && _srt.name) || '') + '</b> ——生成时按台词找画面（点此可换）';
 }
-function importSrt(){
-  if(_isDesktop && window.pywebview && window.pywebview.api){
+async function importSrt(){
+  if(await _ensureBridge()){
     toast('正在打开文件选择框…（如未出现，请看任务栏）');
     window.pywebview.api.pick_srt().then(r => {
       if(!r || !r.path) return null;
@@ -1337,8 +1361,8 @@ document.addEventListener('drop', e => {
 
 /* ── 配乐（桌面：本地路径直连） ── */
 let _music = null;   // {name, path, isLocalPath}
-function pickLocalMusic(){
-  if(!(window.pywebview && window.pywebview.api)){
+async function pickLocalMusic(){
+  if(!await _ensureBridge()){
     _browserFileInput('audio/*', async f => {
       try {
         if(f.size > 8 * 1024 * 1024){
@@ -1809,7 +1833,7 @@ function openClone(){
 $('btnCloneVoice').addEventListener('click', openClone);
 $('cloneClose').addEventListener('click', () => $('cloneMask').style.display = 'none');
 $('clonePick').addEventListener('click', async () => {
-  if(!(window.pywebview && window.pywebview.api)){
+  if(!await _ensureBridge()){
     _browserFileInput('audio/*', async f => {
       try {
         const b64 = await _fileB64(f);

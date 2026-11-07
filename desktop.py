@@ -79,7 +79,7 @@ class DesktopApi:
     桌面版专属：原生文件对话框、本地路径直连凭证——浏览器里没有这些。"""
 
     def get_desktop_info(self):
-        return {'token': _TOKEN, 'version': '桌面版 v1.2.0'}
+        return {'token': _TOKEN, 'version': '桌面版 v1.4.2'}
 
     def pick_video(self):
         import webview
