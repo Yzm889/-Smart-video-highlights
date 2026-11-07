@@ -38,6 +38,7 @@
 
 ## 四、更新清单（新记录在最上）
 
+- **2026-11-08 待发版（本轮·源码态基线修复）** 干净 clone 首次全量回归 + 真实素材实测：① 修 CI 静态门禁两处 F401（`webui_server.py` ollama_service_state 多余的 `os`、`test_desktop_mode.py` 多余 `sys`）；② 修三处测试隔离——缺 `spring10s.mp4` 由 assert 改 `pytest.skip`、cosy 转写优先级用例把 `tts_engines.HERE` 指到临时假模型目录（原本干净 clone/CI 因 `models/` 被 gitignore 排除而必挂 2 条）；③ **真缺陷**：`ai_providers.parse_subtitle_file` 原先硬编码 `utf-8-sig + errors=ignore`，主人《惩罚者》S01E01 官方 **GB18030** 字幕被吞成乱码且 593 条只解析出 557 条——改为按 UTF-8(BOM)/GB18030/UTF-16(BOM) 逐个严格解码，新增 `tests/test_subtitle_encoding.py` 5 条钉死四种编码。坑：`movie_narrator` 直连 import 会触发 `webui_server ↔ video_render` 循环导入，必须先 import webui_server。验证（源码态，未打包）：`flake8 --select=F` 0 告警、`node --check` 通过、全量 pytest **737 passed / 12 skipped**（原 731 passed / 3 failed / 15 skipped）；真实素材 `前二十分钟.mp4` 切 10s 样片让 3 条剪辑测试从 skip 转真跑；解说稿 docx 2542 字 → 79 句 → 95 段画面 → **481.2s 成片（命中项目《惩罚者》481s 基线）**、时间轴单调递增；GB18030 字幕修复后 593 条全还原、0 乱码。数据（配置/成片/模型）由主人主动清空，样片 `spring10s.mp4` 已被 gitignore 排除、不入库。
 - **2026-11-08 v1.4.3（a2c13d3）** 桌面桥自愈：桥初始化持续重试 + 状态栏模式徽章（桌面直连/桥连接中/浏览器模式）+ 选片等四入口 `_ensureBridge()` 先确保桥再走原生。坑：EXE 里桥未连上会**静默退化成上传模式**（主人 5GB 视频白传），已根治。
 - **2026-11-08 v1.4.2（6f8e971）** 上传分片 60s 超时+重试（5GB 卡 26% 根因：单片挂起无超时）；>300MB 引导走 EXE；引擎安装接 TTS_SETUP 实时进度（阶段+百分比）。
 - **2026-11-08 v1.4.1（11a0ee2）** 导入字幕提到新建卡显眼位置（主人：字幕是命脉）；拖拽 .srt 进窗口即导入（绕开原生对话框）；EXE 原生对话框路径加可见反馈。坑：「点不动」其实是 pywebview 对话框被压/静默失败。

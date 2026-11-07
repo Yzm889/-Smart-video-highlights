@@ -732,7 +732,7 @@ def ollama_exe_path():
 def ollama_service_state():
     """Ollama 服务真实状态（与 local 配置解耦——配置未启用不代表服务没在跑）。
     installed：ollama.exe 存在；running：11434 直接响应。"""
-    import urllib.request, os
+    import urllib.request
     exe = ollama_exe_path()
     running = False
     try:

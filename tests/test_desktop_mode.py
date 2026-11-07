@@ -5,7 +5,8 @@
 否则任意网页都能借 127.0.0.1 服务读取本地任意文件（安全红线）。
 """
 import os
-import sys
+
+import pytest
 
 import webui_server as S  # noqa: F401  解除循环依赖
 
@@ -15,7 +16,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def _sample_path(tmp_path):
     src = os.path.join(ROOT, 'spring10s.mp4')
-    assert os.path.exists(src), '本地无样片，此测试需要 spring10s.mp4'
+    if not os.path.exists(src):
+        pytest.skip('缺本地样片 spring10s.mp4（.gitignore 排除，CI/干净 clone 上跳过）')
     return src
 
 

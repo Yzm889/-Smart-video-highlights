@@ -30,10 +30,17 @@ class _FakeModel:
 
 
 @pytest.fixture
-def fake_whisper(monkeypatch):
+def fake_whisper(monkeypatch, tmp_path):
     fake = types.ModuleType('faster_whisper')
     fake.WhisperModel = _FakeModel
     monkeypatch.setitem(sys.modules, 'faster_whisper', fake)
+    # 干净 clone / CI 上没有 models/（.gitignore 排除）。把 HERE 指到临时目录并
+    # 造出两个空壳模型目录，让用例只验证「large-v3 优先 / tiny 回退」的选择逻辑，
+    # 不再依赖本机是否真装了 whisper 权重（WhisperModel 已被 fake，不读文件）。
+    fake_here = tmp_path / 'here'
+    (fake_here / 'models' / 'whisper' / 'large-v3').mkdir(parents=True, exist_ok=True)
+    (fake_here / 'models' / 'whisper' / 'tiny').mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(te, 'HERE', str(fake_here))
     _FakeModel.calls = []
     return _FakeModel
 
