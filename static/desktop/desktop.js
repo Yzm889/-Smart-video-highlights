@@ -278,9 +278,81 @@ $('npPick').addEventListener('click', async () => {
       if(r && r.path) acceptVideo(r.name || r.path.split(/[\\/]/).pop(), r.path);
     } catch(e){ toast('选择失败：' + e.message, 'bad'); }
   } else {
-    toast('请运行桌面版 EXE 使用原生选片', 'bad');
+    // 浏览器模式兜底：标准文件选择 + 分片上传（与网页版同一套后端），不再是死胡同
+    _browserFileInput('video/*', async f => {
+      const label = $('npPickLabel');
+      try {
+        label.textContent = '⬆ 上传中 0%…';
+        const uid = await _chunkUpload(f, done => {
+          label.textContent = '⬆ 上传中 ' + Math.round(done * 100 / f.size) + '%（' + _fmtMB(done) + ' / ' + _fmtMB(f.size) + '）';
+        });
+        _video = {name: f.name, upload_id: uid, isLocalPath: false};
+        $('npPick').classList.add('has');
+        label.textContent = '✅ ' + f.name;
+        $('projName').textContent = f.name.replace(/\.[^.]+$/, '');
+        updateNewProj();
+        toast('✅ 视频已上传，可以填写剧情开始生成', 'ok');
+      } catch(e){ label.textContent = '从电脑选择视频'; toast('上传失败：' + e.message, 'bad'); }
+    });
   }
 });
+let _npFileInput = null;
+function _browserFileInput(accept, cb){
+  // 浏览器模式的兜底选择器（EXE 里走 pywebview 原生对话框）
+  if(!_npFileInput){
+    _npFileInput = document.createElement('input');
+    _npFileInput.type = 'file';
+    _npFileInput.style.display = 'none';
+    document.body.appendChild(_npFileInput);
+  }
+  _npFileInput.accept = accept;
+  _npFileInput.onchange = () => {
+    const f = _npFileInput.files && _npFileInput.files[0];
+    _npFileInput.value = '';
+    if(f) cb(f);
+  };
+  _npFileInput.click();
+}
+function _fileB64(file){
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(new Error('读取失败'));
+    r.readAsDataURL(file);
+  });
+}
+function _fmtMB(n){ return (n / 1024 / 1024).toFixed(1) + 'MB'; }
+
+/* ── 分片上传（web 同一套 /api/upload/*，4MB/片 3 并发） ── */
+async function _chunkUpload(file, onProg){
+  const r0 = await fetch('/api/upload/init', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: file.name, size: file.size})}).then(x => x.json());
+  if(!r0.ok) throw new Error(r0.error || '上传初始化失败');
+  const uid = r0.upload_id;
+  const CHUNK = 4 * 1024 * 1024, CONC = 3;
+  const total = Math.max(1, Math.ceil(file.size / CHUNK));
+  let next = 0, doneBytes = 0;
+  async function worker(){
+    while(next < total){
+      const idx = next++;
+      const blob = file.slice(idx * CHUNK, Math.min(file.size, (idx + 1) * CHUNK));
+      const fd = new FormData();
+      fd.append('upload_id', uid);
+      fd.append('idx', String(idx));
+      fd.append('chunk', blob);
+      const r = await fetch('/api/upload/chunk', {method:'POST', body: fd}).then(x => x.json());
+      if(!r.ok) throw new Error(r.error || ('分片 ' + idx + ' 失败'));
+      doneBytes += blob.size;
+      if(onProg) onProg(doneBytes);
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  const rd = await fetch('/api/upload/done', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({upload_id: uid, name: file.name, chunks: total})}).then(x => x.json());
+  if(!rd.ok) throw new Error(rd.error || '上传收尾失败');
+  return uid;
+}
+
 function acceptVideo(name, path){
   _video = {name, path, isLocalPath: true};
   $('npPick').classList.add('has');
@@ -293,6 +365,13 @@ $('npScript').addEventListener('change', updateNewProj);
 $('npBgm').addEventListener('change', () => {
   if($('npBgm').checked && !_music && window.pywebview && window.pywebview.api) pickLocalMusic();
 });
+
+function _musicPayload(){
+  if(!_music) return undefined;
+  return (_music.upload_id ? {name: _music.name, upload_id: _music.upload_id}
+        : (_music.data ? {name: _music.name, data: _music.data}
+           : {name: _music.name, path: _music.path, desktop_token: _token}));
+}
 
 /* ── 高级设置（生成与合成共用一套参数，改动自动记忆） ── */
 const ADV_KEY = 'framecut_desktop_adv_v1';
@@ -365,13 +444,14 @@ $('npGo').addEventListener('click', async () => {
   $('genMask').style.display = 'flex';
   $('gmTitle').textContent = '正在生成（首次加载模型较慢）…';
   const body = {
-    video: {name: _video.name, path: _video.path, desktop_token: _token},
+    video: (_video.upload_id ? {name: _video.name, upload_id: _video.upload_id}
+                             : {name: _video.name, path: _video.path, desktop_token: _token}),
     plot: isScript ? '' : plot,
     script: isScript ? plot : undefined,
     params: _advParams(),
   };
   if(_srt) body.subtitle_file = {name: _srt.name, text: _srt.text};
-  if(_music && $('npBgm').checked) body.music = {name: _music.name, path: _music.path, desktop_token: _token};
+  if(_music && $('npBgm').checked) body.music = _musicPayload();
   try {
     const r = await fetch('/api/movie_tts', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -1119,7 +1199,18 @@ $('tbGenerate').addEventListener('click', () => {
 /* ── SRT 导入（桌面：原生对话框 + 本地直读） ── */
 let _srt = null;   // {name, text}
 function importSrt(){
-  if(!(window.pywebview && window.pywebview.api)){ toast('请运行桌面版 EXE', 'bad'); return; }
+  if(!(window.pywebview && window.pywebview.api)){
+    _browserFileInput('.srt,.ass,.ssa,.vtt', f => {
+      const r = new FileReader();
+      r.onload = () => {
+        _srt = {name: f.name, text: String(r.result)};
+        setBtnIcon('tbSrt', 'i-subtitle', '字幕 ✓');
+        toast('✅ 字幕已导入：' + f.name, 'ok');
+      };
+      r.readAsText(f, 'utf-8');
+    });
+    return;
+  }
   window.pywebview.api.pick_srt().then(r => {
     if(!r || !r.path) return null;
     const name = r.name || r.path.split(/[\/]/).pop();
@@ -1135,7 +1226,24 @@ function importSrt(){
 /* ── 配乐（桌面：本地路径直连） ── */
 let _music = null;   // {name, path, isLocalPath}
 function pickLocalMusic(){
-  if(!(window.pywebview && window.pywebview.api)) return;
+  if(!(window.pywebview && window.pywebview.api)){
+    _browserFileInput('audio/*', async f => {
+      try {
+        if(f.size > 8 * 1024 * 1024){
+          $('tbMusic').textContent = '⬆ 上传中…';
+          const uid = await _chunkUpload(f);
+          _music = {name: f.name, upload_id: uid, isLocalPath: false};
+        } else {
+          const b64 = await _fileB64(f);
+          _music = {name: f.name, data: b64, isLocalPath: false};
+        }
+        setBtnIcon('tbMusic', 'i-music', _music.name.slice(0, 14));
+        const bg = $('npBgm'); if(bg) bg.checked = true;
+        toast('✅ 配乐已选：' + _music.name, 'ok');
+      } catch(e){ toast('配乐失败：' + e.message, 'bad'); }
+    });
+    return;
+  }
   window.pywebview.api.pick_music().then(r => {
     if(!r || !r.path) return;
     _music = {name: r.name, path: r.path, isLocalPath: true};
@@ -1500,7 +1608,17 @@ function openClone(){
 $('btnCloneVoice').addEventListener('click', openClone);
 $('cloneClose').addEventListener('click', () => $('cloneMask').style.display = 'none');
 $('clonePick').addEventListener('click', async () => {
-  if(!(window.pywebview && window.pywebview.api)){ toast('请运行桌面版 EXE', 'bad'); return; }
+  if(!(window.pywebview && window.pywebview.api)){
+    _browserFileInput('audio/*', async f => {
+      try {
+        const b64 = await _fileB64(f);
+        _cloneFile = {path: null, name: f.name, b64: b64};
+        $('clonePickLabel').textContent = '✅ ' + f.name;
+        $('cloneGo').disabled = !$('cloneName').value.trim();
+      } catch(e){ toast('读取失败：' + e.message, 'bad'); }
+    });
+    return;
+  }
   try {
     const r = await window.pywebview.api.pick_music();
     if(!r || !r.path) return;
@@ -1515,13 +1633,17 @@ $('cloneGo').addEventListener('click', async () => {
   const b = $('cloneGo');
   b.disabled = true; b.textContent = '克隆中…';
   try {
-    const rd = await window.pywebview.api.read_file_b64(_cloneFile.path);
-    if(!rd.ok) throw new Error(rd.error || '读取失败');
+    let b64 = _cloneFile.b64;
+    if(!b64){
+      const rd = await window.pywebview.api.read_file_b64(_cloneFile.path);
+      if(!rd.ok) throw new Error(rd.error || '读取失败');
+      b64 = rd.b64;
+    }
     const ext = (_cloneFile.name.split('.').pop() || 'wav').toLowerCase();
     const r = await fetch('/api/tts/cosyvoice/add_voice', {method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name: $('cloneName').value.trim(),
-                            audio: 'data:audio/' + ext + ';base64,' + rd.b64})});
+                            audio: 'data:audio/' + ext + ';base64,' + b64})});
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '克隆失败');
     $('cloneMask').style.display = 'none';
@@ -1708,7 +1830,7 @@ async function composeAll(){
     setStatus('合成中…');
     const body = { run_dir: _runDir, items: items, skip: skip, params: _advParams() };
     if(_music && $('npBgm').checked){
-      body.music = {name: _music.name, path: _music.path, desktop_token: _token};   // 配乐在合成时落盘
+      body.music = _musicPayload();   // 配乐在合成时落盘
     }
     const r = await fetch('/api/movie_compose', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
