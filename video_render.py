@@ -8,7 +8,8 @@
 import logging, os, sys
 
 # ---- 直接导入：已拆出的工具模块 ----
-from ffmpeg_utils import ffmpeg_run, probe_audio_len, _has_audio_track, AbortError, _TLS
+from ffmpeg_utils import ffmpeg_run, probe_audio_len, _has_audio_track, AbortError, _TLS, \
+    probe_is_hdr, tonemap_chain, tonemap_available, BT709_TAGS
 from text_utils import _clamp_line, _clean_caption, _strip_tts_markup
 from tts_engines import _ping_preferred_engine, local_tts_speak, strip_tts_markup, sapi_tts
 from ai_providers import _aborted, load_ai_config
@@ -432,6 +433,16 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
     cut_dir = os.path.join(run_dir, 'cuts')
     os.makedirs(cut_dir, exist_ok=True)
     has_audio = _has_audio_track(video_path)
+    # HDR → SDR（v1.4.10）：整条管线的第一道编码就在这里，所以调色必须放在这儿——
+    # 每段映射一次，产出即 SDR，后面的拼接 / 烧字幕 / 混音全部继承 bt709 标记。
+    # 不调色的后果：输出是「3840x2160 yuv420p + bt2020nc/bt2020/smpte2084」，
+    # 贴了 HDR 标签却只有 8bit，识别 HDR 的播放器上偏暗发灰、还容易出色带。
+    _tm_chain = ''
+    try:
+        if probe_is_hdr(video_path) and tonemap_available(video_path):
+            _tm_chain = tonemap_chain()
+    except Exception:
+        _tm_chain = ''
     pieces = []
     piece_durs = []   # 每段剪辑后的实际时长（含 P1-2 画面微变速），用于新时间轴累计
     try:
@@ -443,11 +454,18 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
             #         同一段的场景原声同步 atempo=1/f，保证画面与原声不脱节。无声段(factor≈1)原样保留。
             f = _display_factor(seg_len, (voice_durs or {}).get(i)) if voice_durs else 1.0
             cmd = ['-y', '-ss', '%.3f' % s0, '-i', video_path, '-t', '%.3f' % seg_len]
+            _vf = []
             if abs(f - 1.0) > 0.005:
-                cmd += ['-vf', 'setpts=%.6f*PTS' % f]
-                if has_audio:
+                _vf.append('setpts=%.6f*PTS' % f)
+            if _tm_chain:
+                _vf.append(_tm_chain)
+            if _vf:
+                cmd += ['-vf', ','.join(_vf)]
+                if has_audio and abs(f - 1.0) > 0.005:
                     cmd += ['-af', 'atempo=%.6f' % (1.0 / f)]
             cmd += _w.video_encode_args_interim()
+            if _tm_chain:
+                cmd += list(BT709_TAGS)
             cmd += ['-threads', '0']
             if has_audio:
                 cmd += ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
@@ -795,6 +813,16 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         srt = _build_narr_srt(new_spans, narr, run_dir, _build_voice_spans(new_spans, voice_durs, tts_clips), params)
         # _burn=False：字幕不烧进画面，只留 .srt 交付（见 _burn_enabled 的说明）
         vf = []
+        # HDR → SDR：走这条路径说明没有真剪（_no_cut），video_path 仍可能是原始 HDR 片源，
+        # 必须在这里补一次映射，否则成片照样是「HDR 标记 + 8bit」。
+        _tm_here = ''
+        try:
+            if probe_is_hdr(video_path) and tonemap_available(video_path):
+                _tm_here = tonemap_chain()
+        except Exception:
+            _tm_here = ''
+        if _tm_here:
+            vf.append(_tm_here)
         if grade:
             vf.append(grade)
         if _burn:
@@ -807,7 +835,10 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         if vf:
             cmd = ['-y', '-i', video_path, '-vf', ','.join(vf)]
             cmd += (['-c:a', 'copy'] if has_audio else ['-an'])
-            cmd += _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-movflags', '+faststart', out]
+            cmd += _w.video_encode_args(bitrate=bitrate, tier=tier)
+            if _tm_here:
+                cmd += list(BT709_TAGS)
+            cmd += ['-threads', '0', '-movflags', '+faststart', out]
         else:
             cmd = ['-y', '-i', video_path, '-map', '0:v:0', '-c:v', 'copy']
             cmd += (['-map', '0:a:0', '-c:a', 'copy'] if has_audio else ['-an'])
@@ -877,6 +908,17 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         vlabels = ''.join(f'[sv{i}]' for i in range(n))
         vparts.append(f"{vlabels}concat=n={n}:v=1:a=0[vmid]")
         _vlabel = 'vmid'
+    # HDR → SDR：整片拼好后统一映射一次（一次运算、全片一致）。
+    # 这条是「有实质剪辑」的单遍管线，直接吃原始片源，不调色就会把 PQ 标记带到成品。
+    _tm_v = ''
+    try:
+        if probe_is_hdr(video_path) and tonemap_available(video_path):
+            _tm_v = tonemap_chain()
+    except Exception:
+        _tm_v = ''
+    if _tm_v:
+        vparts.append(f"[{_vlabel}]{_tm_v}[vtm]")
+        _vlabel = 'vtm'
     # P0-1 调色：整片拼好后统一上一遍（一次运算、全片一致）；默认 native 不加，串完全不变
     if grade:
         vparts.append(f"[{_vlabel}]{grade}[vgrade]")
@@ -909,7 +951,10 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         cmd += ['-map', _audio_map, '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2']
     else:
         cmd += ['-an']
-    cmd += _w.video_encode_args(bitrate=bitrate) + ['-threads', '0', '-movflags', '+faststart', out]
+    cmd += _w.video_encode_args(bitrate=bitrate)
+    if _tm_v:
+        cmd += list(BT709_TAGS)
+    cmd += ['-threads', '0', '-movflags', '+faststart', out]
     rc, o, e = ffmpeg_run(cmd)
     if rc != 0 or not os.path.exists(out):
         raise RuntimeError('单遍合并编码失败: ' + e.decode('utf-8', 'ignore')[-300:])
@@ -1101,6 +1146,15 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         # P1-1 单遍合并已把字幕+缩放在上一步烧进画面，这里直接复用，不再二次编码
         base_video = video_path
     else:
+        # HDR → SDR：正常情况上游已调色（这里拿到的是 SDR 剪辑片）；只有「无需剪辑直接
+        # 合成」时 video_path 才是原始 HDR 片源，此时补一次映射，避免输出带 PQ 标签。
+        # 放在 srt 构建之前，保持「_build_narr_srt 必须无条件调用」的代码就近可见。
+        _tm_comp = ''
+        try:
+            if probe_is_hdr(video_path) and tonemap_available(video_path):
+                _tm_comp = tonemap_chain()
+        except Exception:
+            _tm_comp = ''
         # 1) 烧字幕：解说词按段显示；有配音时间窗时字随声走
         #    注意 _build_narr_srt 必须无条件调用：不烧进画面时它产出的 narr.srt
         #    就是要交付给用户的那个文件（见 _burn_enabled）。
@@ -1108,7 +1162,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         vsub = os.path.join(run_dir, 'vsub.mp4')
         sub_style = _build_subtitle_style(params)
         # 导出选项：分辨率缩放 + 码率
-        vf_parts = []
+        vf_parts = [_tm_comp] if _tm_comp else []
         _grade = _w.grade_filter(params)
         if _grade:
             # 调色在字幕之前：白色字幕不被 colorbalance 染色
@@ -1129,7 +1183,9 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         else:
             rc, o, e = ffmpeg_run(['-y', '-i', video_path,
                                    '-vf', ','.join(vf_parts),
-                                   ] + _w.video_encode_args(bitrate=bitrate, tier=tier) + ['-threads', '0', '-an', vsub])
+                                   ] + _w.video_encode_args(bitrate=bitrate, tier=tier)
+                                  + (list(BT709_TAGS) if _tm_comp else [])
+                                  + ['-threads', '0', '-an', vsub])
         base_video = vsub if (rc == 0 and os.path.exists(vsub)) else video_path
 
     has_orig_audio = _has_audio_track(video_path)

@@ -71,7 +71,7 @@ from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \
     _sample_frame_cache_trim, _video_cache_key  # noqa: F401
 from ffmpeg_utils import AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS, \
     _has_audio_track, ffmpeg_exe, ffmpeg_run, probe_audio_len, \
-    probe_duration  # noqa: F401
+    probe_duration, probe_is_hdr  # noqa: F401
 from video_render import _NAR_CPS, _NAR_MIN_CHARS, _NAR_MAX_CHARS, _NAR_MAX_SPEED, _NAR_MIN_SPEED, \
     _target_chars, _fit_voice, _render_narrate, \
     _merge_spans, _cut_video_by_spans, \
@@ -3983,10 +3983,28 @@ def make_image_clip(img_path, dur, motion, out_path, w, h, fps):
                             '-r', str(fps), '-i', '-'] + video_encode_args(20) + ['-threads', '0', out_path], input_data=_frames())
     return out_path
 
+_TM_STATE = ffmpeg_utils.TONEMAP_STATE   # 与 video_render 共用同一个开关（失败一次全体降级）
+BT709_TAGS = ffmpeg_utils.BT709_TAGS
+
+
+def tonemap_chain():
+    """HDR(PQ/HLG) → SDR(bt709) 的滤镜链。实现在 ffmpeg_utils，单遍管线也用它。
+
+    【为什么必须做】4K 片源多为 HDR。原管线把 10bit HDR 直接解成 8bit 再编码，
+    而 ffmpeg 会把输入的 color_primaries/color_trc（bt2020nc/bt2020/smpte2084）
+    原样带到输出 —— 成品变成「贴了 HDR 标签却只有 8bit」：识别 HDR 的播放器上
+    偏暗发灰，8bit PQ 还容易出色带。实测整集压测成片即如此（3840x2160 yuv420p
+    + bt2020nc/smpte2084）。"""
+    return ffmpeg_utils.tonemap_chain()
+
+
 def make_video_clip(src, dur, out_path, w, h, fps, start=0.0):
     """Trim a source video from `start` to dur seconds and scale/pad to w x h; returns its real duration.
     start 为源视频内的起始时间（默认 0）。调用方按时间线切片时务必传入，否则每段都会从 0 秒截取，
-    导致片头画面（如商标/Logo）被反复重复、后面内容完全缺失。"""
+    导致片头画面（如商标/Logo）被反复重复、后面内容完全缺失。
+
+    HDR 片源会先做 tonemap 再缩放（v1.4.10）：滤镜链顺序是「tonemap → scale → pad」，
+    并在编码参数上钉 bt709 三件套，后续拼接/烧字幕都继承 SDR 标记。"""
     if not os.path.exists(src):
         raise RuntimeError(f'源视频不存在: {src}')
     real = probe_duration(src) or 0.0
@@ -3995,9 +4013,27 @@ def make_video_clip(src, dur, out_path, w, h, fps, start=0.0):
     use = min(dur, max(0.0, real - start))
     if use < 0.5:
         use = min(dur, real)  # 降级为全取剩余
-    rc, o, e = ffmpeg_run(['-y', '-ss', f'{start:.3f}', '-i', src, '-t', f'{use:.3f}',
-                            '-vf', f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1',
-                            '-r', str(fps)] + video_encode_args(20) + ['-threads', '0', '-an', out_path])
+    hdr = bool(_TM_STATE['ok'] and probe_is_hdr(src) and ffmpeg_utils.tonemap_available(src))
+
+    def _run(with_tonemap):
+        pre = (tonemap_chain() + ',') if with_tonemap else ''
+        vf = (pre + f'scale={w}:{h}:force_original_aspect_ratio=decrease,'
+                     f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1')
+        cmd = ['-y', '-ss', f'{start:.3f}', '-i', src, '-t', f'{use:.3f}',
+               '-vf', vf, '-r', str(fps)] + video_encode_args(20)
+        if with_tonemap:
+            cmd += list(BT709_TAGS)
+        cmd += ['-threads', '0', '-an', out_path]
+        return ffmpeg_run(cmd)
+
+    rc, o, e = _run(hdr)
+    if rc != 0 and hdr:
+        # 降级：关掉 tonemap 重试一次，并全局关闭（本进程后续都按 SDR 处理）
+        _TM_STATE['ok'] = False
+        _log.warning('[DIAG] HDR tonemap 失败（本机 ffmpeg 可能缺 zscale），'
+                     '退回原路径不调色：%s',
+                     (e.decode('utf-8', 'ignore') if isinstance(e, bytes) else str(e))[-200:])
+        rc, o, e = _run(False)
     if rc != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 100:
         err = (e.decode('utf-8', 'ignore') if isinstance(e, bytes) else str(e))[-300:]
         raise RuntimeError(f'视频片段生成失败: {os.path.basename(out_path)} 源={os.path.basename(src)} dur={dur:.1f}s start={start:.1f}s 报错={err}')

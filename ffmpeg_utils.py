@@ -381,6 +381,127 @@ def probe_duration(path):
 
                                   lambda p: _parse_duration(ffmpeg_run(['-hide_banner', '-i', p])[2]))
 
+
+# ---------------------------------------------------------------------------
+# HDR 探测（v1.4.10）
+# 【为什么需要】4K 片源大多是 HDR（PQ=smpte2084 / HLG=arib-std-b67）。之前的管线
+# 直接把 10bit HDR 解成 8bit yuv420p 再编码，而 ffmpeg 会把输入的色彩标记
+# （bt2020nc/bt2020/smpte2084）原样传到输出 —— 成品变成「贴了 HDR 标签却只有 8bit」：
+# 识别 HDR 的播放器上偏暗发灰，8bit PQ 还容易出色带。实测整集压测成片即如此。
+# 这里只负责「判断是不是 HDR」，具体 tonemap 滤镜链由 video_render 决定。
+# 缓存独立于时长缓存：同一个文件的两个探测结果语义不同，共用缓存会串味。
+_HDR_CACHE = {}
+_HDR_CACHE_LOCK = threading.Lock()
+_HDR_CACHE_MAX = 256
+
+
+def _parse_is_hdr(err):
+
+    """从 `ffmpeg -i` 的 stderr 判断视频流是否 HDR。
+
+    只看 Video: 那一行——形如
+      Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive)
+    PQ(smpte2084)/HLG(arib-std-b67) 才算 HDR；只有 bt2020 原色但传输是 bt709 的
+    （极少见）按 SDR 处理，宁可不动画面也不乱 tonemap。"""
+
+    txt = err.decode('utf-8', 'ignore') if isinstance(err, (bytes, bytearray)) else str(err or '')
+
+    for line in txt.splitlines():
+
+        if 'Video:' not in line:
+
+            continue
+
+        if 'smpte2084' in line or 'arib-std-b67' in line:
+
+            return True
+
+    return False
+
+
+def probe_is_hdr(path):
+
+    """片源是否 HDR。读不到/异常一律 False（按 SDR 走原路径，绝不因探测失败而中断出片）。"""
+
+    key = _dur_cache_key(path)
+
+    if key is None:
+
+        return False
+
+    with _HDR_CACHE_LOCK:
+
+        if key in _HDR_CACHE:
+
+            return _HDR_CACHE[key]
+
+    try:
+
+        val = _parse_is_hdr(ffmpeg_run(['-hide_banner', '-i', path])[2])
+
+    except Exception:
+
+        val = False
+
+    with _HDR_CACHE_LOCK:
+
+        if len(_HDR_CACHE) >= _HDR_CACHE_MAX:
+
+            _HDR_CACHE.clear()
+
+        _HDR_CACHE[key] = val
+
+    return val
+
+
+# tonemap 链是否可用：本机 ffmpeg 若缺 zscale，第一次失败后全局关掉，
+# 后续所有片段直接走原路径（不能每段都白跑一次失败重试）。
+TONEMAP_STATE = {'ok': True}
+
+
+def tonemap_chain():
+
+    """HDR(PQ/HLG) → SDR(bt709) 滤镜链（hable 映射）。
+
+    两条视频管线共用：两遍管线的单段剪辑（webui_server.make_video_clip）
+    与单遍合并的整段滤镜图（video_render）。zscale 需要 ffmpeg 带 zimg，
+    imageio-ffmpeg 的 7.1 / 9.0 实测都支持。"""
+
+    return ('zscale=t=linear:npl=100,format=gbrpf32le,'
+            'zscale=p=bt709,tonemap=tonemap=hable:desat=0,'
+            'zscale=t=bt709:m=bt709:r=tv,format=yuv420p')
+
+
+# 输出侧色彩标记三件套：告诉播放器「这是普通 SDR」，避免继承源片的 PQ 标签
+BT709_TAGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709']
+
+_TM_PROBE = {'done': False}
+
+
+def tonemap_available(path=None):
+    """本机 ffmpeg 能不能对**这个片源**跑 tonemap 链。进程内只探一次。
+
+    【为什么用真实片源探、不用 testsrc】实测 v7.1 对 `testsrc2` 合成源会报
+    `Generic error in an external library`（RGB 源进 zscale 的必然问题），
+    但对真实 HDR mkv 跑同一条链是成功的 —— 拿合成源探会误判成「不支持」，
+    白白关掉调色。所以这里抽真实片源的一帧试跑。
+    """
+    if _TM_PROBE['done']:
+        return TONEMAP_STATE['ok']
+    if not path:
+        return TONEMAP_STATE['ok']
+    _TM_PROBE['done'] = True
+    try:
+        rc, _o, _e = ffmpeg_run(['-hide_banner', '-ss', '0', '-i', path,
+                                 '-vf', tonemap_chain(), '-frames:v', '1',
+                                 '-an', '-sn', '-f', 'null', '-'])
+        ok = (rc == 0)
+    except Exception:
+        ok = False
+    TONEMAP_STATE['ok'] = bool(ok)
+    return TONEMAP_STATE['ok']
+
+
 def probe_audio_len(path):
 
     """Return audio duration in seconds using ffmpeg. 只读容器头，不解码。"""
