@@ -16,28 +16,81 @@ _WHISPER_KNOWN = {
     'distil-small',
 }
 
+def _whisper_name_from_repo(repo):
+    """HF 仓库名 → 项目内部模型名。认三种常见前缀，认不出返回 None。
+
+    faster-distil-whisper-large-v3 → distil-large-v3
+    faster-whisper-large-v3        → large-v3
+    whisper-large-v3               → large-v3
+    distil-whisper-large-v3        → distil-large-v3
+    """
+    repo = (repo or '').strip()
+    for pre in ('faster-distil-whisper-', 'distil-whisper-'):
+        if repo.startswith(pre):
+            return 'distil-' + repo[len(pre):]
+    for pre in ('faster-whisper-', 'whisper-'):
+        if repo.startswith(pre):
+            return repo[len(pre):]
+    return repo or None
+
+
 def refresh_whisper_models():
     """扫描 models/whisper/ 目录，把已下载的模型名写入 _WHISPER_MODELS。
     同时保留已知模型名（即使尚未下载，也允许用户选择后触发下载）。
-    前端 /api/whisper/status 的 valid_models 与本函数联动——用户下载新模型后点刷新即可热切换。"""
+    前端 /api/whisper/status 的 valid_models 与本函数联动——用户下载新模型后点刷新即可热切换。
+
+    【v1.4.8 修】原来只认「扁平布局」（目录里直接有 model.bin / *.safetensors），
+    但 faster-whisper 走 huggingface_hub 下载时落的是 HF 缓存布局：
+        models/whisper/models--Systran--faster-distil-whisper-large-v3/
+            snapshots/<sha>/model.bin
+    于是模型明明躺着 1.5G，状态却报 downloaded=False、ready=False ——
+    前端的模型下拉全显示「（未下载）」，主人会以为没下过、再去点下载重下 1.5G。
+    实测证据：`models--Systran--faster-distil-whisper-large-v3/snapshots/c3058b4…/model.bin`
+    存在（1,512,927,867 字节），而 /api/whisper/status 全表 downloaded=False。
+    现在两种布局都认：扁平 + HF 缓存（snapshots/<ref>/ 下有 model.bin 或 *.safetensors）。
+    """
     _WHISPER_MODELS.clear()
     for name in _WHISPER_KNOWN:
         _WHISPER_MODELS[name] = {'name': name, 'downloaded': False}
     md = whisper_models_dir()
     if not os.path.isdir(md):
         return
+
+    def _has_weights(d):
+        try:
+            names = os.listdir(d)
+        except Exception:
+            return False
+        return 'model.bin' in names or any(n.endswith('.safetensors') for n in names)
+
     for entry in os.listdir(md):
         full = os.path.join(md, entry)
         if not os.path.isdir(full):
             continue
-        names = []
-        try:
-            names = os.listdir(full)
-        except Exception:
-            pass
-        if 'model.bin' in names or any(n.endswith('.safetensors') for n in names):
+        if _has_weights(full):
             _WHISPER_MODELS.setdefault(entry, {'name': entry, 'downloaded': False})
             _WHISPER_MODELS[entry]['downloaded'] = True
+            continue
+        # HF 缓存布局：model 名从目录名反推（models--Org--Repo → Repo 再归一化）
+        if not entry.startswith('models--'):
+            continue
+        snaps = os.path.join(full, 'snapshots')
+        if not os.path.isdir(snaps):
+            continue
+        done = False
+        try:
+            for sha in os.listdir(snaps):
+                if _has_weights(os.path.join(snaps, sha)):
+                    done = True
+                    break
+        except Exception:
+            pass
+        if not done:
+            continue
+        repo = entry.split('--')[-1]                      # 如 faster-distil-whisper-large-v3
+        name = _whisper_name_from_repo(repo)
+        if name and name in _WHISPER_MODELS:
+            _WHISPER_MODELS[name]['downloaded'] = True
     flat_names = []
     try:
         flat_names = os.listdir(md)
