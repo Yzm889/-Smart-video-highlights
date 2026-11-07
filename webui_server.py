@@ -3343,14 +3343,17 @@ def cleanup_run_mid(run_dir):
     if not run_dir or not os.path.isdir(run_dir):
         return 0
     keep_prefix = ('final', 'src', 'cover', 'poster')
+    # 【实测踩中 2026-11-07】narr*.wav（配音）与 *.srt 不能进清理名单：
+    #   · narr*.wav 被删后，「恢复项目→再合成」「改词重配后合成」（未改段仍指向旧 wav）
+    #     的音频链两级失败 → 静默兜底出无声片还报成功——主人 8899 实测复现。
+    #   · *.srt 被删后，「不烧录另给 .srt」的交付文件直接消失。
+    #   两类都是后续流程的必需品/交付物，不是可再生的中间垃圾；磁盘大户（src 副本）本就不在名单。
     mid_patterns = [
-        re.compile(r'^narr\d+.*\.(wav|mp3)$'),
         re.compile(r'^frame_\d+\.jpg$'),
         re.compile(r'^cut.*\.mp4$'),
         re.compile(r'^bc\d+\.mp4$'),
         re.compile(r'^bc_silent\.mp4$'),
         re.compile(r'^vsub\.mp4$'),
-        re.compile(r'^.*\.srt$'),
         re.compile(r'^.*\.concat\.txt$'),
     ]
     freed = 0

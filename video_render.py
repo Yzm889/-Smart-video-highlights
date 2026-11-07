@@ -1332,11 +1332,22 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         rc, o, e = ffmpeg_run(cmd)
         if rc == 0 and os.path.exists(final):
             return final
+        _log.info(f'[DIAG] 音频链 {_label} 失败 rc={rc} stderr_len={len(e)}')
+        try:
+            # 完整命令与 stderr 落盘：混音失败的根因此前只留一句"失败"，诊断全靠猜
+            with open(os.path.join(run_dir, '_audiodebug.txt'), 'a', encoding='utf-8') as _df:
+                _df.write('==== %s rc=%s ====\nCMD: %s\nSTDERR:\n%s\n' % (_label, rc, ' '.join(cmd), e.decode('utf-8', 'ignore')))
+        except Exception:
+            pass
         _log.info(f'[DIAG] 音频链 {_label} 失败，尝试下一级降级')
     # 兜底：丢弃配音，仅保留原声/画面的简单封装（保留旧行为以保证「能出片」）
     fb = os.path.join(run_dir, 'final.mp4')
     rc2, o2, e2 = ffmpeg_run(['-y', '-i', base_video, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', fb])
     if rc2 == 0 and os.path.exists(fb):
+        # 【防静默掉级】解说配音明明存在，兜底产物却没有音轨（base_video 是烧字幕的
+        # -an 产物）——交付无声片是事故不是降级。抛错把两级失败的真实 stderr 带给用户。
+        if (tts_paths or []) and not (probe_audio_len(fb) or 0):
+            raise RuntimeError('混音两级失败（无声兜底已拦截）: ' + e.decode('utf-8', 'ignore')[-280:])
         return fb
     raise RuntimeError('混音失败: ' + e.decode('utf-8', 'ignore')[-300:])
 

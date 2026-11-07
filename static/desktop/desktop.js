@@ -1129,6 +1129,9 @@ async function composeAll(){
     }
     setStatus('合成中…');
     const body = { run_dir: _runDir, items: items, skip: skip, params: _advParams() };
+    if(_music && $('npBgm').checked){
+      body.music = {name: _music.name, path: _music.path, desktop_token: _token};   // 配乐在合成时落盘
+    }
     const r = await fetch('/api/movie_compose', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const out = await r.json();

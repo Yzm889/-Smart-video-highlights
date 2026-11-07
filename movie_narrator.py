@@ -5788,6 +5788,17 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             _log.info('[DIAG] 第%d段解说音量%.0f%%' % (i+1, _narr_vol * 100))
         if _fade[0] or _fade[1]:
             _log.info('[DIAG] 第%d段配音淡入%.1fs/淡出%.1fs' % (i+1, _fade[0], _fade[1]))
+        # 【实测踩中 2026-11-07】audio 路径是 OUTDIR 相对形（run-1-.../narr0.wav），
+        # 不解析就 -i 给 ffmpeg → 按 CWD 解析 → 文件不存在 → 混音链两级失败 →
+        # 静默兜底出**无声成片**还报成功（桌面 EXE 与任意非 OUTDIR CWD 启动必中）。
+        if clip and not os.path.isabs(clip):
+            _cand = os.path.join(_w.OUTDIR, clip)
+            if os.path.exists(_cand):
+                clip = _cand
+            else:
+                _cand2 = os.path.join(run_dir, os.path.basename(clip))
+                if os.path.exists(_cand2):
+                    clip = _cand2
         tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol, _fade[0], _fade[1]))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
         voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
