@@ -1037,6 +1037,8 @@ class Handler(BaseHTTPRequestHandler):
                                     'pulling': _w.LOCAL_PULL['running'], 'pull_model': _w.LOCAL_PULL['model'],
                                     'pull_ok': _w.LOCAL_PULL['ok'], 'pull_msg': _w.LOCAL_PULL['msg'],
                                     'pull_pct': _w.LOCAL_PULL.get('pct', 0),
+                                    'pull_mb_done': _w.LOCAL_PULL.get('mb_done'), 'pull_mb_total': _w.LOCAL_PULL.get('mb_total'),
+                                    'pull_speed': _w.LOCAL_PULL.get('speed', ''),
                                     # Ollama 服务真实状态（与配置解耦）+ 一键安装/启动进度
                                     'ollama_installed': _ost['installed'], 'ollama_running': _ost['running'],
                                     'ollama_installing': _oi['running'],
@@ -1068,6 +1070,8 @@ class Handler(BaseHTTPRequestHandler):
             'download_ok': _w.WHISPER_DL['ok'],
             'download_msg': _w.WHISPER_DL['msg'],
             'download_pct': _w.WHISPER_DL.get('pct', 0),
+            'dl_mb_done': _w.WHISPER_DL.get('mb_done'), 'dl_mb_total': _w.WHISPER_DL.get('mb_total'),
+            'dl_speed': _w.WHISPER_DL.get('speed', ''),
             'available': avail,
             'valid_models': _w._WHISPER_MODELS,
             # [B] 推理设备信息：前端据此展示「当前 GPU/CPU，CPU 时提示启用 GPU」
@@ -1083,7 +1087,9 @@ class Handler(BaseHTTPRequestHandler):
                                     'installed': _w._installed_local_models(),
                                     'pulling': _w.VLM_PULL['running'], 'pull_model': _w.VLM_PULL['model'],
                                     'pull_ok': _w.VLM_PULL['ok'], 'pull_msg': _w.VLM_PULL['msg'],
-                                    'pull_pct': _w.VLM_PULL.get('pct', 0)}).encode('utf-8'),
+                                    'pull_pct': _w.VLM_PULL.get('pct', 0),
+                                    'pull_mb_done': _w.VLM_PULL.get('mb_done'), 'pull_mb_total': _w.VLM_PULL.get('mb_total'),
+                                    'pull_speed': _w.VLM_PULL.get('speed', '')}).encode('utf-8'),
                        'application/json')
 
     def _get_storage(self):

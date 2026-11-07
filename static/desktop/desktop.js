@@ -157,6 +157,13 @@ function renderEnv(){
   const noB = t => '<span class="env-badge bad">' + t + '</span>';
   const wB  = t => '<span class="env-badge wait">' + t + '</span>';
   const chk = t => '<span class="env-badge wait">检测中</span>' + (t || '');
+  const bar = (pct, done, total, speed) => {
+    let meta = pct + '%';
+    if(done !== undefined && done !== null && total) meta = done + 'MB / ' + total + 'MB · ' + pct + '%';
+    if(speed) meta += ' · ' + speed;
+    return '<div class="pull-wrap" style="flex:1;min-width:120px"><div class="pbar slim"><i style="width:' + pct + '%"></i></div>'
+      + '<div class="pbar-meta">' + meta + '</div></div>';
+  };
   const btn = (id, label, ghost) => '<button class="env-btn' + (ghost ? ' ghost' : '') + '" data-env="' + id + '">' + label + '</button>';
   const rows = [];
   const lm = (L && L.model) || 'qwen3:8b';
@@ -177,7 +184,8 @@ function renderEnv(){
   // ② 文字大脑：识别本机已装的全部模型（不止当前用的）
   let txtOk = false;
   if(L && L.pulling){
-    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + (L.pull_model || lm) + '<small>' + (L.pull_msg || '拉取中') + '</small></div>' + wB((L.pull_pct || 0) + '%') + '</div>');
+    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + (L.pull_model || lm) + '<small>' + (L.pull_msg || '拉取中') + '</small></div>'
+      + bar(L.pull_pct || 0, L.pull_mb_done, L.pull_mb_total, L.pull_speed) + '</div>');
   } else if(!L){
     rows.push('<div class="env-row"><div class="en-name">文字大脑<small>写解说稿的核心</small></div>' + chk() + '</div>');
   } else {
@@ -199,7 +207,8 @@ function renderEnv(){
 
   // ③ 看图模型（可选）
   if(V && V.pulling){
-    rows.push('<div class="env-row"><div class="en-name">看图模型 ' + (V.pull_model || V.model || 'minicpm-v') + '<small>拉取中</small></div>' + wB((V.pull_pct || 0) + '%') + '</div>');
+    rows.push('<div class="env-row"><div class="en-name">看图模型 ' + (V.pull_model || V.model || 'minicpm-v') + '<small>拉取中</small></div>'
+      + bar(V.pull_pct || 0, V.pull_mb_done, V.pull_mb_total, V.pull_speed) + '</div>');
   } else {
     const vOk = !!(V && V.ready);
     const vOpt = !!(V && V.enabled === false);   // 明确关闭才算"可选"，超时/未启用保持检测中
@@ -209,7 +218,8 @@ function renderEnv(){
 
   // ④ Whisper 台词识别
   if(W && W.downloading){
-    rows.push('<div class="env-row"><div class="en-name">台词识别 ' + (W.download_model || 'large-v3') + '<small>听懂台词，时间轴零偏差</small></div>' + wB((W.download_pct || 0) + '%') + '</div>');
+    rows.push('<div class="env-row"><div class="en-name">台词识别 ' + (W.download_model || 'large-v3') + '<small>听懂台词，时间轴零偏差</small></div>'
+      + bar(W.download_pct || 0, W.dl_mb_done, W.dl_mb_total, W.dl_speed) + '</div>');
   } else {
     const wOk = !!(W && W.ready);
     rows.push('<div class="env-row"><div class="en-name">台词识别 ' + ((W && W.selected) || 'large-v3') + '<small>听懂台词（2.9GB，一次下载）</small></div>'
@@ -219,7 +229,7 @@ function renderEnv(){
   // ⑤ 配音引擎（信息展示；引擎安装/音色在设置里）
   const vc = A && A.voice;
   rows.push('<div class="env-row"><div class="en-name">配音引擎<small>' + ((vc && vc.ready && vc.label) ? vc.label : ((vc && vc.reason) || '检测中')) + '</small></div>'
-    + (!A ? chk() : (vc ? (vc.ready ? okB('就绪') : noB('未就绪')) : wB('…'))) + '</div>');
+    + (!A ? chk() : (vc ? (vc.ready ? okB('就绪') : noB('未就绪') + btn('gotoVoice', '去设置 ›', true)) : wB('…'))) + '</div>');
 
   const coreOk = ollamaUp && txtOk && !!(W && W.ready);
   rows.unshift('<div class="env-row" style="border-color:' + (coreOk ? 'var(--ok)' : 'var(--warn)') + '">'
@@ -240,8 +250,9 @@ function refreshEnv(){
 
 $('envRows').addEventListener('click', e => {   // 只负责「去设置」跳转，安装动作全在设置里
   const b = e.target.closest('[data-goto]');
-  if(!b) return;
-  openSettings(b.dataset.goto);
+  if(b){ openSettings(b.dataset.goto); return; }
+  const v = e.target.closest('[data-env="gotoVoice"]');
+  if(v){ openSettings('secVoice'); }
 });
 $('envRefresh').addEventListener('click', refreshEnv);
 setInterval(() => {                       // 拉取/下载中 2.5s 加密刷新
@@ -1201,6 +1212,7 @@ $('btnWhisperDl').addEventListener('click', async () => {
       const s = await fetch('/api/whisper/status').then(x => x.json()).catch(() => null);
       if(!s) return;
       const d = s.download || {};
+      _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', d.downloading, d.download_pct, d.dl_mb_done, d.dl_mb_total, d.dl_speed);
       stEl.textContent = d.downloading ? ('下载中 ' + (d.download_pct || 0) + '%') : (d.download_ok ? '✅ ' + (d.download_msg || '完成') : (d.download_msg || ''));
       if(!d.downloading){ clearInterval(iv); if(d.download_ok) renderWhisperOptions(); }
     }, 2000);
@@ -1246,6 +1258,17 @@ function _fillModelPick(sel, catalog, current, installed, pulling){
   sel.innerHTML = opts.join('');
   sel.dataset.pulling = pulling ? '1' : '';
 }
+function _pullBar(wrapId, fillId, metaId, active, pct, done, total, speed){
+  const wrap = $(wrapId);
+  if(!wrap) return;
+  if(!active){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  $(fillId).style.width = (pct || 0) + '%';
+  let meta = (pct || 0) + '%';
+  if(done !== undefined && done !== null && total) meta = done + 'MB / ' + total + 'MB · ' + (pct || 0) + '%';
+  if(speed) meta += ' · ' + speed;
+  $(metaId).textContent = meta;
+}
 async function fillModelCenter(){
   try {
     // 【实测踩中】本地填充不许等在慢速的 vlm 探测后面（vlm/status 可达 10s+）——
@@ -1253,6 +1276,7 @@ async function fillModelCenter(){
     const jobL = _envGet('/api/local/status').then(L => {
       if(!L) return;
       _fillModelPick($('setLocalPick'), LOCAL_MODEL_CATALOG, L.model || 'qwen3:8b', L.installed, L.pulling);
+      _pullBar('localPullWrap', 'localPullFill', 'localPullMeta', L.pulling, L.pull_pct, L.pull_mb_done, L.pull_mb_total, L.pull_speed);
       $('ollamaState').textContent = L.ollama_running ? '✓ 运行中'
         : (L.ollama_installed ? '已安装·未运行（点右侧启动）' : '未安装（首次约 1.5GB 下载）');
       $('mcHint').textContent = L.pulling
@@ -1262,6 +1286,7 @@ async function fillModelCenter(){
     const jobV = _envGet('/api/vlm/status').then(V => {
       if(!V) return;
       _fillModelPick($('setVlmPick'), VLM_MODEL_CATALOG, V.model || 'minicpm-v4.5', V.installed, V.pulling);
+      _pullBar('vlmPullWrap', 'vlmPullFill', 'vlmPullMeta', V.pulling, V.pull_pct, V.pull_mb_done, V.pull_mb_total, V.pull_speed);
     });
     await Promise.all([jobL, jobV]);
   } catch(e){ /* 静默，下次刷新 */ }

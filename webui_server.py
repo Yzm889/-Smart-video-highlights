@@ -1015,6 +1015,29 @@ def _hf_head_size(url):
         return 0
     return 0
 
+def _slot_bytes(slot, done_bytes, total_bytes):
+    """下载进度统一出口：pct + 已下/总量 MB + EMA 网速。
+    主人反馈（2026-11-07）：进度只有干巴巴的百分比，要进度条+网速+已下/总量 MB。"""
+    import time as _t
+    if total_bytes:
+        slot['pct'] = min(100, max(0, int(done_bytes * 100 / total_bytes)))
+        slot['mb_total'] = round(total_bytes / 1e6, 1)
+        slot['mb_done'] = round(done_bytes / 1e6, 1)
+    now = _t.time()
+    try:
+        last_t, last_b = slot.get('_bt') or 0, slot.get('_bb') or 0
+        if last_t and now > last_t and done_bytes >= last_b:
+            sp = (done_bytes - last_b) / max(0.05, now - last_t)
+            ema = slot.get('_speed_ema') or sp
+            slot['_speed_ema'] = ema * 0.7 + sp * 0.3
+            v = slot['_speed_ema']
+            slot['speed'] = ('%.1f MB/s' % (v / 1e6)) if v >= 1e6 else ('%.0f KB/s' % (v / 1e3))
+        slot['_bt'] = now
+        slot['_bb'] = done_bytes
+    except Exception:
+        pass
+
+
 def _hf_download_files(repo_id, files, target_dir, slot):
     """通用 HF 仓库文件下载器：手动走普通 HTTP（绕开 Xet 401），断点续传 + 按字节加权百分比。
     大文件（能 Range 探测大小）走断点续传；小文件（探测不到大小，普通 git 文件）走普通 GET。
@@ -1091,7 +1114,7 @@ def _hf_download_files(repo_id, files, target_dir, slot):
                                 break
                             f.write(chunk)
                             if grand:
-                                slot['pct'] = int((base_done + f.tell()) * 100 / grand)
+                                _slot_bytes(slot, base_done + f.tell(), grand)
                                 slot['msg'] = '下载 %s：%d%%' % (fn, slot['pct'])
                 if os.path.getsize(tgt) < total:
                     raise Exception('下载不完整（%d/%d），可续传' % (os.path.getsize(tgt), total))
@@ -1616,6 +1639,7 @@ def _fast_pull_local(model, spec=None, slot=None):
             while pp.poll() is None:
                 if total and os.path.exists(tgt):
                     slot['pct'] = min(hi, lo + int(os.path.getsize(tgt) * (hi - lo) // max(1, total)))
+                    _slot_bytes(slot, os.path.getsize(tgt), total)
                 _t.sleep(1)
             return pp.returncode == 0
         else:
@@ -1623,6 +1647,7 @@ def _fast_pull_local(model, spec=None, slot=None):
             if total:
                 def _prog(cur):
                     slot['pct'] = min(hi, lo + int(cur * (hi - lo) // max(1, total)))
+                    _slot_bytes(slot, cur, total)
                 # 最多试 3 轮：每轮只有「上一轮没下全的段」会重下
                 # （按分片名+大小判定跳过已完成的段）——实测 hf-mirror 在 8 并发下
                 # 会掐连接导致个别分片失败，直接退回单线程会把已下好的 2GB 白重下
@@ -1656,6 +1681,7 @@ def _fast_pull_local(model, spec=None, slot=None):
                                     # ab 模式 f.tell()=总大小（含断点）；wb 模式 f.tell()=本次大小
                                     cur = f.tell()
                                     slot['pct'] = min(hi, lo + int(cur * (hi - lo) // max(1, total)))
+                                    _slot_bytes(slot, cur, total)
                     return True
                 except Exception as e:
                     slot['msg'] = '下载失败(第%d次): %s' % (attempt+1, str(e)[:80])
@@ -1744,6 +1770,7 @@ def _local_pull_thread(model):
             LOCAL_PULL['ok'] = False
             LOCAL_PULL['msg'] = '未找到 ollama 命令：Ollama 未安装或未加入 PATH。请先安装 Ollama 并重启本工具。'
             return
+        _U = {'B': 1 / 1e6, 'KB': 1 / 1e3, 'MB': 1.0, 'GB': 1e3, 'GiB': 1.074, 'MiB': 1.049}
         def _reader(stream):
             for _raw in stream:
                 _line = _raw.strip()
@@ -1756,6 +1783,16 @@ def _local_pull_thread(model):
                         LOCAL_PULL['pct'] = min(100, max(0, float(_m.group(1))))
                     except Exception:
                         pass
+                _b = _re.search(r'([\d.]+)\s*(GB|MB|KB|B|GiB|MiB)\s*/\s*([\d.]+)\s*(GB|MB|KB|B|GiB|MiB)', _line)
+                if _b:
+                    try:
+                        LOCAL_PULL['mb_done'] = round(float(_b.group(1)) * _U[_b.group(2)], 1)
+                        LOCAL_PULL['mb_total'] = round(float(_b.group(3)) * _U[_b.group(4)], 1)
+                    except Exception:
+                        pass
+                _sp = _re.search(r'([\d.]+)\s*(MB|GB|KB|B)/s', _line)
+                if _sp:
+                    LOCAL_PULL['speed'] = '%s %s/s' % (_sp.group(1), _sp.group(2))
         _t = threading.Thread(target=_reader, args=(p.stdout,), daemon=True)
         _t.start()
         try:

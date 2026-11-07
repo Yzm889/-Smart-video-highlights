@@ -234,10 +234,18 @@
           <select id="setLocalPick"></select>
           <button class="mini-btn" id="btnPullLocal">拉取选中</button>
         </div>
+        <div class="pull-wrap" id="localPullWrap" style="display:none">
+          <div class="pbar slim"><i id="localPullFill"></i></div>
+          <div class="pbar-meta" id="localPullMeta"></div>
+        </div>
         <label>看图大脑（可选 · 画面理解）</label>
         <div class="set-row">
           <select id="setVlmPick"></select>
           <button class="mini-btn" id="btnPullVlm">拉取选中</button>
+        </div>
+        <div class="pull-wrap" id="vlmPullWrap" style="display:none">
+          <div class="pbar slim"><i id="vlmPullFill"></i></div>
+          <div class="pbar-meta" id="vlmPullMeta"></div>
         </div>
         <div class="hint" id="mcHint">选已安装的立即生效；选未安装的会自动开始拉取</div>
       </div>
@@ -261,7 +269,7 @@
         <label>服务地址</label>
         <input type="text" id="setVlmBase" placeholder="http://localhost:11434/v1">
       </div>
-      <div class="set-sec">
+      <div class="set-sec" id="secVoice">
         <div class="set-h">配音引擎与音色</div>
         <div class="set-row">
           <select id="setTtsEngine"></select>
@@ -283,6 +291,10 @@
         <div class="set-row">
           <select id="setWhisperModel"></select>
           <button class="mini-btn" id="btnWhisperDl"><svg class="ic"><use href="#i-download"/></svg>下载选中模型</button>
+        </div>
+        <div class="pull-wrap" id="whisperPullWrap" style="display:none">
+          <div class="pbar slim"><i id="whisperPullFill"></i></div>
+          <div class="pbar-meta" id="whisperPullMeta"></div>
         </div>
         <div class="hint" id="whisperDlStatus"></div>
       </div>
