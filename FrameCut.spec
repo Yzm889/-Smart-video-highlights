@@ -31,6 +31,7 @@ a = Analysis(
         'clr',
         'clr_loader',
         # 本地引擎模块（webui_server 直接 import，正常会收；显式列出防漏）
+        'app_version',
         'ai_providers',
         'movie_narrator',
         'video_render',
