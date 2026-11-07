@@ -2063,13 +2063,59 @@ _ai_status_cache = {'time': 0, 'data': None}
 _VERSION_CHECK_CACHE = {'done': False, 'result': None}
 
 
+_VERSION_TIMEOUT = 8      # 单通道超时（秒）
+
+# 版本号匹配：vX.Y.Z，三处复用
+_VER_RE = r'([0-9]+)\.([0-9]+)\.([0-9]+)'
+
+
+def _probe_latest_github(timeout=_VERSION_TIMEOUT):
+    """探最新版本，返回 (整数三元组 or None, 失败原因)。
+
+    两条通道依次尝试，任一成功即返回：
+      1. /releases/latest 的 302 最终 URL 里带 tag——不解析 HTML、不吃 API 限流；
+      2. api.github.com 的 JSON——与 github.com 不同域，通道 1 被代理掐掉时兜底。
+    v1.4.6 修：原来只有通道 1 且超时 3 秒，在本地代理环境下首次 TLS 建连就超时，
+    版本自检等于永久静默失效（实测 timeout=3s 失败、10s 成功且仅需 1.36s）。
+    """
+    import json as _json
+    import re as _re
+    import urllib.request as _u
+    from app_version import REPO, RELEASES_URL
+    err = []
+    try:
+        req = _u.Request(RELEASES_URL, headers={'User-Agent': 'FrameCut'})
+        with _u.urlopen(req, timeout=timeout) as r:
+            m = _re.search(r'/tag/v' + _VER_RE, r.geturl())
+        if m:
+            return tuple(int(x) for x in m.groups()), ' | '.join(err)
+        err.append('redirect: 最终 URL 无 tag')
+    except Exception as e:
+        err.append('redirect: %s: %s' % (type(e).__name__, e))
+    try:
+        req = _u.Request('https://api.github.com/repos/%s/releases/latest' % REPO,
+                         headers={'User-Agent': 'FrameCut',
+                                  'Accept': 'application/vnd.github+json'})
+        with _u.urlopen(req, timeout=timeout) as r:
+            data = _json.loads(r.read().decode('utf-8', 'replace'))
+        m = _re.match(_VER_RE, str(data.get('tag_name') or '').lstrip('vV'))
+        if m:
+            return tuple(int(x) for x in m.groups()), ' | '.join(err)
+        err.append('api: tag_name 不可解析')
+    except Exception as e:
+        err.append('api: %s: %s' % (type(e).__name__, e))
+    return None, ' | '.join(err)
+
+
 def check_latest_version(force=False):
-    """比对 GitHub Releases latest，返回 {ok, current, latest, has_update, url}。
+    """比对 GitHub Releases latest，返回 {ok, current, latest, has_update, url, error}。
 
     设计约束（候选 B）：
-      · 3 秒超时，异常/断网一律静默返回 ok:false，绝不阻塞启动、绝不弹错；
-      · 结果进程内缓存，每次启动只查一次；
-      · 只做提示，不自动下载、不改任何配置。
+      · 8 秒超时 × 最多 2 条通道，异常/断网一律静默返回 ok:false，绝不阻塞启动、
+        绝不弹错（服务端是 ThreadingHTTPServer，慢查询只占自己的线程，不卡 UI）；
+      · 结果进程内缓存，每次启动只查一次；失败也缓存，避免每次轮询都去打网络；
+      · 只做提示，不自动下载、不改任何配置；
+      · error 字段只给排查用，前端不展示。
     版本号来自 app_version（与 tag 单一事实来源），版本号比较用纯整数元组，
     避免字符串比较把 v1.4.10 判成比 v1.4.9 旧。
     """
@@ -2077,24 +2123,14 @@ def check_latest_version(force=False):
         return _VERSION_CHECK_CACHE['result']
     from app_version import APP_VERSION, RELEASES_URL
     out = {'ok': False, 'current': 'v' + APP_VERSION, 'latest': '',
-           'has_update': False, 'url': RELEASES_URL}
-    try:
-        import re as _re
-        import urllib.request as _u
-        req = _u.Request(RELEASES_URL, headers={'User-Agent': 'FrameCut'})
-        # GitHub /releases/latest 会 302 到 /releases/tag/vX.Y.Z，用最终 URL 取 tag，
-        # 不解析 HTML，也不需要 API token / 速率限制。
-        with _u.urlopen(req, timeout=3) as r:
-            final = r.geturl()
-        m = _re.search(r'/tag/v([0-9]+)\.([0-9]+)\.([0-9]+)', final)
-        if m:
-            latest = tuple(int(x) for x in m.groups())
-            current = tuple(int(x) for x in APP_VERSION.split('.'))
-            out['latest'] = 'v%d.%d.%d' % latest
-            out['has_update'] = latest > current
-            out['ok'] = True
-    except Exception:
-        pass                      # 断网/超时/被墙：静默跳过，不影响启动
+           'has_update': False, 'url': RELEASES_URL, 'error': ''}
+    latest, err = _probe_latest_github()
+    out['error'] = err
+    if latest:
+        current = tuple(int(x) for x in APP_VERSION.split('.'))
+        out['latest'] = 'v%d.%d.%d' % latest
+        out['has_update'] = latest > current
+        out['ok'] = True
     _VERSION_CHECK_CACHE['done'] = True
     _VERSION_CHECK_CACHE['result'] = out
     return out

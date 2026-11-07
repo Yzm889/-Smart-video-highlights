@@ -88,7 +88,7 @@ def test_network_failure_is_silent(monkeypatch):
 
 
 def test_timeout_is_passed_and_result_cached(monkeypatch):
-    """必须带 3s 超时；且第二次调用不再打网络。"""
+    """必须带 8s 超时（3s 在代理环境下必超时）；且第二次调用不再打网络。"""
     _reset()
     import urllib.request
     calls = []
@@ -100,4 +100,52 @@ def test_timeout_is_passed_and_result_cached(monkeypatch):
     monkeypatch.setattr(urllib.request, 'urlopen', fake)
     S.check_latest_version()
     S.check_latest_version()
-    assert calls == [3], '超时参数或缓存不符合预期：%r' % calls
+    assert calls == [8], '超时参数或缓存不符合预期：%r' % calls
+
+
+class _JsonResp(_Resp):
+    """模拟 api.github.com 的 JSON 响应。"""
+
+    def __init__(self, body):
+        _Resp.__init__(self, '')
+        self._body = body
+
+    def read(self):
+        return self._body
+
+
+def test_api_channel_used_when_redirect_blocked(monkeypatch):
+    """通道 1（github.com 重定向）被代理掐掉时，必须走通道 2（api.github.com）。
+
+    v1.4.6 修的真实场景：本地代理对 github.com 首次 TLS 建连超时，
+    只有 api.github.com 能通；单通道版本自检等于永久失效。
+    """
+    _reset()
+    import urllib.request
+
+    def fake(req, timeout=None):
+        url = getattr(req, 'full_url', str(req))
+        if 'api.github.com' in url:
+            return _JsonResp(b'{"tag_name": "v9.9.9"}')
+        raise OSError('proxy CONNECT tunnel failed, response 502')
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake)
+    out = S.check_latest_version(force=True)
+    assert out['ok'] is True, 'API 兜底通道没生效：%r' % out
+    assert out['latest'] == 'v9.9.9'
+    assert out['has_update'] is True
+    assert 'redirect' in out['error'], '失败原因要留痕便于排查：%r' % out
+
+
+def test_all_channels_fail_keeps_reason_but_stays_silent(monkeypatch):
+    """两条通道都失败：仍返回 ok:false、不抛异常、error 里有两条原因。"""
+    _reset()
+    import urllib.request
+
+    def boom(*a, **k):
+        raise OSError('network unreachable')
+
+    monkeypatch.setattr(urllib.request, 'urlopen', boom)
+    out = S.check_latest_version(force=True)
+    assert out['ok'] is False and out['has_update'] is False
+    assert 'redirect' in out['error'] and 'api' in out['error']
