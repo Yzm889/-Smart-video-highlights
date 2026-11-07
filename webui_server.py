@@ -2060,6 +2060,46 @@ def _voice_status():
 
 
 _ai_status_cache = {'time': 0, 'data': None}
+_VERSION_CHECK_CACHE = {'done': False, 'result': None}
+
+
+def check_latest_version(force=False):
+    """比对 GitHub Releases latest，返回 {ok, current, latest, has_update, url}。
+
+    设计约束（候选 B）：
+      · 3 秒超时，异常/断网一律静默返回 ok:false，绝不阻塞启动、绝不弹错；
+      · 结果进程内缓存，每次启动只查一次；
+      · 只做提示，不自动下载、不改任何配置。
+    版本号来自 app_version（与 tag 单一事实来源），版本号比较用纯整数元组，
+    避免字符串比较把 v1.4.10 判成比 v1.4.9 旧。
+    """
+    if _VERSION_CHECK_CACHE['done'] and not force:
+        return _VERSION_CHECK_CACHE['result']
+    from app_version import APP_VERSION, RELEASES_URL
+    out = {'ok': False, 'current': 'v' + APP_VERSION, 'latest': '',
+           'has_update': False, 'url': RELEASES_URL}
+    try:
+        import re as _re
+        import urllib.request as _u
+        req = _u.Request(RELEASES_URL, headers={'User-Agent': 'FrameCut'})
+        # GitHub /releases/latest 会 302 到 /releases/tag/vX.Y.Z，用最终 URL 取 tag，
+        # 不解析 HTML，也不需要 API token / 速率限制。
+        with _u.urlopen(req, timeout=3) as r:
+            final = r.geturl()
+        m = _re.search(r'/tag/v([0-9]+)\.([0-9]+)\.([0-9]+)', final)
+        if m:
+            latest = tuple(int(x) for x in m.groups())
+            current = tuple(int(x) for x in APP_VERSION.split('.'))
+            out['latest'] = 'v%d.%d.%d' % latest
+            out['has_update'] = latest > current
+            out['ok'] = True
+    except Exception:
+        pass                      # 断网/超时/被墙：静默跳过，不影响启动
+    _VERSION_CHECK_CACHE['done'] = True
+    _VERSION_CHECK_CACHE['result'] = out
+    return out
+
+
 def ai_status():
     """返回各 AI 能力的就绪状态，供前端做生成前置引导。
     5秒缓存：vlm_ping() 会阻塞，前端轮询时避免重复检查导致超时。"""

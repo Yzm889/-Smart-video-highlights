@@ -964,6 +964,15 @@ class Handler(BaseHTTPRequestHandler):
             'video_encoder': _w.video_encoder_label(),
         }).encode('utf-8'), 'application/json')
 
+    def _get_version_check(self):
+        """新版本自检：比对 GitHub Releases latest。
+
+        硬约束：3 秒超时、异常一律静默返回 ok:false，绝不阻塞启动、绝不弹错。
+        结果进程内缓存（每次启动只查一次），避免轮询反复打 GitHub。
+        """
+        self._send(200, json.dumps(_w.check_latest_version()).encode('utf-8'),
+                   'application/json')
+
     def _get_ai_status(self):
         self._send(200, json.dumps(_w.ai_status()).encode('utf-8'), 'application/json')
 
@@ -2106,6 +2115,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/preview_proxy': '_get_preview_proxy',
         '/api/video_frame': '_get_video_frame',
         '/api/vlm/status': '_get_vlm_status',
+        '/api/version_check': '_get_version_check',
         '/api/whisper/status': '_get_whisper_status',
         '/api/ollama/install': '_get_ollama_install',
         '/index.html': '_get_index',
