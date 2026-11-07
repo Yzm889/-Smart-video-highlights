@@ -11,6 +11,7 @@
   <div class="menu" data-menu="file"><span>文件</span>
     <div class="menu-dd">
       <div class="mi" data-act="new">新建项目 <span class="hk">Ctrl+N</span></div>
+      <div class="mi" data-act="history">成片历史</div>
       <div class="mi" data-act="openfolder">打开成片所在文件夹</div>
       <div class="sep"></div>
       <div class="mi" data-act="exit">退出</div>
@@ -65,13 +66,20 @@
         <div class="env-head"><span>第一步 · 环境检查（AI 引擎就绪后开始创作）</span><button class="mini-btn" id="envRefresh">刷新</button></div>
         <div class="env-rows" id="envRows"><div class="ins-empty">检查中…</div></div>
       </div>
+      <div class="env-card" id="recentCard" style="display:none">
+        <div class="env-head"><span>🕘 最近项目（点击继续调整或合成）</span><button class="mini-btn" id="recentRefresh">刷新</button></div>
+        <div class="recent-list" id="recentList"></div>
+      </div>
       <button class="np-pick" id="npPick">
         <span class="np-pick-icon">📁</span>
         <span id="npPickLabel">从电脑选择视频</span>
       </button>
       <div class="field">
         <label>片名 / 主题（用于搜剧情，可留空）</label>
-        <input type="text" id="npName" placeholder="例如：惩罚者 第一季第一集">
+        <div class="np-name-row">
+          <input type="text" id="npName" placeholder="例如：惩罚者 第一季第一集">
+          <button class="mini-btn" id="npPlotLookup" title="按片名用 AI 检索剧情梗概，填入下方剧情框">🔎 查剧情</button>
+        </div>
       </div>
       <div class="field">
         <label>剧情（开头 → 冲突 → 结局）或粘贴完整解说稿</label>
@@ -81,6 +89,40 @@
         <label class="chk"><input type="checkbox" id="npScript"> 这是写好的完整解说稿（AI 不改一字）</label>
         <label class="chk"><input type="checkbox" id="npCut" checked> 剧情精剪（保留高光，剪掉填充——成片约 10 分钟）</label>
         <label class="chk"><input type="checkbox" id="npBgm"> 加背景音乐（解说时自动闪避）</label>
+      </div>
+      <button class="np-adv-toggle" id="npAdvToggle">⚙ 高级设置（时长 · 字幕 · 导出交付）<span class="adv-arrow" id="npAdvArrow">展开 ▾</span></button>
+      <div class="adv-body" id="npAdvBody" style="display:none">
+        <div class="adv-grid">
+          <div class="adv-item"><label>目标成片时长</label>
+            <select id="advTarget"><option value="0">全片（不压时长）</option><option value="600">约 10 分钟</option><option value="300">约 5 分钟</option><option value="60">约 1 分钟</option></select></div>
+          <div class="adv-item"><label>导出分辨率</label>
+            <select id="advRes"><option value="original">原始</option><option value="1080p">1080p</option><option value="720p">720p</option></select></div>
+          <div class="adv-item"><label>调色</label>
+            <select id="advColor"><option value="native">原片（不调色）</option><option value="cool">清冷</option><option value="warm">暖调</option></select></div>
+          <div class="adv-item"><label>转场</label>
+            <select id="advTrans"><option value="hard">硬切</option><option value="crossfade">交叉淡化 200ms</option></select></div>
+          <div class="adv-item"><label>质量档位</label>
+            <select id="advQual"><option value="balanced">均衡</option><option value="speed">速度优先</option><option value="quality">画质优先</option></select></div>
+          <div class="adv-item"><label>字幕交付</label>
+            <select id="advBurn"><option value="1">烧进画面</option><option value="0">不烧录（另给 .srt）</option></select></div>
+          <div class="adv-item"><label>字幕字号</label>
+            <input type="number" id="advFontSize" min="14" max="48" value="22"></div>
+          <div class="adv-item"><label>文字颜色</label>
+            <input type="color" id="advColor1" value="#ffffff"></div>
+          <div class="adv-item"><label>描边颜色</label>
+            <input type="color" id="advOutline" value="#000000"></div>
+          <div class="adv-item"><label>描边粗细</label>
+            <input type="number" id="advOutlineW" min="0" max="8" value="2"></div>
+          <div class="adv-item"><label>字幕位置</label>
+            <select id="advAlign"><option value="2">底中</option><option value="1">底左</option><option value="3">底右</option><option value="8">顶中</option></select></div>
+          <div class="adv-item"><label>底边距(px)</label>
+            <input type="number" id="advMarginV" min="0" max="200" value="50"></div>
+          <div class="adv-item"><label>音轨交付</label>
+            <select id="advLayers"><option value="0">单轨混音</option><option value="1">双轨分层（A1+A2）</option><option value="2">成片不含解说</option></select></div>
+          <div class="adv-item"><label>解说音轨 wav</label>
+            <select id="advVoice"><option value="0">不导出</option><option value="1">单独导出 .wav</option></select></div>
+        </div>
+        <div class="hint">改完自动记忆，下次生成直接用</div>
       </div>
       <button class="btn primary big" id="npGo" disabled>🎙 开始生成</button>
       <div class="np-hint" id="npHint">选择视频并填写剧情后开始</div>
@@ -173,6 +215,20 @@
         <input type="text" id="setLocalModel" placeholder="qwen3:8b">
       </div>
       <div class="set-sec">
+        <div class="set-h">配音引擎与音色</div>
+        <div class="set-row">
+          <select id="setTtsEngine"></select>
+          <button class="mini-btn" id="btnTtsTest">🧪 试听</button>
+        </div>
+        <label>音色（edge-tts 引擎用）</label>
+        <select id="setTtsVoice"></select>
+        <label>CosyVoice 音色（含克隆音色）</label>
+        <select id="setCosyVoice"></select>
+        <label>语速</label>
+        <input type="text" id="setTtsRate" placeholder="+0%">
+        <div class="hint" id="ttsTestHint"></div>
+      </div>
+      <div class="set-sec">
         <div class="set-h">Whisper 台词识别模型</div>
         <div class="set-row">
           <select id="setWhisperModel"></select>
@@ -184,6 +240,14 @@
     <div class="set-actions">
       <button class="btn primary" id="settingsSave">💾 保存</button>
     </div>
+  </div>
+</div>
+
+<!-- 成片历史 -->
+<div class="modal-mask" id="histMask" style="display:none">
+  <div class="modal hist">
+    <div class="modal-title">🕘 成片历史 <button class="mini-btn" id="histClose" style="float:right">✕</button></div>
+    <div id="histList"><div class="ins-empty">加载中…</div></div>
   </div>
 </div>
 

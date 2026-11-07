@@ -90,6 +90,7 @@ const _acts = {
   delcap(){ delSelected(); },
   tgnarr(){ toggleNarrTrack(); },
   tgorig(){ toggleOrigTrack(); },
+  history(){ openHistory(); },
   about(){ toast('一帧成片 · 本地免费 AI 解说剪辑 · 桌面版'); }
 };
 document.querySelectorAll('.mi').forEach(mi => {
@@ -256,6 +257,66 @@ $('npBgm').addEventListener('change', () => {
   if($('npBgm').checked && !_music && window.pywebview && window.pywebview.api) pickLocalMusic();
 });
 
+/* ── 高级设置（生成与合成共用一套参数，改动自动记忆） ── */
+const ADV_KEY = 'framecut_desktop_adv_v1';
+const ADV_IDS = ['advTarget','advRes','advColor','advTrans','advQual','advBurn',
+  'advFontSize','advColor1','advOutline','advOutlineW','advAlign','advMarginV','advLayers','advVoice'];
+function _advParams(){
+  return {
+    maxSeg: 25, autoCut: $('npCut').checked,
+    targetSec: parseFloat($('advTarget').value) || 0,   // 0 = 全片（后端回落视频时长）
+    narr_style: 'movie', detail_level: 'balanced', genre: 'auto',
+    subtitle: {fontSize: +$('advFontSize').value || 22, color: $('advColor1').value || '#FFFFFF',
+               outlineColor: $('advOutline').value || '#000000',
+               outlineWidth: ($('advOutlineW').value === '' ? 2 : +$('advOutlineW').value),
+               alignment: +$('advAlign').value || 2, marginV: +$('advMarginV').value || 50,
+               burn: $('advBurn').value !== '0'},
+    audio: {layers: $('advLayers').value === '1' ? true : ($('advLayers').value === '2' ? 2 : false),
+            exportVoice: $('advVoice').value === '1'},
+    resolution: $('advRes').value || 'original', fit: 'auto',
+    colorStyle: $('advColor').value || 'native',
+    qualityTier: $('advQual').value || 'balanced',
+    transition: $('advTrans').value || 'hard'
+  };
+}
+function advSave(){
+  const v = {};
+  ADV_IDS.forEach(id => { const el = $(id); if(el) v[id] = el.value; });
+  try { localStorage.setItem(ADV_KEY, JSON.stringify(v)); } catch(e){}
+}
+function advLoad(){
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(ADV_KEY) || 'null'); } catch(e){}
+  if(!v) return;
+  ADV_IDS.forEach(id => { const el = $(id); if(el && v[id] !== undefined) el.value = v[id]; });
+}
+$('npAdvToggle').addEventListener('click', () => {
+  const b = $('npAdvBody');
+  const show = b.style.display === 'none';
+  b.style.display = show ? 'block' : 'none';
+  $('npAdvArrow').textContent = show ? '收起 ▴' : '展开 ▾';
+});
+ADV_IDS.forEach(id => { const el = $(id); if(el) el.addEventListener('change', advSave); });
+advLoad();
+
+/* ── 查剧情（与网页版同一条 /api/deepseek_plot 链，仅加 UI 入口） ── */
+$('npPlotLookup').addEventListener('click', async () => {
+  const title = $('npName').value.trim();
+  if(!title){ toast('先填片名再查剧情（或在剧情框直接写）', 'bad'); return; }
+  const b = $('npPlotLookup');
+  b.disabled = true; b.textContent = '⏳ 查询中…';
+  try {
+    const r = await fetch('/api/deepseek_plot', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({title: title, which: 'nar'})});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '查询失败');
+    $('npPlot').value = (out.plot || '').trim();
+    updateNewProj();
+    toast('✅ 剧情已填入，可修改后开始生成');
+  } catch(e){ toast('查剧情失败：' + e.message, 'bad'); }
+  b.disabled = false; b.textContent = '🔎 查剧情';
+});
+
 $('npGo').addEventListener('click', async () => {
   const btn = $('npGo');
   const plot = $('npPlot').value.trim();
@@ -270,15 +331,7 @@ $('npGo').addEventListener('click', async () => {
     video: {name: _video.name, path: _video.path, desktop_token: _token},
     plot: isScript ? '' : plot,
     script: isScript ? plot : undefined,
-    params: {
-      maxSeg: 25, autoCut: $('npCut').checked, targetSec: 600,
-      narr_style: 'movie', detail_level: 'balanced', genre: 'auto',
-      subtitle: {fontSize: 22, color: '#FFFFFF', outlineColor: '#000000',
-                 outlineWidth: 2, alignment: 2, marginV: 50},
-      audio: {layers: false, exportVoice: false},
-      resolution: 'original', fit: 'auto', colorStyle: 'native',
-      qualityTier: 'balanced', transition: 'hard'
-    }
+    params: _advParams(),
   };
   if(_srt) body.subtitle_file = {name: _srt.name, text: _srt.text};
   if(_music && $('npBgm').checked) body.music = {name: _music.name, path: _music.path, desktop_token: _token};
@@ -782,6 +835,7 @@ function openSettings(){
     $('setLocalBase').value = (c.local || {}).base_url || '';
     $('setLocalModel').value = (c.local || {}).model || '';
     renderWhisperOptions();
+    fillTtsSettings();
   }).catch(e => toast('读取配置失败：' + e.message, 'bad'));
 }
 $('tbSettings').addEventListener('click', openSettings);
@@ -789,7 +843,12 @@ $('tbSrt').addEventListener('click', importSrt);
 $('tbMusic').addEventListener('click', pickLocalMusic);
 $('settingsClose').addEventListener('click', () => $('settingsMask').style.display = 'none');
 $('settingsSave').addEventListener('click', async () => {
-  const payload = {vision: {}, tts: {}, local: {}};
+  const payload = {vision: {}, tts: {}, local: {}, tts_local: {
+    engine: $('setTtsEngine').value || 'auto',
+    voice: $('setTtsVoice').value || '',
+    cosy_voice: $('setCosyVoice').value || '',
+    rate: $('setTtsRate').value.trim() || '+0%'
+  }};
   ['VisBase', 'VisModel'].forEach(f => {
     const el = $('set' + f);
     if(el && el.value.trim()) payload.vision[f.replace('Vis', '').toLowerCase()] = el.value.trim();
@@ -839,6 +898,126 @@ function renderWhisperOptions(){
   }).catch(() => {});
 }
 
+/* ── 设置：配音引擎与音色 ── */
+const TTS_ENGINES = [['auto','自动（按可用性选最优）'],
+  ['cosyvoice','CosyVoice（质量最高 · 支持克隆音色）'],
+  ['edge','edge-tts（微软 · 需联网）'],
+  ['chattts','ChatTTS'],
+  ['sherpa','离线模型（sherpa）'],
+  ['sapi','系统 SAPI（机械音兜底）']];
+async function fillTtsSettings(){
+  try {
+    const v = await fetch('/api/tts/voices').then(r => r.json());
+    const cfg = v.cfg || {};
+    $('setTtsEngine').innerHTML = TTS_ENGINES.map(e =>
+      '<option value="' + e[0] + '">' + e[1] + '</option>').join('');
+    $('setTtsEngine').value = cfg.engine || 'auto';
+    $('setTtsVoice').innerHTML = (v.voices || []).map(n =>
+      '<option value="' + _esc(n) + '">' + _esc(n) + '</option>').join('');
+    $('setTtsVoice').value = cfg.voice || 'zh-CN-XiaoxiaoNeural';
+    $('setTtsRate').value = cfg.rate || '+0%';
+    const cv = await fetch('/api/tts/cosyvoice/voices', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: '{}'}).then(r => r.json()).catch(() => null);
+    $('setCosyVoice').innerHTML = ((cv && cv.voices) || []).map(x =>
+      '<option value="' + _esc(x.name) + '">' + _esc(x.name) + (x.custom ? '（克隆）' : '') + '</option>').join('');
+    $('setCosyVoice').value = cfg.cosy_voice || '中文女';
+    $('ttsTestHint').textContent = v.label || '';
+  } catch(e){ $('ttsTestHint').textContent = '读取配音配置失败：' + e.message; }
+}
+$('btnTtsTest').addEventListener('click', async () => {
+  const b = $('btnTtsTest');
+  b.disabled = true; b.textContent = '⏳ 合成中…';
+  try {
+    const r = await fetch('/api/tts/test', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text: '这是一段配音试听，听听这个声音合不合适。'})});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || out.message || '试听失败');
+    $('ttsTestHint').textContent = '当前引擎：' + (out.engine || '?') + ' · ' + (out.message || '');
+    if(out.file) new Audio('/media/' + out.file).play().catch(() => {});
+  } catch(e){ $('ttsTestHint').textContent = '❌ ' + e.message; }
+  b.disabled = false; b.textContent = '🧪 试听';
+});
+
+/* ── 最近项目（关窗不丢：配音方案都在服务器上） ── */
+async function loadRecent(){
+  const card = $('recentCard');
+  try {
+    const r = await fetch('/api/tts_recent').then(x => x.json());
+    const list = (r && r.list) || [];
+    card.style.display = list.length ? 'block' : 'none';
+    $('recentList').innerHTML = list.slice(0, 6).map(t => {
+      const name = (t.movie || '').trim() || t.run_dir;
+      return '<div class="recent-row" data-run="' + _esc(t.run_dir) + '">'
+        + '<div class="rc-name">' + _esc(name)
+        + '<small>' + _esc(t.time || '') + ' · ' + (t.tts_count || 0) + ' 段配音</small></div>'
+        + '<span class="rc-go">继续 ›</span></div>';
+    }).join('');
+    $('recentList').querySelectorAll('.recent-row').forEach(row => {
+      row.addEventListener('click', async () => {
+        try {
+          toast('恢复中…');
+          await loadAdjustItems(row.dataset.run);
+          openEditor();
+          toast('✅ 已恢复，可继续调整或直接合成');
+        } catch(e){ toast('恢复失败：' + e.message, 'bad'); }
+      });
+    });
+  } catch(e){ card.style.display = 'none'; }
+}
+$('recentRefresh').addEventListener('click', loadRecent);
+loadRecent();
+
+/* ── 成片历史 ── */
+let _histItems = [];
+function openHistory(){
+  $('histMask').style.display = 'flex';
+  $('histList').innerHTML = '<div class="ins-empty">加载中…</div>';
+  fetch('/api/history').then(r => r.json()).then(d => {
+    _histItems = (d && d.history) || [];
+    if(!_histItems.length){
+      $('histList').innerHTML = '<div class="ins-empty">还没有成片——生成并合成后会出现在这里</div>';
+      return;
+    }
+    $('histList').innerHTML = _histItems.map((h, i) => {
+      const rel = h.file || '';
+      const name = rel.split('/').pop() || rel;
+      const cap = Array.isArray(h.captions) ? h.captions.join(' ') : (h.captions || '');
+      const title = String(cap).trim().slice(0, 42) || name;
+      const miss = h.missing ? ' <span class="env-badge bad">文件丢失</span>' : '';
+      return '<div class="hist-row">'
+        + (h.cover ? '<img class="hist-cover" src="/media/' + _esc(h.cover) + '" alt="">'
+                   : '<div class="hist-cover ph">🎬</div>')
+        + '<div class="rc-name">' + _esc(title) + miss
+        + '<small>' + _esc(h.time || '') + (h.duration ? ' · ' + h.duration + 's' : '') + '</small></div>'
+        + '<div class="hist-acts">'
+        + (h.missing ? '' : '<button class="mini-btn" data-play="' + i + '">▶ 播放</button>'
+                        + '<button class="mini-btn" data-folder="' + i + '">📂 位置</button>')
+        + '<button class="mini-btn" data-del="' + i + '">🗑</button></div></div>';
+    }).join('');
+    $('histList').querySelectorAll('[data-play]').forEach(b => b.addEventListener('click', () => {
+      const h = _histItems[+b.dataset.play];
+      $('histMask').style.display = 'none';
+      openExport(h.file);
+    }));
+    $('histList').querySelectorAll('[data-folder]').forEach(b => b.addEventListener('click', () => {
+      const h = _histItems[+b.dataset.folder];
+      if(window.pywebview && window.pywebview.api)
+        window.pywebview.api.open_folder(h.file).catch(() => {});
+      else toast('成片在 webui_output 目录');
+    }));
+    $('histList').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+      const h = _histItems[+b.dataset.del];
+      if(!confirm('删除这条历史记录？（只删记录，不动磁盘上的其他文件）')) return;
+      try {
+        await fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({file: h.file})});
+        openHistory();
+      } catch(e){ toast('删除失败：' + e.message, 'bad'); }
+    }));
+  }).catch(e => { $('histList').innerHTML = '<div class="ins-empty">加载失败：' + _esc(e.message) + '</div>'; });
+}
+$('histClose').addEventListener('click', () => $('histMask').style.display = 'none');
+
 /* ── 合成（含改词自动重配） ── */
 async function composeAll(){
   if(!_runDir || !_items.length){ toast('请先生成或打开一个项目', 'bad'); return; }
@@ -873,12 +1052,7 @@ async function composeAll(){
       if(it) it.audio_text = c.text;
     }
     setStatus('合成中…');
-    const body = { run_dir: _runDir, items: items, skip: skip, params: {
-      subtitle: {fontSize: 22, color: '#FFFFFF', outlineColor: '#000000',
-                 outlineWidth: 2, alignment: 2, marginV: 50},
-      audio: {layers: false, exportVoice: false},
-      resolution: 'original', fit: 'auto', colorStyle: 'native',
-      qualityTier: 'balanced', transition: 'hard' } };
+    const body = { run_dir: _runDir, items: items, skip: skip, params: _advParams() };
     const r = await fetch('/api/movie_compose', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const out = await r.json();
