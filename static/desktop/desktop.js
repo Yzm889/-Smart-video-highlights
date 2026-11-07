@@ -312,6 +312,9 @@ $('npPick').addEventListener('click', async () => {
     // 浏览器模式兜底：标准文件选择 + 分片上传（与网页版同一套后端），不再是死胡同
     _browserFileInput('video/*', async f => {
       const label = $('npPickLabel');
+      if(f.size > 300 * 1024 * 1024){
+        toast('⚠ ' + _fmtMB(f.size) + ' 的大片在浏览器上传又慢又可能失败——建议双击 FrameCut.exe，本地直连秒选不上传', 'bad');
+      }
       try {
         label.textContent = '⬆ 上传中 0%…';
         const uid = await _chunkUpload(f, done => {
@@ -363,16 +366,29 @@ async function _chunkUpload(file, onProg){
   const CHUNK = 4 * 1024 * 1024, CONC = 3;
   const total = Math.max(1, Math.ceil(file.size / CHUNK));
   let next = 0, doneBytes = 0;
-  async function worker(){
-    while(next < total){
-      const idx = next++;
-      const blob = file.slice(idx * CHUNK, Math.min(file.size, (idx + 1) * CHUNK));
+  async function sendChunk(idx, blob, attempt){
+    const ctl = new AbortController();
+    const killer = setTimeout(() => ctl.abort(), 60000);   // 【实测踩中】单片挂起无超时 → 5GB 上传卡死在 26%
+    try {
       const fd = new FormData();
       fd.append('upload_id', uid);
       fd.append('idx', String(idx));
       fd.append('chunk', blob);
-      const r = await fetch('/api/upload/chunk', {method:'POST', body: fd}).then(x => x.json());
+      const r = await fetch('/api/upload/chunk', {method:'POST', body: fd, signal: ctl.signal}).then(x => x.json());
       if(!r.ok) throw new Error(r.error || ('分片 ' + idx + ' 失败'));
+      return true;
+    } catch(e){
+      if(attempt < 2) return await sendChunk(idx, blob, attempt + 1);   // 重试 2 次
+      throw e;
+    } finally {
+      clearTimeout(killer);
+    }
+  }
+  async function worker(){
+    while(next < total){
+      const idx = next++;
+      const blob = file.slice(idx * CHUNK, Math.min(file.size, (idx + 1) * CHUNK));
+      await sendChunk(idx, blob, 0);
       doneBytes += blob.size;
       if(onProg) onProg(doneBytes);
     }
@@ -1616,16 +1632,37 @@ function renderTtsInstalls(v){
   }
   box.innerHTML = parts.join('') || '<span class="hint">引擎都齐了 ✓</span>';
   box.querySelectorAll('[data-ttsi]').forEach(b => b.addEventListener('click', async () => {
-    b.disabled = true; b.textContent = '安装中…';
+    b.disabled = true; b.textContent = '启动安装…';
     const k = b.dataset.ttsi;
     try {
       if(k === 'cosyvoice'){ await fetch('/api/tts/cosyvoice/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'}); }
       if(k === 'edge'){ await fetch('/api/tts/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({pkg: 'edge-tts'})}); }
       if(k === 'sherpa'){ await fetch('/api/tts/model/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: b.dataset.m})}); }
-      toast('已开始安装（后台进行，装完自动可用；CosyVoice 首次较长）');
-      setTimeout(() => { fillTtsSettings(); }, 3000);
+      toast('已开始安装（后台进行，下面会实时显示进度；CosyVoice 首次要装 PyTorch，较长）');
+      _pollTtsSetup();
     } catch(e){ toast('安装失败：' + e.message, 'bad'); b.disabled = false; }
   }));
+}
+let _setupTimer = null;
+function _pollTtsSetup(){
+  if(_setupTimer) clearInterval(_setupTimer);
+  _setupTimer = setInterval(async () => {
+    const v = await _envGet('/api/tts/voices');
+    if(!v) return;
+    const st = v.setup || {};
+    renderTtsInstalls(v);
+    if(st.running){
+      const btn = document.querySelector('#ttsInstalls .mini-btn');
+      if(btn){ btn.textContent = (st.op || '安装') + ' ' + (st.pct || 0) + '%：' + String(st.msg || '').slice(0, 42); btn.disabled = true; }
+    } else {
+      clearInterval(_setupTimer);
+      _setupTimer = null;
+      if(st.ok === true){ toast('✅ 安装完成，引擎自动可用', 'ok'); }
+      else if(st.ok === false){ toast('安装失败：' + String(st.msg || '').slice(0, 80), 'bad'); }
+      fillTtsSettings();
+      refreshEnv();
+    }
+  }, 2000);
 }
 
 /* ── 设置：配音引擎与音色 ── */
