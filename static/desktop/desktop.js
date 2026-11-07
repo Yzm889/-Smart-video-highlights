@@ -391,6 +391,7 @@ function acceptVideo(name, path){
   $('projName').textContent = name.replace(/\.[^.]+$/, '');
   updateNewProj();
 }
+$('npSrt').addEventListener('click', importSrt);
 $('npPlot').addEventListener('input', updateNewProj);
 $('npScript').addEventListener('change', updateNewProj);
 $('npBgm').addEventListener('change', () => {
@@ -1272,30 +1273,51 @@ $('tbGenerate').addEventListener('click', () => {
 
 /* ── SRT 导入（桌面：原生对话框 + 本地直读） ── */
 let _srt = null;   // {name, text}
+function _loadSrtFile(file){
+  const r = new FileReader();
+  r.onload = () => {
+    _srt = {name: file.name, text: String(r.result)};
+    _syncSrtUi();
+    toast('✅ 字幕已导入：' + file.name + '（生成时按台词找画面）', 'ok');
+  };
+  r.onerror = () => toast('字幕读取失败', 'bad');
+  r.readAsText(file, 'utf-8');
+}
+function _syncSrtUi(){
+  setBtnIcon('tbSrt', 'i-subtitle', '字幕 ✓');
+  const lbl = $('npSrtLabel');
+  if(lbl) lbl.innerHTML = '✅ 已导入 <b>' + _esc((_srt && _srt.name) || '') + '</b> ——生成时按台词找画面（点此可换）';
+}
 function importSrt(){
-  if(!(window.pywebview && window.pywebview.api)){
-    _browserFileInput('.srt,.ass,.ssa,.vtt', f => {
-      const r = new FileReader();
-      r.onload = () => {
-        _srt = {name: f.name, text: String(r.result)};
-        setBtnIcon('tbSrt', 'i-subtitle', '字幕 ✓');
-        toast('✅ 字幕已导入：' + f.name, 'ok');
-      };
-      r.readAsText(f, 'utf-8');
-    });
+  if(_isDesktop && window.pywebview && window.pywebview.api){
+    toast('正在打开文件选择框…（如未出现，请看任务栏）');
+    window.pywebview.api.pick_srt().then(r => {
+      if(!r || !r.path) return null;
+      const name = r.name || r.path.split(/[\/]/).pop();
+      return window.pywebview.api.read_text_file(r.path).then(t => {
+        if(!t.ok) throw new Error(t.error || '读取失败');
+        _srt = {name: name, text: t.text};
+        _syncSrtUi();
+        toast('✅ 字幕已导入：' + name + '（生成时按台词找画面）', 'ok');
+      });
+    }).catch(e => toast('字幕导入失败：' + e.message, 'bad'));
     return;
   }
-  window.pywebview.api.pick_srt().then(r => {
-    if(!r || !r.path) return null;
-    const name = r.name || r.path.split(/[\/]/).pop();
-    return window.pywebview.api.read_text_file(r.path).then(t => {
-      if(!t.ok) throw new Error(t.error || '读取失败');
-      _srt = {name: name, text: t.text};
-      setBtnIcon('tbSrt', 'i-subtitle', '字幕 ✓');
-      toast('字幕已导入：' + name);
-    });
-  }).catch(e => toast('字幕导入失败：' + e.message, 'bad'));
+  _browserFileInput('.srt,.ass,.ssa,.vtt', f => _loadSrtFile(f));
 }
+
+/* ── 拖拽导入：.srt 拖进窗口任意位置（EXE/浏览器都行，绕开原生对话框） ── */
+document.addEventListener('dragover', e => { e.preventDefault(); });
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(!f) return;
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  if(['srt', 'ass', 'ssa', 'vtt'].indexOf(ext) >= 0){
+    if($('newProj').style.display === 'none'){ toast('先点「新建项目」回到引导页再导入字幕', 'bad'); return; }
+    _loadSrtFile(f);
+  }
+});
 
 /* ── 配乐（桌面：本地路径直连） ── */
 let _music = null;   // {name, path, isLocalPath}

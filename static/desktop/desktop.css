@@ -78,6 +78,11 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
   color:var(--muted);margin-bottom:16px;transition:border-color .15s,background .15s}
 .np-pick:hover{border-color:var(--acc);background:var(--panel2);color:var(--txt)}
 .np-pick.has{border-color:var(--ok);color:var(--txt)}
+.np-srt{width:100%;padding:14px;border:1px dashed var(--acc);border-radius:9px;margin-top:10px;
+  display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;
+  color:var(--txt);background:rgba(10,132,255,.05);transition:border-color .15s,background .15s}
+.np-srt:hover{border-color:var(--acc);background:rgba(10,132,255,.12)}
+.np-srt b{color:var(--acc)}
 .np-pick-icon{font-size:22px}
 .np-card .field{text-align:left;background:none;border:none;padding:0 0 12px}
 .np-card .field label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
