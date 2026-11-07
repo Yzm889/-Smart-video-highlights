@@ -995,15 +995,39 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({'ok': True, 'test_ok': ok, 'message': msg}).encode('utf-8'),
                    'application/json')
 
+    _INFER_PROBE_STATE = {'ts': 0.0, 'ok': True, 'msg': '', 'running': False}
+
+    def _local_infer_probe_async(self):
+        import time as _t, threading as _th
+        st = self._INFER_PROBE_STATE
+        now = _t.time()
+        if st['running'] or now - st['ts'] < 60:
+            return st
+        st['running'] = True
+        def _job():
+            try:
+                ok, msg = _w.local_llm_infer_probe(force=True)
+                st.update(ok=bool(ok), msg=str(msg)[:160], ts=_t.time())
+            except Exception as e:
+                st.update(ok=False, msg=str(e)[:160], ts=_t.time())
+            finally:
+                st['running'] = False
+        _th.Thread(target=_job, daemon=True, name='infer-probe').start()
+        return st
+
     def _get_local_status(self):
         ok, msg = (_w.local_llm_ping() if _w.local_llm_enabled() else (False, '本地模型未启用'))
         # 真实推理探针：/models 通 ≠ 能出字。模型起不来时这里会直接给出原因，
         # 用户在跑 20 分钟视频之前就能看到，不用等整程卡死才发现。
-        infer_ok, infer_msg = (True, '')
-        try:
-            infer_ok, infer_msg = _w.local_llm_infer_probe()
-        except Exception as e:
-            infer_ok, infer_msg = False, str(e)[:160]
+        # 【实测踩中】推理探针冷启动要先把权重灌进显存（可达 25s），同步等它
+        # 会让 /api/local/status 超过前端 15s 超时 → 模型中心下拉全空。
+        # 改为后台探测 + 状态缓存：本接口 0 等待，结果就绪后自然刷新。
+        if _w.LOCAL_PULL['running']:
+            infer_ok, infer_msg = True, '拉取中，跳过推理探针'
+        else:
+            _st = self._local_infer_probe_async()
+            infer_ok = bool(_st['ok'])
+            infer_msg = (('探测中… ' if _st['running'] else '') + _st['msg'])[:160]
         _ost = _w.ollama_service_state()
         _oi = _w.OLLAMA_INSTALL
         self._send(200, json.dumps({'ok': True, 'enabled': _w.local_llm_enabled(), 'ready': bool(ok),

@@ -997,8 +997,9 @@ def _is_weak_vlm(model):
 def _installed_local_models():
     """探测 Ollama / OpenAI 兼容端点已安装的模型名列表（供前端展示与推荐判断）。"""
     out, seen = [], set()
-    vb = (vlm_cfg().get('base_url') or '').rstrip('/')
-    lb = (local_llm_cfg().get('base_url') or '').rstrip('/')
+    _n = lambda u: str(u or '').replace('://localhost:', '://127.0.0.1:')   # IPv6 慢解析修复
+    vb = _n((vlm_cfg().get('base_url') or '').rstrip('/'))
+    lb = _n((local_llm_cfg().get('base_url') or '').rstrip('/'))
     urls = []
     if vb and 'v1' not in vb:
         urls.append(vb + '/api/tags')

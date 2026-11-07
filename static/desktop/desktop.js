@@ -161,9 +161,8 @@ function renderEnv(){
   const rows = [];
   const lm = (L && L.model) || 'qwen3:8b';
 
-  // ① Ollama 引擎：服务真实状态（与配置解耦，直探 11434）
-  //   【实测踩中】旧版拿配置 ping 当服务状态——EXE 无配置快照时 enabled=false，
-  //   Ollama 明明在跑也显示未就绪，还会误触 1.5GB 重装（已装环境重装必失败）。
+  // 【主人拍板】第一页只看状态：装引擎/选模型收进设置「模型中心」，未就绪行给「去设置 ›」
+  const gotoBtn = sec => '<button class="env-btn ghost" data-goto="' + sec + '">去设置 ›</button>';
   const ollamaUp = !!(L && L.ollama_running);
   if(L && L.ollama_installing){
     rows.push('<div class="env-row"><div class="en-name">Ollama ' + (L.ollama_install_phase || '处理中') + '<small>'
@@ -171,22 +170,24 @@ function renderEnv(){
   } else {
     rows.push('<div class="env-row"><div class="en-name">Ollama 本地引擎<small>AI 运行时（免费 · 全程本地）</small></div>'
       + (!L ? chk() : (ollamaUp ? okB('运行中')
-        : ((L && L.ollama_installed) ? noB('已安装·未运行') + btn('install', '启动')
-                                     : noB('未安装') + btn('install', '安装（约1.5GB）')))) + '</div>');
+        : (L.ollama_installed ? noB('已安装·未运行') + gotoBtn('secModelCenter')
+                              : noB('未安装') + gotoBtn('secModelCenter')))) + '</div>');
   }
 
-  // ② 文字大脑（写解说稿，必装）：看模型是否真在 Ollama 里，不依赖配置开关
+  // ② 文字大脑：识别本机已装的全部模型（不止当前用的）
   let txtOk = false;
   if(L && L.pulling){
     rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + (L.pull_model || lm) + '<small>' + (L.pull_msg || '拉取中') + '</small></div>' + wB((L.pull_pct || 0) + '%') + '</div>');
   } else if(!L){
-    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + lm + '<small>写解说稿的核心（约 4.7GB，一次下载）</small></div>' + chk() + '</div>');
+    rows.push('<div class="env-row"><div class="en-name">文字大脑<small>写解说稿的核心</small></div>' + chk() + '</div>');
   } else {
     txtOk = (L.installed || []).some(m => (m || '').split(':')[0] === lm.split(':')[0]);
-    const sub = txtOk ? (L.enabled ? '写解说稿的核心' : '写解说稿的核心 · 已自动启用本地模型')
-                      : (ollamaUp ? '约 4.7GB，一次下载' : '先启动上方 Ollama');
+    const others = (L.installed || []).filter(m => m && (m.split(':')[0] !== lm.split(':')[0]));
+    const sub = txtOk
+      ? ('当前 ' + lm + (others.length ? ' · 本机已装 ' + others.length + ' 个模型，可在设置更换' : ''))
+      : '本机未装「' + lm + '」，去设置里选型号或拉取';
     rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + lm + '<small>' + sub + '</small></div>'
-      + (txtOk ? okB('就绪') : (ollamaUp ? noB('未拉取') + btn('pulltext', '拉取') : wB('等待'))) + '</div>');
+      + (txtOk ? okB('就绪') : noB('未就绪') + gotoBtn('secModelCenter')) + '</div>');
     // 模型已在而配置开关没开（EXE 首跑无配置快照）：自动打开，否则生成链路不走本地
     if(txtOk && L.enabled === false && !_envAutoEnabled){
       _envAutoEnabled = true;
@@ -203,8 +204,7 @@ function renderEnv(){
     const vOk = !!(V && V.ready);
     const vOpt = !!(V && V.enabled === false);   // 明确关闭才算"可选"，超时/未启用保持检测中
     rows.push('<div class="env-row"><div class="en-name">看图模型 ' + ((V && V.model) || 'minicpm-v') + '<small>可选：AI 亲眼看画面，理解更准</small></div>'
-      + (!V ? chk() : (vOk ? okB('就绪') : (vOpt ? '<span class="env-badge wait">可选</span>' + btn('pullvlm', '拉取', true)
-                                              : noB('未就绪') + btn('pullvlm', '拉取', true)))) + '</div>');
+      + (!V ? chk() : (vOk ? okB('就绪') : wB('可选') + gotoBtn('secModelCenter'))) + '</div>');
   }
 
   // ④ Whisper 台词识别
@@ -213,7 +213,7 @@ function renderEnv(){
   } else {
     const wOk = !!(W && W.ready);
     rows.push('<div class="env-row"><div class="en-name">台词识别 ' + ((W && W.selected) || 'large-v3') + '<small>听懂台词（2.9GB，一次下载）</small></div>'
-      + (!W ? chk() : (wOk ? okB('就绪') : noB('未下载') + btn('dlwsp', '下载'))) + '</div>');
+      + (!W ? chk() : (wOk ? okB('就绪') : noB('未下载') + gotoBtn('secWhisper'))) + '</div>');
   }
 
   // ⑤ 配音引擎（信息展示；引擎安装/音色在设置里）
@@ -238,19 +238,10 @@ function refreshEnv(){
   _envGet('/api/ai_status').then(j => { if(j){ _envData.ai = j; renderEnv(); } });
 }
 
-$('envRows').addEventListener('click', async e => {   // 事件委托：重渲染不丢按钮
-  const b = e.target.closest('[data-env]');
+$('envRows').addEventListener('click', e => {   // 只负责「去设置」跳转，安装动作全在设置里
+  const b = e.target.closest('[data-goto]');
   if(!b) return;
-  const act = b.dataset.env;
-  b.disabled = true; b.textContent = '⏳ 处理中…';
-  const post = (u, d) => fetch(u, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(d || {})});
-  try {
-    if(act === 'install'){ await post('/api/ollama/install'); }
-    if(act === 'pulltext'){ await post('/api/local/pull', {model: (_envData.local && _envData.local.model) || 'qwen3:8b'}); }
-    if(act === 'pullvlm'){ await post('/api/vlm/pull', {model: (_envData.vlm && _envData.vlm.model) || 'minicpm-v'}); }
-    if(act === 'dlwsp'){ await post('/api/whisper/download', {model: (_envData.wsp && _envData.wsp.selected) || 'large-v3'}); }
-    setTimeout(refreshEnv, 2000);
-  } catch(err){ toast('操作失败：' + err.message, 'bad'); refreshEnv(); }
+  openSettings(b.dataset.goto);
 });
 $('envRefresh').addEventListener('click', refreshEnv);
 setInterval(() => {                       // 拉取/下载中 2.5s 加密刷新
@@ -1144,8 +1135,14 @@ function pickLocalMusic(){
 }
 
 /* ── 设置对话框 ── */
-function openSettings(){
+function openSettings(sec){
   $('settingsMask').style.display = 'flex';
+  if(sec){
+    setTimeout(() => {
+      const el = $(sec);
+      if(el) el.scrollIntoView({block: 'start'});
+    }, 60);
+  }
   fetch('/api/ai/config').then(r => r.json()).then(d => {
     const c = d.config || {};
     $('setVisBase').value = (c.vision || {}).base_url || '';
@@ -1153,9 +1150,10 @@ function openSettings(){
     $('setVisKey').value = '';   // 已配置的不回显，留空=不修改
     $('setVisKey').placeholder = (c.vision || {}).api_key ? '已配置（不改请留空）' : '未配置';
     $('setLocalBase').value = (c.local || {}).base_url || '';
-    $('setLocalModel').value = (c.local || {}).model || '';
+    $('setVlmBase').value = (c.vlm || {}).base_url || '';
     renderWhisperOptions();
     fillTtsSettings();
+    fillModelCenter();
   }).catch(e => toast('读取配置失败：' + e.message, 'bad'));
 }
 $('tbSettings').addEventListener('click', openSettings);
@@ -1176,7 +1174,9 @@ $('settingsSave').addEventListener('click', async () => {
   payload.vision.base_url = $('setVisBase').value.trim();
   payload.vision.model = $('setVisModel').value.trim();
   if($('setVisKey').value.trim()) payload.vision.api_key = $('setVisKey').value.trim();
-  payload.local = {enabled: true, base_url: $('setLocalBase').value.trim(), model: $('setLocalModel').value.trim()};
+  // 空地址不落盘（实测泄漏过 vlm.base_url='' → vlm_ping 建出 http:///api/chat 挂死）
+  if($('setLocalBase').value.trim()) payload.local.base_url = $('setLocalBase').value.trim();
+  if($('setVlmBase').value.trim()) payload.vlm = {enabled: true, mode: 'ollama', base_url: $('setVlmBase').value.trim()};
   try {
     const r = await fetch('/api/ai/config', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
@@ -1218,6 +1218,130 @@ function renderWhisperOptions(){
   }).catch(() => {});
 }
 
+/* ── 设置：模型中心（与网页版同一份候选目录） ── */
+const LOCAL_MODEL_CATALOG = [
+  {tag: 'qwen3:8b',          label: '⭐ qwen3:8b',   size: '≈5.0GB'},
+  {tag: 'qwen2.5:7b',        label: 'qwen2.5:7b',    size: '≈4.7GB'},
+  {tag: 'qwen2.5:3b',        label: 'qwen2.5:3b',    size: '≈1.9GB'},
+  {tag: 'qwen3:14b-q4_K_M',  label: 'qwen3:14b',     size: '≈9.3GB'},
+  {tag: 'qwen2.5:14b',       label: 'qwen2.5:14b',   size: '≈8.4GB'}
+];
+const VLM_MODEL_CATALOG = [
+  {tag: 'minicpm-v4.5',  label: '⭐ MiniCPM-V 4.5', size: '≈6.1GB'},
+  {tag: 'qwen3-vl:8b',   label: 'qwen3-vl:8b',     size: '≈6.1GB'}
+];
+function _fillModelPick(sel, catalog, current, installed, pulling){
+  const names = installed || [];
+  const opts = [];
+  catalog.forEach(m => {
+    const inst = names.some(n => (n || '').split(':')[0] === m.tag.split(':')[0]);
+    opts.push('<option value="' + m.tag + '"' + (m.tag === current ? ' selected' : '') + '>'
+      + m.label + (inst ? '（已装）' : '（' + m.size + '）') + '</option>');
+  });
+  names.forEach(n => {
+    if(!catalog.some(m => m.tag.split(':')[0] === (n || '').split(':')[0]) && n !== current){
+      opts.push('<option value="' + _esc(n) + '"' + (n === current ? ' selected' : '') + '>' + _esc(n) + '（已装）</option>');
+    }
+  });
+  sel.innerHTML = opts.join('');
+  sel.dataset.pulling = pulling ? '1' : '';
+}
+async function fillModelCenter(){
+  try {
+    // 【实测踩中】本地填充不许等在慢速的 vlm 探测后面（vlm/status 可达 10s+）——
+    // 两个探测并行，各自的行各自落地
+    const jobL = _envGet('/api/local/status').then(L => {
+      if(!L) return;
+      _fillModelPick($('setLocalPick'), LOCAL_MODEL_CATALOG, L.model || 'qwen3:8b', L.installed, L.pulling);
+      $('ollamaState').textContent = L.ollama_running ? '✓ 运行中'
+        : (L.ollama_installed ? '已安装·未运行（点右侧启动）' : '未安装（首次约 1.5GB 下载）');
+      $('mcHint').textContent = L.pulling
+        ? ('拉取中 ' + (L.pull_model || '') + ' ' + (L.pull_pct || 0) + '%…')
+        : '选已安装的立即生效；选未安装的会自动开始拉取';
+    });
+    const jobV = _envGet('/api/vlm/status').then(V => {
+      if(!V) return;
+      _fillModelPick($('setVlmPick'), VLM_MODEL_CATALOG, V.model || 'minicpm-v4.5', V.installed, V.pulling);
+    });
+    await Promise.all([jobL, jobV]);
+  } catch(e){ /* 静默，下次刷新 */ }
+}
+$('btnPullLocal').addEventListener('click', async () => {
+  const m = $('setLocalPick').value;
+  const r = await fetch('/api/local/pull', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: m})}).then(x => x.json()).catch(() => null);
+  toast(r && r.ok ? ('开始拉取 ' + m) : ('拉取失败：' + ((r && (r.error || r.message)) || '未知')));
+  fillModelCenter();
+});
+$('btnPullVlm').addEventListener('click', async () => {
+  const m = $('setVlmPick').value;
+  const r = await fetch('/api/vlm/pull', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: m})}).then(x => x.json()).catch(() => null);
+  toast(r && r.ok ? ('开始拉取 ' + m) : ('拉取失败：' + ((r && (r.error || r.message)) || '未知')));
+  fillModelCenter();
+});
+$('btnOllamaSetup').addEventListener('click', async () => {
+  const b = $('btnOllamaSetup');
+  b.disabled = true;
+  try { await fetch('/api/ollama/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'}); } catch(e){}
+  toast('Ollama 处理中，状态会自动刷新');
+  setTimeout(() => { b.disabled = false; fillModelCenter(); refreshEnv(); }, 2500);
+});
+// 两个下拉：选择即保存；未安装自动拉取（与网页版 pickLocalModel 语义一致）
+$('setLocalPick').addEventListener('change', async () => {
+  const m = $('setLocalPick').value;
+  const L = _envData.local;
+  const installed = ((L && L.installed) || []).some(n => (n || '').split(':')[0] === m.split(':')[0]);
+  await fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({local: {enabled: true, model: m}})});
+  toast('文字模型已切换为 ' + m + (installed ? '' : '，开始自动拉取…'));
+  if(!installed){ $('btnPullLocal').click(); }
+  else { refreshEnv(); fillModelCenter(); }
+});
+$('setVlmPick').addEventListener('change', async () => {
+  const m = $('setVlmPick').value;
+  const V = _envData.vlm;
+  const installed = ((V && V.installed) || []).some(n => (n || '').split(':')[0] === m.split(':')[0]);
+  await fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({vlm: {enabled: true, mode: 'ollama', base_url: 'http://localhost:11434/v1', model: m}})});
+  toast('看图模型已切换为 ' + m + (installed ? '' : '，开始自动拉取…'));
+  if(!installed){ $('btnPullVlm').click(); }
+  else { refreshEnv(); fillModelCenter(); }
+});
+// 设置打开期间轮询拉取进度（2.5s，仅在对话框可见时）
+setInterval(() => {
+  if($('settingsMask').style.display === 'none' || !$('settingsMask').style.display) return;
+  fillModelCenter();
+}, 2500);
+
+/* ── 设置：配音引擎安装（缺哪个装哪个，装完自动可用） ── */
+function renderTtsInstalls(v){
+  const box = $('ttsInstalls');
+  if(!box || !v) return;
+  const parts = [];
+  if(!v.cosyvoice_installed){
+    parts.push('<button class="mini-btn" data-ttsi="cosyvoice">装 CosyVoice（推荐）</button>');
+  }
+  if(!v.edge_installed){
+    parts.push('<button class="mini-btn" data-ttsi="edge">装 edge-tts</button>');
+  }
+  if(v.sherpa_models && v.sherpa_models.length){
+    v.sherpa_models.forEach(m => {
+      if(!m.ready) parts.push('<button class="mini-btn" data-ttsi="sherpa" data-m="' + m.key + '">下载离线模型 ' + m.label + '</button>');
+    });
+  }
+  box.innerHTML = parts.join('') || '<span class="hint">引擎都齐了 ✓</span>';
+  box.querySelectorAll('[data-ttsi]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = '安装中…';
+    const k = b.dataset.ttsi;
+    try {
+      if(k === 'cosyvoice'){ await fetch('/api/tts/cosyvoice/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'}); }
+      if(k === 'edge'){ await fetch('/api/tts/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({pkg: 'edge-tts'})}); }
+      if(k === 'sherpa'){ await fetch('/api/tts/model/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: b.dataset.m})}); }
+      toast('已开始安装（后台进行，装完自动可用；CosyVoice 首次较长）');
+      setTimeout(() => { fillTtsSettings(); }, 3000);
+    } catch(e){ toast('安装失败：' + e.message, 'bad'); b.disabled = false; }
+  }));
+}
+
 /* ── 设置：配音引擎与音色 ── */
 const TTS_ENGINES = [['auto','自动（按可用性选最优）'],
   ['cosyvoice','CosyVoice（质量最高 · 支持克隆音色）'],
@@ -1242,6 +1366,7 @@ async function fillTtsSettings(){
       '<option value="' + _esc(x.name) + '">' + _esc(x.name) + (x.custom ? '（克隆）' : '') + '</option>').join('');
     $('setCosyVoice').value = cfg.cosy_voice || '中文女';
     $('ttsTestHint').textContent = v.label || '';
+    renderTtsInstalls(v);
   } catch(e){ $('ttsTestHint').textContent = '读取配音配置失败：' + e.message; }
 }
 $('btnTtsTest').addEventListener('click', async () => {

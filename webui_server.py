@@ -736,7 +736,7 @@ def ollama_service_state():
     exe = ollama_exe_path()
     running = False
     try:
-        with urllib.request.urlopen('http://localhost:11434/api/tags', timeout=2):
+        with urllib.request.urlopen('http://127.0.0.1:11434/api/tags', timeout=2):
             running = True
     except Exception:
         running = False
@@ -779,7 +779,7 @@ def dispatch_ollama_install(req, prog):
             for _ in range(20):
                 try:
                     import urllib.request as _u
-                    _u.urlopen('http://localhost:11434/api/tags', timeout=2)
+                    _u.urlopen('http://127.0.0.1:11434/api/tags', timeout=2)
                     P.update(ok=True, msg='Ollama 服务已启动', pct=100, phase='就绪')
                     return
                 except Exception:
@@ -831,7 +831,7 @@ def dispatch_ollama_install(req, prog):
         P['pct'] = 97
         for _ in range(30):
             try:
-                urllib.request.urlopen('http://localhost:11434/api/tags', timeout=2)
+                urllib.request.urlopen('http://127.0.0.1:11434/api/tags', timeout=2)
                 P.update(ok=True, msg='Ollama 安装成功，服务已启动', pct=100)
                 return
             except Exception:
@@ -912,6 +912,12 @@ def chat_text(prompt, system=None, timeout=180):
 
 
 
+def _probe_url(u):
+    """探测 URL 归一：localhost 在 Windows 上先试 IPv6(::1) 再回落，
+    每次请求白等 ~2s（实测 /api/local/status 被拖到 8.3s）。探测走 127.0.0.1。"""
+    return str(u or '').replace('://localhost:', '://127.0.0.1:')
+
+
 def local_llm_enabled():
     """是否已启用本地模型（配置层面：enabled 且填了 base_url）。"""
     cfg = local_llm_cfg()
@@ -937,7 +943,7 @@ def local_llm_ping():
             return False, '本地模型服务可达，但未安装 %s（请在下方点拉取）' % want
     import urllib.request
     try:
-        req = urllib.request.Request(cfg['base_url'] + '/models', method='GET')
+        req = urllib.request.Request(_probe_url(cfg['base_url']) + '/models', method='GET')
         if cfg['api_key']:
             req.add_header('Authorization', 'Bearer ' + cfg['api_key'])
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -1176,9 +1182,10 @@ def vlm_ping():
     if not c['base_url']:
         return False, '未配置 VLM 地址'
     import urllib.request, json as _json
+    _base = _probe_url(c['base_url'].rstrip('/'))   # localhost IPv6 慢解析（每次白等 ~2s）
     try:
         if c['mode'] == 'ollama':
-            req = urllib.request.Request(c['base_url'] + '/api/tags', method='GET')
+            req = urllib.request.Request(_base + '/api/tags', method='GET')
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = _json.loads(r.read().decode('utf-8'))
             models = [m.get('name', '') for m in (data.get('models') or [])]
@@ -1194,7 +1201,7 @@ def vlm_ping():
                 return True, 'Ollama 可达，模型 %s 已就绪' % found
             return False, 'Ollama 可达，但未拉取 %s（请执行 ollama pull %s）' % (want, want)
         else:
-            req = urllib.request.Request(c['base_url'] + '/models', method='GET')
+            req = urllib.request.Request(_base + '/models', method='GET')
             if c['api_key']:
                 req.add_header('Authorization', 'Bearer ' + c['api_key'])
             with urllib.request.urlopen(req, timeout=8) as r:
@@ -1411,7 +1418,7 @@ LOCAL_PULL = {'model': None, 'running': False, 'ok': None, 'msg': '', 'pct': 0}
 def local_model_exists(model):
     """查询 Ollama 是否已存在该模型（/api/tags），避免对已装模型触发整包重复拉取。返回 True/False/None(未知)。"""
     cfg = local_llm_cfg()
-    root = cfg['base_url'].replace('/v1', '').rstrip('/')
+    root = _probe_url(cfg['base_url'].replace('/v1', '').rstrip('/'))
     if not root:
         return None
     import urllib.request, json as _json
@@ -1882,7 +1889,7 @@ def detect_hardware():
     # Ollama
     try:
         import urllib.request
-        req = urllib.request.Request('http://localhost:11434/api/tags')
+        req = urllib.request.Request('http://127.0.0.1:11434/api/tags')
         resp = urllib.request.urlopen(req, timeout=3)
         data = json.loads(resp.read().decode('utf-8'))
         info['ollama'] = True

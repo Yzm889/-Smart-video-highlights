@@ -84,7 +84,7 @@
       <div class="np-title">新建解说项目</div>
       <div class="np-sub">选择一段本地视频，写下剧情——AI 按剧情挑画面、写解说、配音，全程本地免费</div>
       <div class="env-card" id="envCard">
-        <div class="env-head"><span>第一步 · 环境检查（AI 引擎就绪后开始创作）</span><button class="mini-btn" id="envRefresh">刷新</button></div>
+        <div class="env-head"><span>第一步 · 环境检查（缺什么，去设置里装）</span><button class="mini-btn" id="envRefresh">刷新</button></div>
         <div class="env-rows" id="envRows"><div class="ins-empty">检查中…</div></div>
       </div>
       <div class="env-card" id="recentCard" style="display:none">
@@ -222,6 +222,25 @@
   <div class="modal settings">
     <div class="modal-title">设置 <button class="mini-btn" id="settingsClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
     <div class="set-grid">
+      <div class="set-sec" id="secModelCenter">
+        <div class="set-h">模型中心（安装 / 切换都在这里）</div>
+        <label>Ollama 引擎（AI 运行时）</label>
+        <div class="set-row">
+          <div class="hint" id="ollamaState" style="flex:1"></div>
+          <button class="mini-btn" id="btnOllamaSetup">安装 / 启动</button>
+        </div>
+        <label>文字大脑（写解说稿）</label>
+        <div class="set-row">
+          <select id="setLocalPick"></select>
+          <button class="mini-btn" id="btnPullLocal">拉取选中</button>
+        </div>
+        <label>看图大脑（可选 · 画面理解）</label>
+        <div class="set-row">
+          <select id="setVlmPick"></select>
+          <button class="mini-btn" id="btnPullVlm">拉取选中</button>
+        </div>
+        <div class="hint" id="mcHint">选已安装的立即生效；选未安装的会自动开始拉取</div>
+      </div>
       <div class="set-sec">
         <div class="set-h">云端 Key（可选 · 配了自动用云端增强）</div>
         <label>看图写话 base_url</label>
@@ -232,11 +251,15 @@
         <input type="text" id="setVisModel" placeholder="gpt-4o / qwen-vl-plus">
       </div>
       <div class="set-sec">
-        <div class="set-h">本地 Ollama</div>
-        <label>地址</label>
-        <input type="text" id="setLocalBase">
-        <label>文字模型</label>
-        <input type="text" id="setLocalModel" placeholder="qwen3:8b">
+        <div class="set-h">本地 Ollama 服务</div>
+        <label>服务地址</label>
+        <input type="text" id="setLocalBase" placeholder="http://localhost:11434/v1">
+        <div class="hint">文字/看图模型的安装与切换在上方「模型中心」</div>
+      </div>
+      <div class="set-sec" id="secVlm">
+        <div class="set-h">看图模型服务</div>
+        <label>服务地址</label>
+        <input type="text" id="setVlmBase" placeholder="http://localhost:11434/v1">
       </div>
       <div class="set-sec">
         <div class="set-h">配音引擎与音色</div>
@@ -252,6 +275,8 @@
         <label>语速</label>
         <input type="text" id="setTtsRate" placeholder="+0%">
         <div class="hint" id="ttsTestHint"></div>
+        <label>引擎安装（缺哪个装哪个）</label>
+        <div class="set-row" id="ttsInstalls"></div>
       </div>
       <div class="set-sec">
         <div class="set-h">Whisper 台词识别模型</div>
