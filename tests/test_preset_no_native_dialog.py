@@ -38,9 +38,35 @@ def test_preset_path_has_no_native_dialog():
 
 def test_page_modal_elements_exist():
     html = _load(HTML)
-    for i in ('presetMask', 'presetModalTitle', 'presetModalBody',
+    for i in ('presetMask', 'presetModalTitle', 'presetModalBody', 'presetModalMsg',
               'presetNameInput', 'presetModalCancel', 'presetModalOk'):
         assert ('id="%s"' % i) in html, '缺模态元素 %s' % i
+
+
+def test_whole_js_has_no_native_dialog():
+    """v1.4.6：全文（不只预设块）都不得再出现原生 confirm/prompt/alert。
+
+    证据：成品 EXE 内 `ScriptDialogOpening` 只出现在 WebView2 SDK 的 DLL 里，
+    pywebview 侧没有任何处理代码 → 原生脚本对话框依赖默认行为，而本项目
+    v1.4.1 已实测「点了没反应」。统一走 uiConfirm / presetModal。
+    """
+    js = _strip_js_comments(_load(JS))
+    for pat in (r'\bwindow\.confirm\s*\(', r'\bwindow\.prompt\s*\(',
+                r'\bwindow\.alert\s*\(', r'(?<![\w.])confirm\s*\(',
+                r'(?<![\w.])prompt\s*\(', r'(?<![\w.])alert\s*\('):
+        m = re.search(pat, js)
+        assert m is None, '仍有原生对话框：%r' % (js[max(0, m.start() - 60):m.end() + 20]
+                                                if m else '')
+
+
+def test_destructive_flows_use_ui_confirm():
+    """删历史记录 / 一键清理这两条破坏性操作必须由 uiConfirm 把关。"""
+    js = _strip_js_comments(_load(JS))
+    assert 'async function uiConfirm(' in js, '缺 uiConfirm 统一确认框'
+    idx = js.index('/api/history/delete')
+    assert 'uiConfirm(' in js[max(0, idx - 600):idx], '删历史记录没有确认把关'
+    idx = js.index("$('storeClean').addEventListener")
+    assert 'uiConfirm(' in js[idx:idx + 400], '一键清理没有确认把关'
 
 
 def test_modal_is_escapable_and_cancellable():
@@ -54,4 +80,4 @@ def test_cache_version_bumped():
     html = _load(HTML)
     vers = re.findall(r'desktop\.(?:js|css)\?v=(\d+)', html)
     assert len(vers) == 2, 'js/css 都应带版本号：%r' % vers
-    assert vers[0] == vers[1] == '3', '版本未 bump 到 3：%r' % vers
+    assert vers[0] == vers[1] == '4', '版本未 bump 到 4：%r' % vers

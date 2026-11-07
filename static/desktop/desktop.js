@@ -554,16 +554,33 @@ function presetHint(msg){
    主人只会看到「点了没反应」（v1.4.1 已踩过）。返回 Promise<string|null>：
    确定 → 输入值（确认模式下为 'ok'），取消/Esc → null。 */
 let _presetModalResolve = null;
-function presetModal(mode, title, defaultName){
+function presetModal(mode, title, defaultName, detail){
   const mask = $('presetMask'), input = $('presetNameInput'), body = $('presetModalBody');
+  const isInput = mode === 'input';
   $('presetModalTitle').textContent = title;
-  body.style.display = mode === 'input' ? 'block' : 'none';
+  body.style.display = isInput ? 'block' : 'none';
+  const msg = $('presetModalMsg');
+  if(msg){
+    msg.style.display = isInput ? 'none' : 'block';
+    msg.textContent = isInput ? '' : (detail || '');
+  }
   input.value = defaultName || '';
   mask.style.display = 'flex';
-  if(mode === 'input'){ setTimeout(() => { input.focus(); input.select(); }, 0); }
+  if(isInput){ setTimeout(() => { input.focus(); input.select(); }, 0); }
   return new Promise(resolve => {
     _presetModalResolve = resolve;
   });
+}
+/* 统一确认框：替代全项目剩余的原生 confirm()（同类静默失败风险）。
+   用法：if(!await uiConfirm('标题', '补充说明', '确定删除')) return; */
+async function uiConfirm(title, detail, okText){
+  const ok = $('presetModalOk'), prev = ok ? ok.textContent : '';
+  if(ok && okText) ok.textContent = okText;
+  try {
+    return !!(await presetModal('confirm', title, '', detail || ''));
+  } finally {
+    if(ok && okText) ok.textContent = prev;
+  }
 }
 function presetModalClose(result){
   const mask = $('presetMask');
@@ -1949,7 +1966,7 @@ function openHistory(){
     }));
     $('histList').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
       const h = _histItems[+b.dataset.del];
-      if(!confirm('删除这条历史记录？（只删记录，不动磁盘上的其他文件）')) return;
+      if(!await uiConfirm('删除这条历史记录？', '只删记录，不动磁盘上的其他文件。', '删除')) return;
       try {
         await fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({file: h.file})});
@@ -2135,7 +2152,7 @@ function loadStorage(){
   }).catch(e => { $('storeList').innerHTML = '<div class="ins-empty">加载失败：' + _esc(e.message) + '</div>'; });
 }
 $('storeClean').addEventListener('click', async () => {
-  if(!confirm('清理所有「可回收」项？（模型权重需重新下载，默认不动）')) return;
+  if(!await uiConfirm('清理所有「可回收」项？', '模型权重需重新下载，默认不动。', '开始清理')) return;
   const b = $('storeClean');
   b.disabled = true; b.textContent = '清理中…';
   let n = 0;
