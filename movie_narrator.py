@@ -15,10 +15,11 @@ from cache_utils import (ANALYSIS_VERSION, _file_fp, _analysis_cache_load, _anal
     _sample_frame_cache_dir, _sample_frame_cache_mark, _sample_frame_cache_ready,
     _sample_frame_cache_trim)
 from ffmpeg_utils import (AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS,
-    ffmpeg_exe, ffmpeg_run, probe_audio_len, _has_audio_track)
+    ffmpeg_exe, ffmpeg_run, probe_audio_len, _has_audio_track,
+    probe_size, probe_is_hdr)
 from text_utils import _clean_caption
 from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
-    _compose_narration_video, attach_importance)
+    _compose_narration_video, attach_importance, _warn)
 from beat_analysis import _cached_scene_cuts
 from tts_engines import (local_tts_speak, edge_tts_speak, edge_tts_available,
     edge_tts_dead_reason,
@@ -5335,6 +5336,10 @@ def _generate_all_tts(narr, run_dir, progress=None):
     _prog_lock = threading.Lock()
     _probe_lock = threading.Lock()   # 并发下 .edge_probe.mp3 是共享路径，探测必须互斥
     _probe_state = {'n': 0}
+    # 首段串行预热选定的引擎：并发 worker 线程各自第一次调用都要重新探测一遍
+    # （引擎锁在 _TLS 上是线程本地的），每次约 11s。这里把首段结果当提示，
+    # 让后续线程直接沿用 —— 既省探测，也天然满足「一个任务内音色一致」的设计意图。
+    _eng_hint = {'name': None}
 
     # === 断点续跑：主线程统一检查，只提交缺失段 ===
     pending = []   # [(idx, txt)]
@@ -5365,6 +5370,12 @@ def _generate_all_tts(narr, run_dir, progress=None):
         i, txt = item
         if _aborted():
             return (i, None, None, '', 0, True)
+        # 沿用首段预热选定的引擎（线程本地锁，post-pool 线程里默认是空的）
+        if _eng_hint['name'] and not getattr(_TLS, 'tts_engine', None):
+            try:
+                _TLS.tts_engine = _eng_hint['name']
+            except Exception:
+                pass
         # 熔断探测恢复（根因 1 改良）：每 3 段检查，被熔断则探测
         _probe_state['n'] += 1
         if _probe_state['n'] % 3 == 0 and edge_tts_dead_reason():
@@ -5415,6 +5426,22 @@ def _generate_all_tts(narr, run_dir, progress=None):
                              + ('（断点续跑，已跳过%d段）' % skipped if skipped else ''),
                              55 + int(25 * processed / max(1, len(narr))))
         return False
+
+    # === 首段串行预热（v1.4.11）===
+    # 实测真数据（整集 79 段那次）：并发池里前 3 段各花了 80736 / 80739 / 80742 ms，
+    # 第 4 段起回到 1852ms。原因：三段同时在 worker 里触发「edge → sapi 降级探测 +
+    # SAPI COM 初始化」，探测是全局互斥的，于是排队 × 每段约 27s ≈ 80s。
+    # 处理：先串行跑第一段把引擎烧热（单线程只付一次 11s），再进并发池。
+    # 附带好处：这 80 秒期间 UI 只有一个不动的 55%，现在会显示「正在加载配音引擎」。
+    if _parallel and total > 0:
+        _update_progress('正在加载配音引擎（首次较慢）…', 55)
+        _first = pending.pop(0)
+        _r0 = _synth_one(_first)
+        if _r0[2]:
+            _eng_hint['name'] = _r0[2]
+        if _apply(_r0, 'fresh'):
+            return results
+        total = len(pending)
 
     # === 第一轮：并发或串行生成 ===
     if _parallel and total > 0:
@@ -5526,6 +5553,32 @@ def _edge_probe_recover(run_dir):
                     pass
 
 
+def _spec_warnings(video_path, params):
+    """片源规格提示（4K / HDR）：只写 warnings，不阻断流程。
+
+    4K：整集 50 分钟实测合成 7.1 分钟、未调色时成片 791MB；改 1080p 能省约一半时间
+    和大量体积，而解说视频发平台本来也会被压到 1080p —— 所以提醒，但不强制（主人自己
+    的机器，选原始分辨率就该照做）。
+    HDR：管线已自动 tonemap 到 SDR(bt709)，这里说明一句，免得主人以为是画质被压了。
+    """
+    out = []
+    try:
+        res = str((params or {}).get('resolution') or '').strip().lower()
+        w, h = probe_size(video_path) or (0, 0)
+        if w >= 3000 and res in ('', 'original'):
+            out.append('片源是 4K（%dx%d），当前按原始分辨率输出：合成更慢、体积更大；'
+                       '解说视频一般 1080p 就够，可在「高级参数 → 分辨率」改成 1080p'
+                       % (w, h))
+    except Exception:
+        pass
+    try:
+        if probe_is_hdr(video_path):
+            out.append('HDR 片源已自动转换为 SDR（bt709），避免在普通播放器上偏暗发灰')
+    except Exception:
+        pass
+    return out
+
+
 def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_items=None, skip=None, user_params=None):
     """Phase 2：加载已保存的配音状态，裁剪视频+合成。用户确认配音后调用。
     adjusted_items: 用户调整后的片段列表 [{index, text, audio}]，None则用原始状态
@@ -5551,6 +5604,9 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     params = state.get('params') or {}
     if user_params:
         params.update(user_params)  # 用户在手动调整页设置的参数（如字幕样式）覆盖默认值
+    # 片源规格提示（4K / HDR）：写进 warnings，前端进度区直接可见
+    for _spec_msg in _spec_warnings(video_path, params):
+        _warn(progress, _spec_msg)
     # 应用用户调整：跳过指定段，用调整后的文本/音频
     skip_set = set(skip or [])
     if adjusted_items:

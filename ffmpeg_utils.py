@@ -502,6 +502,42 @@ def tonemap_available(path=None):
     return TONEMAP_STATE['ok']
 
 
+_SIZE_CACHE = {}
+_SIZE_CACHE_LOCK = threading.Lock()
+_SIZE_CACHE_MAX = 256
+
+
+def _parse_size(err):
+    """从 `ffmpeg -i` 的 stderr 里取视频分辨率。只认 Video: 那一行。"""
+    txt = err.decode('utf-8', 'ignore') if isinstance(err, (bytes, bytearray)) else str(err or '')
+    for line in txt.splitlines():
+        if 'Video:' not in line:
+            continue
+        m = re.search(r'(\d{2,5})x(\d{2,5})', line)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+    return None
+
+
+def probe_size(path):
+    """(宽, 高)；读不到返回 None。按路径+mtime+size 缓存，与时长/HDR 缓存互不干扰。"""
+    key = _dur_cache_key(path)
+    if key is None:
+        return None
+    with _SIZE_CACHE_LOCK:
+        if key in _SIZE_CACHE:
+            return _SIZE_CACHE[key]
+    try:
+        val = _parse_size(ffmpeg_run(['-hide_banner', '-i', path])[2])
+    except Exception:
+        val = None
+    with _SIZE_CACHE_LOCK:
+        if len(_SIZE_CACHE) >= _SIZE_CACHE_MAX:
+            _SIZE_CACHE.clear()
+        _SIZE_CACHE[key] = val
+    return val
+
+
 def probe_audio_len(path):
 
     """Return audio duration in seconds using ffmpeg. 只读容器头，不解码。"""
