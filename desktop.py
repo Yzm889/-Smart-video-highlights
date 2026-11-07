@@ -166,7 +166,7 @@ class DesktopApi:
         """从旧版本安装目录导入：配置 / 历史 / 成片 / 工作区 / 素材与音乐库，
         models 按情况重建 junction（旧侧是指向别处的 junction）或整体移动（实体目录）。
         在 EXE 里由「升级导入横幅」触发，运行于服务已就绪之后。返回摘要 dict。"""
-        import shutil, subprocess as _sp
+        import shutil, subprocess as _sp, json
         import webui_server
         new_here = webui_server.HERE
         old_root = str(old_root or '').strip()
@@ -177,12 +177,32 @@ class DesktopApi:
             else:
                 return {'ok': False, 'error': '所选目录下没有 _internal——请选择旧版 FrameCut 安装目录（含 FrameCut.exe 的那层）'}
         moved, notes = [], []
-        # 1) 配置与历史（新包无配置才会走到这，覆盖安全）
-        for fn in ('ai_config.json', 'history.json'):
-            src = os.path.join(old_int, fn)
-            if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(new_here, fn))
-                moved.append(fn)
+        # 1) 配置覆盖导入；历史**合并**（2026-11-07 教训：测试时覆盖过真实 history.json
+        #    导致索引全丢——历史索引按 file 键去重合并，两侧成片都在时一条不丢）
+        src_cfg = os.path.join(old_int, 'ai_config.json')
+        if os.path.isfile(src_cfg):
+            shutil.copy2(src_cfg, os.path.join(new_here, 'ai_config.json'))
+            moved.append('ai_config.json')
+        src_hist = os.path.join(old_int, 'history.json')
+        if os.path.isfile(src_hist):
+            dst_hist = os.path.join(new_here, 'history.json')
+            old_items, new_items = [], []
+            try:
+                old_items = json.load(open(src_hist, encoding='utf-8')) or []
+            except Exception:
+                old_items = []
+            try:
+                new_items = json.load(open(dst_hist, encoding='utf-8')) or []
+            except Exception:
+                new_items = []
+            seen = {it.get('file') for it in new_items if isinstance(it, dict)}
+            for it in old_items:
+                if isinstance(it, dict) and it.get('file') and it['file'] not in seen:
+                    new_items.append(it)
+                    seen.add(it['file'])
+            new_items.sort(key=lambda x: x.get('time', ''), reverse=True)
+            json.dump(new_items, open(dst_hist, 'w', encoding='utf-8'), ensure_ascii=False)
+            moved.append('history.json（合并 %d+%d）' % (len(old_items), len(new_items)))
         # 2) 数据目录：新侧已有则递归并入（不覆盖同名），没有则整体复制
         def _merge_tree(src, dst):
             cnt = 0

@@ -1513,6 +1513,63 @@ $('setVlmPick').addEventListener('change', async () => {
   if(!installed){ $('btnPullVlm').click(); }
   else { refreshEnv(); fillModelCenter(); }
 });
+/* ── 硬件一键配置：按显存推荐四件套，配音引擎不抢现成的 ── */
+let _hwRec = null;
+$('btnHwApply').addEventListener('click', async () => {
+  const b = $('btnHwApply'), h = $('hwHint');
+  if(!_hwRec){
+    b.disabled = true; h.textContent = '检测硬件中…';
+    try {
+      const hw = await fetch('/api/hardware').then(r => r.json());
+      const rec = hw.recommendations || {};
+      _hwRec = rec;
+      const ups = (hw.upgrades || []).map(u => u.slot).join('、');
+      h.innerHTML = '档位：<b>' + _esc(hw.tier || '?') + '</b>（' + _esc(String(hw.gpu || '无独显')) + ' / ' + hw.gpu_vram_gb + 'GB 显存）'
+        + '<br>推荐：写稿 ' + _esc(rec.text || '') + ' · 看图 ' + _esc(rec.vlm || '') + ' · 台词 ' + _esc(rec.whisper || '')
+        + ' · 离线配音 ' + _esc(rec.tts || '')
+        + (hw.current && hw.current.tts_engine === 'cosyvoice' ? '<br>配音引擎保持你的 CosyVoice 不动' : '')
+        + (ups ? '<br>可升级：' + _esc(ups) : '');
+      b.textContent = '应用此配置';
+    } catch(e){ h.textContent = '检测失败：' + e.message; }
+    b.disabled = false;
+    return;
+  }
+  // 应用
+  b.disabled = true; b.textContent = '应用中…';
+  try {
+    const rec = _hwRec;
+    const payload = {
+      local: {enabled: true, base_url: 'http://localhost:11434/v1', model: rec.text},
+      vlm: {enabled: !!rec.vlm, mode: 'ollama', base_url: 'http://localhost:11434', model: rec.vlm},
+      whisper: {model: rec.whisper}
+    };
+    // 【实测踩中】配音引擎守卫必须读当下配置（页面缓存可能未就绪，实测把主人的
+    // CosyVoice 覆盖成了 sherpa）：当前已是 cosyvoice/chattts/edge 等自然引擎时不动
+    const cfgNow = await fetch('/api/ai/config').then(x => x.json()).catch(() => null);
+    const curEng = ((cfgNow && cfgNow.config && cfgNow.config.tts_local) || {}).engine || 'auto';
+    const curCosy = cfgNow && cfgNow.cosyvoice_installed;
+    if(['auto', 'sapi', ''].indexOf(curEng) >= 0 && rec.tts && !curCosy){
+      payload.tts_local = {engine: 'sherpa', sherpa_model: rec.tts};
+    }
+    const r = await fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '保存失败');
+    // 未安装的自动开始拉取（进度条已有）
+    const L = _envData.local;
+    const localInstalled = ((L && L.installed) || []).some(n => (n || '').split(':')[0] === (rec.text || '').split(':')[0]);
+    if(!localInstalled){ fetch('/api/local/pull', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: rec.text})}); }
+    const V = _envData.vlm;
+    const vlmInstalled = ((V && V.installed) || []).some(n => (n || '').split(':')[0] === (rec.vlm || '').split(':')[0]);
+    if(rec.vlm && !vlmInstalled){ fetch('/api/vlm/pull', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: rec.vlm})}); }
+    const W = _envData.wsp;
+    if(W && !W.ready && W.selected !== rec.whisper){ fetch('/api/whisper/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: rec.whisper})}); }
+    toast('✅ 已按本机配置（' + (rec.text || '') + ' 等），缺的模型开始自动拉取', 'ok');
+    fillModelCenter(); refreshEnv();
+    _hwRec = null; b.textContent = '按本机一键配置';
+  } catch(e){ toast('应用失败：' + e.message, 'bad'); }
+  b.disabled = false;
+});
+
 // 设置打开期间轮询拉取进度（2.5s，仅在对话框可见时）
 setInterval(() => {
   if($('settingsMask').style.display === 'none' || !$('settingsMask').style.display) return;
@@ -1643,6 +1700,7 @@ function openHistory(){
         + '<small>' + _esc(h.time || '') + (h.duration ? ' · ' + h.duration + 's' : '') + '</small></div>'
         + '<div class="hist-acts">'
         + (h.missing ? '' : '<button class="mini-btn" data-play="' + i + '">▶ 播放</button>'
+                        + '<button class="mini-btn" data-edit="' + i + '" title="回编辑器改词重配">✏️ 编辑</button>'
                         + '<button class="mini-btn" data-folder="' + i + '" title="打开所在文件夹"><svg class="ic"><use href="#i-folder"/></svg></button>')
         + '<button class="mini-btn" data-del="' + i + '" title="删除这条记录"><svg class="ic"><use href="#i-trash"/></svg></button></div></div>';
     }).join('');
@@ -1650,6 +1708,16 @@ function openHistory(){
       const h = _histItems[+b.dataset.play];
       $('histMask').style.display = 'none';
       openExport(h.file);
+    }));
+    $('histList').querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', async () => {
+      const h = _histItems[+b.dataset.edit];
+      const runDir = (h.file || '').split('/')[0];
+      $('histMask').style.display = 'none';
+      try {
+        toast('载入项目…');
+        await loadAdjustItems(runDir);
+        openEditor();
+      } catch(e){ toast('该任务不支持编辑器打开：' + e.message, 'bad'); }
     }));
     $('histList').querySelectorAll('[data-folder]').forEach(b => b.addEventListener('click', () => {
       const h = _histItems[+b.dataset.folder];
