@@ -115,6 +115,109 @@ function initDesktop(){
 window.addEventListener('pywebviewready', initDesktop);
 if(window.pywebview) initDesktop();
 
+/* ── 第一步：环境检查（装机引导） ──
+   渐进渲染：各接口独立落地、各自刷新——快行先显示，不被慢探测（模型 ping 可达 10s+）拖住。
+   【曾犯的错】v1 把整卡渲染压在 Promise.all 后面，冷启动时"检查中…"卡半分钟还锁死重试。 */
+const _envData = {local: null, wsp: null, vlm: null, ai: null};
+let _envActive = false;   // 有拉取/下载任务时 2.5s 加密轮询
+
+function _envGet(u){
+  const c = new AbortController();
+  const k = setTimeout(() => c.abort(), 15000);   // 挂死的探测不能拖死整卡
+  return fetch(u, {signal: c.signal}).then(r => r.json())
+    .catch(() => null).finally(() => clearTimeout(k));
+}
+
+function renderEnv(){
+  const box = $('envRows');
+  if(!box || $('newProj').style.display === 'none') return;
+  const L = _envData.local, W = _envData.wsp, V = _envData.vlm, A = _envData.ai;
+  const okB = t => '<span class="env-badge ok">✓ ' + t + '</span>';
+  const noB = t => '<span class="env-badge bad">' + t + '</span>';
+  const wB  = t => '<span class="env-badge wait">' + t + '</span>';
+  const chk = t => '<span class="env-badge wait">检测中</span>' + (t || '');
+  const btn = (id, label, ghost) => '<button class="env-btn' + (ghost ? ' ghost' : '') + '" data-env="' + id + '">' + label + '</button>';
+  const rows = [];
+  const lm = (L && L.model) || 'qwen3:8b';
+
+  // ① Ollama 引擎（AI 运行时）
+  const ollamaUp = !!(L && L.ready);
+  rows.push('<div class="env-row"><div class="en-name">Ollama 本地引擎<small>AI 运行时（免费 · 全程本地）</small></div>'
+    + (!L ? chk() : (ollamaUp ? okB('运行中') : noB('未就绪') + btn('install', '安装/启动'))) + '</div>');
+
+  // ② 文字大脑（写解说稿，必装）
+  if(L && L.pulling){
+    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + (L.pull_model || lm) + '<small>' + (L.pull_msg || '拉取中') + '</small></div>' + wB((L.pull_pct || 0) + '%') + '</div>');
+  } else {
+    const txtOk = !!(L && L.ready && L.infer_ok !== false);
+    rows.push('<div class="env-row"><div class="en-name">文字大脑 ' + lm + '<small>写解说稿的核心（约 4.7GB，一次下载）</small></div>'
+      + (!L ? chk() : (txtOk ? okB('就绪') : noB('未拉取') + btn('pulltext', '拉取'))) + '</div>');
+  }
+
+  // ③ 看图模型（可选）
+  if(V && V.pulling){
+    rows.push('<div class="env-row"><div class="en-name">看图模型 ' + (V.pull_model || V.model || 'minicpm-v') + '<small>拉取中</small></div>' + wB((V.pull_pct || 0) + '%') + '</div>');
+  } else {
+    const vOk = !!(V && V.ready);
+    const vOpt = !!(V && V.enabled === false);   // 明确关闭才算"可选"，超时/未启用保持检测中
+    rows.push('<div class="env-row"><div class="en-name">看图模型 ' + ((V && V.model) || 'minicpm-v') + '<small>可选：AI 亲眼看画面，理解更准</small></div>'
+      + (!V ? chk() : (vOk ? okB('就绪') : (vOpt ? '<span class="env-badge wait">可选</span>' + btn('pullvlm', '拉取', true)
+                                              : noB('未就绪') + btn('pullvlm', '拉取', true)))) + '</div>');
+  }
+
+  // ④ Whisper 台词识别
+  if(W && W.downloading){
+    rows.push('<div class="env-row"><div class="en-name">台词识别 ' + (W.download_model || 'large-v3') + '<small>听懂台词，时间轴零偏差</small></div>' + wB((W.download_pct || 0) + '%') + '</div>');
+  } else {
+    const wOk = !!(W && W.ready);
+    rows.push('<div class="env-row"><div class="en-name">台词识别 ' + ((W && W.selected) || 'large-v3') + '<small>听懂台词（2.9GB，一次下载）</small></div>'
+      + (!W ? chk() : (wOk ? okB('就绪') : noB('未下载') + btn('dlwsp', '下载'))) + '</div>');
+  }
+
+  // ⑤ 配音引擎（信息展示；引擎安装/音色在设置里）
+  const vc = A && A.voice;
+  rows.push('<div class="env-row"><div class="en-name">配音引擎<small>' + ((vc && vc.ready && vc.label) ? vc.label : ((vc && vc.reason) || '检测中')) + '</small></div>'
+    + (!A ? chk() : (vc ? (vc.ready ? okB('就绪') : noB('未就绪')) : wB('…'))) + '</div>');
+
+  const coreOk = ollamaUp && !!(L && L.ready && L.infer_ok !== false) && !!(W && W.ready);
+  rows.unshift('<div class="env-row" style="border-color:' + (coreOk ? 'var(--ok)' : 'var(--warn)') + '">'
+    + '<div class="en-name" style="font-size:13px">' + (coreOk
+      ? '✅ 环境就绪——选片，开始创作'
+      : '⏳ 还差以下组件（点按钮自动完成，约需几分钟）') + '</div></div>');
+  box.innerHTML = rows.join('');
+  _envActive = !!(L && L.pulling) || !!(W && W.downloading) || !!(V && V.pulling);
+}
+
+function refreshEnv(){
+  if($('newProj').style.display === 'none') return;
+  _envGet('/api/local/status').then(j => { if(j){ _envData.local = j; renderEnv(); } });
+  _envGet('/api/whisper/status').then(j => { if(j){ _envData.wsp = j; renderEnv(); } });
+  _envGet('/api/vlm/status').then(j => { if(j){ _envData.vlm = j; renderEnv(); } });
+  _envGet('/api/ai_status').then(j => { if(j){ _envData.ai = j; renderEnv(); } });
+}
+
+$('envRows').addEventListener('click', async e => {   // 事件委托：重渲染不丢按钮
+  const b = e.target.closest('[data-env]');
+  if(!b) return;
+  const act = b.dataset.env;
+  b.disabled = true; b.textContent = '⏳ 处理中…';
+  const post = (u, d) => fetch(u, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(d || {})});
+  try {
+    if(act === 'install'){ await post('/api/ollama/install'); }
+    if(act === 'pulltext'){ await post('/api/local/pull', {model: (_envData.local && _envData.local.model) || 'qwen3:8b'}); }
+    if(act === 'pullvlm'){ await post('/api/vlm/pull', {model: (_envData.vlm && _envData.vlm.model) || 'minicpm-v'}); }
+    if(act === 'dlwsp'){ await post('/api/whisper/download', {model: (_envData.wsp && _envData.wsp.selected) || 'large-v3'}); }
+    setTimeout(refreshEnv, 2000);
+  } catch(err){ toast('操作失败：' + err.message, 'bad'); refreshEnv(); }
+});
+$('envRefresh').addEventListener('click', refreshEnv);
+setInterval(() => {                       // 拉取/下载中 2.5s 加密刷新
+  if(!_envActive || $('newProj').style.display === 'none') return;
+  refreshEnv();
+}, 2500);
+setInterval(refreshEnv, 15000);           // 平时 15s 慢巡检（探测有成本）
+setTimeout(refreshEnv, 400);
+
 /* ── 新建项目 ── */
 function updateNewProj(){
   const has = !!_video;
