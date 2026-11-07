@@ -189,6 +189,31 @@ async function _ensureBridge(){
   return _isDesktop && !!(window.pywebview && window.pywebview.api);
 }
 
+/* ── 桥调用失败的统一出口：绝不许静默吞 ──
+   v1.4.7 教训：DesktopApi.open_folder 因模块漏导入必然抛 NameError，而这里当时
+   写的是 `open_folder(...).catch(() => {})`，异常被吃掉，主人点「打开文件夹」
+   看到的就是「点了没反应」，坏了很久都没人发现。凡是主人主动点击触发的桥调用，
+   失败必须看得见。 */
+function bridgeFail(action, e){
+  const msg = (e && e.message) ? e.message : String(e || '未知错误');
+  try { console.warn('[bridge]', action, e); } catch(_) {}
+  toast(action + '失败：' + msg, 'bad');
+}
+/* 打开成片所在文件夹（桌面版专属）。返回是否成功，便于调用方决定要不要提示。 */
+async function openFolder(rel){
+  if(!(window.pywebview && window.pywebview.api)){
+    toast('成片在 webui_output 目录');
+    return false;
+  }
+  try {
+    await window.pywebview.api.open_folder(rel);
+    return true;
+  } catch(e){
+    bridgeFail('打开文件夹', e);
+    return false;
+  }
+}
+
 /* ── 升级导入横幅（新包首跑、EXE 内） ── */
 setTimeout(async () => {
   if(!(_isDesktop && window.pywebview && window.pywebview.api)) return;
@@ -1455,11 +1480,8 @@ function newProject(){
   setStatus('就绪');
 }
 function openOutFolder(){
-  if(window.pywebview && window.pywebview.api && _runDir){
-    window.pywebview.api.open_folder(_runDir).catch(() => {});
-  } else {
-    toast('成片在 webui_output 目录');
-  }
+  if(_runDir) openFolder(_runDir);
+  else toast('成片在 webui_output 目录');
 }
 $('tbCompose').addEventListener('click', composeAll);
 $('tbGenerate').addEventListener('click', () => {
@@ -1960,9 +1982,7 @@ function openHistory(){
     }));
     $('histList').querySelectorAll('[data-folder]').forEach(b => b.addEventListener('click', () => {
       const h = _histItems[+b.dataset.folder];
-      if(window.pywebview && window.pywebview.api)
-        window.pywebview.api.open_folder(h.file).catch(() => {});
-      else toast('成片在 webui_output 目录');
+      openFolder(h.file);
     }));
     $('histList').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
       const h = _histItems[+b.dataset.del];
@@ -2101,8 +2121,7 @@ $('coverGo').addEventListener('click', async () => {
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '生成失败');
     $('coverHint').innerHTML = '✅ 已生成：<b>/media/' + _esc(out.cover) + '</b>（与成片同目录）';
-    if(window.pywebview && window.pywebview.api)
-      window.pywebview.api.open_folder(_lastExport).catch(() => {});
+    openFolder(_lastExport);
     toast('✅ 封面已生成 cover.jpg', 'ok');
   } catch(e){ toast('封面失败：' + e.message, 'bad'); }
   b.disabled = false; b.textContent = '生成';
@@ -2279,9 +2298,8 @@ function openExport(file){
   btn.disabled = false;
 }
 $('exFolder').addEventListener('click', () => {
-  if(window.pywebview && window.pywebview.api && _lastExport){
-    window.pywebview.api.open_folder(_lastExport).catch(() => {});
-  } else toast('成片在 webui_output 目录');
+  if(_lastExport) openFolder(_lastExport);
+  else toast('成片在 webui_output 目录');
 });
 $('exBack').addEventListener('click', () => switchView('adjust'));
 $('exNew').addEventListener('click', () => newProject());
