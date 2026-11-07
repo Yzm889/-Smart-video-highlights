@@ -18,6 +18,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import ai_providers as A  # noqa: E402
+import webui_server as S  # noqa: E402
 
 
 def _mk(path, files=('model.bin',), size=1024):
@@ -65,3 +66,25 @@ def test_repo_name_mapping():
     assert A._whisper_name_from_repo('whisper-medium') == 'medium'
     assert A._whisper_name_from_repo('distil-whisper-large-v3') == 'distil-large-v3'
     assert A._whisper_name_from_repo('faster-whisper-tiny') == 'tiny'
+
+
+def test_model_ready_recognizes_hf_cache(tmp_path, monkeypatch):
+    """whisper_model_ready() 走的是另一套判定，也必须认 HF 缓存布局。
+
+    之前只认「子目录」和「平铺」两种，于是 /api/whisper/status 一直报
+    ready:false（实测 v1.4.7 成品：selected=distil-large-v3、ready=False、
+    但快照里 model.bin 有 1.5G）。
+    """
+    md = tmp_path / 'whisper'
+    snap = md / 'models--Systran--faster-distil-whisper-large-v3' / 'snapshots' / 'c3058b4'
+    _mk(str(snap))
+    monkeypatch.setattr(S, 'whisper_models_dir', lambda: str(md))
+    assert S.whisper_model_ready('distil-large-v3') is True
+    assert S.whisper_model_ready('large-v3') is False, '没下过的模型不能误报就绪'
+
+
+def test_model_ready_flat_layout_unchanged(tmp_path, monkeypatch):
+    md = tmp_path / 'whisper'
+    _mk(str(md / 'medium'))
+    monkeypatch.setattr(S, 'whisper_models_dir', lambda: str(md))
+    assert S.whisper_model_ready('medium') is True

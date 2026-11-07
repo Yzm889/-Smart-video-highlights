@@ -985,6 +985,22 @@ def whisper_model_ready(model=None):
     # ② 平铺形式（faster-whisper 直接下载到 download_root）
     if _check(whisper_models_dir()):
         return True
+    # ③ HF 缓存形式（huggingface_hub 默认布局，真实安装几乎都走这条）：
+    #    models/whisper/models--Systran--faster-distil-whisper-large-v3/snapshots/<sha>/model.bin
+    # 【v1.4.8 修】原来只认 ①②，于是模型明明在本地、/api/whisper/status 却报
+    # ready:false、valid_models 全表 downloaded:false，前端显示「（未下载）」
+    # ——主人会以为没下过而重下 1.5G，或以为 ASR 不可用。
+    try:
+        repo = _WHISPER_REPO.get(m)
+        if repo:
+            snaps = os.path.join(whisper_models_dir(),
+                                 'models--' + repo.replace('/', '--'), 'snapshots')
+            if os.path.isdir(snaps):
+                for sha in os.listdir(snaps):
+                    if _check(os.path.join(snaps, sha)):
+                        return True
+    except Exception:
+        pass
     return False
 
 _WHISPER_REPO = {
