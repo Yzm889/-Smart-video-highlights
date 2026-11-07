@@ -103,6 +103,27 @@ class DesktopApi:
             subprocess.Popen(['explorer', os.path.dirname(target) or webui_server.OUTDIR])
         return {'ok': True}
 
+    def pick_srt(self):
+        import webview
+        res = webview.windows[0].create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=('字幕文件 (*.srt)', '所有文件 (*.*)'))
+        if not res:
+            return {}
+        path = res[0]
+        return {'path': path, 'name': os.path.basename(path)}
+
+    def read_text_file(self, path, max_mb=8):
+        """读取本地文本文件（桌面版专属：SRT 导入等）。路径须为绝对路径且存在。"""
+        path = str(path or '')
+        if not os.path.isabs(path) or not os.path.isfile(path):
+            return {'ok': False, 'error': '文件不存在'}
+        if os.path.getsize(path) > max_mb * 1024 * 1024:
+            return {'ok': False, 'error': '文件过大'}
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            return {'ok': True, 'text': f.read()}
+
     def pick_music(self):
         import webview
         res = webview.windows[0].create_file_dialog(

@@ -168,6 +168,8 @@ $('npGo').addEventListener('click', async () => {
       qualityTier: 'balanced', transition: 'hard'
     }
   };
+  if(_srt) body.subtitle_file = {name: _srt.name, text: _srt.text};
+  if(_music) body.music = {name: _music.name, path: _music.path, desktop_token: _token};
   try {
     const r = await fetch('/api/movie_tts', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -592,6 +594,105 @@ $('tbGenerate').addEventListener('click', () => {
   if(!_video || !$('npPlot').value.trim()){ switchView('story'); return; }
   $('npGo').click();
 });
+
+/* ── SRT 导入（桌面：原生对话框 + 本地直读） ── */
+let _srt = null;   // {name, text}
+function importSrt(){
+  if(!(window.pywebview && window.pywebview.api)){ toast('请运行桌面版 EXE', 'bad'); return; }
+  window.pywebview.api.pick_srt().then(r => {
+    if(!r || !r.path) return null;
+    const name = r.name || r.path.split(/[\/]/).pop();
+    return window.pywebview.api.read_text_file(r.path).then(t => {
+      if(!t.ok) throw new Error(t.error || '读取失败');
+      _srt = {name: name, text: t.text};
+      const b = $('tbSrt');
+      if(b) b.textContent = '📄 字幕 ✓';
+      toast('字幕已导入：' + name);
+    });
+  }).catch(e => toast('字幕导入失败：' + e.message, 'bad'));
+}
+
+/* ── 配乐（桌面：本地路径直连） ── */
+let _music = null;   // {name, path, isLocalPath}
+function pickLocalMusic(){
+  if(!(window.pywebview && window.pywebview.api)) return;
+  window.pywebview.api.pick_music().then(r => {
+    if(!r || !r.path) return;
+    _music = {name: r.name, path: r.path, isLocalPath: true};
+    const b = $('tbMusic');
+    if(b) b.textContent = '🎵 ' + _music.name.slice(0, 14);
+    toast('配乐已选：' + _music.name);
+  }).catch(e => toast('选乐失败：' + e.message, 'bad'));
+}
+
+/* ── 设置对话框 ── */
+function openSettings(){
+  $('settingsMask').style.display = 'flex';
+  fetch('/api/ai/config').then(r => r.json()).then(d => {
+    const c = d.config || {};
+    $('setVisBase').value = (c.vision || {}).base_url || '';
+    $('setVisModel').value = (c.vision || {}).model || '';
+    $('setVisKey').value = '';   // 已配置的不回显，留空=不修改
+    $('setVisKey').placeholder = (c.vision || {}).api_key ? '已配置（不改请留空）' : '未配置';
+    $('setLocalBase').value = (c.local || {}).base_url || '';
+    $('setLocalModel').value = (c.local || {}).model || '';
+    renderWhisperOptions();
+  }).catch(e => toast('读取配置失败：' + e.message, 'bad'));
+}
+$('tbSettings').addEventListener('click', openSettings);
+$('tbSrt').addEventListener('click', importSrt);
+$('tbMusic').addEventListener('click', pickLocalMusic);
+$('settingsClose').addEventListener('click', () => $('settingsMask').style.display = 'none');
+$('settingsSave').addEventListener('click', async () => {
+  const payload = {vision: {}, tts: {}, local: {}};
+  ['VisBase', 'VisModel'].forEach(f => {
+    const el = $('set' + f);
+    if(el && el.value.trim()) payload.vision[f.replace('Vis', '').toLowerCase()] = el.value.trim();
+  });
+  payload.vision.base_url = $('setVisBase').value.trim();
+  payload.vision.model = $('setVisModel').value.trim();
+  if($('setVisKey').value.trim()) payload.vision.api_key = $('setVisKey').value.trim();
+  payload.local = {enabled: true, base_url: $('setLocalBase').value.trim(), model: $('setLocalModel').value.trim()};
+  try {
+    const r = await fetch('/api/ai/config', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '保存失败');
+    $('settingsMask').style.display = 'none';
+    toast('✅ 设置已保存');
+  } catch(e){ toast('保存失败：' + e.message, 'bad'); }
+});
+
+/* ── Whisper 模型下载（设置对话框内） ── */
+$('btnWhisperDl').addEventListener('click', async () => {
+  const model = $('setWhisperModel').value;
+  const stEl = $('whisperDlStatus');
+  try {
+    const r = await fetch('/api/whisper/download', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: model})});
+    const out = await r.json();
+    if(!out.ok && !/开始|已存在/.test(out.message || out.error || '')) throw new Error(out.error || out.message || '失败');
+    stEl.textContent = out.message || '已开始下载';
+    const iv = setInterval(async () => {
+      const s = await fetch('/api/whisper/status').then(x => x.json()).catch(() => null);
+      if(!s) return;
+      const d = s.download || {};
+      stEl.textContent = d.downloading ? ('下载中 ' + (d.download_pct || 0) + '%') : (d.download_ok ? '✅ ' + (d.download_msg || '完成') : (d.download_msg || ''));
+      if(!d.downloading){ clearInterval(iv); if(d.download_ok) renderWhisperOptions(); }
+    }, 2000);
+  } catch(e){ stEl.textContent = '❌ ' + e.message; }
+});
+function renderWhisperOptions(){
+  fetch('/api/whisper/status').then(r => r.json()).then(s => {
+    const sel = $('setWhisperModel');
+    if(!sel) return;
+    const valid = s.valid_models || {};
+    sel.innerHTML = Object.keys(valid).map(k =>
+      '<option value="' + k + '"' + (valid[k].downloaded ? ' data-dl="1"' : '') + '>' +
+      k + (valid[k].downloaded ? ' ✓' : '（未下载）') + '</option>').join('');
+    if([...sel.options].some(o => o.value === 'large-v3' && o.dataset.dl)) sel.value = 'large-v3';
+  }).catch(() => {});
+}
 
 /* ── 合成（含改词自动重配） ── */
 $('btnCompose').addEventListener('click', async () => {

@@ -43,11 +43,14 @@
 <div class="toolbar">
   <span class="proj-name" id="projName">未打开项目</span>
   <span class="tb-sep"></span>
-  <button class="tb-btn primary" id="tbGenerate">🎙 生成</button>
+  <button class="tb-btn primary" id="tbGenerate">🎙 生成方案</button>
   <button class="tb-btn" id="tbCompose" disabled>🎬 合成视频</button>
   <span class="tb-flex"></span>
+  <button class="tb-btn" id="tbSrt" title="导入 SRT 字幕文件（字幕是命脉：剧情理解准+时间轴零偏差）">📄 导入字幕</button>
+  <button class="tb-btn" id="tbMusic" title="选择本地音乐文件（加配乐）">🎵 配乐</button>
   <button class="tb-btn tgl on" id="tbNarr" title="整条解说配音轨开关">🎙 解说轨</button>
   <button class="tb-btn tgl on" id="tbOrig" title="整条原片声音轨开关">🎬 原声轨</button>
+  <button class="tb-btn" id="tbSettings" title="AI 配置：Key / 模型 / Whisper 下载">⚙ 设置</button>
 </div>
 
 <!-- 主工作区 -->
@@ -63,11 +66,11 @@
         <span id="npPickLabel">从电脑选择视频</span>
       </button>
       <div class="field">
-        <label>片名 / 主题（用于搜剧情、生成封面，可留空）</label>
+        <label>片名 / 主题（用于搜剧情，可留空）</label>
         <input type="text" id="npName" placeholder="例如：惩罚者 第一季第一集">
       </div>
       <div class="field">
-        <label>剧情（开头 → 冲突 → 结局，100 字就够）或粘贴完整解说稿</label>
+        <label>剧情（开头 → 冲突 → 结局）或粘贴完整解说稿</label>
         <textarea id="npPlot" rows="7" placeholder="例如：深夜的港口，一艘货船悄悄离岸……"></textarea>
       </div>
       <div class="np-opts">
@@ -85,21 +88,13 @@
     <div class="ed-left">
       <div class="panel-head">字幕 <span class="ph-sub" id="capCount"></span></div>
       <div class="cap-tools">
-        <button class="mini-btn" id="capAdd">➕ 在指针处添加</button>
+        <button class="mini-btn" id="capAdd">➕ 指针处添加</button>
         <button class="mini-btn" id="capDel">🗑 删除选中</button>
       </div>
       <div class="cap-list" id="capList"></div>
     </div>
     <div class="ed-center">
-      <div class="export-panel" id="exportPanel" style="display:none">
-        <div class="done-title">✅ 成片已生成</div>
-        <video id="exPlayer" controls playsinline></video>
-        <div class="done-actions">
-          <button class="tb-btn primary" id="btnOpenFolder">📂 打开所在文件夹</button>
-          <span class="hint-inline" id="exPath"></span>
-        </div>
-      </div>
-      <div class="video-shell" id="videoShell">
+      <div class="video-shell">
         <video id="pvVideo" playsinline></video>
         <div class="sub-overlay" id="subOverlay"></div>
       </div>
@@ -113,7 +108,7 @@
       </div>
     </div>
     <div class="ed-right">
-      <div class="panel-head">检查器 <span class="ph-sub" id="insSeg"></span></div>
+      <div class="panel-head">检查器</div>
       <div class="ins-body" id="insBody">
         <div class="ins-empty">点选一段字幕</div>
       </div>
@@ -126,6 +121,8 @@
   <span id="stState">● 就绪</span>
   <span id="stSeg"></span>
   <span class="sb-flex"></span>
+  <span id="stEngine"></span>
+  <span class="sb-flex"></span>
   <span id="stTime">00:00.0</span>
 </div>
 
@@ -135,6 +132,42 @@
     <div class="modal-title" id="gmTitle">正在生成…</div>
     <div class="pbar big"><i id="gmFill"></i></div>
     <div class="modal-meta" id="gmMeta">准备中</div>
+  </div>
+</div>
+
+<!-- 设置对话框 -->
+<div class="modal-mask" id="settingsMask" style="display:none">
+  <div class="modal settings">
+    <div class="modal-title">⚙ 设置 <button class="mini-btn" id="settingsClose" style="float:right">✕</button></div>
+    <div class="set-grid">
+      <div class="set-sec">
+        <div class="set-h">云端 Key（可选 · 配了自动用云端增强）</div>
+        <label>看图写话 base_url</label>
+        <input type="text" id="setVisBase" placeholder="https://api.deepseek.com/v1">
+        <label>看图写话 Key</label>
+        <input type="password" id="setVisKey" placeholder="已配置则留空">
+        <label>看图模型</label>
+        <input type="text" id="setVisModel" placeholder="gpt-4o / qwen-vl-plus">
+      </div>
+      <div class="set-sec">
+        <div class="set-h">本地 Ollama</div>
+        <label>地址</label>
+        <input type="text" id="setLocalBase">
+        <label>文字模型</label>
+        <input type="text" id="setLocalModel" placeholder="qwen3:8b">
+      </div>
+      <div class="set-sec">
+        <div class="set-h">Whisper 台词识别模型</div>
+        <div class="set-row">
+          <select id="setWhisperModel"></select>
+          <button class="mini-btn" id="btnWhisperDl">📥 下载选中模型</button>
+        </div>
+        <div class="hint" id="whisperDlStatus"></div>
+      </div>
+    </div>
+    <div class="set-actions">
+      <button class="btn primary" id="settingsSave">💾 保存</button>
+    </div>
   </div>
 </div>
 

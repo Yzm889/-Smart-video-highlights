@@ -101,6 +101,18 @@ def _resolve_music(music_data):
             os.makedirs(_w.WORKDIR, exist_ok=True)
             shutil.copy2(usrc, mpath)
             return mpath
+        if music_data.get('path') and music_data.get('desktop_token'):
+            # 桌面版路径直连（须持启动器会话令牌，同 _resolve_upload_video 的安全设计）
+            if not _w.DESKTOP_TOKEN or music_data['desktop_token'] != _w.DESKTOP_TOKEN:
+                return None
+            msrc = str(music_data['path'])
+            if not os.path.isabs(msrc) or not os.path.isfile(msrc):
+                return None
+            mpath = os.path.join(_w.WORKDIR, 'music_' + str(int(time.time() * 1000)) +
+                                 (os.path.splitext(msrc)[1] or '.mp3'))
+            os.makedirs(_w.WORKDIR, exist_ok=True)
+            shutil.copy2(msrc, mpath)
+            return mpath
         if music_data.get('data'):
             mdata = base64.b64decode(music_data.get('data', ''))
             mname = music_data.get('name', 'music.mp3')

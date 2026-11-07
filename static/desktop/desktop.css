@@ -10,7 +10,7 @@ html,body{height:100%;overflow:hidden}
 body{font-family:"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
   background:var(--bg);color:var(--txt);font-size:13px;display:flex;flex-direction:column;user-select:none}
 button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
-input,textarea{font-family:inherit;color:var(--txt);user-select:text}
+input,textarea,select{font-family:inherit;color:var(--txt);user-select:text}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:#3c3c3c;border:2px solid var(--panel);border-radius:5px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -34,7 +34,7 @@ input,textarea{font-family:inherit;color:var(--txt);user-select:text}
 /* ── 工具栏 ── */
 .toolbar{height:var(--tb-h);flex:none;background:var(--panel2);border-bottom:1px solid var(--line);
   display:flex;align-items:center;gap:8px;padding:0 12px}
-.proj-name{font-size:13px;font-weight:600;color:var(--txt);max-width:280px;overflow:hidden;
+.proj-name{font-size:13px;font-weight:600;max-width:280px;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
 .tb-sep{width:1px;height:20px;background:var(--line);margin:0 4px}
 .tb-flex{flex:1}
@@ -67,6 +67,8 @@ input,textarea{font-family:inherit;color:var(--txt);user-select:text}
 .np-card textarea{font-size:13.5px}
 .np-opts{text-align:left;margin-bottom:16px}
 .np-opts .chk{margin:5px 0}
+.chk{display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer}
+.chk input{accent-color:var(--acc);width:15px;height:15px}
 .btn.big{width:100%;padding:12px;font-size:15px}
 .np-hint{margin-top:10px;font-size:12px;color:var(--dim);min-height:16px}
 
@@ -92,7 +94,7 @@ input,textarea{font-family:inherit;color:var(--txt);user-select:text}
 .row-top{display:flex;gap:7px;align-items:flex-start}
 .cap-time{flex:none;font-size:10.5px;color:#9cdcfe;font-family:Consolas,monospace;margin-top:3px;min-width:42px}
 .cap-row textarea{flex:1;min-width:0;background:transparent;border:1px solid transparent;
-  padding:3px 5px;font-size:12.5px;line-height:1.5;border-radius:4px;resize:none;overflow:hidden}
+  padding:3px 5px;font-size:12.5px;line-height:1.5;border-radius:4px;resize:none;overflow:hidden;user-select:text}
 .cap-row textarea:hover{border-color:var(--line2)}
 .cap-row textarea:focus{background:var(--bg);border-color:var(--acc);outline:none}
 .cap-del{flex:none;padding:1px 6px;font-size:11px;color:var(--bad);border-radius:4px;opacity:0}
@@ -121,8 +123,8 @@ input,textarea{font-family:inherit;color:var(--txt);user-select:text}
   border:1px solid rgba(255,255,255,.15);overflow:hidden}
 .tl-block:hover{filter:brightness(1.3)}
 .tl-block.sel{outline:2px solid var(--warn);z-index:2}
-.tl-block span{position:absolute;left:5px;top:0;line-height:100%;font-size:10.5px;color:#fff;
-  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:5px;top:50%;transform:translateY(-50%)}
+.tl-block span{position:absolute;left:5px;top:50%;transform:translateY(-50%);font-size:10.5px;color:#fff;
+  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:5px}
 .tl-block.quote{background:#10b981 !important}
 .tl-block.skip{opacity:.3}
 .tl-playhead{position:absolute;top:0;bottom:0;width:2px;background:#f43f5e;z-index:5;
@@ -131,7 +133,7 @@ input,textarea{font-family:inherit;color:var(--txt);user-select:text}
   background:#f43f5e;border-radius:2px}
 
 /* 右：检查器 */
-.ins-body{padding:12px;font-size:12.5px}
+.ins-body{padding:12px;font-size:12.5px;overflow-y:auto}
 .ins-empty{color:var(--dim);text-align:center;padding:20px 0}
 .ins-row{margin-bottom:14px}
 .ins-row label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
@@ -154,11 +156,26 @@ input,textarea{font-family:inherit;color:var(--txt);user-select:text}
   display:flex;align-items:center;gap:16px;padding:0 12px;font-size:11.5px;color:var(--muted)}
 .sb-flex{flex:1}
 #stState.ok{color:var(--ok)}
+#stState.bad{color:var(--bad)}
 
-/* ── 生成进度浮层 ── */
+/* ── 浮层与对话框 ── */
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;
   display:flex;align-items:center;justify-content:center}
-.modal{width:460px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:22px}
+.modal{width:460px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:22px;
+  max-height:80vh;overflow-y:auto}
 .modal-title{font-size:15px;font-weight:600;margin-bottom:16px}
 .modal .pbar{height:10px}
 .modal-meta{margin-top:10px;font-size:12.5px;color:var(--muted)}
+.modal.settings{width:620px}
+.set-grid{display:grid;gap:16px}
+.set-sec{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px}
+.set-h{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:10px}
+.set-sec label{display:block;font-size:11.5px;color:var(--muted);margin:8px 0 3px}
+.set-sec input[type=text],.set-sec input[type=password]{width:100%;background:var(--bg);
+  border:1px solid var(--line);border-radius:5px;padding:6px 9px;font-size:12.5px}
+.set-sec input:focus{outline:none;border-color:var(--acc)}
+.set-row{display:flex;gap:8px;align-items:center}
+.set-row select{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:5px;
+  padding:6px;color:var(--txt);font-size:12.5px}
+.set-actions{margin-top:16px;text-align:right}
+.hint{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5}
