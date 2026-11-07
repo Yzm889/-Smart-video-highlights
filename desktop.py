@@ -124,6 +124,17 @@ class DesktopApi:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             return {'ok': True, 'text': f.read()}
 
+    def read_file_b64(self, path, max_mb=24):
+        """读取本地二进制文件并 base64 编码（桌面版专属：声音克隆上传参考音频）。"""
+        import base64
+        path = str(path or '')
+        if not os.path.isabs(path) or not os.path.isfile(path):
+            return {'ok': False, 'error': '文件不存在'}
+        if os.path.getsize(path) > max_mb * 1024 * 1024:
+            return {'ok': False, 'error': '文件过大（>' + str(max_mb) + 'MB）'}
+        with open(path, 'rb') as f:
+            return {'ok': True, 'b64': base64.b64encode(f.read()).decode('ascii')}
+
     def pick_music(self):
         import webview
         res = webview.windows[0].create_file_dialog(

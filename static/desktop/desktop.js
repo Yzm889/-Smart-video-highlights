@@ -103,6 +103,7 @@ const _acts = {
   tgnarr(){ toggleNarrTrack(); },
   tgorig(){ toggleOrigTrack(); },
   history(){ openHistory(); },
+  storage(){ openStorage(); },
   about(){ toast('一帧成片 · 本地免费 AI 解说剪辑 · 桌面版'); }
 };
 document.querySelectorAll('.mi').forEach(mi => {
@@ -594,24 +595,261 @@ function renderTimeline(){
     ruler += '<span style="left:' + (t / total * 100) + '%">' + _fmt(t) + '</span>';
   }
   $('tlRuler').innerHTML = ruler;
+  // PR 式：色块按视频绝对时间定位（累计排布会让裁剪/拖动没有物理意义）
   let html = '';
-  let cum = 0;
   _items.forEach((it, i) => {
-    const vd = Math.max(0.1, (it.video_end || 0) - (it.video_start || 0));
-    const left = cum / total * 100, w = vd / total * 100;
+    const vs = Math.max(0, it.video_start || 0);
+    const vd = Math.max(0.1, (it.video_end || 0) - vs);
+    const left = vs / total * 100, w = Math.min(vd, total - vs) / total * 100;
     const cls = (it.quote ? ' quote' : '') + (it._skip ? ' skip' : '') + (i === _sel ? ' sel' : '');
     const tip = _esc(_clean(it.text).slice(0, 60)) || (it.quote ? '原声引用' : '');
     html += '<div class="tl-block' + cls + '" data-i="' + i + '" title="' + tip + '" style="left:' + left + '%;width:'
       + w + '%;background:' + (it.quote ? '#10b981' : TL_COLORS[i % TL_COLORS.length]) + '">'
-      + '<span>' + (it.quote ? '原声' : '#' + (i + 1)) + '</span></div>';
-    cum += vd;
+      + '<i class="tl-h hL" data-h="L"></i><i class="tl-h hR" data-h="R"></i>'
+      + '<span>' + (it.quote ? '原声' : '#' + (i + 1)) + '</span>'
+      + '<canvas class="tl-wave" data-wv="' + i + '"></canvas>'
+      + '</div>';
   });
   $('tlTrack').innerHTML = html;
   $('tlTrack').querySelectorAll('.tl-block').forEach(b => {
     b.addEventListener('click', () => selectSeg(parseInt(b.dataset.i, 10)));
+    b.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      selectSeg(parseInt(b.dataset.i, 10));
+      openTlMenu(e.clientX, e.clientY, parseInt(b.dataset.i, 10));
+    });
   });
+  requestAnimationFrame(_drawWaves);   // 布局稳定后再量宽（首帧 rect 可能为 0）
+  setTimeout(_drawWaves, 350);
   updatePlayhead();
 }
+
+/* ── 时间轴拖拽：边缘裁剪 / 整体平移 / 磁吸（快照在首次移动时入栈） ── */
+(function(){
+  const track = $('tlTrack');
+  let drag = null;
+  function snapList(i){
+    const arr = [0, Math.max(10, _vdur)];
+    _items.forEach((it, k) => {
+      if(k === i) return;
+      arr.push(it.video_start || 0, it.video_end || 0);
+    });
+    return arr;
+  }
+  function snap(t, list){
+    const tol = 8 / _pxPerSec;   // 8px 内吸附
+    for(const s of list){ if(Math.abs(t - s) <= tol) return s; }
+    return t;
+  }
+  track.addEventListener('mousedown', e => {
+    const h = e.target.closest('.tl-h');
+    const b = e.target.closest('.tl-block');
+    if(!b) return;
+    const i = parseInt(b.dataset.i, 10);
+    const it = _items[i];
+    if(!it) return;
+    drag = {i: i, mode: h ? h.dataset.h : 'move', x0: e.clientX,
+            start: it.video_start || 0, end: it.video_end || 0,
+            snap: snapList(i), moved: false};
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  window.addEventListener('mousemove', e => {
+    if(!drag) return;
+    const it = _items[drag.i];
+    if(!it) return;
+    if(!drag.moved && Math.abs(e.clientX - drag.x0) <= 3) return;
+    if(!drag.moved){
+      drag.moved = true;
+      _undoStack.push(JSON.stringify(_items));
+      if(_undoStack.length > 50) _undoStack.shift();
+      _redoStack = [];
+    }
+    const dt = (e.clientX - drag.x0) / _pxPerSec;
+    const total = Math.max(10, _vdur);
+    const b = track.querySelector('.tl-block[data-i="' + drag.i + '"]');
+    if(drag.mode === 'L'){
+      const ns = Math.round(snap(Math.min(drag.end - 0.5, Math.max(0, drag.start + dt)), drag.snap) * 10) / 10;
+      it.video_start = Math.min(ns, it.video_end - 0.5);
+    } else if(drag.mode === 'R'){
+      const ne = Math.round(snap(Math.max(drag.start + 0.5, Math.min(total, drag.end + dt)), drag.snap) * 10) / 10;
+      it.video_end = Math.max(ne, it.video_start + 0.5);
+    } else {
+      const vd = drag.end - drag.start;
+      const ns = Math.round(Math.max(0, Math.min(snap(drag.start + dt, drag.snap), total - vd)) * 10) / 10;
+      it.video_start = ns;
+      it.video_end = Math.round((ns + vd) * 10) / 10;
+    }
+    const vs = it.video_start, vd = Math.max(0.1, it.video_end - vs);
+    b.style.left = (vs / total * 100) + '%';
+    b.style.width = (Math.min(vd, total - vs) / total * 100) + '%';
+  });
+  window.addEventListener('mouseup', () => {
+    if(!drag) return;
+    const it = _items[drag.i];
+    if(drag.moved && it){
+      renderTimeline();
+      if(_sel === drag.i) renderInspector(_sel);
+      ensureNarrElements();
+    }
+    drag = null;
+  });
+})();
+
+/* ── 时间轴右键菜单：分割 / 淡入淡出 / 跳过 / 原声引用 ── */
+let _tlMenu = null;
+function openTlMenu(x, y, i){
+  closeTlMenu();
+  const it = _items[i];
+  if(!it) return;
+  const items = [];
+  if(it.quote){
+    items.push('<div class="mi" data-m="unquote">恢复为解说段</div>');
+  } else {
+    items.push('<div class="mi" data-m="split">从播放头分割（一段拆两段）</div>');
+    items.push('<div class="mi" data-m="fadein">淡入 ' + (it.fade_in ? '× 清除（当前 ' + it.fade_in + 's）' : '0.5s') + '</div>');
+    items.push('<div class="mi" data-m="fadeout">淡出 ' + (it.fade_out ? '× 清除（当前 ' + it.fade_out + 's）' : '0.5s') + '</div>');
+    items.push('<div class="mi" data-m="skip">' + (it._skip ? '取消跳过（恢复进合成）' : '跳过此段（不进合成）') + '</div>');
+    items.push('<div class="mi" data-m="quote">设为原声引用（保留原声，不配解说）</div>');
+  }
+  items.push('<div class="mi" data-m="del">删除此段</div>');
+  _tlMenu = document.createElement('div');
+  _tlMenu.className = 'menu-dd tl-menu';
+  _tlMenu.style.cssText = 'display:block;position:fixed;left:' + Math.min(x, window.innerWidth - 260)
+    + 'px;top:' + Math.min(y, window.innerHeight - 200) + 'px;z-index:400';
+  _tlMenu.innerHTML = items.join('');
+  document.body.appendChild(_tlMenu);
+  _tlMenu.addEventListener('click', async e => {
+    const mi = e.target.closest('.mi');
+    if(!mi) return;
+    const m = mi.dataset.m;
+    closeTlMenu();
+    const it2 = _items[i];
+    if(!it2) return;
+    if(m === 'del'){ _sel = i; delSelected(); return; }
+    if(m === 'unquote' || m === 'quote'){
+      _pushUndo();
+      it2.quote = !it2.quote;
+      renderInspector(i); renderCaps(); renderTimeline();
+      return;
+    }
+    if(m === 'skip'){
+      _pushUndo();
+      it2._skip = !it2._skip;
+      renderCaps(); renderTimeline();
+      scheduleStatus();
+      toast(it2._skip ? '已跳过：此段不进合成' : '已恢复：此段进合成');
+      return;
+    }
+    if(m === 'fadein'){
+      _pushUndo();
+      it2.fade_in = it2.fade_in ? 0 : 0.5;
+      renderTimeline();
+      toast(it2.fade_in ? '已加淡入 0.5s（合成时生效）' : '已清除淡入');
+      return;
+    }
+    if(m === 'fadeout'){
+      _pushUndo();
+      it2.fade_out = it2.fade_out ? 0 : 0.5;
+      renderTimeline();
+      toast(it2.fade_out ? '已加淡出 0.5s（合成时生效）' : '已清除淡出');
+      return;
+    }
+    if(m === 'split'){ await splitSegAtPlayhead(i); }
+  });
+  setTimeout(() => document.addEventListener('click', closeTlMenu, {once: true}), 0);
+}
+function closeTlMenu(){
+  if(_tlMenu){ _tlMenu.remove(); _tlMenu = null; }
+}
+
+/* ── 分割：配音按比例切两段（/api/audio_split），文字向最近标点断开 ── */
+async function splitSegAtPlayhead(i){
+  const it = _items[i];
+  if(!it) return;
+  if(it.quote){ toast('原声引用段没有配音，直接拖拽调范围即可', 'bad'); return; }
+  if(!it.audio){ toast('该段没有配音文件，无法分割', 'bad'); return; }
+  const vs = it.video_start || 0, ve = it.video_end || 0;
+  if(ve - vs < 1.6){ toast('这段画面太短（<1.6s），不值得分割', 'bad'); return; }
+  const v = $('pvVideo');
+  const t = (v && isFinite(v.currentTime)) ? v.currentTime : (vs + ve) / 2;
+  if(!(t > vs + 0.4 && t < ve - 0.4)){
+    toast('先把播放头停在段内要分割的位置（离两端至少 0.4s）', 'bad');
+    return;
+  }
+  toast('正在切割配音…');
+  try {
+    const r = await fetch('/api/audio_split', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({run_dir: _runDir, name: it.audio, frac: (t - vs) / (ve - vs)})});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '切割失败');
+    const txt = (it.text || '').trim();
+    let cut = Math.round(txt.length * ((t - vs) / (ve - vs)));
+    const WIN = Math.max(2, Math.floor(txt.length * 0.2));
+    let best = -1;
+    for(let k = Math.max(1, cut - WIN); k <= Math.min(txt.length - 1, cut + WIN); k++){
+      if('，。！？；、：,.!? '.indexOf(txt.charAt(k)) >= 0){
+        if(best < 0 || Math.abs(k - cut) < Math.abs(best - cut)) best = k;
+      }
+    }
+    if(best >= 0) cut = best + 1;
+    const t1 = txt.slice(0, cut).trim(), t2 = txt.slice(cut).trim();
+    _pushUndo();
+    it.video_end = t;
+    it.audio = out.a1;
+    it.duration = out.d1;
+    if(t1){ it.text = t1; it.audio_text = t1; }
+    it.fade_out = 0;
+    let mx = -1;
+    _items.forEach(x => { const n = parseInt(x && x.index); if(!isNaN(n) && n > mx) mx = n; });
+    _items.splice(i + 1, 0, {index: mx + 1, text: t2, audio_text: t2, audio: out.a2, duration: out.d2,
+      video_start: t, video_end: ve, audio_offset: 0,
+      orig_volume: it.orig_volume, narr_volume: it.narr_volume,
+      fade_in: 0, fade_out: 0, isBroll: false, quote: false});
+    _sel = i + 1;
+    renderCaps(); ensureNarrElements(); renderTimeline(); selectSeg(_sel);
+    toast('✅ 已分割：一段拆两段（画面/配音/文字各自独立）');
+  } catch(e){ toast('分割失败：' + e.message, 'bad'); }
+}
+
+/* ── 色块内配音波形（/api/audio_peaks，懒加载缓存） ── */
+let _wavesDrawn = {};
+function _drawWaves(){
+  $('tlTrack').querySelectorAll('canvas.tl-wave').forEach(cv => {
+    const i = parseInt(cv.dataset.wv, 10);
+    const it = _items[i];
+    if(!it || it.quote || !it.audio) { cv.style.display = 'none'; return; }
+    const w = Math.max(20, Math.round(cv.parentElement.getBoundingClientRect().width));
+    cv.width = w; cv.height = 34;
+    cv.style.display = 'block';
+    if(it._peaks){ _paintWave(cv, it._peaks); return; }
+    if(_wavesDrawn[it.audio]) return;   // 已在请求中
+    _wavesDrawn[it.audio] = true;
+    fetch('/api/audio_peaks?run_dir=' + encodeURIComponent(_runDir)
+      + '&name=' + encodeURIComponent(it.audio) + '&points=64')
+      .then(r => r.json()).then(d => {
+        if(d && d.peaks){
+          _items.forEach(x => { if(x.audio === it.audio) x._peaks = d.peaks; });
+          $('tlTrack').querySelectorAll('canvas[data-wv]').forEach(c2 => {
+            const j = parseInt(c2.dataset.wv, 10);
+            if(_items[j] && _items[j].audio === it.audio) _paintWave(c2, d.peaks);
+          });
+        }
+      }).catch(() => {});
+  });
+}
+function _paintWave(cv, peaks){
+  const ctx = cv.getContext('2d');
+  const w = cv.width, h = cv.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(255,255,255,.35)';
+  const n = peaks.length;
+  for(let k = 0; k < n; k++){
+    const bh = Math.max(1, Math.min(1, Math.abs(peaks[k])) * h * 0.9);
+    ctx.fillRect(k / n * w, (h - bh) / 2, Math.max(1, w / n - 1), bh);
+  }
+}
+
 (function(){
   const sc = $('tlScroll');
   let scrubbing = false;
@@ -638,6 +876,12 @@ function renderTimeline(){
   if(zi) zi.addEventListener('click', () => zm(1));
   if(zo) zo.addEventListener('click', () => zm(-1));
 })();
+function seekTo(t){
+  const v = $('pvVideo');
+  if(!v || !isFinite(t)) return;
+  try { v.currentTime = Math.max(0, Math.min(t, (v.duration || t) - 0.05)); } catch(e){}
+  updatePlayhead();
+}
 function updatePlayhead(){
   const v = $('pvVideo');
   const ph = $('tlPlayhead');
@@ -1094,6 +1338,189 @@ function openHistory(){
 }
 $('histClose').addEventListener('click', () => $('histMask').style.display = 'none');
 
+/* ── 声音克隆（本地 CosyVoice，参考音频不出机器） ── */
+let _cloneFile = null;
+function openClone(){
+  _cloneFile = null;
+  $('cloneName').value = '';
+  $('clonePickLabel').textContent = '选择音频文件';
+  $('cloneGo').disabled = true;
+  $('cloneMask').style.display = 'flex';
+}
+$('btnCloneVoice').addEventListener('click', openClone);
+$('cloneClose').addEventListener('click', () => $('cloneMask').style.display = 'none');
+$('clonePick').addEventListener('click', async () => {
+  if(!(window.pywebview && window.pywebview.api)){ toast('请运行桌面版 EXE', 'bad'); return; }
+  try {
+    const r = await window.pywebview.api.pick_music();
+    if(!r || !r.path) return;
+    _cloneFile = {path: r.path, name: r.name};
+    $('clonePickLabel').textContent = '✅ ' + r.name;
+    $('cloneGo').disabled = !$('cloneName').value.trim();
+  } catch(e){ toast('选择失败：' + e.message, 'bad'); }
+});
+$('cloneName').addEventListener('input', () => { $('cloneGo').disabled = !_cloneFile || !$('cloneName').value.trim(); });
+$('cloneGo').addEventListener('click', async () => {
+  if(!_cloneFile) return;
+  const b = $('cloneGo');
+  b.disabled = true; b.textContent = '克隆中…';
+  try {
+    const rd = await window.pywebview.api.read_file_b64(_cloneFile.path);
+    if(!rd.ok) throw new Error(rd.error || '读取失败');
+    const ext = (_cloneFile.name.split('.').pop() || 'wav').toLowerCase();
+    const r = await fetch('/api/tts/cosyvoice/add_voice', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name: $('cloneName').value.trim(),
+                            audio: 'data:audio/' + ext + ';base64,' + rd.b64})});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '克隆失败');
+    $('cloneMask').style.display = 'none';
+    toast('✅ 音色「' + $('cloneName').value.trim() + '」已克隆，可在音色列表选择', 'ok');
+    fillTtsSettings();
+  } catch(e){ toast('克隆失败：' + e.message, 'bad'); }
+  b.disabled = false; b.textContent = '开始克隆';
+});
+
+/* ── 免费音乐库（搜索 / 试听 / 使用） ── */
+function openMusicLib(){
+  $('musicMask').style.display = 'flex';
+  $('musicQ').value = '';
+  loadMusicLib('');
+}
+$('tbMusicLib').addEventListener('click', openMusicLib);
+$('musicClose').addEventListener('click', () => { $('musicMask').style.display = 'none'; $('musicAudio') && $('musicAudio').pause(); });
+function loadMusicLib(q){
+  $('musicList').innerHTML = '<div class="ins-empty">搜索中…</div>';
+  fetch('/api/music/search?q=' + encodeURIComponent(q || '')).then(r => r.json()).then(d => {
+    const list = (d && d.results) || [];
+    if(!list.length){ $('musicList').innerHTML = '<div class="ins-empty">没有匹配的曲目</div>'; return; }
+    $('musicList').innerHTML = list.map(t =>
+      '<div class="hist-row" data-id="' + _esc(t.id) + '">'
+      + '<div class="rc-name">' + _esc(t.title)
+      + '<small>' + _esc(t.genre || '') + (t.bpm ? ' · ' + t.bpm + 'BPM' : '') + (t.cached ? ' · 已缓存' : '') + '</small></div>'
+      + '<div class="hist-acts">'
+      + '<button class="mini-btn" data-prev="' + _esc(t.id) + '">▶ 试听</button>'
+      + '<button class="mini-btn" data-use="' + _esc(t.id) + '" data-title="' + _esc(t.title) + '">＋ 使用</button>'
+      + '</div></div>').join('');
+    let cur = null;
+    $('musicList').querySelectorAll('[data-prev]').forEach(b => b.addEventListener('click', () => {
+      if(cur){ cur.pause(); }
+      cur = new Audio('/music_lib/' + b.dataset.prev + '.mp3');
+      cur.play().catch(() => toast('试听失败（首次使用会先下载）', 'bad'));
+    }));
+    $('musicList').querySelectorAll('[data-use]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true; b.textContent = '下载中…';
+      try {
+        const r = await fetch('/api/music/use?id=' + encodeURIComponent(b.dataset.use));
+        const out = await r.json();
+        if(!out.ok) throw new Error(out.error || '下载失败');
+        if(window.pywebview && window.pywebview.api && out.path){
+          _music = {name: out.file, path: out.path, isLocalPath: true};
+        } else {
+          _music = {name: out.file, catalogId: b.dataset.use, isLocalPath: false};
+        }
+        setBtnIcon('tbMusic', 'i-music', _music.name.slice(0, 14));
+        const bg = $('npBgm'); if(bg) bg.checked = true;
+        $('musicMask').style.display = 'none';
+        toast('✅ 已设为配乐：' + out.file, 'ok');
+      } catch(e){ toast('使用失败：' + e.message, 'bad'); b.disabled = false; b.textContent = '＋ 使用'; }
+    }));
+  }).catch(e => { $('musicList').innerHTML = '<div class="ins-empty">加载失败：' + _esc(e.message) + '</div>'; });
+}
+$('musicGo').addEventListener('click', () => loadMusicLib($('musicQ').value.trim()));
+$('musicQ').addEventListener('keydown', e => { if(e.key === 'Enter') loadMusicLib($('musicQ').value.trim()); });
+
+/* ── 生成封面（导出面板入口，AI 自动选帧） ── */
+$('exCover').addEventListener('click', () => {
+  if(!_lastExport){ toast('先合成出成片', 'bad'); return; }
+  $('coverTitle').value = _projName || '';
+  $('coverSub').value = '';
+  $('coverMask').style.display = 'flex';
+});
+$('coverClose').addEventListener('click', () => $('coverMask').style.display = 'none');
+$('coverGo').addEventListener('click', async () => {
+  const b = $('coverGo');
+  b.disabled = true; b.textContent = '生成中…';
+  try {
+    const r = await fetch('/api/cover', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({file: _lastExport, title: $('coverTitle').value.trim(),
+                            sub: $('coverSub').value.trim(), style: 0})});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '生成失败');
+    $('coverHint').innerHTML = '✅ 已生成：<b>/media/' + _esc(out.cover) + '</b>（与成片同目录）';
+    if(window.pywebview && window.pywebview.api)
+      window.pywebview.api.open_folder(_lastExport).catch(() => {});
+    toast('✅ 封面已生成 cover.jpg', 'ok');
+  } catch(e){ toast('封面失败：' + e.message, 'bad'); }
+  b.disabled = false; b.textContent = '生成';
+});
+
+/* ── 存储管理（总览 / 单项删 / 一键清理） ── */
+function _fmtSize(n){
+  if(!n) return '0';
+  if(n < 1024 * 1024) return (n / 1024).toFixed(0) + 'KB';
+  if(n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(0) + 'MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + 'GB';
+}
+function openStorage(){
+  $('storeMask').style.display = 'flex';
+  loadStorage();
+}
+$('storeClose').addEventListener('click', () => $('storeMask').style.display = 'none');
+$('storeRefresh').addEventListener('click', loadStorage);
+let _storeGroups = [];
+function loadStorage(){
+  $('storeList').innerHTML = '<div class="ins-empty">扫描中…</div>';
+  fetch('/api/storage').then(r => r.json()).then(d => {
+    _storeGroups = (d && d.groups) || [];
+    $('storeSummary').textContent = '项目共 ' + _fmtSize(d.total_bytes)
+      + ' · 可回收约 ' + _fmtSize(d.reclaimable_bytes) + ' · 磁盘剩余 ' + _fmtSize(d.free_bytes);
+    const rows = [];
+    _storeGroups.forEach(g => {
+      if(!g.total) return;
+      rows.push('<div class="rc-name" style="padding:6px 4px 2px"> <b>' + _esc(g.label) + '</b>'
+        + '<small>' + _fmtSize(g.total) + (g.deletable ? ' · 可清理' : ' · 保留') + '</small></div>');
+      (g.items || []).slice(0, 12).forEach(it => {
+        rows.push('<div class="hist-row"><div class="rc-name">' + _esc(it.name)
+          + '<small>' + _fmtSize(it.size) + '</small></div>'
+          + (g.deletable ? '<div class="hist-acts"><button class="mini-btn" data-del-rel="' + _esc(it.rel) + '">🗑</button></div>' : '')
+          + '</div>');
+      });
+    });
+    $('storeList').innerHTML = rows.join('') || '<div class="ins-empty">很干净，没有占用</div>';
+    $('storeList').querySelectorAll('[data-del-rel]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        await fetch('/api/storage/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({path: b.dataset.delRel})});
+        loadStorage();
+      } catch(e){ toast('删除失败：' + e.message, 'bad'); b.disabled = false; }
+    }));
+  }).catch(e => { $('storeList').innerHTML = '<div class="ins-empty">加载失败：' + _esc(e.message) + '</div>'; });
+}
+$('storeClean').addEventListener('click', async () => {
+  if(!confirm('清理所有「可回收」项？（模型权重需重新下载，默认不动）')) return;
+  const b = $('storeClean');
+  b.disabled = true; b.textContent = '清理中…';
+  let n = 0;
+  try {
+    for(const g of _storeGroups){
+      if(!g.deletable || g.tier === 'review') continue;   // 模型档(review)不动
+      for(const it of (g.items || [])){
+        try {
+          await fetch('/api/storage/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({path: it.rel})});
+          n++;
+        } catch(e){ /* 逐项尽力 */ }
+      }
+    }
+    toast('✅ 已清理 ' + n + ' 项', 'ok');
+  } finally {
+    b.disabled = false; b.textContent = '一键清理可回收';
+    loadStorage();
+  }
+});
+
 /* ── 合成（含改词自动重配） ── */
 async function composeAll(){
   if(!_runDir || !_items.length){ toast('请先生成或打开一个项目', 'bad'); return; }
@@ -1106,6 +1533,7 @@ async function composeAll(){
       video_start: it.video_start, video_end: it.video_end,
       audio_offset: 0, orig_volume: (it.orig_volume !== undefined ? it.orig_volume : 0),
       narr_volume: (it.narr_volume !== undefined ? it.narr_volume : null),
+      fade_in: (it.fade_in || 0), fade_out: (it.fade_out || 0),
       isBroll: false, quote: !!it.quote});
   });
   // 改词段自动重配

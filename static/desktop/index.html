@@ -31,6 +31,7 @@
     <div class="menu-dd">
       <div class="mi" data-act="new">新建项目 <span class="hk">Ctrl+N</span></div>
       <div class="mi" data-act="history">成片历史</div>
+      <div class="mi" data-act="storage">存储管理</div>
       <div class="mi" data-act="openfolder">打开成片所在文件夹</div>
       <div class="sep"></div>
       <div class="mi" data-act="exit">退出</div>
@@ -68,6 +69,7 @@
   <span class="tb-flex"></span>
   <button class="tb-btn" id="tbSrt" title="导入 SRT 字幕文件（字幕是命脉：剧情理解准+时间轴零偏差）"><svg class="ic"><use href="#i-subtitle"/></svg>导入字幕</button>
   <button class="tb-btn" id="tbMusic" title="选择本地音乐文件（加配乐）"><svg class="ic"><use href="#i-music"/></svg>配乐</button>
+  <button class="tb-btn" id="tbMusicLib" title="免费踩点音乐库（离线可用）"><svg class="ic"><use href="#i-search"/></svg>曲库</button>
   <button class="tb-btn tgl on" id="tbNarr" title="整条解说配音轨开关"><svg class="ic"><use href="#i-mic"/></svg>解说轨</button>
   <button class="tb-btn tgl on" id="tbOrig" title="整条原片声音轨开关"><svg class="ic"><use href="#i-volume"/></svg>原声轨</button>
   <button class="tb-btn" id="tbSettings" title="AI 配置：Key / 模型 / 配音音色 / Whisper 下载"><svg class="ic"><use href="#i-settings"/></svg>设置</button>
@@ -179,6 +181,7 @@
         <video id="exPlayer" controls playsinline></video>
         <div class="ex-meta" id="exPath"></div>
         <div class="ex-actions">
+          <button class="tb-btn" id="exCover"><svg class="ic"><use href="#i-film"/></svg>生成封面</button>
           <button class="tb-btn" id="exFolder"><svg class="ic"><use href="#i-folder"/></svg>打开所在文件夹</button>
           <button class="tb-btn" id="exBack"><svg class="ic"><use href="#i-edit"/></svg>继续调整</button>
           <button class="tb-btn" id="exNew"><svg class="ic"><use href="#i-plus"/></svg>新建项目</button>
@@ -239,7 +242,8 @@
         <div class="set-h">配音引擎与音色</div>
         <div class="set-row">
           <select id="setTtsEngine"></select>
-          <button class="mini-btn" id="btnTtsTest">🧪 试听</button>
+          <button class="mini-btn" id="btnTtsTest"><svg class="ic"><use href="#i-volume"/></svg>试听</button>
+          <button class="mini-btn" id="btnCloneVoice"><svg class="ic"><use href="#i-mic"/></svg>克隆音色</button>
         </div>
         <label>音色（edge-tts 引擎用）</label>
         <select id="setTtsVoice"></select>
@@ -261,6 +265,55 @@
     <div class="set-actions">
       <button class="btn primary" id="settingsSave">💾 保存</button>
     </div>
+  </div>
+</div>
+
+<!-- 声音克隆 -->
+<div class="modal-mask" id="cloneMask" style="display:none">
+  <div class="modal">
+    <div class="modal-title">克隆音色（CosyVoice） <button class="mini-btn" id="cloneClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <div class="field" style="text-align:left"><label>音色名称</label>
+      <input type="text" id="cloneName" placeholder="例如：我的声音"></div>
+    <div class="field" style="text-align:left"><label>参考音频（3 秒以上清晰人声，wav / mp3 / m4a）</label>
+      <button class="np-pick" id="clonePick" style="padding:14px"><svg class="ic ic-big"><use href="#i-mic"/></svg><span id="clonePickLabel">选择音频文件</span></button></div>
+    <div class="hint">克隆在本地完成，参考音频不会上传到任何服务器</div>
+    <div class="set-actions"><button class="btn primary" id="cloneGo" disabled>开始克隆</button></div>
+  </div>
+</div>
+
+<!-- 免费音乐库 -->
+<div class="modal-mask" id="musicMask" style="display:none">
+  <div class="modal hist">
+    <div class="modal-title">免费踩点音乐库 <button class="mini-btn" id="musicClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <div class="set-row" style="margin-bottom:10px">
+      <input type="text" id="musicQ" placeholder="搜索曲名 / 风格（留空看全部）" style="flex:1;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:6px 9px;color:var(--txt)">
+      <button class="mini-btn" id="musicGo"><svg class="ic"><use href="#i-search"/></svg>搜索</button>
+    </div>
+    <div id="musicList"><div class="ins-empty">加载中…</div></div>
+  </div>
+</div>
+
+<!-- 生成封面 -->
+<div class="modal-mask" id="coverMask" style="display:none">
+  <div class="modal">
+    <div class="modal-title">生成封面 <button class="mini-btn" id="coverClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <div class="field" style="text-align:left"><label>主标题（默认片名）</label><input type="text" id="coverTitle"></div>
+    <div class="field" style="text-align:left"><label>副标题（可留空）</label><input type="text" id="coverSub"></div>
+    <div class="hint" id="coverHint">AI 自动选高光帧，生成后与成片同目录（cover.jpg）</div>
+    <div class="set-actions"><button class="btn primary" id="coverGo">生成</button></div>
+  </div>
+</div>
+
+<!-- 存储管理 -->
+<div class="modal-mask" id="storeMask" style="display:none">
+  <div class="modal hist">
+    <div class="modal-title">存储管理 <button class="mini-btn" id="storeClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <div class="set-row" style="margin-bottom:10px">
+      <div class="hint" id="storeSummary" style="flex:1"></div>
+      <button class="mini-btn" id="storeClean"><svg class="ic"><use href="#i-trash"/></svg>一键清理可回收</button>
+      <button class="mini-btn" id="storeRefresh"><svg class="ic"><use href="#i-search"/></svg>刷新</button>
+    </div>
+    <div id="storeList"><div class="ins-empty">扫描中…</div></div>
   </div>
 </div>
 

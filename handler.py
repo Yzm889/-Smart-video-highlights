@@ -412,7 +412,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             p = _w.download_catalog(q)
             self._send(200, json.dumps({'ok': True, 'file': os.path.basename(p),
-                                        'url': '/music_lib/' + os.path.basename(p)}).encode('utf-8'),
+                                        'url': '/music_lib/' + os.path.basename(p),
+                                        'path': p}).encode('utf-8'),
                        'application/json')
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
