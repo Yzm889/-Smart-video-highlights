@@ -57,3 +57,4 @@ desktop.ini
 dist/
 build/
 FrameCut-windows-x64-*.zip
+_keep_cfg.json
