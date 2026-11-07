@@ -135,6 +135,37 @@ function initDesktop(){
 window.addEventListener('pywebviewready', initDesktop);
 if(window.pywebview) initDesktop();
 
+/* ── 升级导入横幅（新包首跑、EXE 内） ── */
+setTimeout(async () => {
+  if(!(_isDesktop && window.pywebview && window.pywebview.api)) return;
+  try {
+    const hc = await window.pywebview.api.has_config();
+    if(!hc.ok || hc.has || localStorage.getItem('framecut_mig_dismissed')) return;
+    const b = $('migBanner');
+    if(b) b.style.display = 'block';
+  } catch(e){ /* 静默 */ }
+}, 900);
+$('migGo').addEventListener('click', async () => {
+  try {
+    const r = await window.pywebview.api.pick_folder();
+    if(!r || !r.path) return;
+    $('migGo').disabled = true; $('migGo').textContent = '迁移中…';
+    const out = await window.pywebview.api.migrate_from(r.path);
+    if(!out.ok){ toast('导入失败：' + out.error, 'bad'); }
+    else {
+      $('migBanner').style.display = 'none';
+      localStorage.setItem('framecut_mig_dismissed', '1');
+      toast('✅ 导入完成：' + (out.moved.join('、') || '无内容') + (out.notes.length ? '（' + out.notes.join('；') + '）' : ''), 'ok');
+      setTimeout(() => location.reload(), 1800);   // 带着配置重启服务上下文
+    }
+  } catch(e){ toast('导入失败：' + e.message, 'bad'); }
+  $('migGo').disabled = false; $('migGo').textContent = '选择旧版本目录导入';
+});
+$('migSkip').addEventListener('click', () => {
+  localStorage.setItem('framecut_mig_dismissed', '1');
+  $('migBanner').style.display = 'none';
+});
+
 /* ── 第一步：环境检查（装机引导） ──
    渐进渲染：各接口独立落地、各自刷新——快行先显示，不被慢探测（模型 ping 可达 10s+）拖住。
    【曾犯的错】v1 把整卡渲染压在 Promise.all 后面，冷启动时"检查中…"卡半分钟还锁死重试。 */

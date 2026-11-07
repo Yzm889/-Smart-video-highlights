@@ -146,6 +146,96 @@ class DesktopApi:
         path = res[0]
         return {'path': path, 'name': os.path.basename(path)}
 
+    def pick_folder(self):
+        """目录选择对话框（升级迁移：选旧版本安装目录）。"""
+        import webview
+        res = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        if not res:
+            return {}
+        return {'path': res[0]}
+
+    def has_config(self):
+        """新包是否已有配置（首次启动的旧版本导入横幅据此显示）。"""
+        try:
+            import webui_server
+            return {'ok': True, 'has': os.path.isfile(os.path.join(webui_server.HERE, 'ai_config.json'))}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)[:120]}
+
+    def migrate_from(self, old_root):
+        """从旧版本安装目录导入：配置 / 历史 / 成片 / 工作区 / 素材与音乐库，
+        models 按情况重建 junction（旧侧是指向别处的 junction）或整体移动（实体目录）。
+        在 EXE 里由「升级导入横幅」触发，运行于服务已就绪之后。返回摘要 dict。"""
+        import shutil, subprocess as _sp
+        import webui_server
+        new_here = webui_server.HERE
+        old_root = str(old_root or '').strip()
+        old_int = os.path.join(old_root, '_internal')
+        if not os.path.isdir(old_int):
+            if os.path.basename(os.path.normpath(old_root)) == '_internal' and os.path.isdir(old_root):
+                old_int = old_root
+            else:
+                return {'ok': False, 'error': '所选目录下没有 _internal——请选择旧版 FrameCut 安装目录（含 FrameCut.exe 的那层）'}
+        moved, notes = [], []
+        # 1) 配置与历史（新包无配置才会走到这，覆盖安全）
+        for fn in ('ai_config.json', 'history.json'):
+            src = os.path.join(old_int, fn)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(new_here, fn))
+                moved.append(fn)
+        # 2) 数据目录：新侧已有则递归并入（不覆盖同名），没有则整体复制
+        def _merge_tree(src, dst):
+            cnt = 0
+            for root, _dirs, files in os.walk(src):
+                rel = os.path.relpath(root, src)
+                droot = dst if rel == '.' else os.path.join(dst, rel)
+                os.makedirs(droot, exist_ok=True)
+                for f in files:
+                    s2, d2 = os.path.join(root, f), os.path.join(droot, f)
+                    if os.path.exists(d2):
+                        continue
+                    shutil.copy2(s2, d2)
+                    cnt += 1
+            return cnt
+
+        for dn in ('webui_output', 'webui_workspace', 'material_library', 'music_library'):
+            src = os.path.join(old_int, dn)
+            if not os.path.isdir(src):
+                continue
+            dst = os.path.join(new_here, dn)
+            if os.path.isdir(dst):
+                cnt = _merge_tree(src, dst)
+                if cnt:
+                    moved.append('%s（并入 %d 项）' % (dn, cnt))
+            else:
+                shutil.copytree(src, dst)
+                moved.append(dn)
+        # 3) models：junction → 重建；实体目录 → 移动/复制（大，同卷改名瞬间完成）
+        src_models = os.path.join(old_int, 'models')
+        dst_models = os.path.join(new_here, 'models')
+        if os.path.isdir(src_models) and not os.path.exists(dst_models):
+            target = None
+            try:
+                target = os.readlink(src_models)   # junction 可读；实体目录抛 OSError
+            except OSError:
+                target = None
+            if target:
+                _sp.run(['cmd', '/c', 'mklink', '/J', dst_models, target],
+                        capture_output=True, text=True)
+                if os.path.isdir(dst_models):
+                    moved.append('models（junction → %s）' % target)
+                else:
+                    notes.append('models junction 重建失败，请手动 mklink /J')
+            else:
+                try:
+                    os.rename(src_models, dst_models)
+                    moved.append('models（整体移动）')
+                    notes.append('旧版目录的 models 已移至新版；旧版再打开需重新下载模型')
+                except OSError:
+                    shutil.copytree(src_models, dst_models)
+                    moved.append('models（跨盘复制，GB 级需等待）')
+        return {'ok': True, 'moved': moved, 'notes': notes}
+
 
 def _launch_app_window(url):
     """优先 Edge --app 模式（无地址栏的独立应用窗口）；回退默认浏览器。"""

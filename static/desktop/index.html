@@ -80,6 +80,13 @@
   <!-- 新建项目（无项目时显示） -->
   <div class="newproj" id="newProj">
     <div class="np-card">
+      <div class="migrate-banner" id="migBanner" style="display:none">
+        <div class="mb-txt">📦 检测到全新环境——可从旧版本导入：配置、成片、历史、模型</div>
+        <div class="mig-acts">
+          <button class="mini-btn" id="migGo">选择旧版本目录导入</button>
+          <button class="mini-btn" id="migSkip">跳过</button>
+        </div>
+      </div>
       <div class="np-logo">🎬</div>
       <div class="np-title">新建解说项目</div>
       <div class="np-sub">选择一段本地视频，写下剧情——AI 按剧情挑画面、写解说、配音，全程本地免费</div>

@@ -284,6 +284,12 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
 @keyframes toastIn{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:none}}
 @keyframes toastOut{to{opacity:0;transform:translateY(6px)}}
 
+/* ── 升级导入横幅 ── */
+.migrate-banner{background:rgba(10,132,255,.08);border:1px solid var(--acc);border-radius:8px;
+  padding:10px 12px;margin-bottom:16px;text-align:left}
+.migrate-banner .mb-txt{font-size:12.5px;color:var(--txt);margin-bottom:8px}
+.migrate-banner .mig-acts{display:flex;gap:8px}
+
 /* ── 环境检查卡 ── */
 .env-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
   padding:12px 14px;margin:18px 0 16px;text-align:left}
