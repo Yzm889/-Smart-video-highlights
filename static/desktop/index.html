@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=2">
+<link rel="stylesheet" href="desktop.css?v=3">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -387,6 +387,22 @@
   </div>
 </div>
 
-<script src="desktop.js?v=2"></script>
+<!-- 参数预设命名 / 确认：纯页面内模态，绕开 pywebview 原生对话框静默失败（v1.4.1 事故） -->
+<div class="modal-mask" id="presetMask" style="display:none">
+  <div class="modal">
+    <div class="modal-title" id="presetModalTitle">保存为预设</div>
+    <div id="presetModalBody">
+      <label for="presetNameInput" style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:6px">预设名称</label>
+      <input id="presetNameInput" type="text" maxlength="40" placeholder="如：惩罚者·竖版快剪"
+             style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--txt);padding:8px 10px;font-size:12.5px">
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
+      <button type="button" class="mini-btn" id="presetModalCancel">取消</button>
+      <button type="button" class="mini-btn" id="presetModalOk" style="background:var(--acc);color:#fff">确定</button>
+    </div>
+  </div>
+</div>
+
+<script src="desktop.js?v=3"></script>
 </body>
 </html>

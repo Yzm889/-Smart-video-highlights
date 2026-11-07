@@ -549,8 +549,46 @@ function presetHint(msg){
   const h = $('presetHint');
   if(h){ h.textContent = msg || ''; }
 }
-$('presetSave').addEventListener('click', () => {
-  const name = (window.prompt('给这套参数起个名字（如：惩罚者·竖版快剪）') || '').trim();
+/* 页面内模态替代 window.prompt / window.confirm：
+   pywebview(WebView2) 的原生 JS 对话框可能被压到窗口后或静默失败，
+   主人只会看到「点了没反应」（v1.4.1 已踩过）。返回 Promise<string|null>：
+   确定 → 输入值（确认模式下为 'ok'），取消/Esc → null。 */
+let _presetModalResolve = null;
+function presetModal(mode, title, defaultName){
+  const mask = $('presetMask'), input = $('presetNameInput'), body = $('presetModalBody');
+  $('presetModalTitle').textContent = title;
+  body.style.display = mode === 'input' ? 'block' : 'none';
+  input.value = defaultName || '';
+  mask.style.display = 'flex';
+  if(mode === 'input'){ setTimeout(() => { input.focus(); input.select(); }, 0); }
+  return new Promise(resolve => {
+    _presetModalResolve = resolve;
+  });
+}
+function presetModalClose(result){
+  const mask = $('presetMask');
+  if(mask.style.display === 'none') return;
+  mask.style.display = 'none';
+  const fn = _presetModalResolve;
+  _presetModalResolve = null;
+  if(fn) fn(result);
+}
+$('presetModalOk').addEventListener('click', () => {
+  const input = $('presetNameInput');
+  const body = $('presetModalBody');
+  const val = body.style.display === 'none' ? 'ok' : (input.value || '').trim();
+  if(!val){ input.focus(); return; }
+  presetModalClose(val);
+});
+$('presetModalCancel').addEventListener('click', () => presetModalClose(null));
+$('presetMask').addEventListener('click', e => {
+  if(e.target === $('presetMask')) presetModalClose(null);
+});
+$('presetNameInput').addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ e.preventDefault(); $('presetModalOk').click(); }
+});
+$('presetSave').addEventListener('click', async () => {
+  const name = await presetModal('input', '给这套参数起个名字', '');
   if(!name) return;
   const all = presetAll();
   const overwrite = all[name] !== undefined;
@@ -571,10 +609,11 @@ $('presetSel').addEventListener('change', () => {
   presetHint('已套用「' + name + '」· 下次生成即生效');
   toast('已套用预设：' + name, 'ok');
 });
-$('presetDel').addEventListener('click', () => {
+$('presetDel').addEventListener('click', async () => {
   const name = $('presetSel').value, all = presetAll();
   if(!name || !all[name]){ toast('请先选择一个预设', 'bad'); return; }
-  if(!window.confirm('删除预设「' + name + '」？')) return;
+  const yes = await presetModal('confirm', '删除预设「' + name + '」？', '');
+  if(!yes) return;
   delete all[name];
   if(!presetWrite(all)) return;
   presetFill();
@@ -1357,6 +1396,9 @@ document.addEventListener('keydown', e => {
   const inField = /INPUT|TEXTAREA/.test((e.target.tagName || ''));
   if(e.ctrlKey && e.key === 'n'){ e.preventDefault(); newProject(); return; }
   if(e.key === 'Escape'){
+    if($('presetMask') && $('presetMask').style.display !== 'none'){
+      presetModalClose(null); return;
+    }
     ['settingsMask', 'histMask'].forEach(id => {
       const m = $(id);
       if(m && m.style.display !== 'none') m.style.display = 'none';
