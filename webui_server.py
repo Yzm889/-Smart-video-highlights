@@ -4269,6 +4269,51 @@ def build_video_filter(params):
     return None
 
 
+# 4K 片源「前置降采样」阈值：只有宽度达到 4K 量级才值得插这条链，
+# 普通 1080p / 720p 片源保持滤镜图逐字符不变（零影响）。
+_PREDOWN_MIN_SRC_W = 3000
+
+
+def build_predownscale_filter(params, src_size):
+    """4K 片源在【每段 trim 之后】立刻降到目标尺寸。
+
+    原单遍合并的滤镜图是 trim → concat → tonemap → 字幕 → scale → 编码，
+    也就是整条链（含最贵的 zscale/tonemap 与 N 路 4K 帧复制）都在 3840x2160
+    上跑，只在最末端缩一次。改成每段 trim 之后先降采样，后面所有像素运算都
+    在 1080p 上做；且 trim 在 scale 之前，只有被保留下来的帧才吃这次缩放
+    （精剪通常只留 16~20%）。
+
+    返回可直接拼进 filter_complex 单段链的滤镜串（不含逗号，避免破坏
+    滤镜图分隔），条件不满足返回 None。只做等比缩小，不 pad / 不 crop ——
+    画布适配仍由 build_video_filter() 在末端负责，两处不重复算画面位置。
+
+    【为什么不是整片 1080p 代理】整片代理要先全片 4K 解码 + tonemap + 编码
+    一遍，首次反而比直接合成更慢，还要引入缓存键 / 失效 / 磁盘清理；
+    前置降采样首次就生效、零额外文件、失败降级也只是少一次优化。
+    """
+    try:
+        if not src_size:
+            return None
+        sw, sh = int(src_size[0]), int(src_size[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if sw < _PREDOWN_MIN_SRC_W or sh <= 0:
+        return None
+    res = _res_str(params)
+    if not res or res == 'original':
+        return None
+    parts = str(res).lower().split('x')
+    if len(parts) != 2 or not (parts[0].strip().isdigit() and parts[1].strip().isdigit()):
+        return None
+    w, h = int(parts[0].strip()), int(parts[1].strip())
+    # 只降不放：目标不比源小的时候插这条链是纯浪费
+    if w <= 0 or h < 240 or (w >= sw and h >= sh):
+        return None
+    # force_divisible_by=2：yuv420p 要求偶数尺寸，否则 ffmpeg 直接报错
+    return ('scale=%d:%d:force_original_aspect_ratio=decrease:'
+            'flags=lanczos:force_divisible_by=2' % (w, h))
+
+
 # ---------------------------------------------------------------------------
 # 轻量统一调色（P0-1）
 # ---------------------------------------------------------------------------

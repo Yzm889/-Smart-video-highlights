@@ -9,7 +9,7 @@ import logging, os, sys
 
 # ---- 直接导入：已拆出的工具模块 ----
 from ffmpeg_utils import ffmpeg_run, probe_audio_len, _has_audio_track, AbortError, _TLS, \
-    probe_is_hdr, tonemap_chain, tonemap_available, BT709_TAGS
+    probe_is_hdr, tonemap_chain, tonemap_available, BT709_TAGS, probe_size
 from text_utils import _clamp_line, _clean_caption, _strip_tts_markup
 from tts_engines import _ping_preferred_engine, local_tts_speak, strip_tts_markup, sapi_tts
 from ai_providers import _aborted, load_ai_config
@@ -46,6 +46,10 @@ _NAR_MIN_SPEED = 1.03   # 低于此倍率听不出差别，不必重编码
 # P1-1 单遍合并开关：默认开启（视频只编码 1 次）；单遍失败时自动回退两遍管线。
 # 设环境变量 FRAMECUT_SINGLE_PASS=0 可强制走旧两遍管线。
 _SINGLE_PASS_CUT = os.environ.get('FRAMECUT_SINGLE_PASS', '1') != '0'
+
+# v1.4.13 前置降采样开关：4K 片源在每段 trim 后先降到目标尺寸。
+# 默认开；设 FRAMECUT_PREDOWN=0 可整条关掉，回到 v1.4.12 的滤镜图（A/B 实测与回滚用）。
+_PREDOWN_ENABLED = os.environ.get('FRAMECUT_PREDOWN', '1') != '0'
 
 
 def _target_chars(dur):
@@ -798,6 +802,16 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
     # 是否把字幕烧进画面（默认 True）。False = 出干净成片 + 单独 .srt 交付。
     _burn = _burn_enabled(params)
     scale_filter = _w.build_video_filter(params)
+    # 【v1.4.13】4K 片源前置降采样：原来整条滤镜图（trim → concat → tonemap →
+    # 字幕 → 编码）都在 3840x2160 上跑，只在最末端缩一次。改成每段 trim 后
+    # 立刻降到目标尺寸，后面所有像素运算都在 1080p 上做；trim 在前，只有
+    # 被保留的帧才吃这次缩放。非 4K / 未选分辨率 / 探测失败 → 滤镜图不变。
+    _pre_scale = ''
+    try:
+        if _PREDOWN_ENABLED:
+            _pre_scale = _w.build_predownscale_filter(params, probe_size(video_path)) or ''
+    except Exception:
+        _pre_scale = ''
     # P0-1 统一调色：放在「拼接之后、烧字幕之前」——只算一次，全片色调一致；
     # 且在字幕之前，白色字幕不会被 colorbalance 染上蓝/红色偏。
     # 默认 '原片' 返回 None → 滤镜串与改动前逐字符一致（零影响）。
@@ -889,7 +903,10 @@ def _cut_and_burn_video(video_path, segs, voice_durs, run_dir, params, narr, tts
         seg_len = b - a
         f = _display_factor(seg_len, (voice_durs or {}).get(i)) if voice_durs else 1.0
         # 复位+微变速一步到位；f≈1 时仍是「复位到 0」以满足 concat 拼接要求
-        vparts.append(f"[0:v]trim=start={a:.3f}:end={b:.3f},setpts={f:.6f}*(PTS-STARTPTS)[sv{i}]")
+        _vchain = f"trim=start={a:.3f}:end={b:.3f},setpts={f:.6f}*(PTS-STARTPTS)"
+        if _pre_scale:
+            _vchain += ',' + _pre_scale
+        vparts.append(f"[0:v]{_vchain}[sv{i}]")
         if has_audio:
             af = (1.0 / f) if abs(f - 1.0) > 0.005 else 1.0
             # 微变速因子在 ±15% 内，1/f 落在 atempo 安全区间 [0.5,2]，无需链式
