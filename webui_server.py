@@ -4181,6 +4181,28 @@ def video_encode_args_interim():
     return ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast', '-crf', '16']
 
 
+_RES_ALIASES = {
+    '480p': '854x480',
+    '720p': '1280x720',
+    '1080p': '1920x1080',
+    '1440p': '2560x1440',
+    '2k': '2560x1440',
+    '2160p': '3840x2160',
+    '4k': '3840x2160',
+}
+
+
+def _res_str(params):
+    """把「分辨率」参数归一成 WxH 字符串。
+
+    【v1.4.12 修的真缺陷】桌面版分辨率下拉传的是别名（`original` / `1080p` / `720p`），
+    而下面三处（effective_fit / effective_frame_rect / build_video_filter）都按
+    `WxH` 解析 —— 别名过不去，等于**选了跟没选一样**。实测：4K 片源选 1080p 再合成，
+    成片仍是 3840x2160、790.8MB（与原始分辨率一字不差）。修在读取侧，任何客户端都受益。"""
+    raw = str((params or {}).get('resolution') or '').strip().lower()
+    return _RES_ALIASES.get(raw, raw)
+
+
 def effective_fit(params):
     """画面填充方式：letterbox(完整画面+黑边) / crop(满屏裁切)。
 
@@ -4192,7 +4214,7 @@ def effective_fit(params):
     f = str(p.get('fit') or '').strip().lower()
     if f in ('crop', 'letterbox'):
         return f
-    parts = str(p.get('resolution') or '').lower().split('x')
+    parts = _res_str(p).split('x')
     if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
         return 'crop' if int(parts[1]) > int(parts[0]) else 'letterbox'
     return 'letterbox'
@@ -4205,7 +4227,7 @@ def effective_frame_rect(params):
     crop 模式画面满屏 → 有效区就是整张画布；letterbox 模式按源片比例居中留出黑边。
     """
     p = params or {}
-    parts = str(p.get('resolution') or '').lower().split('x')
+    parts = _res_str(p).split('x')
     if len(parts) != 2:
         return None
     a, b = parts[0].strip(), parts[1].strip()
@@ -4228,7 +4250,7 @@ def build_video_filter(params):
     """根据导出参数构建视频滤镜（分辨率缩放）。返回filter字符串或None。"""
     if not params:
         return None
-    res = params.get('resolution') or ''
+    res = _res_str(params)
     if not res or res == 'original':
         return None
     # res格式: '1920x1080' 或 '1280x720'
