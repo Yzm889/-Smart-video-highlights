@@ -8,6 +8,10 @@ local_tts_speak 的契约是「要么出声、要么明确失败」，但首选�
 
 修复后：实际引擎 ≠ 首选引擎时记录降级，经 tts_degrade_msg()（/api/tts/voices 的
 degrade_msg）暴露给 UI。本文件锁定：① 降级必留痕；② 首选成功不留痕。
+
+注：v1.4.14 起 auto 改为「本地优先」，本文件测的是「edge 作首选」这条降级链，
+夹具里显式把 engine 钉成 edge，避免受 auto 策略调整影响；auto 的顺序契约由
+tests/test_tts_local_first.py 覆盖。
 """
 import tts_engines as T
 
@@ -22,7 +26,7 @@ def _fresh_state(monkeypatch, edge_ok):
     with T._TTS_DEGRADE_LOCK:
         T._TTS_DEGRADE.update({'from': None, 'to': None, 'msg': '', 'count': 0})
     monkeypatch.setattr(T, 'tts_local_cfg',
-                        lambda: {'engine': 'auto', 'voice': None, 'rate': '+0%'})
+                        lambda: {'engine': 'edge', 'voice': None, 'rate': '+0%'})
     monkeypatch.setattr(T, 'edge_tts_available', lambda: True)
     monkeypatch.setattr(T, 'cosyvoice_available', lambda: False)
     monkeypatch.setattr(T, 'chattts_available', lambda: False)

@@ -132,8 +132,11 @@ def test_edge_speak_retries_on_transient_failure(monkeypatch, tmp_path):
 
 
 def test_task_locks_tts_engine(monkeypatch, tmp_path):
-    """同一任务内引擎必须锁定：否则前半段 edge、后半段掉到离线模型，音色突变。"""
-    monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'auto'}})
+    """同一任务内引擎必须锁定：否则前半段 edge、后半段掉到离线模型，音色突变。
+
+    v1.4.14：auto 已改本地优先；这里显式钉成 edge 首选，专测「引擎锁定」本身，
+    auto 的顺序契约由 tests/test_tts_local_first.py 覆盖。"""
+    monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'edge'}})
     monkeypatch.setattr(T, 'edge_tts_available', lambda: True)
     # 必须打桩真正的合成动作：否则会真的联网（本机 edge 成功率仅约 2/3），测试不稳定
     monkeypatch.setattr(T, 'edge_tts_speak', lambda text, out, *a, **k: _ok_edge(text, out))

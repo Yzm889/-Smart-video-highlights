@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=5">
+<link rel="stylesheet" href="desktop.css?v=6">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -300,6 +300,7 @@
           <select id="setTtsEngine"></select>
           <button class="mini-btn" id="btnTtsTest"><svg class="ic"><use href="#i-volume"/></svg>试听</button>
           <button class="mini-btn" id="btnCloneVoice"><svg class="ic"><use href="#i-mic"/></svg>克隆音色</button>
+          <button class="mini-btn" id="btnTtsReset" title="解除微软服务熔断并重新选择最优引擎">重试引擎</button>
         </div>
         <label>音色（edge-tts 引擎用）</label>
         <select id="setTtsVoice"></select>
@@ -308,6 +309,7 @@
         <label>语速</label>
         <input type="text" id="setTtsRate" placeholder="+0%">
         <div class="hint" id="ttsTestHint"></div>
+        <div class="hint" id="ttsStateHint"></div>
         <label>引擎安装（缺哪个装哪个）</label>
         <div class="set-row" id="ttsInstalls"></div>
       </div>
@@ -404,6 +406,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=5"></script>
+<script src="desktop.js?v=6"></script>
 </body>
 </html>

@@ -1891,6 +1891,16 @@ async function fillTtsSettings(){
       '<option value="' + _esc(x.name) + '">' + _esc(x.name) + (x.custom ? '（克隆）' : '') + '</option>').join('');
     $('setCosyVoice').value = cfg.cosy_voice || '中文女';
     $('ttsTestHint').textContent = v.label || '';
+    // v1.4.14：静默降级 / 微软服务熔断必须摆到台面上，别让用户只觉得「配音变难听」
+    const st = [];
+    if(v.degrade_msg) st.push('⚠ ' + v.degrade_msg);
+    if(v.edge_dead) st.push('⚠ 微软服务不可用：' + v.edge_dead);
+    if(!v.degrade_msg && !v.edge_dead && (cfg.engine || 'auto') !== 'sapi'){
+      st.push((v.sherpa_installed || v.cosyvoice_installed)
+        ? '✓ 本地引擎优先，联网服务只作兜底'
+        : '⚠ 还没装本地引擎：微软服务不稳时会退回机械音，建议在下方装离线模型');
+    }
+    $('ttsStateHint').textContent = st.join('   ');
     renderTtsInstalls(v);
   } catch(e){ $('ttsTestHint').textContent = '读取配音配置失败：' + e.message; }
 }
@@ -1906,6 +1916,17 @@ $('btnTtsTest').addEventListener('click', async () => {
     if(out.file) new Audio('/media/' + out.file).play().catch(() => {});
   } catch(e){ $('ttsTestHint').textContent = '❌ ' + e.message; }
   b.disabled = false; b.textContent = '🧪 试听';
+});
+$('btnTtsReset').addEventListener('click', async () => {
+  const b = $('btnTtsReset');
+  b.disabled = true;
+  try {
+    const r = await fetch('/api/tts_reset').then(r => r.json());
+    if(!r.ok) throw new Error(r.error || '重置失败');
+    toast('✅ 配音引擎已重置，下次合成会重新选择最优引擎', 'ok');
+    await fillTtsSettings();
+  } catch(e){ toast('重置失败：' + e.message, 'bad'); }
+  b.disabled = false;
 });
 
 /* ── 最近项目（关窗不丢：配音方案都在服务器上） ── */

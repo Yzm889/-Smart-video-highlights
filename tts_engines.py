@@ -34,7 +34,11 @@ _COSYVOICE = {'model': None, 'loading': False, 'error': '', 'voice': '中文女'
 # 每句重载 9GB 模型（~100s/句），进兜底链会让 edge 一抽风就整条解说龟速
 # （2026-11-06 实测）。用户仍可在设置里显式选 CosyVoice 引擎。
 # 常驻 worker（模型加载一次、句句复用）落地后翻回 True。
-_COSY_IN_FALLBACK_CHAIN = False
+# v1.4.14：常驻 worker 已落地（首句约 30s、之后秒级），可以回归自动兜底链了。
+# 但必须由 cosyvoice_resident_ready() 守卫：venv / 模型 / worker 三件套不齐时
+# 仍会逐句起子进程重载 9GB 模型（实测 ~100s/句），一次 edge 抖动就能把整条
+# 解说拖进百秒一句的慢坑。用户显式选 cosyvoice 不走这个守卫。
+_COSY_IN_FALLBACK_CHAIN = True
 COSYVOICE_REPO_DIR = os.path.join(HERE, 'CosyVoice')
 COSYVOICE_MODEL_DIR = os.path.join(HERE, 'models', 'cosyvoice', 'CosyVoice2-0.5B')
 COSYVOICE_VENV_PY = os.path.join(HERE, '.venv_cosyvoice', 'Scripts', 'python.exe')
@@ -383,6 +387,52 @@ def cosyvoice_available():
     except Exception:
         pass
     return False
+
+
+def cosyvoice_resident_ready():
+    """CosyVoice 常驻 worker 三件套齐全（venv python / 模型目录 / worker 脚本）。
+
+    只有满足时才允许把 CosyVoice 放进**自动兜底链**：否则 venv 单发子进程会
+    逐句重载 9GB 模型（实测 ~100s/句），edge 一次网络抖动就能把整条解说拖成
+    一小时。用户显式把引擎选成 cosyvoice 时不走这个守卫（自己选的自己认）。"""
+    return bool(_cosyvoice_venv_python()
+                and os.path.isdir(COSYVOICE_MODEL_DIR)
+                and os.path.exists(os.path.join(HERE, 'cosyvoice_worker.py')))
+
+
+def _auto_order():
+    """auto 模式的引擎顺序（v1.4.14 起：本地优先）。
+
+    装了本地引擎就别把联网的 edge-tts 当主路径 —— edge 是逆向的微软朗读服务，
+    断流 / 限流在客户端无解，已有 TLS 探测、熔断、降权也只是减少白等，
+    根子上要「不押它」。本地一个都没装时，前面几项的 available() 会依次
+    continue，自然回落到 edge → sapi，与旧版行为一致。
+
+    这份顺序同时被 local_tts_speak / local_tts_label / _ping_preferred_engine
+    共用，避免三处各写一份导致「标签说谎」「自检白跑一次联网」。"""
+    fb = ['cosyvoice'] if (_COSY_IN_FALLBACK_CHAIN and cosyvoice_resident_ready()) else []
+    return fb + ['chattts', 'sherpa', 'edge', 'sapi']
+
+
+def _first_available_engine(order):
+    """按顺序返回第一个真正能用的引擎名（子句切分 / 标签 / 自检共用）。"""
+    for e in order:
+        if e == 'edge':
+            if edge_tts_available():
+                return e
+        elif e == 'cosyvoice':
+            if cosyvoice_available():
+                return e
+        elif e == 'chattts':
+            if chattts_available():
+                return e
+        elif e == 'sherpa':
+            if sherpa_tts_available():
+                return e
+        elif e == 'sapi':
+            return e
+    return None
+
 
 # ---- CosyVoice 常驻 worker（模型加载一次、句句复用）----
 # 逐句起新进程要每次重载 9GB 模型（实测 ~100s/句，一条 30 句解说 TTS 要近一小时）；
@@ -834,7 +884,12 @@ def _ping_preferred_engine(run_dir):
         eng = (tts_local_cfg() or {}).get('engine') or 'auto'
     except Exception:
         eng = 'auto'
-    if eng not in ('edge', 'auto'):
+    if eng == 'auto':
+        # v1.4.14：本地优先后 auto 的首选往往是本地引擎，没必要为它去 ping
+        # 联网服务；只有真的回落到 edge 才做端到端试点。
+        if _first_available_engine(_auto_order()) != 'edge':
+            return
+    elif eng != 'edge':
         return  # 首选非 edge：各自本地化引擎的可用性检查已足够，无需端到端 ping
     probe_text = '你好，这里是配音引擎自检。'
     probe_out = os.path.join(run_dir, '.engine_probe.mp3')
@@ -879,11 +934,9 @@ def local_tts_speak(text, out_path):
     text = prosody_for_tts(text)
     cfg = tts_local_cfg()
     eng_set = cfg['engine']
-    # CosyVoice 只能当「显式选择的引擎」，不进任何兜底链：venv 子进程方式下
-    # 每句都要重载 9GB 模型（实测约 100s/句），edge 网络一抽风、整条解说就会
-    # 掉进百秒一句的慢坑（2026-11-06 实测）。常驻 worker 落地、单句成本降到
-    # 秒级后，再把 _COSY_IN_FALLBACK_CHAIN 翻回 True。
-    _cosy_fb = ['cosyvoice'] if _COSY_IN_FALLBACK_CHAIN else []
+    # CosyVoice 进自动兜底链的前提：常驻 worker 三件套齐全（否则 venv 单发
+    # 子进程逐句重载 9GB 模型，实测 ~100s/句）。用户显式选 cosyvoice 不受此限。
+    _cosy_fb = ['cosyvoice'] if (_COSY_IN_FALLBACK_CHAIN and cosyvoice_resident_ready()) else []
     if eng_set == 'edge':
         order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
     elif eng_set == 'cosyvoice':
@@ -894,8 +947,8 @@ def local_tts_speak(text, out_path):
         order = ['sherpa', 'edge'] + _cosy_fb + ['sapi']
     elif eng_set == 'sapi':
         order = ['sapi', 'sherpa', 'edge']
-    else:   # auto：音质优先（edge）→ ChatTTS → sherpa → 系统兜底（CosyVoice 待常驻后回归）
-        order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
+    else:   # auto：本地优先（v1.4.14），顺序统一由 _auto_order() 给出
+        order = _auto_order()
     # 本任务已锁定过引擎 → 优先沿用，其余仍作后备
     locked = getattr(_TLS, 'tts_engine', None)
     if locked in order:
@@ -911,9 +964,12 @@ def local_tts_speak(text, out_path):
         # [2.3] 首选 edge 但已被全局兜底熔断 → 直接排到最后（sherpa/sapi 优先），
         #      避免每段都先白试一次 edge 子进程。
         order = [e for e in order if e != 'edge'] + ['edge']
-    # [task #22] 首选引擎：本轮「最该用上」的那个（已含锁定/降权/熔断重排）。
-    # 实际合成若落到它之后，说明发生了降级——用户必须看到，否则只会觉得「配音变难听」。
-    preferred = order[0] if order else None
+    # [task #22] 首选引擎：本轮「真正能用」的第一个（已含锁定/降权/熔断重排）。
+    # v1.4.14：本地优先后 order[0] 常是没装的本地引擎，若拿它当 preferred，
+    # 用户会看到「ChatTTS 不可用，已降级为 edge-tts」这种莫名其妙的提示。
+    # 实际合成若落到它之后，才说明发生了降级——那种情况必须让用户看到。
+    _first_eng = _first_available_engine(order)
+    preferred = _first_eng or (order[0] if order else None)
 
     def _ok(eng, path):
         """成功收尾：锁定引擎 + 记录「首选→实际」的静默质量降级。"""
@@ -938,8 +994,9 @@ def local_tts_speak(text, out_path):
         rate = '+0%'
 
     # === 长文本子句切分（根因 3）===
-    # 只有 edge-tts 引擎做首选时才触发（其他引擎对长文本无截断限制）
-    enable_split = (order[0] == 'edge')
+    # 只有实际选中的引擎是 edge 才需要子句切分：旧写法看 order[0]，本地优先后
+    # order[0] 是本地引擎，长文本走 edge 时反而绕开了切分保护。
+    enable_split = (_first_eng == 'edge')
     clean_for_len = _strip_tts_markup(text)
     if enable_split and len(clean_for_len) > 200:
         clauses = _split_long_text(text, max_len=200)
@@ -1209,17 +1266,18 @@ def local_tts_label():
         return '离线模型 · %s' % _m if sherpa_tts_available() else '离线模型（未下载，已回退系统 SAPI）'
     if cfg['engine'] == 'sapi':
         return '系统 SAPI'
-    # auto（顺序必须与 local_tts_speak 的兜底链一致，否则标签又开始说谎）
-    if edge_tts_available():
+    # auto（v1.4.14）：与 local_tts_speak 共用 _auto_order()，标签不许再说谎
+    _first = _first_available_engine(_auto_order())
+    if _first == 'edge':
         return 'edge-tts（%s）' % cfg['voice']
-    if _COSY_IN_FALLBACK_CHAIN and cosyvoice_available():
+    if _first == 'cosyvoice':
         return 'CosyVoice（质量最高·%s）' % _COSYVOICE['voice']
-    if chattts_available():
+    if _first == 'chattts':
         return 'ChatTTS（自然·本地GPU）'
-    if sherpa_tts_available():
+    if _first == 'sherpa':
         _m = (SHERPA_TTS_MODELS.get(sherpa_model_key()) or {}).get('label') or '已就绪'
         return '离线模型 · %s' % _m
-    return '系统 SAPI（可选装 edge-tts/CosyVoice/离线模型）'
+    return '系统 SAPI（机械音兜底 · 建议装离线模型或 CosyVoice）'
 
 def parse_tts_markup(text):
     """解析文案中的 TTS 标记，返回结构化片段列表。
