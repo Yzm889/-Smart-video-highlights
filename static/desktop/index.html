@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=6">
+<link rel="stylesheet" href="desktop.css?v=7">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -242,91 +242,127 @@
 <div class="modal-mask" id="settingsMask" style="display:none">
   <div class="modal settings">
     <div class="modal-title">设置 <button class="mini-btn" id="settingsClose" style="float:right"><svg class="ic"><use href="#i-x"/></svg></button></div>
-    <div class="set-grid">
-      <div class="set-sec" id="secModelCenter">
-        <div class="set-h">模型中心（安装 / 切换都在这里）</div>
-        <label>Ollama 引擎（AI 运行时）</label>
-        <div class="set-row">
-          <div class="hint" id="ollamaState" style="flex:1"></div>
-          <button class="mini-btn" id="btnOllamaSetup">安装 / 启动</button>
+    <div class="set-intro">
+      <div class="set-intro-h">配置只需一次，按顺序走就行</div>
+      <div class="set-intro-sub">
+        ① 装好本地配音引擎 → ② 试听选音色 → ③ 保存回首页开做。
+        后面两页都是可选增强，不配也能出片。
+      </div>
+    </div>
+    <div class="set-tabs" id="setTabs">
+      <button type="button" class="set-tab active" data-set-tab="voice">① 配音与音色</button>
+      <button type="button" class="set-tab" data-set-tab="models">② 模型中心</button>
+      <button type="button" class="set-tab" data-set-tab="advanced">③ 高级 · 可选</button>
+    </div>
+    <div class="set-panes">
+
+      <!-- ① 配音：默认页，日常只用这一页 -->
+      <div class="set-pane" data-set-pane="voice">
+        <div class="set-sec lead" id="secVoice">
+          <div class="set-h"><span class="set-num">1</span>当前配音状态<span class="set-tag">实时</span></div>
+          <div class="set-status" id="ttsStateHint"></div>
+          <div class="hint" id="ttsTestHint"></div>
         </div>
-        <label>文字大脑（写解说稿）</label>
-        <div class="set-row">
-          <select id="setLocalPick"></select>
-          <button class="mini-btn" id="btnPullLocal">拉取选中</button>
+        <div class="set-sec">
+          <div class="set-h"><span class="set-num">2</span>缺哪个装哪个<span class="set-tag">装完自动生效</span></div>
+          <div class="set-row" id="ttsInstalls"></div>
+          <div class="hint">本地引擎离线可用，装好就不用再看联网服务的脸色；CosyVoice 还能用一段录音克隆自己的声音。</div>
         </div>
-        <div class="pull-wrap" id="localPullWrap" style="display:none">
-          <div class="pbar slim"><i id="localPullFill"></i></div>
-          <div class="pbar-meta" id="localPullMeta"></div>
-        </div>
-        <label>看图大脑（可选 · 画面理解）</label>
-        <div class="set-row">
-          <select id="setVlmPick"></select>
-          <button class="mini-btn" id="btnPullVlm">拉取选中</button>
-        </div>
-        <div class="pull-wrap" id="vlmPullWrap" style="display:none">
-          <div class="pbar slim"><i id="vlmPullFill"></i></div>
-          <div class="pbar-meta" id="vlmPullMeta"></div>
-        </div>
-        <div class="hint" id="mcHint">选已安装的立即生效；选未安装的会自动开始拉取</div>
-        <div class="set-row" style="margin-top:8px">
-          <div class="hint" id="hwHint" style="flex:1">⚡ 可按本机显存自动配齐四件套（写稿/看图/台词/离线配音）</div>
-          <button class="mini-btn" id="btnHwApply">按本机一键配置</button>
+        <div class="set-sec">
+          <div class="set-h"><span class="set-num">3</span>选引擎 · 试听 · 克隆</div>
+          <div class="set-row wrap">
+            <select id="setTtsEngine"></select>
+            <button class="mini-btn" id="btnTtsTest"><svg class="ic"><use href="#i-volume"/></svg>试听</button>
+            <button class="mini-btn" id="btnCloneVoice"><svg class="ic"><use href="#i-mic"/></svg>克隆音色</button>
+            <button class="mini-btn" id="btnTtsReset" title="解除微软服务熔断并重新选择最优引擎">重试引擎</button>
+          </div>
+          <div class="hint">保持「自动」即可：本地引擎优先，联网服务只作兜底。试听只合成一句，不跑全片。</div>
+          <details class="set-more">
+            <summary>精细调节（音色 / 语速）</summary>
+            <label>音色（edge-tts 引擎用）</label>
+            <select id="setTtsVoice"></select>
+            <label>CosyVoice 音色（含克隆音色）</label>
+            <select id="setCosyVoice"></select>
+            <label>语速</label>
+            <input type="text" id="setTtsRate" placeholder="+0%">
+          </details>
         </div>
       </div>
-      <div class="set-sec">
-        <div class="set-h">云端 Key（可选 · 配了自动用云端增强）</div>
-        <label>看图写话 base_url</label>
-        <input type="text" id="setVisBase" placeholder="https://api.deepseek.com/v1">
-        <label>看图写话 Key</label>
-        <input type="password" id="setVisKey" placeholder="已配置则留空">
-        <label>看图模型</label>
-        <input type="text" id="setVisModel" placeholder="gpt-4o / qwen-vl-plus">
-      </div>
-      <div class="set-sec">
-        <div class="set-h">本地 Ollama 服务</div>
-        <label>服务地址</label>
-        <input type="text" id="setLocalBase" placeholder="http://localhost:11434/v1">
-        <div class="hint">文字/看图模型的安装与切换在上方「模型中心」</div>
-      </div>
-      <div class="set-sec" id="secVlm">
-        <div class="set-h">看图模型服务</div>
-        <label>服务地址</label>
-        <input type="text" id="setVlmBase" placeholder="http://localhost:11434/v1">
-      </div>
-      <div class="set-sec" id="secVoice">
-        <div class="set-h">配音引擎与音色</div>
-        <div class="set-row">
-          <select id="setTtsEngine"></select>
-          <button class="mini-btn" id="btnTtsTest"><svg class="ic"><use href="#i-volume"/></svg>试听</button>
-          <button class="mini-btn" id="btnCloneVoice"><svg class="ic"><use href="#i-mic"/></svg>克隆音色</button>
-          <button class="mini-btn" id="btnTtsReset" title="解除微软服务熔断并重新选择最优引擎">重试引擎</button>
+
+      <!-- ② 模型中心：安装 / 切换 / 服务地址 -->
+      <div class="set-pane" data-set-pane="models" style="display:none">
+        <div class="set-sec" id="secModelCenter">
+          <div class="set-h">模型中心（安装 / 切换都在这里）</div>
+          <label>Ollama 引擎（AI 运行时）</label>
+          <div class="set-row">
+            <div class="hint" id="ollamaState" style="flex:1"></div>
+            <button class="mini-btn" id="btnOllamaSetup">安装 / 启动</button>
+          </div>
+          <label>文字大脑（写解说稿）</label>
+          <div class="set-row">
+            <select id="setLocalPick"></select>
+            <button class="mini-btn" id="btnPullLocal">拉取选中</button>
+          </div>
+          <div class="pull-wrap" id="localPullWrap" style="display:none">
+            <div class="pbar slim"><i id="localPullFill"></i></div>
+            <div class="pbar-meta" id="localPullMeta"></div>
+          </div>
+          <label>看图大脑（可选 · 画面理解）</label>
+          <div class="set-row">
+            <select id="setVlmPick"></select>
+            <button class="mini-btn" id="btnPullVlm">拉取选中</button>
+          </div>
+          <div class="pull-wrap" id="vlmPullWrap" style="display:none">
+            <div class="pbar slim"><i id="vlmPullFill"></i></div>
+            <div class="pbar-meta" id="vlmPullMeta"></div>
+          </div>
+          <div class="hint" id="mcHint">选已安装的立即生效；选未安装的会自动开始拉取</div>
+          <div class="set-row" style="margin-top:8px">
+            <div class="hint" id="hwHint" style="flex:1">⚡ 可按本机显存自动配齐四件套（写稿/看图/台词/离线配音）</div>
+            <button class="mini-btn" id="btnHwApply">按本机一键配置</button>
+          </div>
         </div>
-        <label>音色（edge-tts 引擎用）</label>
-        <select id="setTtsVoice"></select>
-        <label>CosyVoice 音色（含克隆音色）</label>
-        <select id="setCosyVoice"></select>
-        <label>语速</label>
-        <input type="text" id="setTtsRate" placeholder="+0%">
-        <div class="hint" id="ttsTestHint"></div>
-        <div class="hint" id="ttsStateHint"></div>
-        <label>引擎安装（缺哪个装哪个）</label>
-        <div class="set-row" id="ttsInstalls"></div>
+        <div class="set-sec">
+          <div class="set-h">Whisper 台词识别模型</div>
+          <div class="set-row">
+            <select id="setWhisperModel"></select>
+            <button class="mini-btn" id="btnWhisperDl"><svg class="ic"><use href="#i-download"/></svg>下载选中模型</button>
+          </div>
+          <div class="pull-wrap" id="whisperPullWrap" style="display:none">
+            <div class="pbar slim"><i id="whisperPullFill"></i></div>
+            <div class="pbar-meta" id="whisperPullMeta"></div>
+          </div>
+          <div class="hint" id="whisperDlStatus"></div>
+        </div>
+        <div class="set-sec">
+          <div class="set-h">本地服务地址（一般不用改）</div>
+          <label>Ollama 服务地址</label>
+          <input type="text" id="setLocalBase" placeholder="http://localhost:11434/v1">
+          <div class="hint">文字 / 看图模型的安装与切换在上方「模型中心」；默认地址已可用。</div>
+        </div>
+        <div class="set-sec" id="secVlm">
+          <div class="set-h">看图模型服务（可选）</div>
+          <label>服务地址</label>
+          <input type="text" id="setVlmBase" placeholder="http://localhost:11434/v1">
+        </div>
       </div>
-      <div class="set-sec">
-        <div class="set-h">Whisper 台词识别模型</div>
-        <div class="set-row">
-          <select id="setWhisperModel"></select>
-          <button class="mini-btn" id="btnWhisperDl"><svg class="ic"><use href="#i-download"/></svg>下载选中模型</button>
+
+      <!-- ③ 高级：整页可跳过 -->
+      <div class="set-pane" data-set-pane="advanced" style="display:none">
+        <div class="set-sec">
+          <div class="set-h">云端 Key（可选 · 配了自动用云端增强）</div>
+          <label>看图写话 base_url</label>
+          <input type="text" id="setVisBase" placeholder="https://api.deepseek.com/v1">
+          <label>看图写话 Key</label>
+          <input type="password" id="setVisKey" placeholder="已配置则留空">
+          <label>看图模型</label>
+          <input type="text" id="setVisModel" placeholder="gpt-4o / qwen-vl-plus">
+          <div class="hint">不填也能用：默认走本机模型，全流程离线。这一页可以整页跳过。</div>
         </div>
-        <div class="pull-wrap" id="whisperPullWrap" style="display:none">
-          <div class="pbar slim"><i id="whisperPullFill"></i></div>
-          <div class="pbar-meta" id="whisperPullMeta"></div>
-        </div>
-        <div class="hint" id="whisperDlStatus"></div>
       </div>
     </div>
     <div class="set-actions">
+      <span class="set-save-hint">改动保存后生效 · 日常改声音只用「配音」这一页</span>
       <button class="btn primary" id="settingsSave">💾 保存</button>
     </div>
   </div>
@@ -406,6 +442,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=6"></script>
+<script src="desktop.js?v=7"></script>
 </body>
 </html>

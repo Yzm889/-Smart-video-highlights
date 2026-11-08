@@ -261,18 +261,50 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
 .pbar.big{height:12px}
 .pbar i{display:block;height:100%;width:0;background:var(--acc);transition:width .4s}
 .modal-meta{margin-top:10px;font-size:12.5px;color:var(--muted)}
-.modal.settings{width:620px}
-.set-grid{display:grid;gap:16px}
-.set-sec{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px}
-.set-h{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:10px}
-.set-sec label{display:block;font-size:11.5px;color:var(--muted);margin:8px 0 3px}
-.set-sec input[type=text],.set-sec input[type=password]{width:100%;background:var(--bg);
-  border:1px solid var(--line);border-radius:5px;padding:6px 9px;font-size:12.5px}
-.set-sec input:focus{outline:none;border-color:var(--acc)}
+.modal.settings{width:720px;max-height:84vh}
+/* ── 设置页：引导 + 三页分区（v1.4.15）──
+   原来 6 组卡片平铺一屏、20+ 控件无主次；收成「配音 / 模型 / 高级」三页，
+   默认落在配音页，状态与安装动作前置，次要项折叠。 */
+.set-intro{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--acc);
+  border-radius:8px;padding:12px 14px;margin-bottom:14px}
+.set-intro-h{font-size:13px;font-weight:600;color:var(--txt);margin-bottom:5px}
+.set-intro-sub{font-size:11.5px;color:var(--muted);line-height:1.7}
+.set-tabs{display:flex;gap:6px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.set-tab{font-size:12px;color:var(--muted);padding:7px 14px;border-radius:6px;
+  border:1px solid transparent;white-space:nowrap;
+  transition:background .13s var(--ease),color .13s var(--ease)}
+.set-tab:hover{color:var(--txt);background:var(--panel)}
+.set-tab.active{color:var(--txt);background:var(--acc-dim);border-color:var(--acc);font-weight:600}
+.set-panes{min-height:200px}
+.set-pane{display:grid;gap:14px}
+.set-sec{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:14px}
+.set-sec.lead{background:var(--panel);border-color:var(--line2)}
+.set-h{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;
+  color:var(--txt);margin-bottom:10px}
+.set-num{display:inline-flex;align-items:center;justify-content:center;flex:none;
+  width:18px;height:18px;border-radius:50%;background:var(--acc-dim);color:var(--acc);
+  font-size:11px;font-weight:700}
+.set-tag{margin-left:auto;font-size:10.5px;font-weight:400;color:var(--ok);
+  border:1px solid var(--ok);border-radius:10px;padding:1px 8px}
+.set-status{font-size:12px;color:var(--warn);line-height:1.6;min-height:18px}
+.set-sec label{display:block;font-size:11.5px;color:var(--muted);margin:10px 0 4px}
+.set-sec input[type=text],.set-sec input[type=password]{width:100%;background:var(--panel2);
+  border:1px solid var(--line);border-radius:5px;padding:7px 9px;font-size:12.5px}
+.set-sec input:focus,.set-sec select:focus{outline:none;border-color:var(--acc)}
 .set-row{display:flex;gap:8px;align-items:center}
-.set-row select{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:5px;
-  padding:6px;color:var(--txt);font-size:12.5px}
-.set-actions{margin-top:16px;text-align:right}
+.set-row.wrap{flex-wrap:wrap}
+.set-row select{flex:1;min-width:150px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:5px;padding:7px;color:var(--txt);font-size:12.5px}
+.set-more{margin-top:12px;border-top:1px dashed var(--line);padding-top:8px}
+.set-more summary{font-size:11.5px;color:var(--muted);cursor:pointer;padding:4px 0;list-style:none}
+.set-more summary::-webkit-details-marker{display:none}
+.set-more summary::before{content:'▸ ';color:var(--acc)}
+.set-more[open] summary::before{content:'▾ '}
+.set-more > select,.set-more > input[type=text]{width:100%;background:var(--panel2);
+  border:1px solid var(--line);border-radius:5px;padding:7px 9px;font-size:12.5px;margin-top:2px}
+.set-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+.set-save-hint{font-size:11px;color:var(--dim)}
 .hint{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5}
 
 /* ── 下载进度条 ── */

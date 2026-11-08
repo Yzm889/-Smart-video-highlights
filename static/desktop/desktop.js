@@ -1568,8 +1568,31 @@ async function pickLocalMusic(){
 }
 
 /* ── 设置对话框 ── */
+/* ── 设置页分区导航（v1.4.15）──
+   原来 20+ 控件平铺一屏、没有主次也没有引导；收成 3 页，默认落在「配音」。
+   环境卡的「去设置」会带 secVoice / secModelCenter 进来，必须顺手切到对应页，
+   否则 scrollIntoView 会滚向一个被隐藏的元素，用户什么都看不到。 */
+function showSettingsPane(name){
+  document.querySelectorAll('[data-set-tab]').forEach(b =>
+    b.classList.toggle('active', b.dataset.setTab === name));
+  document.querySelectorAll('[data-set-pane]').forEach(p =>
+    p.style.display = (p.dataset.setPane === name) ? '' : 'none');
+  try{ localStorage.setItem('framecut_set_tab', name); }catch(e){}
+}
+(function initSettingsTabs(){
+  const tabs = document.querySelectorAll('[data-set-tab]');
+  if(!tabs.length) return;
+  tabs.forEach(b => b.addEventListener('click', () => showSettingsPane(b.dataset.setTab)));
+  let last = 'voice';
+  try{ last = localStorage.getItem('framecut_set_tab') || 'voice'; }catch(e){}
+  if(!document.querySelector('[data-set-pane="' + last + '"]')) last = 'voice';
+  showSettingsPane(last);
+})();
+
 function openSettings(sec){
   $('settingsMask').style.display = 'flex';
+  if(sec === 'secVoice') showSettingsPane('voice');
+  else if(sec === 'secModelCenter') showSettingsPane('models');
   if(sec){
     setTimeout(() => {
       const el = $(sec);
