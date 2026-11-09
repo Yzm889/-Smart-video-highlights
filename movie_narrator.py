@@ -1566,7 +1566,7 @@ _ACTION_LEXICON = {
     '嘶吼': ('怒吼', '咆哮', '嘶吼', '尖叫', '大喊', '吼'),
     '受伤': ('流血', '伤口', '倒地', '倒下', '重伤'),
     '爆炸': ('爆炸', '火光', '炸开', '爆燃'),
-    '持械': ('瞄准', '射击', '举枪', '持刀', '挥棒', '开枪'),
+    '持械': ('瞄准', '射击', '举枪', '持刀', '挥棒', '开枪', '拔枪', '拔刀'),
     '搏斗': ('搏斗', '缠斗', '扭打', '摔落', '拉拽', '掀翻', '按倒'),
     '劳作': ('敲打', '挥锤', '抡锤', '挖掘', '拆卸', '攀爬'),
 }
@@ -1585,8 +1585,127 @@ def _action_tokens(text):
     return set('ACT:' + c for w, c in _ACTION_TOKENS.items() if w in t)
 
 
+# =============================================================================
+# 解说词分类 + 时间跳跃/描述信息量约束（2026-11-10 语义对齐重构）
+# =============================================================================
+# 倒流根因（真机实测）：VLM 场景描述是白描、解说词是口语改写，两者字面重合随机；
+# 钩子/过渡/留白句这类「不描述具体画面」的句子也会随机命中大段 bigram，被 DP
+# 绑到遥远/倒序的场景上——解说后句被配到视频前段画面、跨越式乱跳，剪辑不可接受。
+# 对策：
+#   · 只有具象句(concrete)允许参与语义吸附，其余四类一律零语义、只服从时间推进；
+#   · DP 转移与画面分配统一施加时间跳跃上限 max_jump_seconds（倒流/超跳 = -inf）；
+#   · 描述信息量惩罚：越长的描述（VLM 车轱辘话/剧情理解层复述）信息密度越低，
+#     乘衰减因子——短描述（短句优先）得分。
+# =============================================================================
+
+KIND_HOOK = 'hook'          # 钩子句：开场悬念/指引观众
+KIND_CONCRETE = 'concrete'  # 具象句：描述具体画面动作/物体 → 唯一参与语义匹配
+KIND_QUOTE = 'quote'        # 引用句：台词引用/转述
+KIND_BLANK = 'blank'        # 留白句：纯氛围/感叹，没有画面信息
+KIND_TRANS = 'transition'   # 过渡句：时间推进/转场/转折
+
+_BLANK_CHARS = frozenset(
+    '啊哦哈呀哇哎咦嘿喂吆喝得吧呢么咯哟嗨嗯好行完棒家伙呐天')
+
+# 钩子句：开场指引观众/点出主角/悬念开场
+_RE_HOOK = re.compile(
+    r'^(注意看|注意了|注意啦|看好|看好了|看这|看这里|看向|看镜头|请看|你看|'
+    r'你绝对|你猜|先听我说|听我说|听好了|别忘了|这位|这[个点段幕场部]|'
+    r'这个故事|开篇|开头|这个男人|这个女人|他叫|她叫|这场|这一幕)'
+)
+
+# 引用句：直接引语(引号/书名号)，或「他喊道/她低语」式引语引导
+_RE_QUOTE_MARK = re.compile(r'[「」『』“”‘’«»《》"\']')
+_RE_QUOTE_SPEECH = re.compile(
+    r'(说道|喊道|叫道|吼道|低语道|低语|喃喃(?:自语)?|回答说|回答道|答应道|'
+    r'警告道|提醒道|嚷道|喊叫|尖叫道|劝告道|劝诫)'
+)
+
+# 过渡句：时间推进/转场/转折词抬头
+_RE_TRANS = re.compile(
+    r'^(接下来|随后|接着|然后|那时|很快|骤然|话音刚落|镜头|画面|时间(?:到|回到|过|跳)'
+    r'|此刻|就在(?:这时|那时|此刻|瞬间)|就这样|就是这样|放眼望去|久而久之|不知不觉|几秒后|几分钟后|几天后|'
+    r'几年后|当天|当晚|次日|第二天|没过多久|过了很久|片刻后|片刻|不久|没多久|'
+    r'之后|后来|与此同时|突然|忽然|瞬间|正说着|回合结束|[一二三四五六七八九十'
+    r'百零\d]+(?:天|年|周|个月|步)后|几家医院|转眼)'
+)
+
+
+def _classify_sentences(texts):
+    """把解说词分五类：hook/concrete/quote/blank/transition（纯正则离线判定）。
+
+    返回与 texts 等长的标签列表。只有 concrete 参与语义匹配；其余句零语义，
+    画面严格随时间轴单调推进（绝不倒流、绝不跨越式跳跃）。
+    """
+    out = []
+    for t in texts or []:
+        s = str(t or '').strip()
+        core = re.sub(r'[^\w]', '', s)
+        # ① 留白句：抽掉标点后只剩语气词/极短氛围（"好家伙""啊！""嗯？"）
+        if core == '' or (len(core) <= 2 and all(c in _BLANK_CHARS for c in core)):
+            out.append(KIND_BLANK)
+            continue
+        # ② 引用句
+        if _RE_QUOTE_MARK.search(s) or _RE_QUOTE_SPEECH.search(s):
+            out.append(KIND_QUOTE)
+            continue
+        # ③ 钩子句（优先于过渡：钩子常含「注意看/接下来」）
+        if _RE_HOOK.match(s):
+            out.append(KIND_HOOK)
+            continue
+        # ④ 过渡句
+        if _RE_TRANS.match(s):
+            # 转折词抬头但整句描述具体动作（如「就在这时，他拔枪而出」）仍是
+            # 具象句——过渡标记只是句首修饰，画面锚点由动作给出，需要保语义吸附。
+            if _action_tokens(s):
+                out.append(KIND_CONCRETE)
+                continue
+            out.append(KIND_TRANS)
+            continue
+        # ⑤ 其余按具象句处理（默认）
+        out.append(KIND_CONCRETE)
+    return out
+
+
+def _scene_info_pen(text):
+    """场景描述信息量惩罚：VLM/剧情理解层的长描述常掺通用词与车轱辘话，
+    信息密度低。≤60 字不罚；每超出 300 字扣至一半（0.5 保底）→ 短描述优先得分。"""
+    n = len(str(text or ''))
+    if n <= 60:
+        return 1.0
+    return max(0.5, 1.0 / (1.0 + (n - 60) / 300.0))
+
+
+def _beat_info_pen(text):
+    """解说句长惩罚：信息量相同的内容，短句优先，防止长解说句（重述/车轱辘）
+    从短句那里吸走高分场景。"""
+    n = len(str(text or ''))
+    if n <= 90:
+        return 1.0
+    return max(0.5, 1.0 / (1.0 + (n - 90) / 400.0))
+
+
+def _default_jump_cap(scenes):
+    """默认 max_jump_seconds：3×场景平均时长（够跨过 1~2 段台词填充），
+    限在 [25, 150]s 避免过于苛刻/松懈。"""
+    durs = []
+    for sc in scenes or []:
+        try:
+            st = float(sc.get('start', 0) or 0)
+            ed = float(sc.get('end', 0) or 0)
+        except Exception:
+            continue
+        durs.append(max(0.0, ed - st))
+    if not durs:
+        return 45.0
+    avg = sum(durs) / float(len(durs))
+    v = max(25.0, min(150.0, 3.0 * avg))
+    return round(v / 5.0) * 5.0
+
+
 def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
-                               action_weight=None):
+                               action_weight=None, beat_kinds=None,
+                               max_jump_seconds=None):
     """算法语义对齐（不调模型）：用 VLM 场景描述/台词/剧情理解与解说词的字符 bigram
     重叠度，在「保持时间顺序」的前提下为每句解说挑最相关的连续场景，并跳过无关填充段。
 
@@ -1604,6 +1723,12 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
 
     _aw = float(action_weight or _ACTION_WEIGHT)
 
+    # —— 句类标签（2026-11-10 语义对齐重构）：只有具象句参与语义匹配；
+    # 钩子/引用/留白/过渡零语义，画面只随时间单调推进（绝不倒流）。——
+    _kinds = list(beat_kinds) if beat_kinds else []
+    _kinds = (_kinds + [KIND_CONCRETE] * n)[:n]
+    beat_pen = [_beat_info_pen(b) for b in beats]
+
     def _bg(s):
         s = str(s or '')
         toks = set(s[i:i + 2] for i in range(len(s) - 1) if s[i:i + 2].strip())
@@ -1611,7 +1736,7 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
         toks |= _action_tokens(s)
         return toks
 
-    scene_bg = []
+    scene_bg, scene_txt = [], []
     for j, sc in enumerate(scenes):
         parts = [_scene_describe(sc)]
         st = (scene_story or {}).get(j) or {}
@@ -1625,8 +1750,11 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
                                           float(sc.get('end', 0) or 0)))
             except Exception:
                 pass
-        scene_bg.append(_bg(' '.join(p for p in parts if p)))
+        txt = ' '.join(p for p in parts if p)
+        scene_txt.append(txt)             # 与 scene_bg 同源，供 _scene_info_pen 用
+        scene_bg.append(_bg(txt))
     beat_bg = [_bg(b) for b in beats]
+    sc_pen = [_scene_info_pen(t) for t in scene_txt]
 
     # 逆文档频率：在几十个场景里都出现的 bigram（「警察」「一名」「车内」「的」）
     # 几乎不带信息，必须压低；「低吼」「番茄酱」「对讲机」这类只在少数场景出现的
@@ -1641,6 +1769,12 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
         return math.log((_N + 1.0) / (_df.get(g, 0) + 0.5))
 
     def _score(i, j):
+        # 【2026-11-10】句类闸门：钩子/引用/留白/过渡句不描述具体画面，
+        # 字面 bigram 重合全是噪声——它们一旦参与匹配就会「乱吸」场景，
+        # 解说后句被绑到视频前段画面（画面倒流/乱跳的元凶）。
+        # 这些句子零语义，只由 DP 的单调约束决定位置（哪里近就接哪里）。
+        if _kinds[i] != KIND_CONCRETE:
+            return 0.0
         q, s = beat_bg[i], scene_bg[j]
         if not q or not s:
             return 0.0
@@ -1656,7 +1790,9 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
         got = sum(_wt(g) for g in shared)
         # 分母用「解说词自己的信息量」：长句不会因为场景描述长而占便宜
         den = math.sqrt(sum(_wt(g) for g in q) or 1.0)
-        return got / den
+        # 【2026-11-10】描述信息量惩罚：长的场景描述（VLM 车轱辘话/剧情理解层
+        # 复述）信息密度低，短描述优先得分（得分 × 衰减系数）。
+        return got / den * sc_pen[j] * beat_pen[i]
 
     # —— 全局单调对齐（动态规划）——
     # 逐句贪心地「在剩下的范围里取最大分」是错的：第 7 句一旦被 384 秒的某个巧合
@@ -1667,7 +1803,13 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
     # 【权重只能小】真机实测 PRIOR_W=0.3 时，中段和结尾被先验拖后 200~350 秒
     # （稿子的详略节奏和片子的时间节奏并不一致），降到 0.1 后平均误差 122s→33s。
     starts = [float(sc.get('start', 0) or 0) for sc in scenes]
-    vdur = max([float(sc.get('end', 0) or 0) for sc in scenes] or [0.0])
+    ends_arr = [float(sc.get('end', 0) or 0) for sc in scenes]
+    vdur = max(ends_arr or [0.0])
+
+    # 【2026-11-10 强制单调约束】跳跃上限：句子间「新场景 start - 上一句
+    # 前一场景 end」的允许值（之后的场景增量允许，之前的全部 -inf）。
+    _jump = float(max_jump_seconds) if max_jump_seconds else _default_jump_cap(scenes)
+    _jump = max(1e-6, _jump)
 
     _wts = [max(1, len(str(b or ''))) for b in beats]
     _tot = float(sum(_wts)) or 1.0
@@ -1711,14 +1853,40 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
         dp[0][j] = val[0][j]
     for i in range(1, n):
         prev, cur, cur_bk = dp[i - 1], dp[i], bk[i]
+        # 【2026-11-10 强制单调约束】从第 i-1 句场景 k 转移到第 i 句候选 j 时：
+        # ① starts[j] ≥ ends[k]（否则 -inf 拒绝倒流——解说后句绝不配到前段画面）；
+        # ② starts[j] ≤ ends[k] + max_jump_seconds（超跳 -inf——最佳语义匹配在
+        #    很久之前也直接丢弃，按顺序选取最近的可用场景）。
         for j in range(m):
             best, bj = NEG, -1
             for k in range(max(0, j - WIN), j + 1):
+                if starts[j] + 1e-6 < ends_arr[k]:
+                    continue
+                if starts[j] - (ends_arr[k] + _jump) > 1e-9:
+                    continue
                 cand = prev[k] - (SAME_PEN if k == j else 0.0)
                 if cand > best:
                     best, bj = cand, k
+            if best == NEG:
+                cur[j] = NEG
+                continue
             cur[j] = val[i][j] + best
             cur_bk[j] = bj
+
+    # 兜底：若全部 -inf（某句话时间上无合法落点），退回无约束 DP（零-inf 模式保底）。
+    if all(dp[i][j] == NEG for i in range(n) for j in range(m)):
+        for j in range(m):
+            dp[0][j] = val[0][j]
+        for i in range(1, n):
+            prev, cur, cur_bk = dp[i - 1], dp[i], bk[i]
+            for j in range(m):
+                best, bj = NEG, -1
+                for k in range(max(0, j - WIN), j + 1):
+                    cand = prev[k] - (SAME_PEN if k == j else 0.0)
+                    if cand > best:
+                        best, bj = cand, k
+                cur[j] = val[i][j] + best
+                cur_bk[j] = bj
 
     j = max(range(m), key=lambda x: dp[n - 1][x])
     pick = [0] * n
@@ -1757,7 +1925,8 @@ def _isotonic(vals):
     return out
 
 
-def _sanitize_alignment(merged, base, scenes, n_beats, max_span=3, factor=3.0):
+def _sanitize_alignment(merged, base, scenes, n_beats, max_span=3, factor=3.0,
+                        max_jump_seconds=None):
     """把对齐结果规范成「能直接下锅」的形态。三道处理，缺一不可：
 
     1) 每句最多跨 max_span 个场景：模型常回 [21..39] 这种一整段（252~468 秒），
@@ -1765,13 +1934,18 @@ def _sanitize_alignment(merged, base, scenes, n_beats, max_span=3, factor=3.0):
     2) 顺序纠正用保序回归，不用单向棘轮（见 _isotonic 的实测说明）。
     3) 单句向前跳的距离不能离谱：解说词是按剧情顺序写的，第 i 句该落在
        「上一句结束 + 剩余时长/剩余句数」附近。模型偶尔被同款动作镜头吸走
-       （真机实测把「她扑过来」对到二十多分钟后），这种直接退回算法结果。
+       （真机实测把「她扑过来」对到二十多分钟后），这种直接退回算法结果；
+       【2026-11-10】若配置了 max_jump_seconds，则越过「上一句结束 + 跳跃上限」
+       一律触发同样的退回，且退回后再次钳制起点 ≥ prev_end，保证不倒流。
     """
     if not merged or not scenes:
         return merged
     starts = [float(s.get('start', 0) or 0) for s in scenes]
     ends = [float(s.get('end', 0) or 0) for s in scenes]
     vdur = max(ends) if ends else 0.0
+    # 跳跃上限（2026-11-10 语义对齐重构）：缺省按场景平均时长动态算。
+    _jump = float(max_jump_seconds) if max_jump_seconds else _default_jump_cap(scenes)
+    _jump = max(1e-6, _jump)
 
     idxs, groups = [], {}
     for i in range(n_beats):
@@ -1805,12 +1979,27 @@ def _sanitize_alignment(merged, base, scenes, n_beats, max_span=3, factor=3.0):
         if prev_first >= 0 and g[0] < prev_first:
             g = list(range(prev_first, min(prev_first + len(g), len(scenes))))
             n_back += 1
-        # ③ 跳太远：退回算法结果（DP 全局对齐，本身单调且带等比例先验）
+        # ③ 跳太远：退回算法结果（DP 全局对齐，本身单调且带等比例先验）。
+        # 【2026-11-10】两条触发线，任一命中即退回：
+        #   · 超出「上一句结束 + max_jump_seconds」跳跃上限（原始诉求：
+        #     最佳语义匹配在很久之前也必须丢弃，强制就近取景）；
+        #   · 考虑配置上限后仍过远的旧启发式（factor × 预估剩余步长）。
+        # 退回后统一钳制：新组起点 ≥ prev_end + 跳限内的最近可用位置，
+        # 保证即使 DP 兜底路径也满足时间轴单调递增、绝不倒流。
         exp = max(1.0, (vdur - prev_end) / float(max(1, n_beats - i)))
-        if starts[g[0]] > prev_end + factor * exp and base and base.get(i):
+        if (starts[g[0]] > prev_end + _jump
+                or starts[g[0]] > prev_end + factor * exp) and base and base.get(i):
             g2 = sorted(set(int(x) for x in base[i] if 0 <= int(x) < len(scenes)))
             if g2:
                 g = g2[:max_span]
+                # 钳制：起点必须 ≥ prev_end（不倒流），且 ≤ prev_end+_jump（不超跳）。
+                if starts[g[0]] < prev_end + 1e-6:
+                    j0 = min(range(len(starts)),
+                             key=lambda x: abs(starts[x] - (prev_end + _jump)))
+                    j0 = max(j0, 0)
+                    g = list(range(j0, min(j0 + len(g), len(scenes))))
+                    if starts[g[0]] < prev_end + 1e-6 and g[0] + 1 < len(scenes):
+                        g = list(range(g[0] + 1, min(g[0] + 1 + len(g), len(scenes))))
                 n_far += 1
         out[i] = g
         prev_first = g[0]
@@ -2151,6 +2340,10 @@ NAR_BEAT_MIN = 40       # 每节解说词最少字数：少于此讲不成完整
 NAR_BEAT_MAX = 90       # 每节最多字数：超过则口播发赶、字幕一行放不下
 NAR_SCRIPT_CPS = 5.2    # 影视解说话速（字/秒）：比普通解说略快，更贴近 B 站观感
 NAR_SEG_TARGET = 5.0    # 每个视频子片段目标时长（秒）：一节解说词拆成多个短片段，提升剪辑密度
+NAR_MAX_JUMP_SECONDS = 20.0  # 2026-11-10 语义对齐重构：相邻解说句间的画面跳跃上限（秒）。
+                             # 候选场景 start < 上一句 end → -inf（倒流拒绝）；超过
+                             # 上限 → -inf（最佳匹配在很久之前也必须丢弃，就近按序取景）。
+                             # 传 0/负 则由 _default_jump_cap 按场景平均时长动态算（25~150s）。
 # 语义精修权重（_allocate_script_spans 的 sem_weight）：0=关。
 # bigram 版 A/B 实测仅 +1.8% 噪声已关；向量版（scene_sem/余弦）A/B 赢了才调成 >0（2026-11-06）
 _SEM_WEIGHT = 0.0
@@ -4214,7 +4407,7 @@ def _compose_scene_texts(scenes, scene_story=None):
     return out
 
 
-def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None, scene_story=None, sem_weight=1.2, scene_sem=None, progress=None):
+def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None, scene_story=None, sem_weight=1.2, scene_sem=None, progress=None, beat_kinds=None, max_jump_seconds=None):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
 
     返回 (spans, narr_map)：
@@ -4245,6 +4438,14 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
     n = len(texts or [])
     if n == 0 or vdur <= 0:
         return [], []
+    # 【2026-11-10 语义对齐重构】句类标签：非具象句（钩子/引用/留白/过渡）
+    # 不做语义匹配——它们不描述具体画面，语义吸附只会乱吸场景制造倒流。
+    _kinds = list(beat_kinds) if beat_kinds else _classify_sentences(texts)
+    _kinds = (_kinds + [KIND_CONCRETE] * n)[:n]
+    # 跳跃上限：候选起点不得早于 last_end（倒流 -inf），也不得超过
+    # last_end + max_jump_seconds（超跳 -inf）——与 DP 对齐同一套约束。
+    _jump = float(max_jump_seconds) if max_jump_seconds else _default_jump_cap(scenes)
+    _jump = max(1e-6, _jump)
     weights = [max(1, len(str(t or ''))) for t in texts]
     durs = [w / cps for w in weights]
     need = sum(durs)
@@ -4440,21 +4641,38 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
                 sub_hi = min(vdur - sub_d, sub_lo + sub_d)
 
             scan_step = max(step, (sub_hi - sub_lo) / 15.0) if sub_hi > sub_lo else step
-            best_t, best_s = sub_lo, -1.0
             beat_txt = str(texts[i] or '') if i < len(texts) else ''
-            t = sub_lo
-            while t <= sub_hi + 1e-6:
-                t1 = min(vdur, t + sub_d)
-                density = _score(t, t1)
-                t_match = _text_match(beat_txt, t, t1)
-                # 语义精修：窗口内的候选起点，优先落在「场景内容贴合这句解说」的
-                # 位置（additive 精修项，不压制台词密度主信号；只在 DP 已匹配的
-                # 窗口内做精修）。向量版=余弦相似度（scene_sem），无向量=bigram 保底
-                v_match = _scene_match(i, t, t1)
-                s = density * (1.0 + t_match * 2.0) + sem_weight * v_match
-                if s > best_s + 1e-9:
-                    best_s, best_t = s, t
-                t += scan_step
+
+            # 【2026-11-10 强制单调约束 + 局部滑窗/跳跃上限】
+            # 候选起点必须落在 [last_end, last_end + max_jump_seconds] 内：
+            #   · t < last_end  → 倒流（画面往回走），直接 -inf；
+            #   · t > last_end + _jump → 超跳（最佳语义匹配在很久之前也必须
+            #     丢弃），直接 -inf，按顺序取最近可用位置。
+            t_min = max(sub_lo, last_end)
+            t_max = min(sub_hi, last_end + _jump)
+            if t_max < t_min:
+                # 本子片段窗口整体超出跳跃上限 → 强制裁退到上限边界（最近可用）
+                t_min = max(last_end, min(last_end + _jump, vdur - sub_d))
+                t_max = t_min
+            if _kinds[i] != KIND_CONCRETE:
+                # 非具象句（钩子/引用/留白/过渡）：不描述具体画面，无语义扫描，
+                # 直接取最近可用位置——它们参与语义匹配正是画面乱跳的根源。
+                best_t, best_s = t_min, -1.0
+            else:
+                best_t, best_s = t_min, -1.0
+                t = t_min
+                while t <= t_max + 1e-6:
+                    t1 = min(vdur, t + sub_d)
+                    density = _score(t, t1)
+                    t_match = _text_match(beat_txt, t, t1)
+                    # 语义精修：窗口内的候选起点，优先落在「场景内容贴合这句解说」的
+                    # 位置（additive 精修项，不压制台词密度主信号；只在 DP 已匹配的
+                    # 窗口内做精修）。向量版=余弦相似度（scene_sem），无向量=bigram 保底
+                    v_match = _scene_match(i, t, t1)
+                    s = density * (1.0 + t_match * 2.0) + sem_weight * v_match
+                    if s > best_s + 1e-9:
+                        best_s, best_t = s, t
+                    t += scan_step
             s0 = min(max(0.0, best_t), max(0.0, vdur - sub_d))
             s1 = min(vdur, s0 + sub_d)
             spans.append((round(s0, 3), round(s1, 3)))
@@ -5512,6 +5730,12 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     scene_alignment = {}
     # ① 算法语义对齐（两种模式都做）：用 VLM 描述/台词/实体与解说词做 bigram 重叠，
     #    在时间顺序约束下为每句挑最相关场景。这是「LLM 失败也不会声画错位」的保底通道。
+    # 【2026-11-10 语义对齐重构】先按解说词句型打标签：钩子/引用/留白/过渡不参与
+    # 语义匹配（只有具象句吸附画面），再统一传入 max_jump_seconds 跳跃上限。
+    _beat_classes = _classify_sentences(texts)
+    _log.info('[DIAG] 句类标签: %s' %
+              ({k: _beat_classes.count(k) for k in (KIND_HOOK, KIND_CONCRETE, KIND_QUOTE,
+                                                  KIND_BLANK, KIND_TRANS)}))
     if scene_descs:
         # scene_story 必传：剧情理解层的『这段在讲什么』比 VLM 的浅层画面描述
         # 更贴解说词。此前漏传，等于把最贵的语义信息白扔，只剩「警察/车内」这类
@@ -5520,7 +5744,9 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                     or _ACTION_WEIGHT)
         scene_alignment = _algo_align_beats_to_scenes(texts, scene_descs, asr=asr,
                                                       scene_story=scene_story,
-                                                      action_weight=_aw)
+                                                      action_weight=_aw,
+                                                      beat_kinds=_beat_classes,
+                                                      max_jump_seconds=NAR_MAX_JUMP_SECONDS)
         _log.info('[DIAG] 算法语义对齐(保底): %d/%d 句' % (len(scene_alignment), len(texts)))
 
     if _fast:
@@ -5547,7 +5773,8 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                     timeout=int(params.get('align_timeout') or 150), progress=progress,
                     use_cloud=bool(params.get('align_cloud', False)))
                 scene_alignment = _sanitize_alignment(scene_alignment, _algo_base,
-                                                      scene_descs, len(texts))
+                                                      scene_descs, len(texts),
+                                                      max_jump_seconds=NAR_MAX_JUMP_SECONDS)
                 _log.info('[DIAG] 分批语义对齐完成: %d/%d 句' % (len(scene_alignment), len(texts)))
             except AbortError:
                 raise
@@ -5614,7 +5841,11 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                                              # 向量版（余弦）机制已接入，重测赢了把 _SEM_WEIGHT 调开
                                              sem_weight=_SEM_WEIGHT,
                                              scene_sem=_scene_sem,
-                                             progress=progress)
+                                             progress=progress,
+                                             # 【2026-11-10】句类分流 + 跳跃上限：与 DP 对齐
+                                             # 同一套单调约束（倒流/超跳 -inf）。
+                                             beat_kinds=_beat_classes if len(_beat_classes) == len(texts) else None,
+                                             max_jump_seconds=NAR_MAX_JUMP_SECONDS)
     if not segs:
         raise RuntimeError('画面分配失败（视频可能过短）')
 
