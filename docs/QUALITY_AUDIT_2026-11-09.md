@@ -32,18 +32,18 @@
 | B3 | **动作镜头在平衡档几乎看不见**：相似帧复用阈值 0.85 时，100 个点只发 4 次 VLM 请求，但静态对话/片头动画把细微动作一起抹掉 | `_vlm_sample_timeline` 的 `_SIM_THRESHOLD` | "打戏/吻戏被剪掉"的根因之一（另一根因是 A1 与 B4） | 档位化阈值 0.60/0.85/0.93/0.97（已做）；平衡档是否再收紧到 0.90 待定 | 部分解决 |
 | B4 | **中文 bigram 对同义动作失明**：「接吻」与「吻在一起」共享 0 个 bigram，动作镜头永远匹配不上 | `_algo_align_beats_to_scenes` 的 `_bg` | 用户最在意的"重点画面配解说"落不了地 | 动作词归一（接吻/热吻/相拥 → 同一「吻」）+ 命中加权 1.6（极致 2.0） | **已修** v1.4.27 |
 | B5 | **引用台词让位依赖 8B 模型的判别力**："从候选里挑一个"的问法会硬选（12 条全不对也挑），且会误配到片源之外的台词 | `_pick_quote_span` / `_score_block` | 误配 = 播错画面，比念稿更伤 | 已改为"逐条判 0/1 + 写死判据 + 按 60 秒一块由近及远"；再加"片内限制" | 部分解决（误配仍可能） |
-| B6 | **记录页 `w/h` 字段未写**：历史条目的标签显示成孤零零的 "x" | `webui_server._record_history` | 记录页信息不完整 | 写入成片宽高 | **未修** |
+| B6 | **记录页 `w/h` 字段未写**：历史条目的标签显示成孤零零的 "x" | `webui_server._record_history` | 记录页信息不完整 | 写入成片宽高 | **已修**（`_probe_video_size` 一次拿宽高） |
 | B7 | **数据目录埋在 `_internal` 内**：`webui_output` / `models` / `material_library` / `history.json` 全在安装目录里 | 打包结构 `FrameCut.spec` | 升级/换机时数据易丢；"程序"与"数据"边界混乱 | 数据外置到 `%LOCALAPPDATA%\FrameCut` 或用户目录，安装目录只放程序 | **未修** |
 | B8 | **配音是硬成本且不可并行**：IndexTTS2 单实例 6.6GB，12GB 显存放不下第二个；37 句约 7 分钟 | `tts_engines.local_tts_speak` | 任何档位的一次成片都不可能低于 ~10 分钟 | ① 句子更凝练（稿子侧）；② 支持多进程分句（需更大显存或 CPU 慢） | 未修（属物理限制） |
-| B9 | **CI 绿灯未确认**：GitHub 匿名 API 限额耗尽，最后一次 CI 结果没查到 | `.github/workflows/ci.yml` | 主干可能带红 | 用带 token 的 `gh` 或本地复现确认；把 flake8 门禁扩到全仓 | **待确认** |
+| B9 | **CI 绿灯未确认**：GitHub 匿名 API 限额耗尽，最后一次 CI 结果没查到 | `.github/workflows/ci.yml` | 主干可能带红 | 用带 token 的 `gh` 或本地复现确认；把 flake8 门禁扩到全仓 | **已修**（带 token 确认 CI 绿；flake8 --select=F 扩全仓并清零） |
 
 ### C. 轻微
 
 | # | 问题 | 位置 | 影响 | 处理方向 | 状态 |
 |---|---|---|---|---|---|
 | C1 | 缓存版本号在测试里硬编码，每次改前端都要改测试 | `tests/test_preset_no_native_dialog.py` | 易漏、CI 假红 | 改为"js 与 css 一致且 ≥ 阈值" | **已修** |
-| C2 | `origin` 仍是 https，本机直连被墙，只能走 SSH 推 | `.git/config` | 后续推送需显式指定 SSH 地址 | 把 origin 换成 SSH，或写一段 `push.sh` | **未修** |
-| C3 | 回滚包 `Desktop\FrameCut_old_1426` 占 6.9G | 桌面 | 占盘 | 确认稳定后删除 | 未处理 |
+| C2 | `origin` 仍是 https，本机直连被墙，只能走 SSH 推 | `.git/config` | 后续推送需显式指定 SSH 地址 | 把 origin 换成 SSH，或写一段 `push.sh` | **已修**（origin=SSH + `push.sh`） |
+| C3 | 回滚包 `Desktop\FrameCut_old_1426` 实测仅 **395MB**（6.9G 是现役 `FrameCut` 目录含运行时下载的模型，不可删） | 桌面 | 占盘 | 确认稳定后删除 `FrameCut_old_1426` | 待确认删除 |
 | C4 | 语速靠生成后 atempo（1.12×），非模型原生 | `tts_engines._apply_speed` | >1.3× 时音质轻微劣化 | 保持 ≤1.2×；更大提速改走换引擎 | 已定策略 |
 | C5 | 引用让位的匹配只在本机模型上验证过；接云端模型（DeepSeek）未做 | `_pick_quote_span` | 云端用户拿不到同等效果 | 抽象出统一接口，云端只做匹配不做配音 | **未修** |
 
