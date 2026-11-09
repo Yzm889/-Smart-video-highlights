@@ -36,7 +36,9 @@ def test_prosody_marks_reach_new_engines():
 
 
 def test_label_reports_new_engine(monkeypatch):
+    # 两个引擎现在都真的装好了，必须同时钉住状态，否则断言依赖本机资产
     monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: False)
     monkeypatch.setattr(T, 'load_ai_config',
                         lambda: {'tts_local': {'engine': 'auto'}})
     monkeypatch.setattr(T, '_cloud_tts_ready', lambda: False)

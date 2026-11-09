@@ -85,7 +85,8 @@ def tts_local_cfg():
     return {'engine': str(c.get('engine') or 'auto').lower(),
             'voice': str(c.get('voice') or 'zh-CN-XiaoxiaoNeural').strip(),
             'rate': rate or '+0%',
-            'cosy_voice': str(c.get('cosy_voice') or '中文女').strip()}
+            'cosy_voice': str(c.get('cosy_voice') or '中文女').strip(),
+            'instruct': str(c.get('instruct') or '').strip()}
 
 # ---------------------------------------------------------------------------
 # 🎬 电影解说引擎：分段→ASR台词→解说稿→时间轴→配音→混音→字幕
@@ -1059,9 +1060,11 @@ def local_tts_speak(text, out_path):
                 continue
             wv = stem + '_qwen3.wav'
             _hint, _vec = _tts2_style(text)
-            # 韵律标记在这里真正被消费：情绪词进 VoiceDesign 的 instruct
+            # 韵律标记在这里真正被消费：情绪词进 VoiceDesign 的 instruct；
+            # 用户在配置里写的音色描述优先于默认描述。
+            _base = cfg.get('instruct') or T2.DEFAULT_INSTRUCT
             if T2.qwen3tts_speak(_tts2_clean(text), wv,
-                                 instruct=T2.DEFAULT_INSTRUCT + _hint):
+                                 instruct=_base + _hint):
                 return _ok('qwen3tts', wv)
             _tts_note_fail('qwen3tts')
         elif eng == 'indextts2':

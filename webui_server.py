@@ -5516,22 +5516,38 @@ def tts_model_download_async(model_key=None):
 
 
 def tts_test_speak(text='这是一段中文配音试听。'):
-    """试听一句：返回 (ok, msg, engine, rel_path)。rel_path 相对 OUTDIR，供 /media 播放。"""
+    """试听一句：返回 (ok, msg, engine, rel_path)。rel_path 相对 OUTDIR，供 /media 播放。
+
+    v1.4.17：只走**当前选中的**新引擎，绝不走 local_tts_speak 的完整兜底链。
+    旧实现里 Qwen3 一旦启动慢/失败就静默降级到 IndexTTS2（首次加载实测 202s），
+    而前端 fetch 没有超时也没有阶段提示 —— 用户只看到「⏳ 合成中…」永远不结束。
+    试听是「听这一个引擎」，降级应该报清楚，而不是偷偷换一个要等三分钟的引擎。
+    """
+    import tts2_engines as T2
     text = (text or '').strip() or '这是一段中文配音试听。'
     out_dir = os.path.join(OUTDIR, '_tts_test')
     os.makedirs(out_dir, exist_ok=True)
-    # 文件名带时间戳：连点两次「试听」时，旧实现的固定名 sample.mp3 会被第二次
-    # 先删后写，导致第一次正在播放的请求读到 404 或半截文件
-    out = os.path.join(out_dir, 'sample_%d.mp3' % int(time.time() * 1000))
-    ok, eng, path = local_tts_speak(text, out)
-    if not ok or not os.path.exists(path):
-        hint = ''
-        if not edge_tts_available() and edge_tts_dead_reason():
-            hint = '（edge-tts 暂时不可用：%s）' % edge_tts_dead_reason()
-        return False, '配音失败：没有可用的配音引擎，先装 edge-tts 或下载离线模型' + hint, None, ''
-    rel = os.path.relpath(path, OUTDIR).replace('\\', '/')
-    label = {'edge': 'edge-tts', 'sherpa': '离线模型', 'sapi': '系统 SAPI'}.get(eng, eng or '未知')
-    return True, '✅ 试听已生成（%s，%.1f 秒）' % (label, probe_audio_len(path) or 0), eng, rel
+    cfg = tts_local_cfg()
+    eng_set = cfg.get('engine') or 'auto'
+    use_idx = (eng_set == 'indextts2'
+               or (eng_set == 'auto' and not T2.qwen3tts_ready()
+                   and T2.indextts2_ready()))
+    # 时间戳文件名避免连点两次互相覆盖；新引擎输出 wav
+    out = os.path.join(out_dir, 'sample_%d.wav' % int(time.time() * 1000))
+    if use_idx:
+        ok = T2.indextts2_speak(text, out)
+        eng = 'indextts2'
+    else:
+        ok = T2.qwen3tts_speak(text, out, instruct=(cfg.get('instruct') or None))
+        eng = 'qwen3tts'
+    if not ok or not os.path.isfile(out):
+        name = 'IndexTTS2' if use_idx else 'Qwen3-TTS'
+        return False, ('试听失败：%s 未就绪或加载超时。请在设置页看「引擎状态」，'
+                       '或稍后再点一次（首次加载模型较慢）' % name), None, ''
+    rel = os.path.relpath(out, OUTDIR).replace('\\', '/')
+    label = {'qwen3tts': 'Qwen3-TTS · VoiceDesign',
+             'indextts2': 'IndexTTS2'}.get(eng, eng)
+    return True, '✅ 试听已生成（%s，%.1f 秒）' % (label, probe_audio_len(out) or 0), eng, rel
 
 
 

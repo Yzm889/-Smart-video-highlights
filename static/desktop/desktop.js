@@ -1912,17 +1912,34 @@ async function fillTtsSettings(){
   } catch(e){ $('ttsTestHint').textContent = '读取配音配置失败：' + e.message; }
 }
 $('btnTtsTest').addEventListener('click', async () => {
-  const b = $('btnTtsTest');
+  const b = $('btnTtsTest'), hint = $('ttsTestHint');
+  if(b.dataset.busy === '1') return;       // 连点不叠加请求
+  b.dataset.busy = '1';
   b.disabled = true; b.textContent = '⏳ 合成中…';
+  const ctrl = new AbortController();
+  // 新一代引擎首次要加载模型（Qwen3 ~30s / IndexTTS2 ~3min），给足 210s，
+  // 但一定要有上限：以前没有超时，后端卡住时按钮就永远停在「合成中」。
+  const kill = setTimeout(() => ctrl.abort(), 210000);
+  const ticks = [
+    setTimeout(() => { if(b.dataset.busy === '1') hint.textContent = '正在加载配音模型（首次约半分钟）…'; }, 8000),
+    setTimeout(() => { if(b.dataset.busy === '1') hint.textContent = '仍在合成；若选的是 IndexTTS2，首次加载约 3 分钟…'; }, 45000)
+  ];
   try {
     const r = await fetch('/api/tts/test', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({text: '这是一段配音试听，听听这个声音合不合适。'})});
+      body: JSON.stringify({text: '这是一段配音试听，听听这个声音合不合适。'}),
+      signal: ctrl.signal});
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || out.message || '试听失败');
-    $('ttsTestHint').textContent = '当前引擎：' + (out.engine || '?') + ' · ' + (out.message || '');
+    hint.textContent = '当前引擎：' + (out.engine || '?') + ' · ' + (out.message || '');
     if(out.file) new Audio('/media/' + out.file).play().catch(() => {});
-  } catch(e){ $('ttsTestHint').textContent = '❌ ' + e.message; }
-  b.disabled = false; b.textContent = '🧪 试听';
+  } catch(e){
+    hint.textContent = '❌ ' + (e.name === 'AbortError'
+      ? '试听超时（3 分半）。引擎可能仍在首次加载，稍后再点一次即可'
+      : e.message);
+  } finally {
+    clearTimeout(kill); ticks.forEach(clearTimeout);
+    b.dataset.busy = ''; b.disabled = false; b.textContent = '🧪 试听';
+  }
 });
 $('btnTtsReset').addEventListener('click', async () => {
   const b = $('btnTtsReset');

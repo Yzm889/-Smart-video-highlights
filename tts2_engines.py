@@ -62,7 +62,7 @@ def indextts2_ready():
 class _Serve:
     """常驻 worker：启动一次，之后每行 JSON 一个请求 / 一行 JSON 一个应答。"""
 
-    def __init__(self, name, cmd, ready_timeout=900):
+    def __init__(self, name, cmd, ready_timeout=150):
         self.name = name
         self.cmd = cmd
         self.ready_timeout = ready_timeout
@@ -92,8 +92,13 @@ class _Serve:
             env['HF_ENDPOINT'] = 'https://hf-mirror.com'
             for _k in ('HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'ALL_PROXY'):
                 env.pop(_k, None)
+            # stderr 落日志：以前 DEVNULL 把 worker 的加载报错全吞了，
+            # 试听卡住时完全看不到原因（这次事故的直接教训）。
+            os.makedirs(TTS2_DIR, exist_ok=True)
+            self._errf = open(os.path.join(TTS2_DIR, self.name + '.log'),
+                              'a', encoding='utf-8')
             p = subprocess.Popen(self.cmd, stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=self._errf,
                                  text=True, encoding='utf-8', errors='replace',
                                  bufsize=1, env=env)
         except Exception as e:
@@ -121,7 +126,7 @@ class _Serve:
         self.proc = None
         return False
 
-    def ask(self, req, timeout=300):
+    def ask(self, req, timeout=180):
         with self.lock:
             if self.proc is None or self.proc.poll() is not None:
                 if not self._start():
@@ -156,14 +161,20 @@ _IDX = None
 def _get_qwen():
     global _QWEN
     if _QWEN is None:
-        _QWEN = _Serve('qwen3tts', [QWEN_PY, QWEN_WORKER, 'serve', QWEN_MODEL])
+        # -u 关掉 stdout 块缓冲；ready_timeout 按引擎实际冷启动给
+        _QWEN = _Serve('qwen3tts',
+                       [QWEN_PY, '-u', QWEN_WORKER, 'serve', QWEN_MODEL],
+                       ready_timeout=150)
     return _QWEN
 
 
 def _get_idx():
     global _IDX
     if _IDX is None:
-        _IDX = _Serve('indextts2', [IDX_PY, IDX_WORKER, 'serve', IDX_REPO, IDX_CKPT])
+        # IndexTTS2 首次要换入 5.5GB 权重，实测约 202s，给足 360s
+        _IDX = _Serve('indextts2',
+                      [IDX_PY, '-u', IDX_WORKER, 'serve', IDX_REPO, IDX_CKPT],
+                      ready_timeout=360)
     return _IDX
 
 

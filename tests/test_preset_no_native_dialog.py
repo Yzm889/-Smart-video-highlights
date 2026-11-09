@@ -80,4 +80,4 @@ def test_cache_version_bumped():
     html = _load(HTML)
     vers = re.findall(r'desktop\.(?:js|css)\?v=(\d+)', html)
     assert len(vers) == 2, 'js/css 都应带版本号：%r' % vers
-    assert vers[0] == vers[1] == '8', '版本未 bump 到 8：%r' % vers
+    assert vers[0] == vers[1] == '9', '版本未 bump 到 9：%r' % vers
