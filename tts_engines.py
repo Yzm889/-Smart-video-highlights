@@ -403,14 +403,16 @@ def cosyvoice_resident_ready():
 
 
 def _auto_order():
-    """auto 模式（v1.4.16 起：只用新一代引擎）。
+    """auto 模式（v1.4.20 起：克隆优先，VoiceDesign 退回「造音色」专职）。
 
-    主人拍板「放弃以前的」：SAPI / edge / MeloTTS / ChatTTS / CosyVoice
-    全部退出默认链。旧引擎代码仍保留（显式指定 engine=edge 等仍可用，
-    也是回滚通道），但 auto 与设置页下拉都不再出现它们。
-    两个新引擎都没装好时 local_tts_speak 会明确失败，由前端提示安装，
-    而不是像过去那样静默掉到机械音。"""
-    return ['qwen3tts', 'indextts2']
+    旧版把 qwen3tts 排第一，于是整片每一句都独立 VoiceDesign 一次 —— 每次都按
+    文字重新采样一个发音人，实测组内基频离散 16.8%~19.3%（贪心解码也 17.5%），
+    听感就是「一句一个人」。用户 2026-11-09 实跑「惩罚者前二十分钟」当场指出。
+
+    现在反过来：IndexTTS2 拿**一条固定的参考音**做零样本克隆（离散 1.4%），
+    参考音由 Qwen3 按用户的音色描述造一次并缓存（见 T2.voice_ref）。两个引擎都
+    不可用时 local_tts_speak 会明确失败，由前端提示安装。"""
+    return ['indextts2', 'qwen3tts']
 
 
 def _first_available_engine(order):
@@ -1073,8 +1075,11 @@ def local_tts_speak(text, out_path):
                 continue
             wv = stem + '_indextts2.wav'
             _hint, _vec = _tts2_style(text)
+            # 固定参考音：整片同一把嗓子。造不出来（Qwen3 没装好/坏了）就退回
+            # worker 自带示例音——仍然是一个固定的人，绝不退回逐句造音色。
+            _ref = T2.voice_ref(cfg.get('instruct'))
             # 情绪词映射成 8 维向量，不再像旧引擎那样被 _strip_tts_markup 丢掉
-            if T2.indextts2_speak(_tts2_clean(text), wv, emo_vector=_vec):
+            if T2.indextts2_speak(_tts2_clean(text), wv, emo_vector=_vec, spk=_ref):
                 return _ok('indextts2', wv)
             _tts_note_fail('indextts2')
         elif eng == 'edge':
@@ -1322,7 +1327,9 @@ def local_tts_label():
     if _first == 'qwen3tts':
         return 'Qwen3-TTS · VoiceDesign（文字造音色）'
     if _first == 'indextts2':
-        return 'IndexTTS2（情感 / 时长可控）'
+        # 说清楚「为什么不再是一句一个音色」：Qwen3 只负责造一条参考音，
+        # 整片由 IndexTTS2 克隆它。用户听到的是同一个人从片头讲到片尾。
+        return 'IndexTTS2 · 克隆音色（整片同一把嗓子，情感可控）'
     if _first == 'edge':
         return 'edge-tts（%s）' % cfg['voice']
     if _first == 'cosyvoice':

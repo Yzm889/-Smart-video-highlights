@@ -8,6 +8,7 @@
 替换目录，放里面会被替换脚本迁走或直接丢失。可用 FRAMECUT_TTS2_DIR 覆盖。
 """
 import atexit
+import hashlib
 import json
 import os
 import queue
@@ -487,6 +488,79 @@ def release_engines():
                 pass
             stopped.append(srv.name)
     return stopped
+
+
+def _stop_engine(srv):
+    """停掉单个常驻 worker（造完音色样本要把 Qwen3 的 5.2GB 让给 IndexTTS2）。"""
+    if srv is None:
+        return False
+    with srv.lock:
+        p = srv.proc
+        if srv.starting:
+            return False        # 正在拉起，杀了等于自杀
+        srv.proc = None
+        if p is None or p.poll() is not None:
+            return False
+        try:
+            p.stdin.close()
+        except Exception:
+            pass
+        try:
+            p.kill()
+        except Exception:
+            pass
+        return True
+
+
+# 造音色样本用的固定台词：只用于「定人」，不进成片，所以内容无意义、只求咬字完整。
+VOICE_REF_TEXT = '这是本次解说的音色样本，接下来，由我为你讲述这个故事。'
+_VOICE_REF_LOCK = threading.Lock()
+
+
+def voice_ref(instruct=None):
+    """本次解说固定使用的参考音 wav；造不出来返回 None（调用方退回引擎自带示例音）。
+
+    【为什么必须「只造一次」】Qwen3-TTS 的 VoiceDesign 是**按文字描述现场造音色**，
+    每一条请求都重新采样一个发音人 —— 同一段 instruct、三句不同文本，实测基频中位数
+    105.7 / 96.8 / 89.4 Hz（离散 16.8%）；改成批量一次生成也一样（100.4 / 91.6 /
+    111.1 Hz，19.3%）；关掉采样走贪心（do_sample=False）仍然 17.5%。
+    听感就是「每句换一个人」，这正是用户说的「音色、语气都割裂」。
+
+    修法：让 Qwen3 只造**一条**音色样本并缓存，整片用 IndexTTS2 拿它当零样本参考音
+    克隆。同样三句实测 F0 100.2 / 98.9 / 99.3 Hz，离散 **1.4%**，而且每句 6.7~9.5s
+    （Qwen3 逐句要 11~30s）。
+
+    缓存键带 instruct 指纹：用户改音色描述 → 自动造一条新的，不复用旧音色。
+    """
+    txt = str(instruct or DEFAULT_INSTRUCT).strip()
+    try:
+        key = hashlib.md5(txt.encode('utf-8')).hexdigest()[:10]
+    except Exception:
+        key = 'default'
+    try:
+        os.makedirs(BIN_DIR, exist_ok=True)
+    except Exception:
+        return None
+    dst = os.path.join(BIN_DIR, 'voice_ref_%s.wav' % key)
+    if os.path.isfile(dst) and os.path.getsize(dst) > 20000:
+        return dst
+    with _VOICE_REF_LOCK:
+        if os.path.isfile(dst) and os.path.getsize(dst) > 20000:
+            return dst
+        if not qwen3tts_ready():
+            return None
+        tmp = dst + '.tmp.wav'
+        if not qwen3tts_speak(VOICE_REF_TEXT, tmp, instruct=txt):
+            return None
+        if not os.path.isfile(tmp) or os.path.getsize(tmp) < 20000:
+            return None
+        try:
+            os.replace(tmp, dst)
+        except Exception:
+            return None
+        # 音色已经落盘，Qwen3 的显存在这条片子里再没用了；让给 IndexTTS2（6.6GB）。
+        _stop_engine(_QWEN)
+        return dst
 
 
 def _ollama_model_size(model, base='http://127.0.0.1:11434'):

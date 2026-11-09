@@ -21,7 +21,9 @@ SPEC = os.path.join(ROOT, 'FrameCut.spec')
 
 
 def test_auto_order_is_only_new_engines():
-    assert T._auto_order() == ['qwen3tts', 'indextts2']
+    # v1.4.20：克隆优先。qwen3tts 逐句 VoiceDesign 会每句换一个发音人
+    # （F0 离散 16.8%），只留作“造一次音色样本”和克隆故障时的兜底。
+    assert T._auto_order() == ['indextts2', 'qwen3tts']
     for legacy in ('edge', 'sapi', 'sherpa', 'chattts', 'cosyvoice'):
         assert legacy not in T._auto_order(), '旧引擎 %s 不该回默认链' % legacy
 
@@ -47,23 +49,31 @@ def test_label_reports_new_engine(monkeypatch):
     assert '未安装' in T.local_tts_label()
 
 
-def test_auto_dispatches_to_qwen3tts(monkeypatch, tmp_path):
+def test_auto_dispatches_to_indextts2_with_fixed_ref(monkeypatch, tmp_path):
+    """v1.4.20：auto 走克隆，且每句都带同一个参考音。
+
+    以前这条断言的是「auto 交给 qwen3tts」——恰恰是音色割裂的根源：
+    VoiceDesign 每条请求重新采样发音人。现在 Qwen3 只负责造参考音。
+    """
     monkeypatch.delattr(T._TLS, 'tts_engine', raising=False)
     monkeypatch.setattr(T, 'load_ai_config',
                         lambda: {'tts_local': {'engine': 'auto'}})
-    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: True)
+    monkeypatch.setattr(T2, 'voice_ref', lambda instruct=None: r'C:\ref\voice.wav')
     called = []
 
-    def _speak(text, out, instruct=None):
-        called.append((text, instruct))
+    def _speak(text, out, **kw):
+        called.append((text, kw))
         with open(out, 'wb') as f:
             f.write(b'RIFF' + b'0' * 100)
         return True
-    monkeypatch.setattr(T2, 'qwen3tts_speak', _speak)
+    monkeypatch.setattr(T2, 'indextts2_speak', _speak)
     ok, eng, path = T.local_tts_speak(
         '注意看{情绪:紧张}，这个男人叫弗兰克。', str(tmp_path / 'n.wav'))
-    assert ok is True and eng == 'qwen3tts' and called, (ok, eng, called)
-    assert '紧张' in called[0][1], '情绪词必须进 VoiceDesign 的 instruct'
+    assert ok is True and eng == 'indextts2', (ok, eng)
+    assert called[0][1].get('spk') == r'C:\ref\voice.wav', '必须传固定参考音'
+    assert called[0][1].get('emo_vector') == T2.EMO_VECTORS['紧张'], '情绪词必须进向量'
+    assert '{' not in called[0][0] and '情绪' not in called[0][0]
     assert os.path.isfile(path)
 
 
