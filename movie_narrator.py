@@ -2712,6 +2712,61 @@ def _tier_field_spec(fields):
     return _TIER_FIELD_SPEC.get(int(fields or 5)) or _TIER_FIELD_SPEC[5]
 
 
+def _detect_opening(scene_descs, asr, vdur, opening_window=90.0):
+    """A1 片头识别：识别「片头 logo/主题曲」区段，返回正片起点 content_start。
+
+    只检查前 opening_window(90) 秒，三条同时成立才算片头：
+      条件① 无成句对白（去标点后 ≥6 字才算成句）；
+      条件② 相邻采样点 VLM 描述相似度均值 > 0.95（logo 定格反复同描）；
+      条件③ 描述里命中 "logo/片头/title" 等特征词。
+    三条件全满足 → 返回最后一个片头采样点 end 之后的时间点；否则返回 0（不跳过）。
+    检测过程任何异常 → 返回 0，绝不让片头判断破坏出片主流程。
+    """
+    import difflib as _dl
+    try:
+        if not scene_descs or not vdur or vdur <= 0:
+            return 0.0
+        # 只看前 90 秒内的采样点
+        _win = [s for s in scene_descs if float(s.get('start', 0)) < opening_window]
+        if len(_win) < 2:
+            return 0.0   # 片头窗口采样点不足，无法可靠判定 → 不跳过
+
+        # 条件①：前 90 秒无成句对白（去标点后 <6 字的碎片不算「成句」）
+        def _sentence(txt):
+            _t = re.sub(r'[^\w]', '', str(txt or ''))
+            return len(_t) >= 6
+        for seg in (asr or []):
+            try:
+                if float(seg.get('start', 0)) < opening_window and _sentence(seg.get('text')):
+                    return 0.0   # 有对白 → 不是纯片头
+            except (ValueError, TypeError):
+                continue
+
+        # 条件②：相邻 VLM 描述相似度均值 > 0.95
+        def _desc(s):
+            return ('%s %s' % (s.get('event', ''), s.get('summary', ''))).strip()
+        _sims = []
+        for a, b in zip(_win, _win[1:]):
+            da, db = _desc(a), _desc(b)
+            if not da or not db:
+                _sims.append(0.0)   # 描述缺失按不相似处理，避免空串撞出高相似
+                continue
+            _sims.append(_dl.SequenceMatcher(None, da, db).ratio())
+        if not _sims or (sum(_sims) / len(_sims)) <= 0.95:
+            return 0.0
+
+        # 条件③：命中片头特征词
+        _kw = ('logo', '片头', 'title', '标题', 'intro', '字幕')
+        _joined = ' '.join(_desc(s) for s in _win).lower()
+        if not any(k in _joined for k in _kw):
+            return 0.0
+
+        # 三条件全满足：正片起点 = 最后一个片头采样点之后
+        return max(0.0, max(float(s.get('end', 0)) for s in _win))
+    except Exception:
+        return 0.0   # 检测失败默认不跳过
+
+
 def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0,
                          cancel_check=None, quality=None, tier=None):
     """时间轴驱动建立画面索引，跳过场景检测。
@@ -2729,11 +2784,17 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     重新开始时按「视频指纹+模型+抽样间隔」校验后跳过已完成的场景，
     全部完成并落缓存后删除进度文件。中途取消不丢已分析结果。"""
     if not _w.vlm_enabled():
+        _log.warning('[A1] VLM 未启用（ai_config.json 的 vlm.enabled=false 或未配置），画面索引为空；'
+                     '解说配画面将退化为纯位置均匀兜底，声画可能系统性错位。请在 AI 配置里启用本地视觉模型。')
         return []
     try:
-        if not _w.vlm_ping()[0]:
+        _ping = _w.vlm_ping()
+        if not _ping[0]:
+            _log.warning('[A1] VLM 探活失败（%s），画面索引为空；解说配画面将退化为纯位置均匀兜底。',
+                         (_ping[1] if len(_ping) > 1 else '探活未通过'))
             return []
-    except Exception:
+    except Exception as _e:
+        _log.warning('[A1] VLM 探活异常（%s），画面索引为空；解说配画面将退化为纯位置均匀兜底。', _e)
         return []
 
     # 路径修复：progress_state 里的 run_dir 可能是相对路径，转成绝对路径
@@ -3137,6 +3198,16 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             _log.info('[DIAG] VLM断点续跑: 已全部完成，清理进度文件')
         except OSError:
             pass
+    # A1 片头识别：检测正片起点写回 progress，供下游「解说起点对齐」使用。
+    # 检测失败/无片头时 content_start=0，下游不跳过（行为与旧版完全一致）。
+    try:
+        _content_start = _detect_opening(results, asr, vdur)
+        if progress is not None:
+            progress['content_start'] = _content_start
+        if _content_start > 0:
+            _log.info('[DIAG] 检测到片头，正片起点 content_start=%.1fs' % _content_start)
+    except Exception:
+        pass   # 片头检测异常不影响出片
     return results
 
 
@@ -4143,7 +4214,7 @@ def _compose_scene_texts(scenes, scene_story=None):
     return out
 
 
-def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None, scene_story=None, sem_weight=1.2, scene_sem=None):
+def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_captions=None, scene_alignment=None, scenes=None, scene_story=None, sem_weight=1.2, scene_sem=None, progress=None):
     """按解说词字数分配画面区间 ——「解说驱动剪辑」的核心。
 
     返回 (spans, narr_map)：
@@ -4158,7 +4229,18 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
       不齐一律忽略向量退回 bigram，绝不让向量问题打断分配。
     - 向量已 L2 归一化（余弦=点积）。传入后 _scene_match 用余弦替换 bigram——
       口语解说 vs 白描场景描述的字面差异，bigram 抓不住（A/B 实测仅 +1.8% 噪声）。
+
+    progress：片头检测写入的进度字典；progress['content_start'] 为正片起点（秒），
+    所有解说 span 的起点 ≥ content_start；progress=None / 字段缺失 / 为 0 / 越界
+    → 一律退回 0（从 0 秒开始，与旧版行为逐字节一致）。
     """
+    # A1 片头让位：解说起点对齐正片起点 content_start（前置流程写入 progress）。
+    try:
+        content_start = float(progress.get('content_start', 0) or 0) if progress else 0.0
+    except Exception:
+        content_start = 0.0
+    if content_start < 0 or content_start > vdur:
+        content_start = 0.0   # 越界值兜底 0，绝不让片头判断破坏出片
     cps = float(cps or NAR_SCRIPT_CPS)
     n = len(texts or [])
     if n == 0 or vdur <= 0:
@@ -4295,7 +4377,8 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
 
     spans = []
     narr_map = []
-    last_end = 0.0
+    # A1：last_end 兼作单调起点游标，首段 lo = max(lo, last_end) 即起点 ≥ content_start
+    last_end = content_start
 
     for i, d in enumerate(durs):
         # 每节拆成多个子片段：节时长 / 目标片段时长，至少 1 个
@@ -5249,6 +5332,11 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     # 注意：12GB显存无法同时加载VLM(6.5GB)+LLM(9GB)，并行会导致Ollama反复换模型，
     # 反而比串行慢2-3倍且容易卡死。TTS(网络/CPU)+裁剪(GPU编码NVENC)仍可并行，不冲突。
     up('建立画面索引（均匀抽样）', 44)
+    # 画面索引为空时（VLM 未启用/失败），画面理解层整体缺席 → 下游对齐只剩位置均匀兜底，
+    # 是对齐质量的致命退化，必须让用户在 UI 上一眼看到，不能只在日志里悄悄死掉。
+    if not _w.vlm_enabled():
+        _warn(progress, 'VLM 未启用：跳过画面索引，解说只能按时间位置均匀配画面，声画可能错位。'
+                        '请在「AI 配置 → ⑤ 本地视觉理解」勾选启用并测试通过。')
     # VLM缓存：同视频同模型不重复分析（最耗时的步骤，1小时视频约20分钟）
     vlm_model = (load_ai_config().get('vlm') or {}).get('model', 'default')
     # 质量模式判定提前到缓存之前：画面理解的「覆盖策略」变了（全片覆盖 vs 台词过滤），
@@ -5525,7 +5613,8 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                                              # （口语 vs 白描，字面抓不住 paraphrase）→ 默认关；
                                              # 向量版（余弦）机制已接入，重测赢了把 _SEM_WEIGHT 调开
                                              sem_weight=_SEM_WEIGHT,
-                                             scene_sem=_scene_sem)
+                                             scene_sem=_scene_sem,
+                                             progress=progress)
     if not segs:
         raise RuntimeError('画面分配失败（视频可能过短）')
 
