@@ -4895,6 +4895,177 @@ def align_script_to_segments(events, segs, asr):
     return [(segs[i][0], desc) for i, desc in assigned]
 
 
+_QUOTE_RE = re.compile(r'[\u201c"\u300c\u300e]([^\u201d"\u300d\u300f]{2,80})[\u201d"\u300d\u300f]')
+
+
+_SPEAK_RE = re.compile(r'(说|问|喊|叫|答|应|道|回|念|嘟囔|低语|开口|写道|写着)[^，。；]{0,8}[：:]?\s*$')
+
+
+def _quote_is_dialogue(line, pos):
+    """引号里是不是「说的话」。
+
+    稿子里的引号有两种用途：引用台词（“我不想交朋友。”）和标注称谓
+    （“惩罚者”的制服、“厨房爱尔兰帮”最后一个幸存者）。只有前者该转原声，
+    后者转过去会把画面切到八竿子打不着的镜头。判据：引号前紧跟冒号或说话动词。
+    """
+    head = str(line or '')[:pos]
+    tail = head[-14:]
+    if '：' in tail or ':' in tail:
+        return True
+    return bool(_SPEAK_RE.search(tail))
+
+
+def _quote_texts(line, only_dialogue=True):
+    """取出解说句里引用的台词（中文弯引号 / 直角引号 / 英文双引号）。"""
+    out = []
+    for m in _QUOTE_RE.finditer(str(line or '')):
+        t = m.group(1).strip(' ，。、！？…—-')
+        if len(t) < 2:
+            continue
+        if only_dialogue and not _quote_is_dialogue(line, m.start()):
+            continue
+        out.append(t)
+    return out
+
+
+def _norm_cn(s):
+    return re.sub(r'[^\u4e00-\u9fa5A-Za-z0-9]', '', str(s or ''))
+
+
+def _literal_score(a, b):
+    from difflib import SequenceMatcher
+    x, y = _norm_cn(a), _norm_cn(b)
+    if len(x) < 2 or len(y) < 2:
+        return 0.0
+    return SequenceMatcher(None, x, y).ratio()
+
+
+def _score_block(qtext, block):
+    """让模型逐条判「是否表达了同一意思」，返回命中条目。
+
+    【为什么不是「从这些里挑一个」】实测 8B 模型面对「挑一个」时总会硬选一个：
+    给 12 条（都不对）它能挑出「每个人都以为你是智障」；给 60 条又过度保守全判 0。
+    换成逐条判 0/1 并写死判据（同一件事/同一个态度，措辞沾边不算）后校准正常：
+    正确区间命中「但我不是在找同伴」，错误区间返回空。
+    """
+    listing = '\n'.join('%d. %s' % (i + 1, c[2]) for i, c in enumerate(block))
+    prompt = ('解说稿用一句话概括了某句台词的意思，作者写的是：「%s」\n\n'
+              '下面是对白候选。请逐条判断：这一条**是否表达了同样的意思**。\n'
+              '判据：说的是同一件事、同一个态度；只是情绪相近或措辞沾边都不算。\n'
+              '输出 JSON：{"hit": [命中序号...]}；一条都不像就输出 {"hit": []}。\n\n'
+              '候选：\n%s' % (qtext, listing))
+    r = _llm_text(prompt, timeout=120)
+    if not r:
+        return []
+    try:
+        m = re.search(r'\{.*\}', r, re.S)
+        hits = json.loads(m.group(0) if m else r).get('hit') or []
+    except Exception:
+        return []
+    out = []
+    for h in hits:
+        try:
+            i = int(h)
+        except Exception:
+            continue
+        if 1 <= i <= len(block):
+            out.append(block[i - 1])
+    return out
+
+
+def _pick_quote_span(qtext, asr, near=None, window=240.0, block_sec=60.0,
+                     max_blocks=8, src_dur=None):
+    """在台词时间轴里找这句话对应哪一条。返回 (start, end, text, how) 或 None。
+
+    两级匹配，因为稿子是**意译**、字幕是官方译法：
+      · 字面：SequenceMatcher 去标点后比对，「我死了，柯蒂斯，你没听说吗？」
+        对「我是死了，科提斯，你没听说吗？」能到 0.8+，直接命中；
+      · 语义：字面救不了「我不想交朋友」对「但我不是在找同伴」（实词重合 0），
+        交给本地模型**按 60 秒一块、由近及远**逐块判分，第一块有命中就停。
+    宁可漏（照常念稿），不可错（播错画面比念稿更伤）。
+    """
+    cands = []
+    for a in (asr or []):
+        try:
+            s0 = float(a.get('start') or 0)
+            e0 = float(a.get('end') or 0)
+        except Exception:
+            continue
+        t = str(a.get('text') or '').strip()
+        if e0 <= s0 or not t:
+            continue
+        if src_dur and e0 > float(src_dur) + 0.5:
+            continue          # 台词在片外（片源只截了一段）→ 不能引用
+        if near is not None and not (near - window <= s0 <= near + window):
+            continue
+        cands.append((s0, e0, t))
+    if not cands:
+        return None
+    best = max(cands, key=lambda c: _literal_score(qtext, c[2]))
+    if _literal_score(qtext, best[2]) >= 0.55:
+        return best[0], best[1], best[2], 'literal'
+    if not _local_model_available():
+        return None
+    anchor = near if near is not None else cands[len(cands) // 2][0]
+    # 由近及远：0, +1, -1, +2, -2 …（单位 block_sec）
+    order = [0]
+    for k in range(1, max_blocks):
+        order += [k, -k]
+    order = order[:max_blocks]
+    for k in order:
+        b0 = anchor + k * block_sec
+        block = [c for c in cands if b0 <= c[0] < b0 + block_sec]
+        if not block:
+            continue
+        block.sort(key=lambda c: c[0])
+        hits = _score_block(qtext, block)
+        if not hits:
+            continue
+        hits.sort(key=lambda c: (-_literal_score(qtext, c[2]), abs(c[0] - anchor)))
+        pick = hits[0]
+        _log.info('[DIAG] 引用语义匹配：「%s」→ 「%s」（%d 条命中）'
+                  % (qtext, pick[2][:30], len(hits)))
+        return pick[0], pick[1], pick[2], 'semantic'
+    return None
+
+
+def _detect_quote_slots(narr, segs, asr, progress=None, params=None,
+                        narr_map=None, src_dur=None):
+    """把「引用台词」的解说句标成原声段（整句让位）。
+
+    用户 2026-11-09 定下的口径：稿子里引用台词的那一句**整句不念**，
+    直接播原片对应画面与原声，字幕换成该台词的中文——比旁白转述有力。
+    返回 {句序号: {text, start, end, how, quote}}，匹配不上就不含该句（照常念稿）。
+    """
+    slots = {}
+    if not asr or not narr:
+        return slots
+    for i, line in enumerate(narr):
+        for q in _quote_texts(line):
+            near = None
+            try:
+                if narr_map and len(narr_map) == len(segs):
+                    _idxs = [j for j, g in enumerate(narr_map) if g == i]
+                    near = float(segs[_idxs[0]][0]) if _idxs else None
+                elif i < len(segs):
+                    near = float(segs[i][0])
+            except Exception:
+                near = None
+            hit = _pick_quote_span(q, asr, near=near, src_dur=src_dur)
+            if not hit:
+                continue
+            s0, e0, txt, how = hit
+            slots[i] = {'text': txt, 'start': round(s0, 2), 'end': round(e0, 2),
+                        'how': how, 'quote': q}
+            _log.info('[DIAG] 引用让位 第%d句（%s）:「%s」→ %.1f-%.1fs「%s」'
+                      % (i + 1, how, q[:20], s0, e0, txt[:30]))
+            break
+    if slots and progress is not None:
+        progress['quote_slots'] = slots
+        progress['phase'] = '引用台词转原声 %d 处' % len(slots)
+    return slots
+
+
 def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_name='', events=None):
     """🎭 剧情驱动核心（解说驱动剪辑）：
         完整解说稿 → 按每句字数分配画面 → 返回「解说词与画面一一对应」的区间。
@@ -5296,6 +5467,13 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
 
     # events 保持旧格式返回，供 diag 与「按解说词重新匹配分镜」复用
     events = [{'desc': t[:40], 'keywords': []} for t in texts]
+    # 引用台词 → 原声让位：必须在配音之前定下来，第一步配音才能跳过这些句子
+    try:
+        if params.get('quoteFromScript', True):
+            _detect_quote_slots(texts, segs, asr, progress=progress, params=params,
+                                narr_map=narr_map, src_dur=vdur)
+    except Exception as _eq:
+        _log.info('[DIAG] 引用识别失败（照常念稿）: %s' % _eq)
     return segs, texts, asr, {}, 'movie', events, narr_map
 
 
@@ -5309,7 +5487,7 @@ def _tts_concurrency():
     return max(1, min(5, v))
 
 
-def _generate_all_tts(narr, run_dir, progress=None):
+def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
     """逐段生成所有配音，返回 [(index, clip_path), ...]。不做视频裁剪。
     断点续跑：已存在且有效的 narr%d.mp3 直接跳过，只生成缺失的。
     【并发（S6）】默认路径（本地引擎 + edge-tts 可用）用 TTS_CONCURRENCY 路并发：
@@ -5330,6 +5508,7 @@ def _generate_all_tts(narr, run_dir, progress=None):
     _tcfg = load_ai_config().get('tts') or {}
     use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))
     skipped = 0
+    skip_idx = set(skip_idx or ())   # 原声让位段：本来就不配音
     _tts_diag = []   # 诊断日志：[{idx, engine, ok, error, duration_ms, source}]
     _n_workers = _tts_concurrency()
     _parallel = (not use_mimo) and bool(edge_tts_available()) and _n_workers > 1
@@ -5345,6 +5524,11 @@ def _generate_all_tts(narr, run_dir, progress=None):
     pending = []   # [(idx, txt)]
     for i, txt in enumerate(narr):
         if not (txt or '').strip():
+            continue
+        if i in skip_idx:
+            skipped += 1
+            _tts_diag.append({'idx': i, 'engine': 'quote', 'ok': True, 'error': '',
+                              'duration_ms': 0, 'source': 'quote'})
             continue
         if is_white_line(txt):
             # 「（留白）」是功能标记不是台词：这条不配音，让原片声音飞。
@@ -5478,7 +5662,8 @@ def _generate_all_tts(narr, run_dir, progress=None):
     # 留白段本来就不该有配音，绝不能算「失败」再补念一遍——
     # 否则第一轮跳过了，第二轮又把它念出来（实测踩中，功能等于没做）。
     failed = [i for i in range(len(narr))
-              if i not in success_idx and (narr[i] or '').strip()
+              if i not in success_idx and i not in skip_idx
+              and (narr[i] or '').strip()
               and not is_white_line(narr[i])]
     if failed:
         _log.info('[DIAG] TTS重试 %d 个失败段落' % len(failed))
@@ -5819,6 +6004,48 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                 tts_results = new_tts_results
                 _log.info('[DIAG] B-roll后重建配音索引: %d段配音' % len(tts_results))
             _log.info('[DIAG] B-roll插入后: %d个画面段, %d段解说词' % (len(segs), len(narr)))
+    # === 引用台词让位（用户 2026-11-09 定：整句让位）===
+    # 稿子里引用台词的那句不念，画面换成原片那句台词的镜头，字幕换成台词中文
+    # （片源是英文原声，不打字幕观众听不懂），混音时原声抬到 1.0。
+    _qslots = {}
+    try:
+        _qslots = {int(k): v for k, v in (state.get('quote_slots') or {}).items()}
+    except Exception:
+        _qslots = {}
+    if _qslots:
+        _applied = 0
+        for _i, _info in sorted(_qslots.items()):
+            try:
+                _qs = float(_info.get('start'))
+                _qe = float(_info.get('end'))
+            except Exception:
+                continue
+            if _qe <= _qs:
+                continue
+            # 该句可能占多段画面（高密度分镜）：按 narr_map 找到整组，
+            # 把整组平均铺在台词区间上——段数不变，拼接后正好是那句台词。
+            if narr_map and len(narr_map) == len(segs):
+                _idxs = [j for j, g in enumerate(narr_map) if g == _i]
+            else:
+                _idxs = [_i] if 0 <= _i < len(segs) else []
+            if not _idxs:
+                continue
+            # 保序：台词镜头若落在上一段中间，把上一段收口到这里
+            _prev = _idxs[0] - 1
+            if _prev >= 0 and segs[_prev][1] > _qs > segs[_prev][0] + 1.0:
+                segs[_prev] = (segs[_prev][0], _qs)
+            _step = (_qe - _qs) / float(len(_idxs))
+            for _k, _j in enumerate(_idxs):
+                segs[_j] = (round(_qs + _k * _step, 3), round(_qs + (_k + 1) * _step, 3))
+            _t = str(_info.get('text') or '').strip()
+            if _t and 0 <= _i < len(narr):
+                narr[_i] = _t
+            _applied += 1
+        if _applied:
+            _skipq = set(_qslots)
+            tts_results = [(i, p) for i, p in tts_results if i not in _skipq]
+            _log.info('[DIAG] 引用让位 %d 句：不配音、画面切原片台词、字幕换台词、原声 1.0'
+                      % _applied)
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
     # 留白段一律不播：稿子先配了音、之后才在调整页改成「（留白）」时，
     # 旧音频还躺在 tts_state 里，不过滤就会照放——用户听到「留白」却有人声。
@@ -5944,8 +6171,12 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     # 特意把话筒交回给画面。混音默认在解说缝隙只留 0.5 音量，这里显式抬到 1.0。
     _white_spans = [(float(s), float(e)) for i, (s, e) in enumerate(segs)
                     if i < len(narr) and is_white_line(narr[i])]
+    # 引用让位段同样要原声 1.0：这一段就是让原片自己说话
+    for _qi in _qslots:
+        if 0 <= _qi < len(segs):
+            _white_spans.append((float(segs[_qi][0]), float(segs[_qi][1])))
     if _white_spans:
-        _log.info('[DIAG] 留白段 %d 处：不配音、不出字幕、原声全量保留' % len(_white_spans))
+        _log.info('[DIAG] 原声全量段 %d 处（留白+引用让位）' % len(_white_spans))
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans,
                                      quote_spans=quote_spans, white_spans=_white_spans)
@@ -5984,7 +6215,10 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     # === 两步走模式：先生成配音，等用户确认后再合成 ===
     if tts_only:
         up('逐段生成配音', 55)
-        tts_results = _generate_all_tts(narr, run_dir, progress=progress)
+        # 引用让位的句子不配音（原声直接播原片）
+        _qslots = (progress or {}).get('quote_slots') or {}
+        tts_results = _generate_all_tts(narr, run_dir, progress=progress,
+                                        skip_idx=set(_qslots))
         import json as _json
         tts_state = {
             'video_path': os.path.abspath(video_path),
@@ -5993,6 +6227,8 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             'narr_map': list(narr_map) if narr_map else [],
             'params': params,
             'tts_results': [[i, p] for i, p in tts_results],
+            # 引用台词让位段：第二步合成据此换画面/换字幕/原声 1.0
+            'quote_slots': (progress or {}).get('quote_slots') or {},
             'movie_name': movie_name,
             'asr': asr if asr else [],
             # 剪辑方案随状态保存：第二步合成时据此决定「是否真剪」，
