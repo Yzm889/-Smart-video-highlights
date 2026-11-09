@@ -97,6 +97,19 @@ def _clamp_line(text, max_chars):
 
     return window.strip()
 
+WHITE_MARKS = ('（留白）', '(留白)')
+
+
+def is_white_line(text):
+    """「（留白）」功能标记判定：这句解说闭嘴，让原片声音飞。
+
+    用户 2026-11-09 特别交代：解说之后留出原声画面（钩子引出后面的原声）
+    是必须功能。判定必须全局一致——同一句在配音、字幕、混音三处若有任何
+    一处把它当普通台词，就会听到「括号留白括号」这种人声，等于功能失效。
+    """
+    return str(text or '').strip() in WHITE_MARKS
+
+
 def _clean_caption(text):
     """清洗单条字幕文案：去首尾空白/引号、把内部换行替换为空格、合并多余空格。
     LLM/模板输出偶尔带换行或引号，若原样写入 SRT 会破坏字幕时间轴格式。

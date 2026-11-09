@@ -17,7 +17,7 @@ from cache_utils import (ANALYSIS_VERSION, _file_fp, _analysis_cache_load, _anal
 from ffmpeg_utils import (AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS,
     ffmpeg_exe, ffmpeg_run, probe_audio_len, _has_audio_track,
     probe_size, probe_is_hdr)
-from text_utils import _clean_caption
+from text_utils import _clean_caption, is_white_line
 from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
     _compose_narration_video, attach_importance, _warn, _fit_spans_to_voice)
 from beat_analysis import _cached_scene_cuts
@@ -5346,6 +5346,13 @@ def _generate_all_tts(narr, run_dir, progress=None):
     for i, txt in enumerate(narr):
         if not (txt or '').strip():
             continue
+        if is_white_line(txt):
+            # 「（留白）」是功能标记不是台词：这条不配音，让原片声音飞。
+            # 以前只跳过空串，留白段会被念成「括号留白括号」，功能直接失效。
+            skipped += 1
+            _tts_diag.append({'idx': i, 'engine': 'white', 'ok': True, 'error': '',
+                              'duration_ms': 0, 'source': 'white'})
+            continue
         existing = os.path.join(run_dir, 'narr%d.mp3' % i)
         if os.path.exists(existing) and os.path.getsize(existing) > 100:
             results.append((i, existing))
@@ -5468,7 +5475,11 @@ def _generate_all_tts(narr, run_dir, progress=None):
     _log.info('[DIAG] TTS第一轮完成: %d/%d段' % (len(results), len(narr)))
     # 失败重试：第一轮没成功的段落再试一次（可能是瞬时网络抖动或熔断恢复）
     success_idx = set(i for i, _ in results)
-    failed = [i for i in range(len(narr)) if i not in success_idx and (narr[i] or '').strip()]
+    # 留白段本来就不该有配音，绝不能算「失败」再补念一遍——
+    # 否则第一轮跳过了，第二轮又把它念出来（实测踩中，功能等于没做）。
+    failed = [i for i in range(len(narr))
+              if i not in success_idx and (narr[i] or '').strip()
+              and not is_white_line(narr[i])]
     if failed:
         _log.info('[DIAG] TTS重试 %d 个失败段落' % len(failed))
         _time.sleep(1.0)  # 等熔断恢复
@@ -5809,6 +5820,14 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                 _log.info('[DIAG] B-roll后重建配音索引: %d段配音' % len(tts_results))
             _log.info('[DIAG] B-roll插入后: %d个画面段, %d段解说词' % (len(segs), len(narr)))
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
+    # 留白段一律不播：稿子先配了音、之后才在调整页改成「（留白）」时，
+    # 旧音频还躺在 tts_state 里，不过滤就会照放——用户听到「留白」却有人声。
+    if any(is_white_line(t) for t in narr):
+        _before = len(tts_results)
+        tts_results = [(i, p) for i, p in tts_results
+                       if not (i < len(narr) and is_white_line(narr[i]))]
+        if len(tts_results) != _before:
+            _log.info('[DIAG] 留白段剔除残留配音 %d 条' % (_before - len(tts_results)))
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 60)
         # 【2026-11-09】先让画面装得下配音。合成端把每段配音裁在本段内（防跨段重叠），
@@ -5819,22 +5838,38 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             _d = probe_audio_len(_clip) or 0.0
             if _d > 0:
                 _vdur[_ti] = _d
+        _vdur_pos = None      # 段位置 -> 配音秒数（一一对应时用）
         if _vdur:
             _tail = _voice_tail(params)
             # 高密度分镜下 1 句占多段（实测 43 段 ↔ 37 句）：必须按 narr_map 归组补，
             # 否则「第 i 段配第 i 句」会错配到别的句子身上，补了也白补。
-            _groups = narr_map if (narr_map and len(narr_map) == len(segs)) else None
-            segs, _fit = _fit_spans_to_voice(segs, _vdur, cut_info['src_dur'],
-                                             tail=_tail, groups=_groups)
+            _groups = narr_map if (narr_map and len(narr_map) == len(segs)
+                                   and len(narr_map) != len(narr)) else None
+            if _groups:
+                segs, _fit = _fit_spans_to_voice(segs, _vdur, cut_info['src_dur'],
+                                                 tail=_tail, groups=_groups)
+                # 分组时逐段时长与配音不一一对应，微变速会算错倍数 → 关掉
+            else:
+                # 段与解说一一对应（含 B-roll / 原声引用 / 留白）：
+                # 按位置映射，留白与 B-roll 段没有配音，必须跳过——
+                # 否则第 N 句的时长会套到第 N 段无解说的画面上，后面全部错位。
+                _vdur_pos = {}
+                _k = 0
+                for _pos in range(len(segs)):
+                    _txt = narr[_pos] if _pos < len(narr) else ''
+                    if not str(_txt or '').strip() or is_white_line(_txt):
+                        continue
+                    if _k in _vdur:
+                        _vdur_pos[_pos] = _vdur[_k]
+                    _k += 1
+                segs, _fit = _fit_spans_to_voice(segs, _vdur_pos, cut_info['src_dur'],
+                                                 tail=_tail)
             if _fit['grew']:
                 _log.info('[DIAG] 画面补长 %d 段 / +%.1fs（让每句念完再切，留 %.2fs 气口）'
                           % (_fit['grew'], _fit['added'], _tail))
-            if _groups:
-                # 分组时逐段时长与配音不一一对应，微变速会算错倍数 → 关掉
-                _vdur = {}
-        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress,
-                                                       voice_durs=_vdur or None,
-                                                       voice_tail=_voice_tail(params))
+        src_video, segs, cut_sec = _cut_video_by_spans(
+            video_path, segs, run_dir, progress,
+            voice_durs=_vdur_pos, voice_tail=_voice_tail(params))
         cut_info['cut_sec'] = cut_sec
     # 剪辑后聚合：把同属一个beat的多个seg在剪辑后的时间轴上合并（此时无空白，聚合安全）
     if orig_narr_map and len(orig_narr_map) == orig_segs_count and len(segs) == orig_segs_count:
@@ -5901,13 +5936,19 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     up('混音+烧字幕+配乐', 80)
     # 字幕必须去掉 TTS 标记：narr 里带 {情绪:紧张}/{停顿:0.5}，直接烧进字幕
     # 会在画面里显示成「{/情绪}{/停顿}」（实测成片即如此）。
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)')
+    narr_srt = ['' if is_white_line(t)
                 else _clean_caption(strip_tts_markup(t)) for t in narr]
     # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
     params = attach_importance(params, progress, segs)
+    # 留白段（nar稿里写「（留白）」）必须原声全量：它不是"没有解说"，而是
+    # 特意把话筒交回给画面。混音默认在解说缝隙只留 0.5 音量，这里显式抬到 1.0。
+    _white_spans = [(float(s), float(e)) for i, (s, e) in enumerate(segs)
+                    if i < len(narr) and is_white_line(narr[i])]
+    if _white_spans:
+        _log.info('[DIAG] 留白段 %d 处：不配音、不出字幕、原声全量保留' % len(_white_spans))
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans,
-                                     quote_spans=quote_spans)
+                                     quote_spans=quote_spans, white_spans=_white_spans)
     if progress:
         progress['done'] = True; progress['pct'] = 100
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/') if final else ''
@@ -6099,14 +6140,20 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     up('混音+烧字幕+配乐', 70)
     # 字幕必须去掉 TTS 标记：narr 里带 {情绪:紧张}/{停顿:0.5}，直接烧进字幕
     # 会在画面里显示成「{/情绪}{/停顿}」（实测成片即如此）。
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)')
+    narr_srt = ['' if is_white_line(t)
                 else _clean_caption(strip_tts_markup(t)) for t in narr]
     # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
     params = attach_importance(params, progress, segs)
     quote_spans = []   # 本路径（一步直出）无用户调整段，原声引用由上层路径处理
+    # 留白段（nar稿里写「（留白）」）必须原声全量：它不是"没有解说"，而是
+    # 特意把话筒交回给画面。混音默认在解说缝隙只留 0.5 音量，这里显式抬到 1.0。
+    _white_spans = [(float(s), float(e)) for i, (s, e) in enumerate(segs)
+                    if i < len(narr) and is_white_line(narr[i])]
+    if _white_spans:
+        _log.info('[DIAG] 留白段 %d 处：不配音、不出字幕、原声全量保留' % len(_white_spans))
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans,
-                                     quote_spans=quote_spans)
+                                     quote_spans=quote_spans, white_spans=_white_spans)
     if progress:
         progress['done'] = True; progress['pct'] = 100
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/') if final else ''

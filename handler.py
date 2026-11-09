@@ -782,13 +782,15 @@ class Handler(BaseHTTPRequestHandler):
         st['voice_spans'] = voice_spans
         # 重新合成
         segs = [tuple(s) for s in st['segs']]
-        narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else t for t in narr]
+        narr_srt = ['' if _w.is_white_line(t) else t for t in narr]
         tps = [(t[0], t[1], t[2]) for t in tts_paths]
         vs = {int(k): tuple(v) for k, v in voice_spans.items()}
         music_path = st.get('music_path')
         params = st.get('params', {})
+        _ws = [(float(a), float(b)) for i, (a, b) in enumerate(segs)
+               if i < len(narr) and _w.is_white_line(narr[i])]
         final = _w._compose_narration_video(st['src_video'], segs, narr_srt, tps, run_dir, params,
-                                         music_path=music_path, voice_spans=vs)
+                                         music_path=music_path, voice_spans=vs, white_spans=_ws)
         st['final'] = os.path.abspath(final) if final else None
         # [P0-1] 状态原子写：与 webui_server._save_tts_state 同步
         _w._atomic_json_dump(state_path, st)

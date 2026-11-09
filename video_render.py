@@ -10,7 +10,7 @@ import logging, os, sys
 # ---- 直接导入：已拆出的工具模块 ----
 from ffmpeg_utils import ffmpeg_run, probe_audio_len, _has_audio_track, AbortError, _TLS, \
     probe_is_hdr, tonemap_chain, tonemap_available, BT709_TAGS, probe_size
-from text_utils import _clamp_line, _clean_caption, _strip_tts_markup
+from text_utils import _clamp_line, _clean_caption, _strip_tts_markup, is_white_line
 from tts_engines import _ping_preferred_engine, local_tts_speak, strip_tts_markup, sapi_tts
 from ai_providers import _aborted, load_ai_config
 
@@ -264,7 +264,7 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
             raise AbortError('用户取消了任务')
         if not (txt and txt.strip()):
             continue
-        if txt.strip() in ('（留白）', '(留白)'):
+        if is_white_line(txt):
             continue   # 留白段：不配音不出字幕，让原片声音飞（第五原则·留白意识）
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
         span_len = max(0.0, seg_span[1] - seg_span[0])
@@ -325,7 +325,7 @@ def _render_narrate(video_path, segs, narr, params, run_dir, progress=None, musi
         voice_durs[i] = v_len
 
     # ---- 字幕文案：剥 TTS 标记、留白置空（P1-1 单遍合并需在剪辑前烧字幕，两遍管线共用）----
-    narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else strip_tts_markup(t) for t in narr]
+    narr_srt = ['' if is_white_line(t) else strip_tts_markup(t) for t in narr]
 
     # ---- 第二阶段：按分镜真剪辑，并应用 P1-2 画面微变速（setpts）----
     _single_pass = False
@@ -1245,7 +1245,7 @@ def _build_subtitle_style(params):
 
 
 def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params, music_path=None,
-                             voice_spans=None, burned=False, quote_spans=None):
+                             voice_spans=None, burned=False, quote_spans=None, white_spans=None):
     """把解说配音按时间轴混入原视频，烧录解说字幕，可选叠加背景音乐，输出 final.mp4。
     - narr[i] 对应 segs[i]（镜头段时间轴），作为该段字幕与配音文案。
     - tts_paths: [(audio_path, start_sec)]，按各自起始时间对齐到时间轴。
@@ -1338,6 +1338,10 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
     fparts = []
     orig_label = ''                     # 原声那一路的标签（没有原声时为空）
     next_idx = 1                        # 下一个音频输入索引（显式记录，避免 count("-i") 脆弱）
+    # 「原声全量」区间 = 用户标记的原声引用 + 稿子里的（留白）段。
+    # 留白不是"没解说"，是特意把话筒交回给画面：默认缝隙只有 0.5 音量，
+    # 不显式抬到 1.0 就听不清原片在说什么，钩子等于白钩。
+    _loud_spans = list(quote_spans or []) + list(white_spans or [])
     if has_orig_audio:
         inputs += ['-i', video_path]    # 1 = 原视频(音频)
         if _mix_tts:
@@ -1345,7 +1349,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             # 原声引用段（quote_spans）优先级最高：这段原声 1.0 全量保留
             #（博主的「原片原声引用」：解说提到的话/精彩片段，原片自己说）
             expr = '0.5'
-            for _qs, _qe in (quote_spans or []):
+            for _qs, _qe in _loud_spans:
                 expr = "if(between(t,%.2f,%.2f),1.0,%s)" % (_qs, _qe, expr)
             for item in _mix_tts:
                 np_, od, _oe, _ovol, _nv, _fi_x, _fo_x = _tt_span(item)
@@ -1358,7 +1362,7 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
         else:
             # 无解说（纯 B-roll/原声引用）：引用段原声 1.0，其余 0.5
             _expr = '0.5'
-            for _qs, _qe in (quote_spans or []):
+            for _qs, _qe in _loud_spans:
                 _expr = "if(between(t,%.2f,%.2f),1.0,%s)" % (_qs, _qe, _expr)
             fparts.append("[1:a]volume='%s':eval=frame[orig]" % _expr)
         orig_label = '[orig]'

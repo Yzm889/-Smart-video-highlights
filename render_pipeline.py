@@ -27,6 +27,7 @@ import logging
 from ffmpeg_utils import probe_audio_len
 from video_render import _cut_video_by_spans, _compose_narration_video, attach_importance
 from movie_narrator import _generate_all_tts, _clean_caption, _w
+from text_utils import is_white_line
 
 _log = logging.getLogger('framecut.render')
 
@@ -176,14 +177,16 @@ def dispatch_render(req, prog):
         # 4) 混音 + 烧字幕 + 导出
         prog['phase'] = '草稿：混音、烧字幕、导出' if is_draft else '混音、烧字幕、导出成片'
         prog['pct'] = 85
-        narr_srt = ['' if (t or '').strip() in ('（留白）', '(留白)') else _clean_caption(t)
+        narr_srt = ['' if is_white_line(t) else _clean_caption(t)
                     for t in narr]
         # [P0-2] 配乐情绪包络：把编辑台确认过的重要度带进混音阶段。
         # 注意用 new_spans（剪辑后时间轴）的段数对齐——这里是真正交付给混音的段数。
         params = attach_importance(params, prog, new_spans)
+        _white_spans = [(float(a), float(b)) for i, (a, b) in enumerate(new_spans)
+                        if i < len(narr) and is_white_line(narr[i])]
         final = _compose_narration_video(
             cut_video, new_spans, narr_srt, tts_paths, out_dir, params,
-            music_path=None, voice_spans=voice_spans)
+            music_path=None, voice_spans=voice_spans, white_spans=_white_spans)
 
         if not final or not os.path.exists(final) or os.path.getsize(final) < 1024:
             raise RuntimeError('合成未产出有效视频（ffmpeg 或配音可能失败），请查看日志')
