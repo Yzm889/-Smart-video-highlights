@@ -8,6 +8,10 @@ Pillow>=9.0.0
 psutil>=5.9.0
 soundfile>=0.12.0
 imageio-ffmpeg>=0.4.8
+# 桌面窗口（desktop.py 的 webview.create_window / create_file_dialog）。
+# 2026-11-09 事故：它一直没写进本文件，靠本机手工装过；构建环境里缺了就
+# 打出一个**开不出窗口**的 EXE（--selftest 直接 ModuleNotFoundError: webview）。
+pywebview>=5.0.0
 
 # === AI 模型 ===
 torch>=2.0.0

@@ -58,3 +58,7 @@ dist/
 build/
 FrameCut-windows-x64-*.zip
 _keep_cfg.json
+dist_v*/
+build_v*/
+dist_v*/
+build_v*/
