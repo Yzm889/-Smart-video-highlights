@@ -4327,10 +4327,17 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
             # 对齐窗口被前面几句吃光了（多句共用一个高分场景时会发生）。
             # 【不能】退回等比例位置——那会从 228 秒直接跳到几百秒外；
             # 正确做法是从窗口末端就近向后延伸（最多 2 个子片段长），画面保持连续推进。
-            lo = min(max(lo, 0.0), max(0.0, vdur - sub_d))
-            hi = min(vdur - sub_d, lo + sub_d * 2)
-            if hi < lo:
-                hi = min(vdur - sub_d, lo + sub_d)
+            #
+            # 【必须夹住 last_end】旧写法 min(max(lo,0), vdur-sub_d) 会把起点
+            # 拉到 last_end 之前：实测片尾兜底把最后一段从 1195.0 拉回 1192.9，
+            # 画面倒着走 2.1 秒。起点只许前进，不许回退。
+            lo = max(last_end, min(max(lo, 0.0), max(0.0, vdur - sub_d)))
+            hi = min(vdur, lo + sub_d * 2)
+            if hi <= lo:
+                # 片尾已没有完整 sub_d 的空间：给一小段，画面仍然只向前
+                hi = min(vdur, max(lo + 0.2, last_end + 0.2))
+                lo = max(0.0, min(lo, hi - 0.2))
+            hi = min(max(hi, lo + 0.2), vdur)
 
         # 窗口均分成 n_sub 个子区，每个子区选台词密度最高的起点。
         win_len = max(0.0, hi - lo)

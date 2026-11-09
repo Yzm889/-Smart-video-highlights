@@ -140,3 +140,17 @@ def test_lexicon_covers_common_action_words():
     assert MN._action_tokens('狙击枪瞄准远处') & MN._action_tokens('他举枪射击')
     assert MN._action_tokens('工人用锤子敲打墙壁')
 
+
+
+def test_allocated_spans_never_run_backwards():
+    """画面只能向前推进，绝不允许倒着放。
+
+    实测：片尾兜底分支把最后一段的起点从 1195.0 拉回 1192.9，倒流 2.1 秒。
+    """
+    import movie_narrator as MN
+    texts = ['这是第%d句解说词，讲的是工地上的事情。' % (i + 1) for i in range(12)]
+    spans, nmap = MN._allocate_script_spans(texts, 1200.0, asr=None)
+    assert spans
+    for k in range(1, len(spans)):
+        assert spans[k][0] >= spans[k - 1][0] - 1e-6, \
+            '第%d段起点 %.2f 倒退到 %.2f' % (k, spans[k][0], spans[k - 1][0])
