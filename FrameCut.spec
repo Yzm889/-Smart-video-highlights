@@ -19,7 +19,12 @@ a = Analysis(
     pathex=[],
     binaries=[],
     # 静态前端资源打进包内（服务按 HERE/static 寻址；frozen 下 HERE=包目录）
-    datas=[('static', 'static')] + _whisper_datas,
+    # v1.4.16：常驻 worker 是独立 venv 用子进程调用的**脚本文件**，
+    # 不在模块图里，不显式登记的话打包版里两个新引擎全部不可用
+    # （旧 cosyvoice/chattts worker 就是漏在这里，成品里一直静默失效）。
+    datas=[('static', 'static'),
+           ('qwen3tts_worker.py', '.'),
+           ('indextts2_worker.py', '.')] + _whisper_datas,
     hiddenimports=[
         # 重依赖的次级导入，模块图常跟不全（缺一个运行时就是 err/弹窗）
         'faster_whisper',

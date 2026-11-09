@@ -5,6 +5,7 @@ import os, time
 from ai_providers import load_ai_config, _gpu_slot
 from ffmpeg_utils import _TLS, _concat_audio_clips
 from text_utils import _split_long_text, _strip_tts_markup
+import tts2_engines as T2   # v1.4.16 新一代配音引擎（VoiceDesign / IndexTTS2）
 
 import json
 import queue
@@ -401,23 +402,26 @@ def cosyvoice_resident_ready():
 
 
 def _auto_order():
-    """auto 模式的引擎顺序（v1.4.14 起：本地优先）。
+    """auto 模式（v1.4.16 起：只用新一代引擎）。
 
-    装了本地引擎就别把联网的 edge-tts 当主路径 —— edge 是逆向的微软朗读服务，
-    断流 / 限流在客户端无解，已有 TLS 探测、熔断、降权也只是减少白等，
-    根子上要「不押它」。本地一个都没装时，前面几项的 available() 会依次
-    continue，自然回落到 edge → sapi，与旧版行为一致。
-
-    这份顺序同时被 local_tts_speak / local_tts_label / _ping_preferred_engine
-    共用，避免三处各写一份导致「标签说谎」「自检白跑一次联网」。"""
-    fb = ['cosyvoice'] if (_COSY_IN_FALLBACK_CHAIN and cosyvoice_resident_ready()) else []
-    return fb + ['chattts', 'sherpa', 'edge', 'sapi']
+    主人拍板「放弃以前的」：SAPI / edge / MeloTTS / ChatTTS / CosyVoice
+    全部退出默认链。旧引擎代码仍保留（显式指定 engine=edge 等仍可用，
+    也是回滚通道），但 auto 与设置页下拉都不再出现它们。
+    两个新引擎都没装好时 local_tts_speak 会明确失败，由前端提示安装，
+    而不是像过去那样静默掉到机械音。"""
+    return ['qwen3tts', 'indextts2']
 
 
 def _first_available_engine(order):
     """按顺序返回第一个真正能用的引擎名（子句切分 / 标签 / 自检共用）。"""
     for e in order:
-        if e == 'edge':
+        if e == 'qwen3tts':
+            if T2.qwen3tts_ready():
+                return e
+        elif e == 'indextts2':
+            if T2.indextts2_ready():
+                return e
+        elif e == 'edge':
             if edge_tts_available():
                 return e
         elif e == 'cosyvoice':
@@ -885,10 +889,7 @@ def _ping_preferred_engine(run_dir):
     except Exception:
         eng = 'auto'
     if eng == 'auto':
-        # v1.4.14：本地优先后 auto 的首选往往是本地引擎，没必要为它去 ping
-        # 联网服务；只有真的回落到 edge 才做端到端试点。
-        if _first_available_engine(_auto_order()) != 'edge':
-            return
+        return  # v1.4.16：auto 只含本地新引擎，没有联网 edge 需要端到端试点
     elif eng != 'edge':
         return  # 首选非 edge：各自本地化引擎的可用性检查已足够，无需端到端 ping
     probe_text = '你好，这里是配音引擎自检。'
@@ -937,7 +938,11 @@ def local_tts_speak(text, out_path):
     # CosyVoice 进自动兜底链的前提：常驻 worker 三件套齐全（否则 venv 单发
     # 子进程逐句重载 9GB 模型，实测 ~100s/句）。用户显式选 cosyvoice 不受此限。
     _cosy_fb = ['cosyvoice'] if (_COSY_IN_FALLBACK_CHAIN and cosyvoice_resident_ready()) else []
-    if eng_set == 'edge':
+    if eng_set == 'qwen3tts':
+        order = ['qwen3tts', 'indextts2']
+    elif eng_set == 'indextts2':
+        order = ['indextts2', 'qwen3tts']
+    elif eng_set == 'edge':
         order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
     elif eng_set == 'cosyvoice':
         order = ['cosyvoice', 'edge', 'chattts', 'sherpa', 'sapi']
@@ -1049,7 +1054,26 @@ def local_tts_speak(text, out_path):
 
     # === 短文本 / 子句切分回退：走原有引擎选择逻辑 ===
     for eng in order:
-        if eng == 'edge':
+        if eng == 'qwen3tts':
+            if not T2.qwen3tts_ready():
+                continue
+            wv = stem + '_qwen3.wav'
+            _hint, _vec = _tts2_style(text)
+            # 韵律标记在这里真正被消费：情绪词进 VoiceDesign 的 instruct
+            if T2.qwen3tts_speak(_tts2_clean(text), wv,
+                                 instruct=T2.DEFAULT_INSTRUCT + _hint):
+                return _ok('qwen3tts', wv)
+            _tts_note_fail('qwen3tts')
+        elif eng == 'indextts2':
+            if not T2.indextts2_ready():
+                continue
+            wv = stem + '_indextts2.wav'
+            _hint, _vec = _tts2_style(text)
+            # 情绪词映射成 8 维向量，不再像旧引擎那样被 _strip_tts_markup 丢掉
+            if T2.indextts2_speak(_tts2_clean(text), wv, emo_vector=_vec):
+                return _ok('indextts2', wv)
+            _tts_note_fail('indextts2')
+        elif eng == 'edge':
             if not edge_tts_available():
                 continue
             # 【不能剥标记】edge_tts_speak 靠 has_tts_markup 走 SSML 分支，
@@ -1249,12 +1273,35 @@ def _cloud_tts_ready():
             return True
     return False
 
+
+def _tts2_style(text):
+    """把 prosody_for_tts 注入的 {情绪:xx} 标记转成新引擎能用的风格信息。
+
+    旧引擎一律 _strip_tts_markup 把标记丢光，所以「换好嗓子还是平读」；
+    这里把同一个情绪词喂给 VoiceDesign 的 instruct 与 IndexTTS2 的 8 维向量。"""
+    m = re.search(r'\{情绪[:：]([^}]*)\}', text or '')
+    name = (m.group(1).strip() if m else '')
+    vec = T2.EMO_VECTORS.get(name)
+    return ('，语气要求：%s' % name if name else ''), vec
+
+
+def _tts2_clean(text):
+    """新引擎不认 {停顿:n} / {情绪:xx} 字面量：停顿转成逗号，其余标记剥掉。"""
+    t = re.sub(r'\{停顿[:：]?[^}]*\}', '，', text or '')
+    t = re.sub(r'\{/?(?:情绪|慢|快|高音|低音|大声|小声)[^}]*\}', '', t)
+    return re.sub(r'，{2,}', '，', t).strip()
+
+
 def local_tts_label():
     """给前端看的当前配音来源说明（用于解说卡状态提示）。"""
     if _cloud_tts_ready():
         t = load_ai_config().get('tts') or {}
         return '云端 %s' % (t.get('provider') or 'tts')
     cfg = tts_local_cfg()
+    if cfg['engine'] == 'qwen3tts':
+        return 'Qwen3-TTS · VoiceDesign（文字造音色）' if T2.qwen3tts_ready() else 'Qwen3-TTS（未安装）'
+    if cfg['engine'] == 'indextts2':
+        return 'IndexTTS2（情感 / 时长可控）' if T2.indextts2_ready() else 'IndexTTS2（未安装）'
     if cfg['engine'] == 'edge':
         return 'edge-tts（%s）' % cfg['voice'] if edge_tts_available() else 'edge-tts（不可用，已回退系统 SAPI）'
     if cfg['engine'] == 'cosyvoice':
@@ -1268,6 +1315,10 @@ def local_tts_label():
         return '系统 SAPI'
     # auto（v1.4.14）：与 local_tts_speak 共用 _auto_order()，标签不许再说谎
     _first = _first_available_engine(_auto_order())
+    if _first == 'qwen3tts':
+        return 'Qwen3-TTS · VoiceDesign（文字造音色）'
+    if _first == 'indextts2':
+        return 'IndexTTS2（情感 / 时长可控）'
     if _first == 'edge':
         return 'edge-tts（%s）' % cfg['voice']
     if _first == 'cosyvoice':
@@ -1277,7 +1328,7 @@ def local_tts_label():
     if _first == 'sherpa':
         _m = (SHERPA_TTS_MODELS.get(sherpa_model_key()) or {}).get('label') or '已就绪'
         return '离线模型 · %s' % _m
-    return '系统 SAPI（机械音兜底 · 建议装离线模型或 CosyVoice）'
+    return '⚠ 未安装配音引擎：请在设置页装 Qwen3-TTS 或 IndexTTS2'
 
 def parse_tts_markup(text):
     """解析文案中的 TTS 标记，返回结构化片段列表。

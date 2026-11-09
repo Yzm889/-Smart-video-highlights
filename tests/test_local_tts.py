@@ -33,8 +33,8 @@ def test_tts_local_cfg_normalizes_rate(monkeypatch):
 
 
 def test_local_tts_prefers_edge_then_falls_back(monkeypatch, tmp_path):
-    """auto：优先 edge-tts；edge 不可用时退到离线模型；再退到系统 SAPI。"""
-    monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'auto'}})
+    """旧引擎回滚通道：显式 engine=edge 时优先 edge，失败退到离线模型 / SAPI。"""
+    monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'edge'}})
     out = str(tmp_path / 'a.mp3')
 
     monkeypatch.setattr(T, 'edge_tts_available', lambda: True)
@@ -175,7 +175,7 @@ def test_task_locks_tts_engine(monkeypatch, tmp_path):
 def test_local_tts_label_reflects_state(monkeypatch):
     """前端要显示「到底用的哪种声音」，文案必须随可用性变化。"""
     monkeypatch.setattr(T, '_tts_available', lambda: False)
-    monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'auto'}})
+    monkeypatch.setattr(T, 'load_ai_config', lambda: {'tts_local': {'engine': 'edge'}})
     monkeypatch.setattr(T, 'edge_tts_available', lambda: True)
     monkeypatch.setattr(T, 'sherpa_tts_available', lambda: False)
     assert 'edge-tts' in S.local_tts_label()

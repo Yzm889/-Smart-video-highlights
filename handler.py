@@ -996,6 +996,8 @@ class Handler(BaseHTTPRequestHandler):
             'setup': dict(_w.TTS_SETUP),
             # [task #22] 首选引擎失败后降级到备用引擎的提示（静默质量降级可见化）
             'degrade_msg': _w.tts_degrade_msg(),
+            # v1.4.16：新一代引擎资产在独立数据目录，设置页要显示就绪状态
+            'tts2': __import__('tts2_engines').engine_status(),
         }).encode('utf-8'), 'application/json')
 
     def _get_local_test(self):

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=7">
+<link rel="stylesheet" href="desktop.css?v=8">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -245,8 +245,8 @@
     <div class="set-intro">
       <div class="set-intro-h">配置只需一次，按顺序走就行</div>
       <div class="set-intro-sub">
-        ① 装好本地配音引擎 → ② 试听选音色 → ③ 保存回首页开做。
-        后面两页都是可选增强，不配也能出片。
+        ① 选配音引擎 → ② 试听一句话 → ③ 保存回首页开做。
+        新一代引擎离线运行、不用录参考音；后面两页都是可选增强。
       </div>
     </div>
     <div class="set-tabs" id="setTabs">
@@ -264,9 +264,9 @@
           <div class="hint" id="ttsTestHint"></div>
         </div>
         <div class="set-sec">
-          <div class="set-h"><span class="set-num">2</span>缺哪个装哪个<span class="set-tag">装完自动生效</span></div>
+          <div class="set-h"><span class="set-num">2</span>引擎状态<span class="set-tag">离线运行</span></div>
           <div class="set-row" id="ttsInstalls"></div>
-          <div class="hint">本地引擎离线可用，装好就不用再看联网服务的脸色；CosyVoice 还能用一段录音克隆自己的声音。</div>
+          <div class="hint">Qwen3-TTS 用一句话描述就能造音色；IndexTTS2 可单独调情绪与时长。两者都离线，不依赖联网服务。</div>
         </div>
         <div class="set-sec">
           <div class="set-h"><span class="set-num">3</span>选引擎 · 试听 · 克隆</div>
@@ -276,10 +276,10 @@
             <button class="mini-btn" id="btnCloneVoice"><svg class="ic"><use href="#i-mic"/></svg>克隆音色</button>
             <button class="mini-btn" id="btnTtsReset" title="解除微软服务熔断并重新选择最优引擎">重试引擎</button>
           </div>
-          <div class="hint">保持「自动」即可：本地引擎优先，联网服务只作兜底。试听只合成一句，不跑全片。</div>
+          <div class="hint">保持「自动」即可：优先 Qwen3-TTS VoiceDesign，IndexTTS2 作备选。试听只合成一句，不跑全片。</div>
           <details class="set-more">
             <summary>精细调节（音色 / 语速）</summary>
-            <label>音色（edge-tts 引擎用）</label>
+            <label>音色（兼容旧配置，新引擎不读）</label>
             <select id="setTtsVoice"></select>
             <label>CosyVoice 音色（含克隆音色）</label>
             <select id="setCosyVoice"></select>
@@ -442,6 +442,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=7"></script>
+<script src="desktop.js?v=8"></script>
 </body>
 </html>

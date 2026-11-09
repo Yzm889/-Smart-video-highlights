@@ -1843,30 +1843,17 @@ setInterval(() => {
 function renderTtsInstalls(v){
   const box = $('ttsInstalls');
   if(!box || !v) return;
-  const parts = [];
-  if(!v.cosyvoice_installed){
-    parts.push('<button class="mini-btn" data-ttsi="cosyvoice">装 CosyVoice（推荐）</button>');
-  }
-  if(!v.edge_installed){
-    parts.push('<button class="mini-btn" data-ttsi="edge">装 edge-tts</button>');
-  }
-  if(v.sherpa_models && v.sherpa_models.length){
-    v.sherpa_models.forEach(m => {
-      if(!m.ready) parts.push('<button class="mini-btn" data-ttsi="sherpa" data-m="' + m.key + '">下载离线模型 ' + m.label + '</button>');
-    });
-  }
-  box.innerHTML = parts.join('') || '<span class="hint">引擎都齐了 ✓</span>';
-  box.querySelectorAll('[data-ttsi]').forEach(b => b.addEventListener('click', async () => {
-    b.disabled = true; b.textContent = '启动安装…';
-    const k = b.dataset.ttsi;
-    try {
-      if(k === 'cosyvoice'){ await fetch('/api/tts/cosyvoice/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'}); }
-      if(k === 'edge'){ await fetch('/api/tts/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({pkg: 'edge-tts'})}); }
-      if(k === 'sherpa'){ await fetch('/api/tts/model/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: b.dataset.m})}); }
-      toast('已开始安装（后台进行，下面会实时显示进度；CosyVoice 首次要装 PyTorch，较长）');
-      _pollTtsSetup();
-    } catch(e){ toast('安装失败：' + e.message, 'bad'); b.disabled = false; }
-  }));
+  const st = v.tts2 || {};
+  const rows = [
+    ['Qwen3-TTS · VoiceDesign', st.qwen3tts, '纯文字描述造音色，不用录参考音，离线运行'],
+    ['IndexTTS2', st.indextts2, '8 维情感 + 时长控制，自带示例音色']
+  ];
+  box.innerHTML = rows.map(r =>
+      '<div class="set-row"><span class="env-badge ' + (r[1] ? 'ok' : 'bad') + '">'
+      + (r[1] ? '已装' : '未装') + '</span><span class="hint" style="flex:1">'
+      + r[0] + ' · ' + r[2] + '</span></div>').join('')
+    + '<div class="hint">引擎资产在 ' + _esc(st.dir || '本机用户数据目录')
+    + '，升级成品不会丢失。未装的引擎由安装脚本部署，无需在此操作。</div>';
 }
 let _setupTimer = null;
 function _pollTtsSetup(){
@@ -1891,12 +1878,9 @@ function _pollTtsSetup(){
 }
 
 /* ── 设置：配音引擎与音色 ── */
-const TTS_ENGINES = [['auto','自动（按可用性选最优）'],
-  ['cosyvoice','CosyVoice（质量最高 · 支持克隆音色）'],
-  ['edge','edge-tts（微软 · 需联网）'],
-  ['chattts','ChatTTS'],
-  ['sherpa','离线模型（sherpa）'],
-  ['sapi','系统 SAPI（机械音兜底）']];
+const TTS_ENGINES = [['auto','自动（Qwen3-TTS 优先）'],
+  ['qwen3tts','Qwen3-TTS · VoiceDesign（文字造音色，无需录音）'],
+  ['indextts2','IndexTTS2（情感 / 时长可控）']];
 async function fillTtsSettings(){
   try {
     const v = await fetch('/api/tts/voices').then(r => r.json());
