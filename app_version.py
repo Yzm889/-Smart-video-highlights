@@ -6,7 +6,7 @@ desktop.get_desktop_info 与版本自检共用，避免版本号散落多处、�
 状态栏显示旧版本（历史 bug：项目已 v1.4.3，桌面信息仍写死 v1.4.2）。
 """
 
-APP_VERSION = '1.4.19'
+APP_VERSION = '1.4.20'
 VERSION_LABEL = 'v' + APP_VERSION
 
 # GitHub 仓库：版本自检用 /releases/latest 比对

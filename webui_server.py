@@ -2560,6 +2560,42 @@ def load_history(limit=50):
     return items[:limit]
 
 
+def _history_narration(prog):
+    """从任务进度/落盘状态里取出本次成片的解说词，返回 (captions, has_voice)。
+
+    【为什么不能只看 prog】两步走的合成是**另一个任务**（/api/movie_compose 的
+    run-2），它的进度里只有 run_dir，解说词在第一步写下的 tts_state.json 里。
+    只读 prog 会把「有 37 段配音」的成片记成无配音无文案——记录页于是不显示
+    🗣️ 标记、不显示文案、连「✏️ 编辑解说词」按钮都没有，历史搜索也搜不到。
+    """
+    caps, clips = [], 0
+    try:
+        for x in (prog.get('tts_list') or []):
+            t = str((x or {}).get('text') or '').strip()
+            if t:
+                caps.append(t)
+        clips = len(prog.get('tts_list') or [])
+    except Exception:
+        pass
+    if not caps:
+        d = prog.get('diag')
+        if isinstance(d, dict):
+            caps = [str(t).strip() for t in (d.get('narration') or []) if str(t).strip()]
+            clips = clips or int(d.get('voice_clips') or d.get('tts_ok') or 0)
+    if not caps or not clips:
+        rd = str(prog.get('run_dir') or '').strip()
+        if rd:
+            try:
+                p = os.path.join(_safe_dir(OUTDIR, rd), 'tts_state.json')
+                st = json.load(open(p, encoding='utf-8'))
+                if not caps:
+                    caps = [str(t).strip() for t in (st.get('narr') or []) if str(t).strip()]
+                clips = clips or len(st.get('tts_results') or [])
+            except Exception:
+                pass
+    return caps, bool(clips)
+
+
 def _record_history(req, prog, kind=''):
     """统一写生成历史（⑨记录）。此前只有一键合成写历史，强卡点/解说/联网解说/
     按方案渲染的成片都不会出现在记录里。失败静默，不影响出片主流程。
@@ -2568,12 +2604,17 @@ def _record_history(req, prog, kind=''):
         if not prog.get('file'):
             return
         f = os.path.join(OUTDIR, prog['file'])
+        # 【2026-11-09】voice/captions 以前写死 False/[]，等于每条记录都宣称
+        # 「没配音、没文案」——实测 37 段配音 + 烧录字幕的成片也被记成空的，
+        # 记录页因此丢掉 🗣️ 标记、文案行、按解说词搜索和「编辑解说词」入口。
+        captions, has_voice = _history_narration(prog)
         add_history({
             'time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'file': prog['file'],
             'duration': round(float(probe_audio_len(f) or 0.0), 2),
             'music': (req.get('music') or {}).get('name') if isinstance(req.get('music'), dict) else None,
-            'voice': False, 'captions': [],
+            'voice': has_voice,
+            'captions': captions,
             'kind': kind,
         })
     except Exception:
