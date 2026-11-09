@@ -34,6 +34,43 @@ IDX_CKPT = _p('indextts2', 'checkpoints_2')
 IDX_PY = os.path.join(IDX_REPO, '.venv', 'Scripts', 'python.exe')
 IDX_WORKER = os.path.join(_HERE, 'indextts2_worker.py')
 
+BIN_DIR = _p('bin')
+
+
+def sync_worker(src_name):
+    """把 worker 脚本复制到 TTS2_DIR/bin 并返回那份副本的路径。
+
+    【为什么不能直接用 _internal 里的那份 —— 2026-11-09 事故】
+    冻结后 PyInstaller 会把打包目录塞进 PYTHONPATH，而 worker 跑的是**独立
+    venv 的 3.11**；sys.path 里 `_internal` 排在标准库前面，于是
+    `import _ctypes` 拣到打包进来的 3.13 `_ctypes.pyd`：
+        ImportError: Module use of python313.dll conflicts with this version of Python
+    表现就是「试听失败，worker 启动失败」。脚本放到 assets 目录 + 启动加 -E
+    （忽略所有 PYTHON* 环境变量），就再也不碰打包目录。
+    每次启动都覆盖一次：几十 KB，换来的是升级成品后 worker 一定是最新版。
+    """
+    src = os.path.join(_HERE, src_name)
+    dst = os.path.join(BIN_DIR, src_name)
+    if not os.path.isfile(src):
+        # 源码态/异常态：源没了就用已有副本，总比返回一个不存在的路径好
+        return dst if os.path.isfile(dst) else src
+    try:
+        with open(src, 'rb') as f:
+            new = f.read()
+        old = b''
+        if os.path.isfile(dst):
+            with open(dst, 'rb') as f:
+                old = f.read()
+        if new != old:
+            os.makedirs(BIN_DIR, exist_ok=True)
+            tmp = dst + '.tmp'
+            with open(tmp, 'wb') as f:
+                f.write(new)
+            os.replace(tmp, dst)
+    except Exception:
+        return dst if os.path.isfile(dst) else src
+    return dst
+
 # VoiceDesign 的默认音色描述：纯文字造音色，不用录参考音
 DEFAULT_INSTRUCT = ('沉稳克制的中文男声，影视剧情解说风格，语气有起伏但不夸张，'
                     '句间有自然停顿，咬字清晰，不要播报腔')
@@ -196,17 +233,30 @@ class _Serve:
         if not ok_vram:
             self.error = note
             return False
+        cmd = list(self.cmd)
+        # 每次起进程前同步 worker（升级成品后副本要跟着变），并把脚本路径换成
+        # assets 里的副本；-E 忽略 PYTHONPATH/PYTHONHOME，防止 3.11 的 worker
+        # 从打包目录拣到 3.13 的扩展模块（详见 sync_worker 注释）。
+        for i, part in enumerate(cmd):
+            if isinstance(part, str) and part.endswith('_worker.py'):
+                cmd[i] = sync_worker(os.path.basename(part))
+                if '-E' not in cmd:
+                    cmd.insert(1, '-E')
+                break
         try:
             env = os.environ.copy()
             env['HF_ENDPOINT'] = 'https://hf-mirror.com'
             for _k in ('HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'ALL_PROXY'):
+                env.pop(_k, None)
+            # -E 之外再清一遍：万一副本同步失败退回打包目录那份，这里也能兜住
+            for _k in ('PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP'):
                 env.pop(_k, None)
             # stderr 落日志：以前 DEVNULL 把 worker 的加载报错全吞了，
             # 试听卡住时完全看不到原因（这次事故的直接教训）。
             os.makedirs(TTS2_DIR, exist_ok=True)
             self._errf = open(os.path.join(TTS2_DIR, self.name + '.log'),
                               'a', encoding='utf-8')
-            p = subprocess.Popen(self.cmd, stdin=subprocess.PIPE,
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=self._errf,
                                  text=True, encoding='utf-8', errors='replace',
                                  bufsize=1, env=env)

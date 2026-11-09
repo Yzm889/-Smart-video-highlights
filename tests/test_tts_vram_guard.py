@@ -160,3 +160,62 @@ def test_ask_timeout_covers_generation_after_load():
     src = open(os.path.join(ROOT, 'tts2_engines.py'), encoding='utf-8').read()
     assert 'def ask(self, req, timeout=240)' in src
     assert '合成超时' in src, '超时也要说人话，别只说 worker 无响应'
+
+
+# ---------------------------------------------------------------------------
+# v1.4.19：worker 不许在打包目录里跑
+# 事故：冻结后 PyInstaller 把 _internal 塞进 PYTHONPATH，3.11 的 worker 拣到
+# 打包进来的 3.13 `_ctypes.pyd` → ImportError: python313.dll conflicts，
+# 界面只显示「试听失败，worker 启动失败」。
+# ---------------------------------------------------------------------------
+def test_sync_worker_copies_then_refreshes(monkeypatch, tmp_path):
+    src_dir = tmp_path / 'bundle'
+    src_dir.mkdir()
+    src = src_dir / 'qwen3tts_worker.py'
+    src.write_text('v1', encoding='utf-8')
+    monkeypatch.setattr(T2, '_HERE', str(src_dir))
+    monkeypatch.setattr(T2, 'BIN_DIR', str(tmp_path / 'bin'))
+
+    dst = T2.sync_worker('qwen3tts_worker.py')
+    assert dst == str(tmp_path / 'bin' / 'qwen3tts_worker.py')
+    assert open(dst, encoding='utf-8').read() == 'v1'
+
+    src.write_text('v2', encoding='utf-8')          # 升级成品后副本要跟着变
+    assert open(T2.sync_worker('qwen3tts_worker.py'), encoding='utf-8').read() == 'v2'
+
+
+def test_sync_worker_keeps_copy_when_source_missing(monkeypatch, tmp_path):
+    """源码态/异常态：源没了就用已有副本，别把可用状态弄坏。"""
+    monkeypatch.setattr(T2, '_HERE', str(tmp_path / 'empty'))
+    binstub = tmp_path / 'bin'
+    binstub.mkdir()
+    (binstub / 'indextts2_worker.py').write_text('old', encoding='utf-8')
+    monkeypatch.setattr(T2, 'BIN_DIR', str(binstub))
+    assert T2.sync_worker('indextts2_worker.py') == str(binstub / 'indextts2_worker.py')
+
+
+def test_start_runs_assets_copy_with_isolated_python(monkeypatch, tmp_path):
+    """启动命令必须是 assets 里的副本 + -E，且 PYTHONPATH 被清掉。"""
+    captured = {}
+
+    class _P:
+        def __init__(self, cmd, **kw):
+            captured['cmd'] = list(cmd)
+            captured['env'] = dict(kw.get('env') or {})
+            raise RuntimeError('stop-here')
+
+    monkeypatch.setattr(T2, 'release_vram', lambda **k: (True, ''))
+    monkeypatch.setattr(T2, 'sync_worker', lambda n: r'C:\assets\bin\%s' % n)
+    monkeypatch.setattr(T2, 'TTS2_DIR', str(tmp_path))
+    monkeypatch.setattr(T2.subprocess, 'Popen', _P)
+    monkeypatch.setenv('PYTHONPATH', r'C:\app\_internal')
+
+    srv = T2._Serve('qwen3tts', ['C:\\venv\\python.exe', '-u', r'C:\app\_internal\qwen3tts_worker.py',
+                                 'serve', r'C:\models'], need_mb=1)
+    assert srv._start() is False          # 被 _P 打断，但命令已经拿到
+    cmd = captured['cmd']
+    assert cmd[0].endswith('python.exe') and '-E' in cmd and '-u' in cmd
+    assert cmd[cmd.index('-E') + 1] == '-u'
+    assert cmd[-3] == r'C:\assets\bin\qwen3tts_worker.py', '必须跑 assets 里的副本'
+    assert 'PYTHONPATH' not in captured['env']
+
