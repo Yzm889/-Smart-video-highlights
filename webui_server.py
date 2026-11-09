@@ -5534,20 +5534,37 @@ def tts_test_speak(text='这是一段中文配音试听。'):
                    and T2.indextts2_ready()))
     # 时间戳文件名避免连点两次互相覆盖；新引擎输出 wav
     out = os.path.join(out_dir, 'sample_%d.wav' % int(time.time() * 1000))
+    diag = {}
     if use_idx:
-        ok = T2.indextts2_speak(text, out)
+        ok = T2.indextts2_speak(text, out, diag=diag)
         eng = 'indextts2'
     else:
-        ok = T2.qwen3tts_speak(text, out, instruct=(cfg.get('instruct') or None))
+        ok = T2.qwen3tts_speak(text, out, instruct=(cfg.get('instruct') or None),
+                               diag=diag)
         eng = 'qwen3tts'
     if not ok or not os.path.isfile(out):
         name = 'IndexTTS2' if use_idx else 'Qwen3-TTS'
-        return False, ('试听失败：%s 未就绪或加载超时。请在设置页看「引擎状态」，'
-                       '或稍后再点一次（首次加载模型较慢）' % name), None, ''
+        reason = (diag.get('reason') or '').strip()
+        note = (diag.get('note') or '').strip()
+        vram = diag.get('vram') or {}
+        if reason:
+            # 引擎/显存层的真实原因优先：以前一律回「未就绪或加载超时」，
+            # 用户只能反复点，真正的原因（Ollama 吃掉 9.6GB 显存）永远看不到。
+            msg = '试听失败：%s。%s' % (name, reason)
+        else:
+            msg = ('试听失败：%s 没有产出音频。请在设置页看「引擎状态」，'
+                   '或点「重置引擎」后重试' % name)
+        if note and note not in msg:
+            msg += '（%s）' % note
+        if vram.get('total'):
+            msg += '｜当前显存 %d/%d MB' % (vram.get('used', 0), vram['total'])
+        return False, msg, None, ''
     rel = os.path.relpath(out, OUTDIR).replace('\\', '/')
     label = {'qwen3tts': 'Qwen3-TTS · VoiceDesign',
              'indextts2': 'IndexTTS2'}.get(eng, eng)
-    return True, '✅ 试听已生成（%s，%.1f 秒）' % (label, probe_audio_len(out) or 0), eng, rel
+    extra = ('，%s' % diag['note']) if diag.get('note') else ''
+    return True, '✅ 试听已生成（%s，%.1f 秒%s）' % (
+        label, probe_audio_len(out) or 0, extra), eng, rel
 
 
 

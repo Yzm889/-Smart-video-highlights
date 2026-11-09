@@ -7,12 +7,14 @@
 资产统一放 TTS2_DIR，**不放在 EXE 的 _internal 下** —— 桌面成品每次发版都整体
 替换目录，放里面会被替换脚本迁走或直接丢失。可用 FRAMECUT_TTS2_DIR 覆盖。
 """
+import atexit
 import json
 import os
 import queue
 import subprocess
 import threading
 import time
+import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 TTS2_DIR = (os.environ.get('FRAMECUT_TTS2_DIR')
@@ -49,6 +51,104 @@ EMO_VECTORS = {
 }
 
 
+# 常驻 worker 各自要占的显存（含 KV cache 余量，按实测 4438MB / ~5.5GB 上浮）
+VRAM_NEED = {'qwen3tts': 5200, 'indextts2': 6600}
+
+_NO_WIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+_VRAM_CACHE = {'t': -99.0, 'v': (0, 0)}
+
+
+def gpu_vram(max_age=3.0):
+    """返回 (已用MB, 总量MB)。无 N 卡或取不到时返回 (0, 0)，调用方据此跳过守门。
+
+    WDDM 下显存被占满不会报错，而是把权重偷偷换页到内存：GPU 占用满、
+    利用率 0%，推理在 PCIe 上反复抖，看起来就是「永远合成中」。
+    2026-11-09 用户试听失败的根因就是 Ollama 的 qwen3:8b 常驻吃了 9.6GB。
+    """
+    now = time.time()
+    if now - _VRAM_CACHE['t'] < max_age:
+        return _VRAM_CACHE['v']
+    val = (0, 0)
+    try:
+        r = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.used,memory.total',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=4, creationflags=_NO_WIN)
+        first = (r.stdout or '').strip().splitlines()[0]
+        used, total = [int(x.strip()) for x in first.split(',')[:2]]
+        val = (used, total)
+    except Exception:
+        val = (0, 0)
+    _VRAM_CACHE['t'], _VRAM_CACHE['v'] = now, val
+    return val
+
+
+def _http(base, path, payload=None, timeout=4):
+    """只连本机 Ollama：显式禁用代理，否则 HTTP_PROXY 会把 127.0.0.1 也代走。"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+    req = urllib.request.Request(base + path, data=data, headers=headers)
+    with opener.open(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def ollama_loaded(base='http://127.0.0.1:11434'):
+    """当前 Ollama 驻留在显存里的模型名列表；没装/没开就是空列表。"""
+    try:
+        raw = _http(base, '/api/ps', timeout=2)
+        data = json.loads(raw.decode('utf-8') or '{}')
+    except Exception:
+        return []
+    names = []
+    for m in (data.get('models') or []):
+        n = m.get('name') or m.get('model')
+        if n:
+            names.append(n)
+    return names
+
+
+def release_vram(want=5200, wait_sec=15):
+    """开工前确认显存够用；不够就让 Ollama 把模型请出显存（keep_alive=0）。
+
+    返回 (ok, note)。note 是给用户看的说明，成功但释放过也会带一句。
+    只卸 Ollama：它是本机唯一会长时间常驻显存的「自己人」，卸了下次用到
+    会自动重新加载（qwen3:8b 约 10~20s），比让配音静静算不完划算。
+    """
+    used, total = gpu_vram(0)
+    if not total:
+        return True, ''                      # 拿不到显存信息：不阻断，让引擎自己撞
+    if total - used >= want:
+        return True, ''
+    names = ollama_loaded()
+    freed = []
+    for n in names:
+        try:
+            _http(base='http://127.0.0.1:11434', path='/api/generate',
+                  payload={'model': n, 'keep_alive': 0}, timeout=6)
+            freed.append(n)
+        except Exception:
+            pass
+    if not freed:
+        return False, ('显存不足：%d/%d MB 已用，配音需要约 %d MB。'
+                       '请关闭占显卡的程序（Ollama、其它 AI 工具、游戏）后重试'
+                       % (used, total, want))
+    deadline = time.time() + wait_sec
+    while True:
+        used, total = gpu_vram(0)
+        if total - used >= want:
+            return True, '已临时腾出显存（%s 已卸载，下次用会自动重新加载）' % '、'.join(freed)
+        if time.time() >= deadline:
+            break
+        time.sleep(0.5)
+    return False, ('显存仍不足：%d/%d MB 已用，配音需要约 %d MB。'
+                   '已尝试卸载 %s 但没腾够，请关掉其它占显卡的程序后重试'
+                   % (used, total, want, '、'.join(freed)))
+
+
 def qwen3tts_ready():
     return (os.path.isfile(QWEN_PY) and os.path.isfile(QWEN_WORKER)
             and os.path.isdir(QWEN_MODEL))
@@ -62,14 +162,16 @@ def indextts2_ready():
 class _Serve:
     """常驻 worker：启动一次，之后每行 JSON 一个请求 / 一行 JSON 一个应答。"""
 
-    def __init__(self, name, cmd, ready_timeout=150):
+    def __init__(self, name, cmd, ready_timeout=150, need_mb=5200):
         self.name = name
         self.cmd = cmd
         self.ready_timeout = ready_timeout
+        self.need_mb = need_mb
         self.proc = None
         self.q = queue.Queue()
         self.lock = threading.Lock()
         self.error = ''
+        self.note = ''          # 「已腾出显存」之类的软提示，成功后也带给前端
 
     def _reader(self, proc):
         try:
@@ -87,6 +189,13 @@ class _Serve:
             self.q.put({'_eos': True})
 
     def _start(self):
+        # 先确认显存：12GB 卡上 Ollama 的 qwen3:8b 能吃掉 9.6GB，
+        # 模型照样能加载，但会被驱动换页到内存，推理永远算不完。
+        ok_vram, note = release_vram(want=self.need_mb)
+        self.note = note
+        if not ok_vram:
+            self.error = note
+            return False
         try:
             env = os.environ.copy()
             env['HF_ENDPOINT'] = 'https://hf-mirror.com'
@@ -126,7 +235,7 @@ class _Serve:
         self.proc = None
         return False
 
-    def ask(self, req, timeout=180):
+    def ask(self, req, timeout=240):
         with self.lock:
             if self.proc is None or self.proc.poll() is not None:
                 if not self._start():
@@ -150,12 +259,26 @@ class _Serve:
                     self.proc = None
                     break
                 if 'ok' in msg:
-                    return bool(msg.get('ok')), str(msg.get('error') or '')
-            return False, 'worker 超时或无响应'
+                    if msg.get('ok'):
+                        return True, ''
+                    return False, str(msg.get('error') or '引擎返回失败')[:300]
+            return False, ('合成超时（%d 秒）：模型已加载但没算完，'
+                           '通常是显存被别的程序抢占' % timeout)
 
 
 _QWEN = None
 _IDX = None
+
+# 常驻 worker 是独立进程，主程序退出不会自动带走它（Windows 无 job 对象）：
+# 不注册退出钩子的话，关掉 FrameCut 后那 4.3GB 显存会一直挂着。
+def _kill_all():
+    try:
+        release_engines()
+    except Exception:
+        pass
+
+
+atexit.register(_kill_all)
 
 
 def _get_qwen():
@@ -164,7 +287,7 @@ def _get_qwen():
         # -u 关掉 stdout 块缓冲；ready_timeout 按引擎实际冷启动给
         _QWEN = _Serve('qwen3tts',
                        [QWEN_PY, '-u', QWEN_WORKER, 'serve', QWEN_MODEL],
-                       ready_timeout=150)
+                       ready_timeout=150, need_mb=VRAM_NEED['qwen3tts'])
     return _QWEN
 
 
@@ -174,27 +297,122 @@ def _get_idx():
         # IndexTTS2 首次要换入 5.5GB 权重，实测约 202s，给足 360s
         _IDX = _Serve('indextts2',
                       [IDX_PY, '-u', IDX_WORKER, 'serve', IDX_REPO, IDX_CKPT],
-                      ready_timeout=360)
+                      ready_timeout=360, need_mb=VRAM_NEED['indextts2'])
     return _IDX
 
 
-def qwen3tts_speak(text, out_path, instruct=None):
-    """VoiceDesign：纯文字描述造音色，不需要任何参考音频。"""
+def release_engines():
+    """停掉常驻 TTS worker，把显存让回给本地大模型（解说生成用）。
+
+    12GB 卡上 Qwen3-TTS 常驻 4.4GB + qwen3:8b 要 9.6GB 装不下，
+    Ollama 不会报错而是把一半层丢 CPU，解说会慢到不可用 —— 比等 45s 重载更亏。
+    加锁是为了不打断正在合成的请求（等它跑完再停）。
+    """
+    stopped = []
+    for srv in (_QWEN, _IDX):
+        if srv is None:
+            continue
+        with srv.lock:
+            p = srv.proc
+            if p is None or p.poll() is not None:
+                continue
+            srv.proc = None
+            try:
+                p.stdin.close()
+            except Exception:
+                pass
+            try:
+                p.kill()
+            except Exception:
+                pass
+            stopped.append(srv.name)
+    return stopped
+
+
+def _ollama_model_size(model, base='http://127.0.0.1:11434'):
+    """从 /api/tags 取模型体积（字节）；取不到返回 0。"""
+    try:
+        data = json.loads((_http(base, '/api/tags') or b'{}').decode('utf-8') or '{}')
+    except Exception:
+        return 0
+    want = str(model or '').strip().lower()
+    for m in (data.get('models') or []):
+        name = str(m.get('name') or m.get('model') or '').lower()
+        if not name:
+            continue
+        if name == want or name.split(':')[0] == want.split(':')[0]:
+            try:
+                return int(m.get('size') or 0)
+            except Exception:
+                return 0
+    return 0
+
+
+_LLM_GUARD = {'t': -99.0}
+
+
+def free_vram_for_llm(model=None, min_free_mb=7000):
+    """解说开工前调用：显存不够就停掉配音 worker。
+
+    需要多少按 Ollama 里该模型的体积估。磁盘体积只算权重，32K 上下文还要
+    再吃 2GB 多 KV —— 实测 qwen3:8b 磁盘 5.2GB、驻留 9.6GB，按 size*1.35+2500 才准。
+    模型体积未知时退化成 min_free_mb 阈值。5s 内只查一次，别给逐句调用加负担。
+    """
+    now = time.time()
+    if now - _LLM_GUARD['t'] < 5:
+        return []
+    _LLM_GUARD['t'] = now
+    used, total = gpu_vram(0)
+    if not total:
+        return []
+    need = min_free_mb
+    sz = _ollama_model_size(model) if model else 0
+    if sz:
+        need = int(sz / 1048576 * 1.35) + 2500
+    if total - used >= need:
+        return []
+    return release_engines()
+
+
+def _fill(diag, srv, engine, err):
+    if diag is None:
+        return
+    diag['engine'] = engine
+    diag['reason'] = (err or '').strip()
+    diag['note'] = getattr(srv, 'note', '') or ''
+    used, total = gpu_vram()
+    diag['vram'] = {'used': used, 'total': total}
+
+
+def qwen3tts_speak(text, out_path, instruct=None, diag=None):
+    """VoiceDesign：纯文字描述造音色，不需要任何参考音频。
+
+    diag 传一个 dict 进来可拿到失败原因（reason / note / vram）；
+    以前只返回 bool，真实报错全被吞掉，前端只能说「未就绪或加载超时」。
+    """
     if not (text or '').strip() or not qwen3tts_ready():
+        if diag is not None:
+            diag.update({'engine': 'qwen3tts', 'reason': '引擎资产不完整',
+                         'note': '', 'vram': {}})
         return False
-    ok, _err = _get_qwen().ask({
+    srv = _get_qwen()
+    ok, err = srv.ask({
         'text': text,
         'instruct': (instruct or '').strip() or DEFAULT_INSTRUCT,
         'out': out_path,
         'language': 'Chinese',
     })
+    _fill(diag, srv, 'qwen3tts', err)
     return ok and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000
 
 
 def indextts2_speak(text, out_path, emo_vector=None, emo_text=None,
-                    duration_factor=None, spk=None):
+                    duration_factor=None, spk=None, diag=None):
     """IndexTTS2：8 维情感 + 时长控制；不传 spk 就用仓库自带示例音色。"""
     if not (text or '').strip() or not indextts2_ready():
+        if diag is not None:
+            diag.update({'engine': 'indextts2', 'reason': '引擎资产不完整',
+                         'note': '', 'vram': {}})
         return False
     req = {'text': text, 'out': out_path}
     if emo_vector:
@@ -206,12 +424,18 @@ def indextts2_speak(text, out_path, emo_vector=None, emo_text=None,
         req['duration_factor'] = duration_factor
     if spk:
         req['spk'] = spk
-    ok, _err = _get_idx().ask(req)
+    srv = _get_idx()
+    ok, err = srv.ask(req)
+    _fill(diag, srv, 'indextts2', err)
     return ok and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000
 
 
 def engine_status():
     """给前端/日志看的就绪摘要。"""
+    used, total = gpu_vram()
     return {'dir': TTS2_DIR,
             'qwen3tts': qwen3tts_ready(),
-            'indextts2': indextts2_ready()}
+            'indextts2': indextts2_ready(),
+            'vram': {'used': used, 'total': total,
+                     'free': max(0, total - used) if total else 0},
+            'ollama': ollama_loaded()}

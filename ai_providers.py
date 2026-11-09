@@ -1005,6 +1005,13 @@ def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
     """
     import urllib.request, urllib.error, json as _j, re as _re
     root = _re.sub(r'/v1/?$', '', str(cfg['base_url']).rstrip('/'))
+    # 配音 worker 常驻吃 4.4GB：显存不够时先让它让开，否则 Ollama 会把一半层
+    # 丢到 CPU（不报错，但解说慢到不可用）。失败不影响主流程。
+    try:
+        import tts2_engines as _T2
+        _T2.free_vram_for_llm(cfg.get('model'))
+    except Exception:
+        pass
     url = root + '/api/chat'
     payload = {'model': cfg['model'], 'messages': messages, 'stream': False,
                'think': False,

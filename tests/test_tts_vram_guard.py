@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+"""v1.4.18 回归钉：配音前必须确认显存，不够就让 Ollama 让开。
+
+事故（2026-11-09）：用户点试听只看到「未就绪或加载超时」。
+真因不是引擎、不是超时 —— 是 Ollama 的 qwen3:8b 以 32K 上下文常驻吃了 9.6GB，
+Qwen3-TTS 模型照样能加载，但 WDDM 把权重换页到内存：GPU 占用 11671/12288 MB、
+利用率 0%，推理在 PCIe 上反复抖，永远算不完。
+清掉 Ollama 后同样的调用 45.3s 出 284KB 音频。
+"""
+import os
+import sys
+
+import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import tts2_engines as T2  # noqa: E402
+
+JS = os.path.join(ROOT, 'static', 'desktop', 'desktop.js')
+HTML = os.path.join(ROOT, 'static', 'desktop', 'index.html')
+
+
+def _reset(monkeypatch):
+    monkeypatch.setattr(T2, '_VRAM_CACHE', {'t': -99.0, 'v': (0, 0)})
+    monkeypatch.setattr(T2, '_LLM_GUARD', {'t': -99.0})
+
+
+def test_gpu_vram_parses_nvidia_smi(monkeypatch):
+    class _R:
+        stdout = '11671, 12288\n'
+    monkeypatch.setattr(T2.subprocess, 'run', lambda *a, **k: _R())
+    _reset(monkeypatch)
+    assert T2.gpu_vram(0) == (11671, 12288)
+
+
+def test_gpu_vram_tolerates_missing_nvidia_smi(monkeypatch):
+    def _boom(*a, **k):
+        raise FileNotFoundError('nvidia-smi')
+    monkeypatch.setattr(T2.subprocess, 'run', _boom)
+    _reset(monkeypatch)
+    assert T2.gpu_vram(0) == (0, 0), '没 N 卡不能抛，只能退化成 0'
+
+
+def test_release_vram_no_gpu_does_not_block(monkeypatch):
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (0, 0))
+    _reset(monkeypatch)
+    assert T2.release_vram(want=5200) == (True, '')
+
+
+def test_release_vram_leaves_ollama_alone_when_enough(monkeypatch):
+    called = []
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (900, 12288))
+    monkeypatch.setattr(T2, 'ollama_loaded', lambda *a, **k: called.append(1) or ['qwen3:8b'])
+    _reset(monkeypatch)
+    assert T2.release_vram(want=5200) == (True, '')
+    assert not called, '显存够用时不许动用户的 Ollama'
+
+
+def test_release_vram_unloads_ollama_and_reports(monkeypatch):
+    """缺显存 → 给 Ollama 每个在驻模型发 keep_alive=0，腾够就放行并说明。"""
+    seen = []
+
+    def _http(base=None, path=None, payload=None, timeout=4):
+        seen.append((path, payload))
+        return b'{}'
+
+    vram = iter([(11671, 12288), (1500, 12288)])
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: next(vram))
+    monkeypatch.setattr(T2, 'ollama_loaded', lambda *a, **k: ['qwen3:8b'])
+    monkeypatch.setattr(T2, '_http', _http)
+    _reset(monkeypatch)
+    ok, note = T2.release_vram(want=5200)
+    assert ok is True
+    assert ('/api/generate', {'model': 'qwen3:8b', 'keep_alive': 0}) in seen
+    assert 'qwen3:8b' in note and '已临时腾出显存' in note
+
+
+def test_release_vram_explains_when_still_short(monkeypatch):
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (11671, 12288))
+    monkeypatch.setattr(T2, 'ollama_loaded', lambda *a, **k: [])
+    _reset(monkeypatch)
+    ok, note = T2.release_vram(want=5200)
+    assert ok is False
+    assert '显存不足' in note and '11671' in note and '关闭' in note
+
+
+def test_serve_does_not_start_worker_when_vram_short(monkeypatch):
+    """显存不够时不要拉起 worker（拉起来也是白等 240s）。"""
+    monkeypatch.setattr(T2, 'release_vram', lambda **k: (False, '显存不足：11671/12288 MB 已用'))
+    srv = T2._Serve('qwen3tts', ['nope'], need_mb=5200)
+    assert srv._start() is False
+    assert srv.proc is None
+    assert '显存不足' in srv.error
+
+
+def test_speak_returns_worker_reason_via_diag(monkeypatch):
+    class _S:
+        note = ''
+        def ask(self, req, timeout=240):
+            return False, 'CUDA out of memory'
+    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+    monkeypatch.setattr(T2, '_get_qwen', lambda: _S())
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (11000, 12288))
+    diag = {}
+    ok = T2.qwen3tts_speak('测试', os.path.join(os.environ.get('TEMP', '.'), 'x.wav'),
+                           diag=diag)
+    assert ok is False
+    assert diag['reason'] == 'CUDA out of memory'
+    assert diag['vram'] == {'used': 11000, 'total': 12288}
+
+
+def test_free_vram_for_llm_only_when_short(monkeypatch):
+    """解说开工前：够就什么都不做，不够才停配音 worker。"""
+    stopped = []
+    monkeypatch.setattr(T2, '_ollama_model_size', lambda m: 0)
+    monkeypatch.setattr(T2, 'release_engines', lambda: stopped.append(1) or ['qwen3tts'])
+
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (500, 12288))
+    _reset(monkeypatch)
+    assert T2.free_vram_for_llm('qwen3:8b') == []
+    assert not stopped
+
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (6000, 12288))
+    _reset(monkeypatch)
+    assert T2.free_vram_for_llm('qwen3:8b') == ['qwen3tts']
+    assert stopped == [1]
+
+
+def test_free_vram_for_llm_sizes_by_model(monkeypatch):
+    """按 Ollama 里该模型体积估算，别对小模型也一顿猛停。"""
+    monkeypatch.setattr(T2, '_ollama_model_size', lambda m: 3 * 1024 ** 3)  # 3GB 小模型
+    monkeypatch.setattr(T2, 'release_engines', lambda: ['qwen3tts'])
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (4400, 12288))
+    _reset(monkeypatch)
+    # 3GB*1.25+800 ≈ 4640MB，空闲 7888MB 足够 → 不动
+    assert T2.free_vram_for_llm('qwen3:4b') == []
+
+
+def test_engine_status_exposes_vram_and_ollama(monkeypatch):
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (11671, 12288))
+    monkeypatch.setattr(T2, 'ollama_loaded', lambda *a, **k: ['qwen3:8b'])
+    st = T2.engine_status()
+    assert st['vram'] == {'used': 11671, 'total': 12288, 'free': 617}
+    assert st['ollama'] == ['qwen3:8b']
+
+
+def test_frontend_shows_vram_and_longer_timeout():
+    js = open(JS, encoding='utf-8').read()
+    assert '_vramRow' in js and 'Ollama 正占用' in js, '设置页要摊开显存占用'
+    i = js.index("$('btnTtsTest').addEventListener")
+    block = js[i:i + 2400]
+    assert 'ctrl.abort(), 360000' in block, '前端超时必须长于后端(加载 360s+合成 240s)'
+    html = open(HTML, encoding='utf-8').read()
+    assert 'desktop.js?v=10' in html and 'desktop.css?v=10' in html
+
+
+def test_ask_timeout_covers_generation_after_load():
+    src = open(os.path.join(ROOT, 'tts2_engines.py'), encoding='utf-8').read()
+    assert 'def ask(self, req, timeout=240)' in src
+    assert '合成超时' in src, '超时也要说人话，别只说 worker 无响应'

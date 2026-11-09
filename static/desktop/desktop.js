@@ -1852,8 +1852,23 @@ function renderTtsInstalls(v){
       '<div class="set-row"><span class="env-badge ' + (r[1] ? 'ok' : 'bad') + '">'
       + (r[1] ? '已装' : '未装') + '</span><span class="hint" style="flex:1">'
       + r[0] + ' · ' + r[2] + '</span></div>').join('')
+    + _vramRow(st)
     + '<div class="hint">引擎资产在 ' + _esc(st.dir || '本机用户数据目录')
     + '，升级成品不会丢失。未装的引擎由安装脚本部署，无需在此操作。</div>';
+}
+
+/* 显存一行：12GB 卡上最容易「看着装好了却合成不动」的地方，
+   直接把它摊开给用户看（Ollama 的 qwen3:8b 能吃掉 9.6GB）。 */
+function _vramRow(st){
+  const vr = (st && st.vram) || {};
+  if(!vr.total) return '';
+  const free = vr.free || 0, tight = free < 5200;
+  const ol = (st.ollama || []);
+  return '<div class="set-row"><span class="env-badge ' + (tight ? 'bad' : 'ok') + '">'
+    + (tight ? '偏紧' : '充足') + '</span><span class="hint" style="flex:1">'
+    + '显存 ' + vr.used + ' / ' + vr.total + ' MB（空闲 ' + free + ' MB）'
+    + (ol.length ? ' · Ollama 正占用 ' + _esc(ol.join('、')) + '，点试听会自动腾出' : '')
+    + '</span></div>';
 }
 let _setupTimer = null;
 function _pollTtsSetup(){
@@ -1917,12 +1932,13 @@ $('btnTtsTest').addEventListener('click', async () => {
   b.dataset.busy = '1';
   b.disabled = true; b.textContent = '⏳ 合成中…';
   const ctrl = new AbortController();
-  // 新一代引擎首次要加载模型（Qwen3 ~30s / IndexTTS2 ~3min），给足 210s，
-  // 但一定要有上限：以前没有超时，后端卡住时按钮就永远停在「合成中」。
-  const kill = setTimeout(() => ctrl.abort(), 210000);
+  // 后端各段超时是「加载 150s/360s + 合成 240s」，前端要留得比它长，
+  // 否则真因还没传回来，前端就先 abort 成一句「试听超时」。
+  const kill = setTimeout(() => ctrl.abort(), 360000);
   const ticks = [
     setTimeout(() => { if(b.dataset.busy === '1') hint.textContent = '正在加载配音模型（首次约半分钟）…'; }, 8000),
-    setTimeout(() => { if(b.dataset.busy === '1') hint.textContent = '仍在合成；若选的是 IndexTTS2，首次加载约 3 分钟…'; }, 45000)
+    setTimeout(() => { if(b.dataset.busy === '1') hint.textContent = '仍在合成；若选的是 IndexTTS2，首次加载约 3 分钟…'; }, 45000),
+    setTimeout(() => { if(b.dataset.busy === '1') hint.textContent = '还在算：显卡可能被别的程序占着（设置页「引擎状态」可看显存）…'; }, 120000)
   ];
   try {
     const r = await fetch('/api/tts/test', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -1934,7 +1950,7 @@ $('btnTtsTest').addEventListener('click', async () => {
     if(out.file) new Audio('/media/' + out.file).play().catch(() => {});
   } catch(e){
     hint.textContent = '❌ ' + (e.name === 'AbortError'
-      ? '试听超时（3 分半）。引擎可能仍在首次加载，稍后再点一次即可'
+      ? '试听超时（6 分钟）。到设置页看「引擎状态」里的显存占用，关掉占显卡的程序再试'
       : e.message);
   } finally {
     clearTimeout(kill); ticks.forEach(clearTimeout);

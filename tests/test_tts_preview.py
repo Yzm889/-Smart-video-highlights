@@ -60,7 +60,7 @@ def test_preview_qwen3_success_path(monkeypatch, tmp_path):
     monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
     got = {}
 
-    def _speak(text, out, instruct=None):
+    def _speak(text, out, instruct=None, diag=None):
         got['instruct'] = instruct
         return _fake_wav(out)
     monkeypatch.setattr(T2, 'qwen3tts_speak', _speak)
@@ -87,4 +87,27 @@ def test_worker_is_unbuffered_logged_and_bounded():
     assert "'-u'" in src, 'worker 必须无缓冲，否则 stdout 阶段输出会被块缓冲吞掉'
     assert ".log'" in src or '.log\"' in src, 'worker stderr 必须落日志'
     assert 'ready_timeout=150' in src and 'ready_timeout=360' in src
-    assert 'def ask(self, req, timeout=180)' in src
+    assert 'def ask(self, req, timeout=240)' in src
+
+
+def test_preview_failure_shows_real_reason(monkeypatch, tmp_path):
+    """v1.4.18：失败必须把 worker/显存的真实原因带出来。
+
+    事故现场：用户只看到「未就绪或加载超时」，而真因是 Ollama 的
+    qwen3:8b 常驻吃了 9.6GB 显存，模型被驱动换页 → 永远算不完。
+    """
+    monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
+    monkeypatch.setattr(S, 'tts_local_cfg',
+                        lambda: {'engine': 'auto', 'instruct': ''})
+    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+
+    def _speak(text, out, instruct=None, diag=None):
+        diag.update({'engine': 'qwen3tts',
+                     'reason': '显存不足：11671/12288 MB 已用，配音需要约 5200 MB',
+                     'note': '', 'vram': {'used': 11671, 'total': 12288}})
+        return False
+    monkeypatch.setattr(T2, 'qwen3tts_speak', _speak)
+    ok, msg, eng, rel = S.tts_test_speak('试听一句。')
+    assert ok is False
+    assert '显存不足' in msg and '11671' in msg
+    assert '未就绪或加载超时' not in msg, '不能再拿模糊文案糊弄用户'
