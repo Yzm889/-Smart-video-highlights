@@ -5571,14 +5571,26 @@ def tts_test_speak(text='这是一段中文配音试听。'):
     os.makedirs(out_dir, exist_ok=True)
     cfg = tts_local_cfg()
     eng_set = cfg.get('engine') or 'auto'
-    use_idx = (eng_set == 'indextts2'
-               or (eng_set == 'auto' and not T2.qwen3tts_ready()
-                   and T2.indextts2_ready()))
+    # auto 必须跟 _auto_order() 一致（克隆优先）。旧判定是「Qwen3 装好就用 Qwen3」，
+    # 结果试听听到 Qwen3 逐句造音色（每句换人、也更慢），成片却是 IndexTTS2 克隆
+    # —— 用户点试听以为配音又坏了。试听要听的就是成片那把嗓子。
+    if eng_set == 'auto':
+        use_idx = bool(T2.indextts2_ready())
+    else:
+        use_idx = (eng_set == 'indextts2')
     # 时间戳文件名避免连点两次互相覆盖；新引擎输出 wav
     out = os.path.join(out_dir, 'sample_%d.wav' % int(time.time() * 1000))
     diag = {}
     if use_idx:
-        ok = T2.indextts2_speak(text, out, diag=diag)
+        # 与正式配音同参：同一条参考音、同一档语速
+        _ref = T2.voice_ref(cfg.get('instruct'))
+        ok = T2.indextts2_speak(text, out, spk=_ref, diag=diag)
+        if ok:
+            try:
+                from tts_engines import _apply_speed
+                _apply_speed(out, T2.rate_to_speed(cfg.get('rate')))
+            except Exception:
+                pass
         eng = 'indextts2'
     else:
         ok = T2.qwen3tts_speak(text, out, instruct=(cfg.get('instruct') or None),

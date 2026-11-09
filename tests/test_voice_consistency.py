@@ -115,3 +115,37 @@ def test_speak_passes_same_ref_every_sentence(tmp_path, monkeypatch):
         ok, eng, _ = T.local_tts_speak('第%d句话测试' % i, str(tmp_path / ('n%d.wav' % i)))
         assert ok and eng == 'indextts2'
     assert seen == [r'C:\ref\voice.wav'] * 3
+
+
+def test_preview_uses_same_voice_as_final(tmp_path, monkeypatch):
+    """试听必须用成片那把嗓子（克隆），不能退回 Qwen3 逐句造音色。
+
+    事故（2026-11-09 打包验证）：点试听返回「Qwen3-TTS · VoiceDesign」，
+    8 秒才出 32 字，而成片走的是 IndexTTS2 克隆——两条路不一致，
+    用户拿试听判断音色会被误导。
+    """
+    import webui_server as W
+    monkeypatch.setattr(W, 'OUTDIR', str(tmp_path))
+    monkeypatch.setattr(W, 'tts_local_cfg',
+                        lambda: {'engine': 'auto', 'rate': '+0%', 'instruct': ''})
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: True)
+    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+    monkeypatch.setattr(T2, 'voice_ref', lambda instruct=None: r'C://ref.wav')
+    monkeypatch.setattr(T2, 'rate_to_speed', lambda r: 1.12)
+    seen = {}
+
+    def fake_idx(text, out, spk=None, diag=None):
+        seen['spk'] = spk
+        open(out, 'wb').write(b'RIFF' + b'0' * 4000)
+        return True
+
+    def fake_qwen(*a, **k):
+        seen['qwen'] = True
+        return False
+
+    monkeypatch.setattr(T2, 'indextts2_speak', fake_idx)
+    monkeypatch.setattr(T2, 'qwen3tts_speak', fake_qwen)
+    ok, msg, eng, rel = W.tts_test_speak('试听一句话')
+    assert ok and eng == 'indextts2', (ok, msg, eng)
+    assert seen.get('spk') == r'C://ref.wav'
+    assert not seen.get('qwen'), '试听不该走 Qwen3'
