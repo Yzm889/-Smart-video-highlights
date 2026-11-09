@@ -516,8 +516,30 @@ document.addEventListener('change', (e) => {
 
 /* ── 高级设置（生成与合成共用一套参数，改动自动记忆） ── */
 const ADV_KEY = 'framecut_desktop_adv_v1';
+// 会被「记住」的字段。ADV_IDS 里都是 select / text，取值用 .value；
+// ADV_CHECKS 是复选框，必须用 .checked —— 用 .value 往返会把它们永远存成 'on'。
+// npTier / npCut / npBgm 原来不在这个表里（只有 _advParams() 读它们）：
+// 用户在「新建项目」选的画面理解档位、精剪、BGM 每次开窗口都被忘掉，
+// 静默退回 index.html 里写死的默认值（档位回 balanced、精剪回开、BGM 回关）。
 const ADV_IDS = ['advTarget','advRes','advColor','advTrans','advQual','advBurn',
-  'advFontSize','advColor1','advOutline','advOutlineW','advAlign','advMarginV','advLayers','advVoice'];
+  'advFontSize','advColor1','advOutline','advOutlineW','advAlign','advMarginV','advLayers','advVoice',
+  'npTier'];
+const ADV_CHECKS = ['npCut','npBgm'];
+const ADV_ALL = ADV_IDS.concat(ADV_CHECKS);
+function _advRead(id){
+  const el = $(id);
+  if(!el) return undefined;
+  return el.type === 'checkbox' ? !!el.checked : el.value;
+}
+function _advWrite(id, val){
+  const el = $(id);
+  if(!el) return;
+  if(el.type === 'checkbox') el.checked = !!val; else el.value = val;
+}
+function _advTierHint(){
+  const t = $('npTier') ? $('npTier').value : '';
+  if($('npTierHint')) $('npTierHint').textContent = TIER_TIP[t] || '';
+}
 function _advParams(){
   return {
     maxSeg: 25, autoCut: $('npCut').checked,
@@ -540,14 +562,15 @@ function _advParams(){
 }
 function advSave(){
   const v = {};
-  ADV_IDS.forEach(id => { const el = $(id); if(el) v[id] = el.value; });
+  ADV_ALL.forEach(id => { const val = _advRead(id); if(val !== undefined) v[id] = val; });
   try { localStorage.setItem(ADV_KEY, JSON.stringify(v)); } catch(e){}
 }
 function advLoad(){
   let v = null;
   try { v = JSON.parse(localStorage.getItem(ADV_KEY) || 'null'); } catch(e){}
   if(!v) return;
-  ADV_IDS.forEach(id => { const el = $(id); if(el && v[id] !== undefined) el.value = v[id]; });
+  ADV_ALL.forEach(id => { if(v[id] !== undefined) _advWrite(id, v[id]); });
+  _advTierHint();               // 档位提示文字要跟着恢复后的值走，否则与下拉不一致
 }
 $('npAdvToggle').addEventListener('click', () => {
   const b = $('npAdvBody');
@@ -555,11 +578,11 @@ $('npAdvToggle').addEventListener('click', () => {
   b.style.display = show ? 'block' : 'none';
   $('npAdvArrow').textContent = show ? '收起 ▴' : '展开 ▾';
 });
-ADV_IDS.forEach(id => { const el = $(id); if(el) el.addEventListener('change', advSave); });
+ADV_ALL.forEach(id => { const el = $(id); if(el) el.addEventListener('change', advSave); });
 advLoad();
 
 /* ── 参数预设（同一影片反复重做 5+ 次、每次 30+ 字段的痛点）──
-   只做命名保存 / 一键套用 / 删除，复用 ADV_IDS 与 advSave，
+   只做命名保存 / 一键套用 / 删除，复用 ADV_ALL 与 advSave，
    不动 _advParams() 与任何后端接口；纯 localStorage，无新依赖。 */
 const PRESET_KEY = 'framecut_param_presets';
 function presetAll(){
@@ -572,7 +595,7 @@ function presetWrite(all){
 }
 function presetCurrent(){
   const v = {};
-  ADV_IDS.forEach(id => { const el = $(id); if(el) v[id] = el.value; });
+  ADV_ALL.forEach(id => { const val = _advRead(id); if(val !== undefined) v[id] = val; });
   return v;
 }
 function presetFill(){
@@ -662,7 +685,8 @@ $('presetSel').addEventListener('change', () => {
   const name = $('presetSel').value, all = presetAll();
   if(!name || !all[name]){ presetHint(''); return; }
   const v = all[name];
-  ADV_IDS.forEach(id => { const el = $(id); if(el && v[id] !== undefined) el.value = v[id]; });
+  ADV_ALL.forEach(id => { if(v[id] !== undefined) _advWrite(id, v[id]); });
+  _advTierHint();                  // 与 advLoad 同理：提示要跟上下拉
   advSave();                       // 套用后同步「上次参数」，重开窗口仍是这套
   presetHint('已套用「' + name + '」· 下次生成即生效');
   toast('已套用预设：' + name, 'ok');
@@ -1637,7 +1661,11 @@ $('settingsSave').addEventListener('click', async () => {
     engine: $('setTtsEngine').value || 'auto',
     voice: $('setTtsVoice').value || '',
     cosy_voice: $('setCosyVoice').value || '',
-    rate: $('setTtsRate').value.trim() || '+0%'
+    rate: $('setTtsRate').value.trim() || '+0%',
+    // 音色描述：后端全链都读（tts_engines.py:1099 造音色 / :1111 铸参考音），
+    // 但以前 ①设置页没有输入框 ②/api/ai/config 白名单不存 → 永远等于 DEFAULT_INSTRUCT。
+    // 允许空串（= 用默认音色），所以不能用 `|| ''` 之外的花样，直接送。
+    instruct: (($('setTtsInstruct') || {}).value || '').trim()
   }};
   ['VisBase', 'VisModel'].forEach(f => {
     const el = $('set' + f);
@@ -1844,7 +1872,13 @@ $('btnHwApply').addEventListener('click', async () => {
       whisper: {model: rec.whisper}
     };
     // 【实测踩中】配音引擎守卫必须读当下配置（页面缓存可能未就绪，实测把主人的
-    // CosyVoice 覆盖成了 sherpa）：当前已是 cosyvoice/chattts/edge 等自然引擎时不动
+    // CosyVoice 覆盖成了 sherpa）。
+    // 下面这个列表 = 「可以安全覆盖」的取值，不是「要排除」的取值——命中就把
+    // tts_local 改成 sherpa。只有 auto/sapi/空 才算「用户没做过显式选择」，
+    // 把这类配置升级到离线 sherpa 是纯赚。
+    // 【2026-11-10】白名单修好后 qwen3tts / indextts2 也是「用户显式选过的自然引擎」，
+    // 与 cosyvoice/chattts/edge 同类，一律不覆盖（已拍板第⑦条：硬件一键配置不得接管
+    // 在用的自然配音引擎）。它们不在这里，就是被保护。
     const cfgNow = await fetch('/api/ai/config').then(x => x.json()).catch(() => null);
     const curEng = ((cfgNow && cfgNow.config && cfgNow.config.tts_local) || {}).engine || 'auto';
     const curCosy = cfgNow && cfgNow.cosyvoice_installed;
@@ -1891,7 +1925,9 @@ function renderTtsInstalls(v){
       + r[0] + ' · ' + r[2] + '</span></div>').join('')
     + _vramRow(st)
     + '<div class="hint">引擎资产在 ' + _esc(st.dir || '本机用户数据目录')
-    + '，升级成品不会丢失。未装的引擎由安装脚本部署，无需在此操作。</div>';
+    + '，升级成品不会丢失。两个引擎的权重体积大，随安装包一起分发；'
+    + '若这里显示「未装」，说明资产没到位或被杀软清掉了——请重新运行安装包，'
+    + '设置页暂时无法在线补装。</div>';
 }
 
 /* 显存一行：12GB 卡上最容易「看着装好了却合成不动」的地方，
@@ -1908,29 +1944,18 @@ function _vramRow(st){
     + '</span></div>';
 }
 let _setupTimer = null;
-function _pollTtsSetup(){
-  if(_setupTimer) clearInterval(_setupTimer);
-  _setupTimer = setInterval(async () => {
-    const v = await _envGet('/api/tts/voices');
-    if(!v) return;
-    const st = v.setup || {};
-    renderTtsInstalls(v);
-    if(st.running){
-      const btn = document.querySelector('#ttsInstalls .mini-btn');
-      if(btn){ btn.textContent = (st.op || '安装') + ' ' + (st.pct || 0) + '%：' + String(st.msg || '').slice(0, 42); btn.disabled = true; }
-    } else {
-      clearInterval(_setupTimer);
-      _setupTimer = null;
-      if(st.ok === true){ toast('✅ 安装完成，引擎自动可用', 'ok'); }
-      else if(st.ok === false){ toast('安装失败：' + String(st.msg || '').slice(0, 80), 'bad'); }
-      fillTtsSettings();
-      refreshEnv();
-    }
-  }, 2000);
-}
+/* 死代码清理（2026-11-10）：_pollTtsSetup 一直没有调用者，而且它等的是
+   `#ttsInstalls .mini-btn`——renderTtsInstalls() 从不渲染按钮（只渲染状态徽标 + 显存行）。
+   更关键的是后端根本没有 qwen3tts/indextts2 的安装接口：/api/tts/install 走的是
+   edge-tts，/api/tts/model/download 只有 sherpa 的 melo-zh / piper-huayan。
+   换言之这里曾经想做「缺哪个装哪个」，但装的两个引擎都不在可安装清单里，
+   按钮即使渲染出来也无接口可调。真正的修法需要先有后端安装器（见 AI_CHANGELOG），
+   在那之前不留一个装作能装的空壳。_setupTimer 保留给以后真接了安装接口时用。 */
 
 /* ── 设置：配音引擎与音色 ── */
-const TTS_ENGINES = [['auto','自动（Qwen3-TTS 优先）'],
+// auto 的真实顺序是 _auto_order() = ['indextts2','qwen3tts']（克隆优先，整片同一把嗓子），
+// 标签以前写成「Qwen3-TTS 优先」，与代码相反，用户按标签理解就会选错引擎。
+const TTS_ENGINES = [['auto','自动（IndexTTS2 克隆优先）'],
   ['qwen3tts','Qwen3-TTS · VoiceDesign（文字造音色，无需录音）'],
   ['indextts2','IndexTTS2（情感 / 时长可控）']];
 async function fillTtsSettings(){
@@ -1944,6 +1969,8 @@ async function fillTtsSettings(){
       '<option value="' + _esc(n) + '">' + _esc(n) + '</option>').join('');
     $('setTtsVoice').value = cfg.voice || 'zh-CN-XiaoxiaoNeural';
     $('setTtsRate').value = cfg.rate || '+0%';
+    const _ins = $('setTtsInstruct');
+    if(_ins) _ins.value = cfg.instruct || '';
     const cv = await fetch('/api/tts/cosyvoice/voices', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: '{}'}).then(r => r.json()).catch(() => null);
     $('setCosyVoice').innerHTML = ((cv && cv.voices) || []).map(x =>

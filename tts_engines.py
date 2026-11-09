@@ -77,7 +77,13 @@ _EMOTION_VOICES = {
 
 
 def tts_local_cfg():
-    """本地配音配置 {engine, voice, rate}；engine ∈ auto|edge|cosyvoice|chattts|sherpa|sapi。"""
+    """本地配音配置 {engine, voice, rate, cosy_voice, instruct}。
+
+    engine ∈ auto|qwen3tts|indextts2（默认链，见 _auto_order()）
+             | edge|cosyvoice|chattts|sherpa|sapi（旧引擎，显式选用仍可用）。
+    instruct 是音色描述：Qwen3-TTS VoiceDesign 拿它造音色、IndexTTS2 拿它造参考音；
+    空串表示用 tts2_engines.DEFAULT_INSTRUCT。
+    """
     c = load_ai_config().get('tts_local') or {}
     rate = str(c.get('rate') or '+0%').strip()
     if rate and not rate.startswith(('+', '-')):

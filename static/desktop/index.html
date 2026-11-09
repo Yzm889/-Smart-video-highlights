@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=12">
+<link rel="stylesheet" href="desktop.css?v=13">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -284,11 +284,14 @@
             <select id="setTtsEngine"></select>
             <button class="mini-btn" id="btnTtsTest"><svg class="ic"><use href="#i-volume"/></svg>试听</button>
             <button class="mini-btn" id="btnCloneVoice"><svg class="ic"><use href="#i-mic"/></svg>克隆音色</button>
-            <button class="mini-btn" id="btnTtsReset" title="解除微软服务熔断并重新选择最优引擎">重试引擎</button>
+            <button class="mini-btn" id="btnTtsReset" title="重置配音引擎状态，下次合成重新选择最优引擎">重试引擎</button>
           </div>
-          <div class="hint">保持「自动」即可：优先 Qwen3-TTS VoiceDesign，IndexTTS2 作备选。试听只合成一句，不跑全片。</div>
+          <div class="hint">保持「自动」即可：优先 IndexTTS2 克隆音色（整片同一把嗓子），Qwen3-TTS VoiceDesign 负责造参考音、并在克隆失败时兜底。试听只合成一句，不跑全片。</div>
           <details class="set-more">
-            <summary>精细调节（音色 / 语速）</summary>
+            <summary>精细调节（音色描述 / 音色 / 语速）</summary>
+            <label>音色描述（新引擎的「嗓子」）</label>
+            <input type="text" id="setTtsInstruct" maxlength="200" placeholder="例如：低沉磁性的中年男声，语速偏慢，有纪录片质感">
+            <div class="hint">Qwen3-TTS 用这句话现场造音色；IndexTTS2 用它铸一条参考音，整片共用同一把嗓子。留空 = 用默认音色。</div>
             <label>音色（兼容旧配置，新引擎不读）</label>
             <select id="setTtsVoice"></select>
             <label>CosyVoice 音色（含克隆音色）</label>
@@ -452,6 +455,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=12"></script>
+<script src="desktop.js?v=13"></script>
 </body>
 </html>

@@ -1179,19 +1179,31 @@ class Handler(BaseHTTPRequestHandler):
                     cur['enabled'] = bool(inc['enabled'])
                 cfg['vlm'] = cur
             if isinstance(data.get('tts_local'), dict):
-                # 本地免费配音：engine(auto|edge|cosyvoice|chattts|sherpa|sapi) + voice + rate
+                # 本地免费配音：engine(auto|qwen3tts|indextts2|edge|cosyvoice|chattts|sherpa|sapi)
+                # + voice + cosy_voice + rate + instruct（音色描述）
                 # 【2026-11-07】白名单原本漏了 cosyvoice/chattts、也不存 cosy_voice——
                 # 界面上永远无法切换到克隆音色引擎（真机实测踩中），补齐。
+                # 【2026-11-10】同一处坑又踩了一次：设置页下拉只有 auto/qwen3tts/indextts2，
+                # 白名单却只认旧引擎 → 选 Qwen3-TTS / IndexTTS2 存不进去，刷新后又弹回 auto，
+                # 用户看不出被丢（desktop.js 把旧值读回下拉）。同时 instruct 后端全链都读
+                # （tts_engines.py:1099/:1111 与 webui_server.py 试听），但从来没存过 →
+                # 自定义音色描述永远等于 DEFAULT_INSTRUCT。两处一起补齐。
                 inc = data['tts_local']
                 cur = dict(cfg.get('tts_local') or {})
                 eng = str(inc.get('engine') or '').strip().lower()
-                if eng in ('auto', 'edge', 'sherpa', 'sapi', 'cosyvoice', 'chattts'):
+                if eng in ('auto', 'qwen3tts', 'indextts2',
+                           'edge', 'sherpa', 'sapi', 'cosyvoice', 'chattts'):
                     cur['engine'] = eng
                 if inc.get('voice'):
                     cur['voice'] = str(inc['voice']).strip()
                 cvv = str(inc.get('cosy_voice') or '').strip()
                 if cvv:
                     cur['cosy_voice'] = cvv
+                # 音色描述：允许清空（空 = 用 tts2_engines.DEFAULT_INSTRUCT），
+                # 所以不能像 voice 那样「空值不写」。长度上限与前端 maxlength 一致，
+                # 免得一段超长文本被塞进 VoiceDesign 的 instruct。
+                if 'instruct' in inc:
+                    cur['instruct'] = str(inc.get('instruct') or '').strip()[:200]
                 mk = str(inc.get('sherpa_model') or '').strip()
                 if mk in _w.SHERPA_TTS_MODELS:
                     cur['sherpa_model'] = mk

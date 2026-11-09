@@ -8,6 +8,7 @@ Qwen3-TTS 模型照样能加载，但 WDDM 把权重换页到内存：GPU 占用
 清掉 Ollama 后同样的调用 45.3s 出 284KB 音频。
 """
 import os
+import re
 import sys
 
 import pytest
@@ -153,7 +154,40 @@ def test_frontend_shows_vram_and_longer_timeout():
     block = js[i:i + 2400]
     assert 'ctrl.abort(), 360000' in block, '前端超时必须长于后端(加载 360s+合成 240s)'
     html = open(HTML, encoding='utf-8').read()
-    assert 'desktop.js?v=12' in html and 'desktop.css?v=12' in html
+    # 缓存戳（cache-buster）：改过 desktop.js / desktop.css 就必须同时抬 index.html 里的
+    # ?v=N，否则 WebView2 会继续用旧文件，用户看到「改了没生效」。
+    # 这里不钉死具体数字（上一次钉死 ?v=12，下一次合法升级就必然变红），
+    # 只钉真正的不变量：两个资源都带版本号，且**两个数字必须相等**——
+    # 只抬其中一个才是真的 bug（两个资源版本漂移）。
+    js_v = re.search(r'desktop\.js\?v=(\d+)', html)
+    css_v = re.search(r'desktop\.css\?v=(\d+)', html)
+    assert js_v and css_v, 'index.html 里 desktop.js / desktop.css 必须带 ?v=N 缓存戳'
+    assert js_v.group(1) == css_v.group(1), (
+        'desktop.js?v=%s 与 desktop.css?v=%s 版本号不一致：两个资源必须同步抬版本'
+        % (js_v.group(1), css_v.group(1)))
+    assert int(js_v.group(1)) >= 13, 'v1.4.21 已抬到 13，不许回退（否则旧缓存继续生效）'
+
+
+def test_hw_onclick_never_takes_over_a_chosen_engine():
+    """已拍板第⑦条：硬件一键配置不得接管「在用的自然配音引擎」。
+
+    btnHwApply 里那句 `if([...].indexOf(curEng) >= 0 ...)` 是**可覆盖白名单**——
+    命中就把 tts_local 改成 sherpa。这里钉住：名单里只能有「用户没做过显式选择」的值
+    （auto / sapi / 空），绝不能出现 qwen3tts / indextts2 / cosyvoice / chattts / edge。
+
+    背景：v1.4.21 修好 engine 白名单后 qwen3tts/indextts2 才第一次真的存得住，
+    以前它们存不进去、curEng 永远是 auto，所以旧名单「看起来」没问题；
+    一旦把它们加进这个列表，用户显式选的 Qwen3-TTS/IndexTTS2 会被静默改成 sherpa。
+    """
+    js = open(JS, encoding='utf-8').read()
+    i = js.index('indexOf(curEng) >= 0')
+    line = js[js.rindex('\n', 0, i) + 1:js.index('\n', i)]
+    for eng in ('qwen3tts', 'indextts2', 'cosyvoice', 'chattts', 'edge'):
+        assert "'%s'" % eng not in line, (
+            '硬件一键配置的可覆盖名单里出现了 %s —— 这会接管用户显式选择的引擎'
+            '（已拍板第⑦条）。该名单只应含 auto / sapi / 空串。实际：%s' % (eng, line.strip()))
+    for eng in ('auto', 'sapi'):
+        assert "'%s'" % eng in line, '可覆盖名单应仍含 %s。实际：%s' % (eng, line.strip())
 
 
 def test_ask_timeout_covers_generation_after_load():
