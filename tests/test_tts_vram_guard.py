@@ -195,7 +195,7 @@ def test_sync_worker_keeps_copy_when_source_missing(monkeypatch, tmp_path):
 
 
 def test_start_runs_assets_copy_with_isolated_python(monkeypatch, tmp_path):
-    """启动命令必须是 assets 里的副本 + -E，且 PYTHONPATH 被清掉。"""
+    """启动命令必须是 assets 里的副本 + -E，且环境是白名单（无 PYTHONPATH）。"""
     captured = {}
 
     class _P:
@@ -214,8 +214,101 @@ def test_start_runs_assets_copy_with_isolated_python(monkeypatch, tmp_path):
                                  'serve', r'C:\models'], need_mb=1)
     assert srv._start() is False          # 被 _P 打断，但命令已经拿到
     cmd = captured['cmd']
-    assert cmd[0].endswith('python.exe') and '-E' in cmd and '-u' in cmd
-    assert cmd[cmd.index('-E') + 1] == '-u'
+    assert cmd[0].endswith('python.exe')
+    assert '-E' in cmd and '-X' in cmd and 'utf8' in cmd, '必须强制 UTF-8 标准流'
+    assert cmd[cmd.index('-X') + 1] == 'utf8'
+    assert cmd[cmd.index('-E') + 1] == '-X'      # 两个开关连在一起，-u 在后面
     assert cmd[-3] == r'C:\assets\bin\qwen3tts_worker.py', '必须跑 assets 里的副本'
     assert 'PYTHONPATH' not in captured['env']
 
+
+
+# ---------------------------------------------------------------------------
+# v1.4.19：启动链路的三处硬伤
+# ① 上一轮的 _eos 会留在队列里，让下一次启动「秒判失败」并把刚起的 worker 杀掉；
+# ② 失败只留一句「worker 启动失败」，退出码和日志尾巴全丢；
+# ③ 宿主进程的环境变量整包继承，打包目录会顺着 PATH/PYTHONPATH 漏进子进程。
+# ---------------------------------------------------------------------------
+def test_drain_drops_stale_answers(monkeypatch):
+    srv = T2._Serve('probe', ['x'])
+    srv.q.put({'_eos': True})
+    srv.q.put({'ok': True})
+    srv._drain()
+    assert srv.q.empty()
+
+
+def test_restart_survives_stale_eos(monkeypatch, tmp_path):
+    """worker 死过一次后（队列里躺着 _eos），下次启动仍必须能成功。"""
+    worker = tmp_path / 'fake_echo.py'
+    worker.write_text('\n'.join([
+        'import sys, json',
+        'print(json.dumps({"event": "ready"}), flush=True)',
+        'for line in sys.stdin:',
+        '    print(json.dumps({"ok": True}), flush=True)',
+    ]) + '\n', encoding='utf-8')
+    monkeypatch.setattr(T2, 'TTS2_DIR', str(tmp_path))
+    monkeypatch.setattr(T2, 'release_vram', lambda **k: (True, ''))
+    srv = T2._Serve('probe', [sys.executable, '-u', str(worker)],
+                    ready_timeout=30, need_mb=1)
+    assert srv._start() is True
+    srv.proc.kill()                      # 模拟崩溃
+    srv.proc = None
+    srv.q.put({'_eos': True})            # 上一轮 reader 留下的墓碑
+    assert srv._start() is True, '残留 _eos 不该让新进程秒死'
+    srv.proc.kill()
+
+
+def test_child_env_is_whitelisted(monkeypatch):
+    monkeypatch.setenv('PYTHONPATH', r'C:/app/_internal')
+    monkeypatch.setenv('PYTHONHOME', r'C:/app/_internal')
+    monkeypatch.setenv('PATH', r'C:/app/_internal;C:/Windows/system32')
+    env = T2.child_env()
+    assert 'PYTHONPATH' not in env and 'PYTHONHOME' not in env
+    assert '_internal' not in env['PATH']
+    assert 'system32' in env['PATH']
+    assert env['HF_ENDPOINT'].startswith('https://')
+
+
+def test_start_failure_reports_exit_code(monkeypatch, tmp_path):
+    """失败必须带上退出码（不然只会看到一句「worker 启动失败」）。"""
+    class _Dead:
+        def __init__(self):
+            self.stdout = []
+            self.returncode = 3
+
+        def poll(self):
+            return 3
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(T2, 'TTS2_DIR', str(tmp_path))
+    monkeypatch.setattr(T2, 'release_vram', lambda **k: (True, ''))
+    monkeypatch.setattr(T2.subprocess, 'Popen', lambda *a, **k: _Dead())
+    srv = T2._Serve('qwen3tts', ['x'], ready_timeout=5, need_mb=1)
+    assert srv._start() is False
+    assert '退出码 3' in srv.error
+
+
+def test_chinese_text_survives_the_pipe(monkeypatch, tmp_path):
+    """中文必须原样送到 worker：子进程 stdin 是 GBK 时，裸 UTF-8 会变乱码
+    （表现是 tokenizer 抛 TextEncodeInput must be Union[...]）。"""
+    worker = tmp_path / 'echo_to_file.py'
+    got = tmp_path / 'got.txt'
+    worker.write_text('\n'.join([
+        'import sys, json',
+        'print(json.dumps({"event": "ready"}), flush=True)',
+        'for line in sys.stdin:',
+        '    req = json.loads(line)',
+        '    open(sys.argv[1], "w", encoding="utf-8").write(req.get("text", ""))',
+        '    print(json.dumps({"ok": True}), flush=True)',
+    ]) + '\n', encoding='utf-8')
+    monkeypatch.setattr(T2, 'TTS2_DIR', str(tmp_path))
+    monkeypatch.setattr(T2, 'release_vram', lambda **k: (True, ''))
+    srv = T2._Serve('echo', [sys.executable, '-u', str(worker), str(got)],
+                    ready_timeout=30, need_mb=1)
+    assert srv._start() is True
+    text = '画面还没有开始，声音先到了——试听。'
+    assert srv.ask({'text': text, 'out': 'x'})[0] is True
+    assert got.read_text(encoding='utf-8') == text, '中文走到 worker 不能变形'
+    srv.proc.kill()

@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -196,9 +197,47 @@ def indextts2_ready():
             and os.path.isdir(IDX_CKPT))
 
 
+# 允许传给 worker 的环境变量白名单。别用 os.environ.copy()：打包进程里塞着
+# PYTHONPATH/PYTHONHOME 等指向 _internal 的变量（外加一堆我们不了解的），
+# worker 的 3.11 解释器一旦看见它们就会拣错扩展模块。
+_ENV_KEEP = ('SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
+             'LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+             'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
+             'CUDA_PATH', 'CUDA_HOME', 'FRAMECUT_TTS2_DIR')
+
+
+def child_env():
+    """给独立 venv 的 worker 准备干净环境（白名单继承 + 剔除打包目录）。"""
+    env = {}
+    for k in _ENV_KEEP:
+        v = os.environ.get(k)
+        if v:
+            env[k] = v
+    sysroot = env.get('SYSTEMROOT') or r'C:\Windows'
+    env['SYSTEMROOT'] = sysroot
+    env.setdefault('WINDIR', sysroot)
+    env.setdefault('TEMP', r'C:\Windows\Temp')
+    env['TMP'] = env.get('TMP') or env['TEMP']
+    env['HF_ENDPOINT'] = 'https://hf-mirror.com'
+    meipass = (getattr(sys, '_MEIPASS', '') or '').lower().replace('/', '\\')
+    dirs = []
+    for d in (os.environ.get('PATH') or '').split(os.pathsep):
+        if not d:
+            continue
+        dl = d.lower().replace('/', '\\')
+        # 打包目录从 DLL 搜索路径里剔掉：里面躺着另一个版本的 python3xx.dll
+        if '_internal' in dl or (meipass and dl.startswith(meipass)):
+            continue
+        dirs.append(d)
+    for d in (os.path.dirname(QWEN_PY), os.path.dirname(os.path.dirname(QWEN_PY))):
+        if d and d not in dirs:
+            dirs.insert(0, d)
+    env['PATH'] = os.pathsep.join(dirs)
+    return env
+
+
 class _Serve:
     """常驻 worker：启动一次，之后每行 JSON 一个请求 / 一行 JSON 一个应答。"""
-
     def __init__(self, name, cmd, ready_timeout=150, need_mb=5200):
         self.name = name
         self.cmd = cmd
@@ -209,6 +248,7 @@ class _Serve:
         self.lock = threading.Lock()
         self.error = ''
         self.note = ''          # 「已腾出显存」之类的软提示，成功后也带给前端
+        self.starting = False   # 正在拉起进程：此时不许被「让显存」误杀
 
     def _reader(self, proc):
         try:
@@ -225,7 +265,57 @@ class _Serve:
         finally:
             self.q.put({'_eos': True})
 
+    def _drain(self):
+        """丢掉上一轮残留的应答/_eos。
+
+        2026-11-09：worker 死过一次后，reader 线程留下的 `_eos` 会一直躺在队列里；
+        下一次 _start 拉起进程后立刻读到它，于是**秒判失败并 kill 掉刚起来的 worker**
+        （日志一片空白，完全看不出原因）。每次启动前必须清干净。
+        """
+        while True:
+            try:
+                self.q.get_nowait()
+            except Exception:
+                return
+
+    def _log_tail(self, limit=200):
+        """把 worker 日志里最后几行有用的内容抓出来（跳过 sox 那堆噪音）。"""
+        try:
+            with open(os.path.join(TTS2_DIR, self.name + '.log'),
+                      'r', encoding='utf-8', errors='replace') as f:
+                data = f.read()[-4000:]
+        except Exception:
+            return ''
+        noise = ('sox could not be found', 'proceed here', '- - -', 'path variables',
+                 "'sox'", 'if you do', 'if you do not')
+        keep = []
+        for ln in data.splitlines():
+            s = ln.strip()
+            if not s or any(n in s.lower() for n in noise):
+                continue
+            keep.append(s)
+        return ' | '.join(keep[-3:])[-limit:]
+
     def _start(self):
+        self.starting = True
+        try:
+            for attempt in (1, 2):
+                t0 = time.time()
+                if self._start_inner():
+                    return True
+                # 秒退（<6s）多半是上一次强杀留下的 CUDA 上下文/DLL 撞车，
+                # 换个新进程往往就好了；显存类失败重试没意义，直接报。
+                if attempt == 1 and time.time() - t0 < 6 \
+                        and '显存' not in (self.error or ''):
+                    time.sleep(1.0)
+                    self._drain()
+                    continue
+                return False
+            return False
+        finally:
+            self.starting = False
+
+    def _start_inner(self):
         # 先确认显存：12GB 卡上 Ollama 的 qwen3:8b 能吃掉 9.6GB，
         # 模型照样能加载，但会被驱动换页到内存，推理永远算不完。
         ok_vram, note = release_vram(want=self.need_mb)
@@ -233,6 +323,8 @@ class _Serve:
         if not ok_vram:
             self.error = note
             return False
+        self._drain()                       # 上一轮的 _eos 不能带进来
+        self.error = ''
         cmd = list(self.cmd)
         # 每次起进程前同步 worker（升级成品后副本要跟着变），并把脚本路径换成
         # assets 里的副本；-E 忽略 PYTHONPATH/PYTHONHOME，防止 3.11 的 worker
@@ -241,16 +333,15 @@ class _Serve:
             if isinstance(part, str) and part.endswith('_worker.py'):
                 cmd[i] = sync_worker(os.path.basename(part))
                 if '-E' not in cmd:
-                    cmd.insert(1, '-E')
+                    # -E：忽略 PYTHON* 环境变量（打包目录会顺着 PYTHONPATH 漏进来）
+                    # -X utf8：但 -E 也顺手关掉了 PYTHONUTF8，子进程 stdin 会退回
+                    # GBK —— 中文 JSON 一进去就成乱码，tokenizer 报
+                    # TextEncodeInput must be Union[...]。必须显式开 UTF-8 模式。
+                    cmd[1:1] = ['-E', '-X', 'utf8']
                 break
+        self.cmd_used = cmd
         try:
-            env = os.environ.copy()
-            env['HF_ENDPOINT'] = 'https://hf-mirror.com'
-            for _k in ('HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'ALL_PROXY'):
-                env.pop(_k, None)
-            # -E 之外再清一遍：万一副本同步失败退回打包目录那份，这里也能兜住
-            for _k in ('PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP'):
-                env.pop(_k, None)
+            env = child_env()
             # stderr 落日志：以前 DEVNULL 把 worker 的加载报错全吞了，
             # 试听卡住时完全看不到原因（这次事故的直接教训）。
             os.makedirs(TTS2_DIR, exist_ok=True)
@@ -278,8 +369,23 @@ class _Serve:
             if msg.get('event') == 'error' or msg.get('_eos'):
                 self.error = str(msg.get('error') or 'worker 启动失败')[:300]
                 break
+        # 走到这里就是没起来。把退出码和日志尾巴一并带上：
+        # 以前只剩一句「worker 启动失败」，什么都查不到。
+        rc = p.poll()
+        tail = self._log_tail()
+        detail = '退出码 %s' % (rc if rc is not None else '未知')
+        if tail:
+            detail += '｜' + tail
+        if not self.error:
+            self.error = 'worker 启动失败（%s）' % detail
+        elif 'worker 启动失败' in self.error:
+            self.error = '%s（%s）' % (self.error, detail)
         try:
             p.kill()
+        except Exception:
+            pass
+        try:
+            self._errf.close()      # 失败就别攥着日志句柄，反复重试会泄漏
         except Exception:
             pass
         self.proc = None
@@ -292,7 +398,9 @@ class _Serve:
                     return False, self.error or 'worker 不可用'
             p = self.proc
             try:
-                p.stdin.write(json.dumps(req, ensure_ascii=False) + '\n')
+                # 一律 ASCII 转义：不管子进程 stdin 是 UTF-8 还是 GBK，
+                # \uXXXX 都能被 json.loads 还原成原字符，绝不出现乱码
+                p.stdin.write(json.dumps(req) + '\n')
                 p.stdin.flush()
             except Exception as e:
                 self.proc = None
@@ -364,6 +472,8 @@ def release_engines():
             continue
         with srv.lock:
             p = srv.proc
+            if srv.starting:
+                continue        # 正在拉起，杀了等于自杀（会报「worker 启动失败」）
             if p is None or p.poll() is not None:
                 continue
             srv.proc = None

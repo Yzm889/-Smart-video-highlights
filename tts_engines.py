@@ -515,9 +515,10 @@ def _cosy_serve_synth(txt, out_path, ref_wav, prompt_text='', timeout=300):
             _COSY_SERVE.update(proc=None, q=None)
             return False
         try:
+            # 同 v1.4.19 的教训：子进程 stdin 在中文系统上是 GBK，裸 UTF-8 会变
+            # 乱码，一律 ASCII 转义（\uXXXX）由 json.loads 还原
             proc.stdin.write(json.dumps({'txt': txt, 'out': out_path, 'ref': ref_wav,
-                                         'prompt_text': prompt_text or ''},
-                                        ensure_ascii=False) + '\n')
+                                         'prompt_text': prompt_text or ''}) + '\n')
             proc.stdin.flush()
         except Exception:
             _COSY_SERVE.update(proc=None, q=None)
