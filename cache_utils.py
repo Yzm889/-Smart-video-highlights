@@ -193,13 +193,16 @@ SAMPLE_FRAME_CACHE_DIR = os.path.join(WORKDIR, 'sample_frames_cache')  # [P0-1 �
 
 SAMPLE_FRAME_CACHE_KEEP = 32   # [P0-1 方案1.5] 最多保留多少个视频的抽帧产物目录，超出按修改时间清最旧
 
-def _sample_frame_cache_dir(video_path, interval):
+def _sample_frame_cache_dir(video_path, interval, width=None):
 
     """抽帧产物缓存目录：按视频指纹+间隔定位（与 VLM/ASR 缓存同一指纹来源）。"""
 
     import hashlib
 
-    key = _video_cache_key(video_path, f'frames_{int(interval)}')
+    # 宽度也必须进键：同间隔不同档位的帧尺寸不同（448/512/640/720），
+    # 只按间隔复用会拿到上一种尺寸的帧，白费一次抽帧还看不准。
+    _w = f'_{int(width)}' if width else ''
+    key = _video_cache_key(video_path, f'frames_{int(interval)}{_w}')
 
     d = os.path.join(SAMPLE_FRAME_CACHE_DIR, hashlib.md5(key.encode('utf-8')).hexdigest())
 

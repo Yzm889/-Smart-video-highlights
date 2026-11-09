@@ -91,7 +91,7 @@ def h(tmp_path, monkeypatch):
     monkeypatch.setattr(M, '_video_cache_key', lambda vp, suffix='': 'FP')
     monkeypatch.setattr(M, '_cache_load', lambda key: None)
     monkeypatch.setattr(M, '_cache_save', lambda key, value: None)
-    monkeypatch.setattr(M, '_sample_frame_cache_dir', lambda vp, itv: e.frame_dir)
+    monkeypatch.setattr(M, '_sample_frame_cache_dir', lambda vp, itv, **kw: e.frame_dir)
     monkeypatch.setattr(M, '_sample_frame_cache_ready', lambda d, n: True)
     monkeypatch.setattr(M, '_sample_frame_cache_mark', lambda *a, **k: None)
     monkeypatch.setattr(M, '_sample_frame_cache_trim', lambda: None)

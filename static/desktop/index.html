@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=11">
+<link rel="stylesheet" href="desktop.css?v=12">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -121,6 +121,16 @@
         <label class="chk"><input type="checkbox" id="npScript"> 这是写好的完整解说稿（AI 不改一字）</label>
         <label class="chk"><input type="checkbox" id="npCut" checked> 剧情精剪（保留高光，剪掉填充——成片约 10 分钟）</label>
         <label class="chk"><input type="checkbox" id="npBgm"> 加背景音乐（解说时自动闪避）</label>
+      </div>
+      <div class="field" style="margin-top:8px">
+        <label>画面理解档位（决定「没台词的高光镜头」保不保得住）</label>
+        <select id="npTier">
+          <option value="speed">极速 ·约 10 分钟·无台词画面会丢（调文案用）</option>
+          <option value="balanced" selected>平衡 ·约 18 分钟·全片覆盖，打戏吻戏都保留（推荐）</option>
+          <option value="quality">质量 ·约 33 分钟·更密抽样，动作快的片子选它</option>
+          <option value="ultra">极致 ·约 50 分钟·每 5 秒一帧，动作匹配权重加倍</option>
+        </select>
+        <div class="hint" id="npTierHint">平衡档：全片每 12 秒看一帧，没有台词的打斗/对视/吻戏也会进候选池；配音 7 分钟是四档共同下限。</div>
       </div>
       <button class="np-adv-toggle" id="npAdvToggle">⚙ 高级设置（时长 · 字幕 · 导出交付）<span class="adv-arrow" id="npAdvArrow">展开 ▾</span></button>
       <div class="adv-body" id="npAdvBody" style="display:none">
@@ -442,6 +452,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=11"></script>
+<script src="desktop.js?v=12"></script>
 </body>
 </html>

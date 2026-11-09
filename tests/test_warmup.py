@@ -203,7 +203,7 @@ def _install_vlm_env(monkeypatch, tmp_path):
     os.makedirs(frame_dir, exist_ok=True)
     from PIL import Image
     Image.new('L', (8, 8), 120).save(os.path.join(frame_dir, 'sample_0000.jpg'))
-    monkeypatch.setattr(M, '_sample_frame_cache_dir', lambda p, iv: frame_dir)
+    monkeypatch.setattr(M, '_sample_frame_cache_dir', lambda p, iv, **kw: frame_dir)
     return v
 
 

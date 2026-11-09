@@ -23,9 +23,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-VDUR = 3600.0          # interval = max(15, 3600/60) = 60 → 60 个抽样点
-N_SAMPLES = 60
-BATCH = 8              # 与 _vlm_sample_timeline 内的 batch_size 一致（S5：3→6→8）
+# 走「极速档」（quality=False → tier=speed）：interval = max(20, 3600/40) = 90
+# → 40 个抽样点。档位参数化后抽样点数由 NARR_TIERS 决定，测试跟着它走。
+VDUR = 3600.0
+N_SAMPLES = int(VDUR // max(20.0, VDUR / 40.0))
+BATCH = 8              # 极速档 batch_size = 8
 
 
 class Env:
@@ -129,7 +131,7 @@ def env():
     M._video_cache_key = lambda vp, suffix='': 'FINGERPRINT-A'
     M._cache_load = lambda key: None
     M._cache_save = lambda key, value: e.saved.append((key, value))
-    M._sample_frame_cache_dir = lambda vp, itv: e.frame_dir
+    M._sample_frame_cache_dir = lambda vp, itv, **kw: e.frame_dir
     M._sample_frame_cache_ready = lambda d, n: True
     M._sample_frame_cache_mark = lambda *a, **k: None
     M._sample_frame_cache_trim = lambda: None

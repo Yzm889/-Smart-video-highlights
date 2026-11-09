@@ -153,7 +153,7 @@ def test_frontend_shows_vram_and_longer_timeout():
     block = js[i:i + 2400]
     assert 'ctrl.abort(), 360000' in block, '前端超时必须长于后端(加载 360s+合成 240s)'
     html = open(HTML, encoding='utf-8').read()
-    assert 'desktop.js?v=11' in html and 'desktop.css?v=11' in html
+    assert 'desktop.js?v=12' in html and 'desktop.css?v=12' in html
 
 
 def test_ask_timeout_covers_generation_after_load():

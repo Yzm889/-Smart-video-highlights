@@ -500,6 +500,20 @@ function _musicPayload(){
            : {name: _music.name, path: _music.path, desktop_token: _token}));
 }
 
+/* ── 画面理解档位：切换即解释差异，避免"点了不知道等多久" ── */
+const TIER_TIP = {
+  speed: '极速：只看台词附近的画面，没有台词的打斗/对视/吻戏不会进候选池——只适合先调文案和配音。',
+  balanced: '平衡：全片每 12 秒看一帧，无台词高光镜头也会进候选池；配音 7 分钟是四档共同下限。',
+  quality: '质量：每 8 秒看一帧 + 每帧 5 个字段，动作节奏快的片子选它；耗时约为平衡的 2 倍。',
+  ultra: '极致：每 5 秒一帧、动作匹配权重加倍，最接近"解说与画面严丝合缝"；约 50 分钟。'
+};
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'npTier') {
+    const t = e.target.value;
+    if ($('npTierHint')) $('npTierHint').textContent = TIER_TIP[t] || '';
+  }
+});
+
 /* ── 高级设置（生成与合成共用一套参数，改动自动记忆） ── */
 const ADV_KEY = 'framecut_desktop_adv_v1';
 const ADV_IDS = ['advTarget','advRes','advColor','advTrans','advQual','advBurn',
@@ -507,6 +521,8 @@ const ADV_IDS = ['advTarget','advRes','advColor','advTrans','advQual','advBurn',
 function _advParams(){
   return {
     maxSeg: 25, autoCut: $('npCut').checked,
+    // 画面理解档位：决定是否覆盖无台词镜头、每帧让模型写多少字
+    narrTier: ($('npTier') ? $('npTier').value : 'balanced'),
     targetSec: parseFloat($('advTarget').value) || 0,   // 0 = 全片（后端回落视频时长）
     narr_style: 'movie', detail_level: 'balanced', genre: 'auto',
     subtitle: {fontSize: +$('advFontSize').value || 22, color: $('advColor1').value || '#FFFFFF',

@@ -1551,7 +1551,40 @@ def _algo_align_shots(shots, lines):
     return bounds
 
 
-def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None):
+# 动作/情绪词归一表（用户 2026-11-09 的核心诉求：打戏、对视、吻戏不能因为
+# 没有台词就被剪掉）。中文 bigram 对同义动作是瞎的——
+# 「接吻」与「吻在一起」共享 0 个 bigram，算法会判定毫无关系，
+# 于是带动作的高光镜头永远匹配不上「他们深情地吻在了一起」这类解说词。
+# 这里把同义动作映射成一个标准词（匹配单位从「字面」变成「动作」）。
+_ACTION_LEXICON = {
+    '吻':   ('吻', '亲了', '亲吻', '嘴唇', '相拥', '拥吻', '热吻', '接吻'),
+    '拥抱': ('拥抱', '抱住', '搂住', '搂着', '环抱', '相拥'),
+    '对视': ('对视', '凝视', '相望', '目光', '看着对方', '四目'),
+    '打斗': ('挥拳', '出拳', '殴打', '扭打', '搏斗', '踢', '一拳', '掐住', '勒住', '摔在'),
+    '枪战': ('开枪', '枪口', '射击', '扳机', '中弹', '枪声'),
+    '追逐': ('追赶', '奔跑', '狂奔', '逃跑', '疾驰', '追车'),
+    '哭泣': ('哭泣', '流泪', '泪流', '抽泣', '哽咽', '眼泪'),
+    '嘶吼': ('怒吼', '咆哮', '嘶吼', '尖叫', '大喊', '吼'),
+    '受伤': ('流血', '伤口', '倒地', '倒下', '重伤'),
+    '爆炸': ('爆炸', '火光', '炸开', '爆燃'),
+}
+_ACTION_WEIGHT = 1.6     # 动作命中相对普通词组的加权
+_ACTION_TOKENS = {}
+for _canon, _words in _ACTION_LEXICON.items():
+    for _w0 in _words:
+        _ACTION_TOKENS[_w0] = _canon
+
+
+def _action_tokens(text):
+    """把文本里的动作/情绪词映射成标准 token（前缀 ACT: 避免与普通 bigram 撞车）。"""
+    t = str(text or '')
+    if not t:
+        return set()
+    return set('ACT:' + c for w, c in _ACTION_TOKENS.items() if w in t)
+
+
+def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
+                               action_weight=None):
     """算法语义对齐（不调模型）：用 VLM 场景描述/台词/剧情理解与解说词的字符 bigram
     重叠度，在「保持时间顺序」的前提下为每句解说挑最相关的连续场景，并跳过无关填充段。
 
@@ -1567,9 +1600,14 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None):
         # 句子比场景多：按比例共享场景（保证每句都有画面，且顺序不倒退）
         return {i: [min(m - 1, int(i * m / float(n)))] for i in range(n)}
 
+    _aw = float(action_weight or _ACTION_WEIGHT)
+
     def _bg(s):
         s = str(s or '')
-        return set(s[i:i + 2] for i in range(len(s) - 1) if s[i:i + 2].strip())
+        toks = set(s[i:i + 2] for i in range(len(s) - 1) if s[i:i + 2].strip())
+        # 动作词以「标准词」参与匹配：「接吻」与「吻在一起」靠 ACT:吻 才连得上。
+        toks |= _action_tokens(s)
+        return toks
 
     scene_bg = []
     for j, sc in enumerate(scenes):
@@ -1607,9 +1645,15 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None):
         shared = q & s
         if not shared:
             return 0.0
-        got = sum(_w(g) for g in shared)
+        # 动作命中加权：一句「他们深情地吻在了一起」如果只按字面算，
+        # 顶多和「吻」沾边的镜头得点分；加权后带动作的镜头能压过
+        # 「台词密度高但内容无关」的镜头——这正是高光画面被保留的关键。
+        def _wt(g):
+            return _w(g) * (_aw if g.startswith('ACT:') else 1.0)
+
+        got = sum(_wt(g) for g in shared)
         # 分母用「解说词自己的信息量」：长句不会因为场景描述长而占便宜
-        den = math.sqrt(sum(_w(g) for g in q) or 1.0)
+        den = math.sqrt(sum(_wt(g) for g in q) or 1.0)
         return got / den
 
     # —— 全局单调对齐（动态规划）——
@@ -2602,8 +2646,68 @@ def _dialogue_anchor_times(asr, vdur, interval, quality):
     return [x for x in out if 0 < x < vdur], 'snap'
 
 
+# ============================================================================
+# 画面理解四档（用户 2026-11-09 定：给时间/质量一个明确的档位选择）
+# ----------------------------------------------------------------------------
+# 决定成片观感的关键不是「看了多少帧」，而是两件事：
+#   ① 有没有覆盖**没有台词的镜头**（打戏、对视、吻戏）——台词-only 必然把它们剪掉；
+#   ② 每帧让模型写多少字——decode 是瓶颈，写 5 个字段比写 1 个字段贵 3 倍。
+# 所以档位之间的差别是「覆盖 × 字量」的组合，不是简单的帧数加减。
+#
+# 各档实际耗时（20 分钟素材、RTX 3060 实测口径）：
+#   极速 ~2 分钟 / 平衡 ~8 分钟 / 质量 ~23 分钟 / 极致 ~40 分钟
+# 注意：配音恒为 7 分钟地板（37 句 × 12 秒），四档都一样。
+# ============================================================================
+NARR_TIERS = {
+    # 只看台词附近：画面先不管，用来快速调文案与配音
+    'speed':    {'label': '极速', 'interval': 20.0, 'max_points': 40,
+                 'width': 448, 'batch': 8, 'fields': 1, 'tok_per_frame': 70,
+                 'story': False, 'dialogue_filter': True,  'action_weight': 1.6},
+    # 全片覆盖 + 精简字段：静默段一个不漏，日常出片档
+    'balanced': {'label': '平衡', 'interval': 12.0, 'max_points': 300,
+                 'width': 512, 'batch': 6, 'fields': 3, 'tok_per_frame': 110,
+                 'story': True,  'dialogue_filter': False, 'action_weight': 1.6},
+    # 更密抽样 + 5 字段：动作节奏快的片子
+    'quality':  {'label': '质量', 'interval': 8.0,  'max_points': 300,
+                 'width': 640, 'batch': 4, 'fields': 5, 'tok_per_frame': 220,
+                 'story': True,  'dialogue_filter': False, 'action_weight': 1.6},
+    # 5 秒密度 + 动作匹配权重翻倍：要发出去的成片
+    'ultra':    {'label': '极致', 'interval': 5.0,  'max_points': 300,
+                 'width': 720, 'batch': 4, 'fields': 5, 'tok_per_frame': 220,
+                 'story': True,  'dialogue_filter': False, 'action_weight': 2.0},
+}
+NARR_TIER_DEFAULT = 'balanced'
+NARR_TIER_ORDER = ('speed', 'balanced', 'quality', 'ultra')
+
+
+def narr_tier(params=None):
+    """解析当前档位：params.narrTier > 环境变量 NARRATE_TIER > 默认 balanced。"""
+    v = str((params or {}).get('narrTier') or '').strip().lower()
+    if v in NARR_TIERS:
+        return v
+    v = str(os.environ.get('NARRATE_TIER') or '').strip().lower()
+    if v in NARR_TIERS:
+        return v
+    return NARR_TIER_DEFAULT
+
+
+# 每档让模型写哪些字段。**event 任何档位都不能省**：它是唯一能匹配
+# 「他们深情地吻在了一起」这类解说词的动作信号（location 只是地点，characters 只是人名）。
+_TIER_FIELD_SPEC = {
+    1: 'event（人物在做什么动作、什么情绪；不要写景别，不要复述台词）',
+    3: 'location（地点）、characters（画面里的人物）、'
+       'event（人物在做什么动作、什么情绪；不要复述台词）',
+    5: 'location（地点）、characters（主要人物）、event（正在发生什么事）、'
+       'dialogue（这段台词的核心内容，没有则留空）、summary（画面整体概括，不超过30字）',
+}
+
+
+def _tier_field_spec(fields):
+    return _TIER_FIELD_SPEC.get(int(fields or 5)) or _TIER_FIELD_SPEC[5]
+
+
 def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval=28.0,
-                         cancel_check=None, quality=None):
+                         cancel_check=None, quality=None, tier=None):
     """时间轴驱动建立画面索引，跳过场景检测。
 
     【抽样策略】有台词时间轴时**按台词驱动**（见 _dialogue_anchor_times）：
@@ -2631,22 +2735,23 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     if run_dir and not os.path.isabs(run_dir):
         run_dir = os.path.join(_w.OUTDIR, run_dir)
 
-    # 质量模式判定：默认质量；NARRATE_FAST=1 才走旧的「稀疏 + 台词过滤」。
-    if quality is None:
-        quality = (os.environ.get('NARRATE_FAST') != '1')
+    # === 档位（见 NARR_TIERS）===
+    # quality=False 是旧布尔入口（NARRATE_FAST=1），等价于「只看台词附近」。
+    _tier = tier or narr_tier()
+    if quality is False and tier is None:
+        _tier = 'speed'
+    if _tier not in NARR_TIERS:
+        _tier = NARR_TIER_DEFAULT
+    _T = NARR_TIERS[_tier]
+    quality = not _T['dialogue_filter']      # 旧变量：True 表示全片覆盖
 
-    # 抽样间隔
-    #  质量模式：全片覆盖优先。≥12s，同时按总点数封顶 300 点（2 小时片 ≈ 24s/点），
-    #            避免超长片把 VLM 阶段拖到不可接受。
-    #  快速模式：旧策略，1 小时约 60 点。
-    if quality:
-        interval = max(12.0, float(vdur) / 300.0)
-        # 短片段保护：interval 大于片长会让抽样点数为 0，画面理解直接空手而归。
-        # 5 秒素材按 12s 间隔抽不到任何帧，这里退化为「至少 4 个点」。
-        if interval >= float(vdur):
-            interval = max(1.0, float(vdur) / 4.0)
-    else:
-        interval = max(15.0, float(vdur) / 60.0)
+    # 抽样间隔：档位基准间隔与「总点数上限」取较大者。
+    # 上限的作用是别让超长片把 VLM 拖死（2 小时片在 quality 档会到 900 点）。
+    interval = max(float(_T['interval']), float(vdur) / float(_T['max_points']))
+    # 短片段保护：interval 大于片长会让抽样点数为 0，画面理解直接空手而归。
+    if interval >= float(vdur):
+        interval = max(1.0, float(vdur) / 4.0)
+    _fw = int(_T['width'])
 
     # 抽样点规划必须**早于缓存检查**：抽样策略本身（台词吸附 vs 固定网格）
     # 决定产出结构，缓存键要带上它，否则换了策略仍会命中旧缓存、改动等于没做。
@@ -2681,13 +2786,14 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         return cached
 
     # [P0-1 方案1.5] 抽帧产物缓存目录：按视频指纹+间隔复用（原 frame_dir = run_dir/sample_frames，换文案会重新抽帧）
-    frame_dir = _sample_frame_cache_dir(video_path, interval)
+    frame_dir = _sample_frame_cache_dir(video_path, interval, width=_fw)
     results = []
+    # 字段随档位变化：极速只写动作，质量档才要 5 项。
+    # event 一律强调「动作 + 情绪」——「他们深情地吻在了一起」这类解说词
+    # 只能靠动作词匹配上；写成「两名男子在室内」就永远匹配不到。
+    _fspec = _tier_field_spec(_T['fields'])
     sys_prompt = ('你是影视场景分析助手。根据画面和提供的台词，用JSON格式结构化描述这个时间点的画面。'
-                  '字段：location(地点)，characters(主要人物)，'
-                  'event(正在发生什么事，一句话)，'
-                  'dialogue(这段台词的核心内容，没有则留空)，'
-                  'summary(画面整体概括，不超过30字)。只输出JSON。')
+                  '字段：%s。只输出JSON。' % _fspec)
 
     # 抽样点已在缓存检查前规划完毕（见上方 sample_times / _anchor_mode）。
 
@@ -2739,14 +2845,14 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             for idx, ts in enumerate(sample_times):
                 fp = os.path.join(frame_dir, 'sample_%04d.jpg' % idx)
                 ffmpeg_run(['-y', '-ss', '%.3f' % ts, '-i', video_path,
-                            '-frames:v', '1', '-vf', 'scale=min(iw\\,640):-2',
+                            '-frames:v', '1', '-vf', 'scale=min(iw\\,%d):-2' % _fw,
                             '-q:v', '4', '-an', fp])
             n_got = sum(1 for i in range(total_samples)
                         if os.path.exists(os.path.join(frame_dir, 'sample_%04d.jpg' % i)))
             rc = 0 if n_got == total_samples else 1
         else:
             rc, _o, _e = ffmpeg_run(['-y', '-ss', '%.3f' % (interval / 2.0), '-i', video_path,
-                                     '-vf', 'fps=1/%.6f,scale=min(iw\\,640):-2' % interval,
+                                     '-vf', 'fps=1/%.6f,scale=min(iw\\,%d):-2' % (interval, _fw),
                                      '-q:v', '4', '-an', '-start_number', '0',
                                      os.path.join(frame_dir, 'sample_%04d.jpg')])
             n_got = sum(1 for i in range(total_samples)
@@ -2766,7 +2872,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
                 ts = sample_times[idx]
                 fp = os.path.join(frame_dir, 'sample_%04d.jpg' % idx)
                 r2, _o2, _e2 = ffmpeg_run(['-y', '-ss', '%.3f' % ts, '-i', video_path,
-                                           '-frames:v', '1', '-vf', 'scale=min(iw\\,640):-2',
+                                           '-frames:v', '1', '-vf', 'scale=min(iw\\,%d):-2' % _fw,
                                            '-q:v', '4', '-an', fp])
         _sample_frame_cache_mark(frame_dir, total_samples)
         _sample_frame_cache_trim()
@@ -2847,7 +2953,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     #            下一批重新加载 >80s，而超时只有 30s，于是「几乎每批必失败」。
     #  快速模式：沿用 8 帧/批，但超时从 30s 提到 90s（30s 对 8 帧在 3060 上本就不现实）。
     vlm_count = 0
-    batch_size = 4 if quality else 8
+    batch_size = int(_T['batch'])
     _VLM_KEEP = '30m' if quality else 0
     _VLM_TO_MULTI = 300 if quality else 90
     _VLM_TO_SINGLE = 180 if quality else 60
@@ -2855,20 +2961,20 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     def _batch_prompt(n):
         return ('你是影视场景分析助手。以下按时间顺序给出%d张画面帧。'
                 '请对每张帧分别用JSON描述，帧之间用---分隔。'
-                '每个JSON字段：location/characters/event/dialogue/summary。'
-                '无台词的帧 dialogue 留空字符串，但仍须描述画面正在发生什么。'
-                '只输出JSON和---分隔符。' % n)
+                '每个JSON字段：%s。'
+                '没有台词的帧仍须描述画面里人物在做什么动作。'
+                '只输出JSON和---分隔符。' % (n, _fspec))
 
     def _call_frames(_frames):
         """对一组帧发起一次 VLM 调用，返回与 _frames 等长的 dict 列表；失败抛异常。"""
         if len(_frames) == 1:
             r = _w.vlm_chat(_frames[0],
-                            '请用JSON描述这个画面：location/characters/event/dialogue/summary',
+                            '请用JSON描述这个画面，字段：%s' % _fspec,
                             system=sys_prompt, timeout=_VLM_TO_SINGLE, keep_alive=_VLM_KEEP)
             return [_extract_json_obj(r) or {}]
         r = vlm_chat_multi(_frames, _batch_prompt(len(_frames)), system=sys_prompt,
                            timeout=_VLM_TO_MULTI, keep_alive=_VLM_KEEP,
-                           max_tokens=max(600, 220 * len(_frames)))
+                           max_tokens=max(240, int(_T['tok_per_frame']) * len(_frames)))
         parts = (r or '').split('---')
         objs = [_extract_json_obj(p) or {} for p in parts[:len(_frames)]]
         while len(objs) < len(_frames):
@@ -5129,8 +5235,11 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     # 旧缓存是缺一半画面的脏数据，必须换 key，否则改良后的分析会被旧缓存短路。
     _q_param = params.get('fast', params.get('fast_mode', params.get('fastMode')))
     _quality_mode = (os.environ.get('NARRATE_FAST') != '1') if _q_param is None else (not bool(_q_param))
+    _tier = narr_tier(params)
+    # 缓存键必须带档位：不同档位的抽样密度/字段集完全不同，复用等于用旧数据糊弄。
     vlm_cache_key = _video_cache_key(
-        video_path, 'vlm_%s_%s' % (vlm_model, 'q2' if _quality_mode else 'f2'))
+        video_path, 'vlm_%s_%s_%s' % (vlm_model, _tier,
+                                      'q2' if _quality_mode else 'f2'))
     scene_descs = _cache_load(vlm_cache_key)
     if scene_descs:
         _log.info(f'[DIAG] VLM命中缓存: {len(scene_descs)}个时间点')
@@ -5139,7 +5248,8 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
             progress['pct'] = 46
     else:
         scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir,
-                                           progress=progress, quality=_quality_mode)
+                                           progress=progress, quality=_quality_mode,
+                                           tier=_tier)
         # 画面理解结束后立刻卸载 VLM：12GB 卡放不下 VLM(6.1GB) + 文本模型(5.0GB)，
         # 不让位会让后续写稿/对齐/润色每次调用都触发换入换出。
         if vlm_unload():
@@ -5174,8 +5284,9 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     _user_script = str(params.get('user_script') or params.get('userScript')
                        or params.get('script') or '').strip()
     _has_user_script = len(_user_script) >= 20
-    if _quality_mode and scene_descs and any(s.get('event') or s.get('location')
-                                             for s in scene_descs):
+    _tier_story = bool((NARR_TIERS.get(_tier) or {}).get('story', True))
+    if _quality_mode and _tier_story and scene_descs and any(
+            s.get('event') or s.get('location') for s in scene_descs):
         up('剧情理解（推断每段画面在讲什么）', 43)
         # 剧情理解结果缓存：这一层是 LLM 批量推断，两次跑结果不一样，
         # 直接影响对齐质量（真机实测两轮跑出的对齐差 90 秒）。缓存住
@@ -5297,8 +5408,11 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         # scene_story 必传：剧情理解层的『这段在讲什么』比 VLM 的浅层画面描述
         # 更贴解说词。此前漏传，等于把最贵的语义信息白扔，只剩「警察/车内」这类
         # 通用词在打分，句句对错位。
+        _aw = float((NARR_TIERS.get(_tier) or {}).get('action_weight')
+                    or _ACTION_WEIGHT)
         scene_alignment = _algo_align_beats_to_scenes(texts, scene_descs, asr=asr,
-                                                      scene_story=scene_story)
+                                                      scene_story=scene_story,
+                                                      action_weight=_aw)
         _log.info('[DIAG] 算法语义对齐(保底): %d/%d 句' % (len(scene_alignment), len(texts)))
 
     if _fast:
