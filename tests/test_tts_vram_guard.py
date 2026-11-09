@@ -10,6 +10,8 @@ Qwen3-TTS 模型照样能加载，但 WDDM 把权重换页到内存：GPU 占用
 import os
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -192,6 +194,9 @@ def test_sync_worker_keeps_copy_when_source_missing(monkeypatch, tmp_path):
     assert T2.sync_worker('indextts2_worker.py') == str(binstub / 'indextts2_worker.py')
 
 
+@pytest.mark.skipif(os.name != 'nt',
+                    reason=r'断言的是 Windows 路径拼接（C:\assets\bin\...）：'
+                           r'Linux 上 os.path.join 不把反斜杠当分隔符，必然拼错')
 def test_start_runs_assets_copy_with_isolated_python(monkeypatch, tmp_path):
     """启动命令必须是 assets 里的副本 + -E，且环境是白名单（无 PYTHONPATH）。"""
     captured = {}
