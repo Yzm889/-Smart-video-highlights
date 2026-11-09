@@ -1,154 +1,101 @@
-# FrameCut · AI-Powered Short Video Maker
+# FrameCut · 一帧成片
 
-A **locally running, AI-powered** video creation tool. Upload images/videos + choose a piece of music, and it automatically generates a **strong beat‑synchronised** short video – every cut lands exactly on the musical downbeats, with optional AI-generated descriptions, Chinese voiceover, and burned‑in subtitles.
+[中文文档](README.md) · v1.4.26
 
-> ⚡ All intelligent beat detection, scene analysis, and music alignment are performed **locally** – no API credits consumed.
+A local-first AI movie-commentary and short-video editor for Windows. Give it a film and a plot summary (or your own script), and it writes the narration, voices every line, picks shots by content, cuts only after each line finishes, and renders the final video.
 
-## 📦 Desktop Edition (Recommended — no Python needed)
+All AI runs locally: no API bills, no uploads, works offline.
 
-**Download and run**: [⬇️ FrameCut v1.1.0 (Windows x64)](https://github.com/Yzm889/-Smart-video-highlights/releases/latest)
+> This is a condensed English overview. The [Chinese README](README.md) is the authoritative, always up-to-date document.
 
-- Unzip and double-click `FrameCut.exe` — a **standalone desktop window**, no command line, no browser juggling
-- First run: follow the in-app guide to install Ollama + models; AI models auto-download when needed
-- 100% local: free, private, works offline
-- Source-code setup below 👇
+---
 
-<p align="center">
-  <img src="demo.gif" alt="FrameCut demo" width="400">
-</p>
+## Features
 
-## ✨ Features
+**Movie commentary**
 
-- 🎯 **Precise beat‑matching** – analyses scene changes / major motion pauses in your video, matches them to strong musical downbeats, and automatically hard‑cuts with synchronized music (xfade transitions / original audio retention / 0.5–1–2 beat alignment)
-- 🎬 **Movie narration pipeline** – scene segmentation → Whisper transcription → **one-shot coherent narration script** (hook / grounded visuals / restrained uplift / deliberate pauses) → TTS → subtitles → mixed output; supports "script‑driven editing" (shorten footage to match narration)
-- 🌐 **Online narration** – search the plot by movie title → fully automatic narration (offline fallback, zero cost)
-- 💬 **Instruction‑driven creation** – route natural‑language instructions to the right workflow (narration / beat‑cut / composition)
-- 🎛 **Human‑in‑the‑loop editing** – plan preview panel (timeline drag / delete cuts / edit narration / insert B‑roll / regenerate single‑segment voice) + 50‑step undo/redo
-- 🖼️ **Mixed media support** – combine images (with automatic Ken Burns motion) and videos freely
-- 🎵 **Free royalty‑free music library** – built‑in CC.BY commercial music collection, search and use with one click
-- 🤖 **AI scripts + subtitles + Chinese voiceover** – supports DeepSeek (image‑to‑text), Xiaomi MiMo / Tongyi (TTS) – configure each separately
-- 💸 **Free‑first auto routing** – local models first → cloud only if you configure a key → offline template fallback. **Fully free without any key**
-- 🧠 **Local model picker** – writing: `qwen3:14b` ⭐ / `qwen2.5:14b` / `qwen3:8b`; vision: `qwen3-vl:8b` ⭐ / `qwen2.5vl`; click a card in the UI to download & enable; Qwen3 thinking segments auto‑stripped
-- ⚡ **CN mirror acceleration** – UI pulls automatically use **hf‑mirror + aria2c multi‑thread** (qwen3:14b‑q4_K_M / qwen3‑vl:8b dual files / qwen2.5 series), GB‑scale in ~2–3 min, with automatic fallback to the official source
-- ⚡ **GPU encoding** – auto‑detects `h264_nvenc` (~1.8× faster), falls back to `libx264`; three quality presets
-- 🔇 **Local TTS engines** – edge‑tts (key‑free, multi‑voice) / sherpa‑onnx offline models / system SAPI with auto‑fallback and circuit breaker
-- ⚡ **Upload warm‑up** – ASR+VLM pre‑analysis runs in idle time right after upload; narration hits the cache instantly
-- 🎙 **Concurrent TTS** – 3‑way parallel edge voices (resume / retry / circuit breaker)
-- 🧮 **GPU resource isolation** – global mutex for local inference (ASR/LLM/VLM share one slot; remote APIs run in parallel)
-- 🧠 **Merged LLM rounds + light model** – alignment+refinement in one call; genre/outline/story tasks use a lighter 8B model (script writing keeps the main model)
-- 🗂 **Local material library + Bilibili integration** – persistent `material_library/`; search → select → download MP4 from Bilibili → one‑click library entry
-- 🖼 **Auto cover generation** – smart frame picking (contrast + edge energy) + large‑title cover compositing, three layouts
-- 🧹 **Auto disk cleanup** – run dirs / warm‑up dirs / upload leftovers recycled on a 6‑hour sweep; analysis cache capped at 200 entries (fingerprint+params+version keyed)
-- 🕘 Generation history, cancel‑able synthesis (immediate ffmpeg kill + cooperative flags), vertical formats, multiple transitions
-- 🧪 **Regression assurance** – **576 tests / 0 failures** + flake8 zero‑warning gate + GitHub Actions CI (Python 3.9/3.11 matrix)
+- **Plot-driven editing** — writes the full script first, then allocates footage per sentence; unused shots are cut away, so the result is shorter than the source
+- **Bring your own script** — the tool only finds shots, voices lines and burns subtitles; your text is never rewritten
+- **No truncation** — every shot is extended to fit its real voice-over, plus a configurable 0.5 s tail
+- **Quoted-dialogue takeover** — a line quoting dialogue (`He replied: "I don't want to make friends."`) is replaced by the original shot, original audio and the actual subtitle
+- **Silence markers** — a line containing only `（留白）` is not voiced or subtitled; the original audio plays at full volume
+- **Two-step workflow** — generate all voice-over first, preview it, then compose; regenerate single lines without redoing the film
+- **Timeline editor** — drag clips, trim in/out points, delete, insert B-roll, adjust volumes, undo/redo
 
-## 📁 Project Structure
+**Voice-over**
 
-```
-.
-├── webui_server.py        # Backend entry: HTTP service + route tables + background scheduler
-├── handler.py             # HTTP endpoint handlers (table‑driven routing)
-├── workflows.py           # Task workflows & persisted queue
-├── movie_narrator.py      # Movie narration: scripting/alignment/story/VLM analysis (resumable)
-├── video_render.py        # Rendering: cutting/transitions/mixing/subtitles/single‑pass encode
-├── beat_analysis.py       # Beat‑matching: scene cuts/beat analysis/frame sampling
-├── ffmpeg_utils.py        # ffmpeg wrapper (timeout / cooperative cancel / probe / proc cleanup)
-├── cache_utils.py         # Analysis cache (fingerprint+params+version, 200‑entry cap)
-├── ai_providers.py        # AI access: local Ollama / cloud providers / hf‑mirror fast pull
-├── tts_engines.py         # TTS engines: edge‑tts / sherpa‑onnx / SAPI / cloud / concurrency
-├── text_utils.py          # Text utilities (narration cleaning / splitting / alignment)
-├── bili_downloader.py     # Bilibili material: search/download
-├── static/                # Frontend (index.html / style.css / app.js)
-├── tests/                 # Regression tests (576 cases, pytest)
-├── .github/workflows/     # CI: flake8 --select=F gate + pytest matrix
-├── ai_config.example.json # AI config template (copy to ai_config.json)
-├── requirements.txt       # Python runtime dependencies
-├── requirements-dev.txt   # Dev dependencies (pytest + flake8)
-├── Dockerfile             # Container image (ffmpeg / CJK fonts / HEALTHCHECK)
-├── docker-compose.yml     # One‑click deployment with persisted volumes
-├── material_library/      # Local material library (.gitignore‑excluded)
-├── music_library/         # Music library (.gitignore‑excluded)
-├── models/                # Whisper weight cache (.gitignore‑excluded)
-├── webui_output/          # Outputs & intermediates (.gitignore‑excluded)
-├── webui_workspace/       # Runtime data such as analysis cache (.gitignore‑excluded)
-├── 启动视频工坊.bat        # Windows one‑click launcher (double‑click to open browser)
-├── _restart_server.py     # Restart launcher (no browser popup)
-├── start.sh               # macOS/Linux startup script
-└── img1~4.png / demo.gif  # Built‑in sample images & demo
-```
+| Engine | Notes |
+|---|---|
+| **IndexTTS2** (default) | Zero-shot cloning from one fixed reference clip — one voice for the whole film; 8-D emotion control |
+| **Qwen3-TTS · VoiceDesign** | Designs a voice from text; used to mint the reference clip, and as a fallback |
+| Legacy (optional) | edge-tts / sherpa-onnx / SAPI / CosyVoice / ChatTTS |
 
-text
+Speech rate is controlled by `tts_local.rate` (default 1.12×, pitch-preserving via ffmpeg `atempo`).
 
-## 🚀 Quick Start
+**Also included**: beat-synced cutting, local material library, Bilibili search/download, auto cover generation, NVENC encoding, a VRAM guard that swaps models in and out, and searchable render history.
 
-### Requirements
-- Python 3.9+
-- No separate ffmpeg installation required – `imageio-ffmpeg` is bundled
+---
 
-### Installation
+## Desktop build
+
+**[⬇️ Download for Windows x64](https://github.com/Yzm889/-Smart-video-highlights/releases/latest)**
+
+Unzip and run `FrameCut.exe`. No Python required. On first launch, open the setup guide to install the models.
+
+---
+
+## Run from source
+
+Requires Python 3.9+ (CI covers 3.9 / 3.11; packaging uses 3.11). ffmpeg ships with `imageio-ffmpeg`.
+
 ```bash
 git clone https://github.com/Yzm889/-Smart-video-highlights.git
 cd -Smart-video-highlights
 pip install -r requirements.txt
-Launch
-Windows: Double‑click 启动视频工坊.bat (automatically opens your browser).
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-macOS / Linux:
+python webui_server.py     # then open http://127.0.0.1:8765/
+```
 
-bash
-chmod +x start.sh
-./start.sh
-Or use the generic method:
+On macOS/Linux use `./start.sh`; on Windows double-click `启动视频工坊.bat`.
 
-bash
-python webui_server.py
-Then open http://127.0.0.1:8765/ in your browser.
+---
 
-Usage
-Drag in images / videos
+## Configuration
 
-(Optional) Choose a music track – search the built‑in "🎵 Free Music Library" and click "Use", or upload your own local MP3
+Settings live in `ai_config.json` (git-ignored). See `ai_config.example.json`.
 
-(Optional) Open the "🤖 AI" section to configure your API keys, or stick with the default "Economy mode" offline scripts
-
-Click "🎬 Start Synthesis" or "⚡ One‑click Beat‑matching"
-
-🤖 AI Configuration (Optional – works without it)
-Copy ai_config.example.json to ai_config.json and fill in your keys (you can mix different providers for vision and TTS):
-
-json
+```json
 {
-  "vision": { "base_url": "https://api.deepseek.com/v1", "api_key": "your-key", "model": "deepseek-v4-flash-vision-exp" },
-  "tts":    { "provider": "mimo", "base_url": "https://api.xiaomimimo.com/v1", "api_key": "your-key", "model": "mimo-v2.5-tts", "voice": "Mia" }
+  "local": { "enabled": true, "base_url": "http://localhost:11434/v1" },
+  "vlm":   { "enabled": true, "mode": "ollama",
+             "base_url": "http://localhost:11434", "model": "minicpm-v4.5:latest" },
+  "tts_local": { "engine": "auto", "rate": "+0%", "instruct": "" }
 }
-⚠️ ai_config.json is already in .gitignore – never commit it to the repository.
+```
 
-🤝 How to Contribute
-Fork this repository
+- `local` — writing model via Ollama's OpenAI-compatible endpoint (`/v1`)
+- `vlm` — vision model via Ollama's **native** endpoint (no `/v1`); the legacy `vision` key is still accepted
+- `tts_local.rate` — positive values speak faster (`+20%`); `instruct` describes the voice
+- No keys are required for the fully local pipeline
 
-Create a feature branch: git checkout -b feature/xxx
+## Models on a 12 GB GPU
 
-Commit your changes: git commit -am 'feat: xxx'
+`qwen3:8b` (~5.0 GB) for writing, `minicpm-v4.5` (~6.1 GB) or `qwen3-vl:8b` (~5.8 GB) for vision, `faster-whisper` (~0.2 GB) for dialogue, IndexTTS2 (~6.6 GB) for voice. Models are swapped serially — never resident at the same time.
 
-Push to your branch: git push origin feature/xxx
+---
 
-Open a Pull Request
+## Development
 
-Suggested improvements:
+```bash
+pip install -r requirements-dev.txt
+py -m pytest tests -q        # 897 passed / 12 skipped
 
-Smarter beat‑matching algorithms (bar‑level alignment, downbeat weighting)
+py -m PyInstaller FrameCut.spec --noconfirm   # desktop build → dist/FrameCut/
+```
 
-More transition effects / subtitle styles / intro/outro templates
+---
 
-Support for additional TTS / vision model providers
+## License
 
-UI polish and enhancements
-
-📄 License
-MIT
-
-🙏 Acknowledgements
-Some music tracks provided by Incompetech (Kevin MacLeod, CC.BY 4.0)
-
-Video processing powered by ffmpeg, beat analysis by librosa
-
+[MIT](LICENSE)
