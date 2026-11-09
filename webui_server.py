@@ -2609,10 +2609,15 @@ def _record_history(req, prog, kind=''):
         # 「没配音、没文案」——实测 37 段配音 + 烧录字幕的成片也被记成空的，
         # 记录页因此丢掉 🗣️ 标记、文案行、按解说词搜索和「编辑解说词」入口。
         captions, has_voice = _history_narration(prog)
+        # 【2026-11-09 B6】记录成片宽高：app.js 记录页标签渲染 `WxH`，
+        # 以前 w/h 没人写，标签只剩孤零零的 "x"。探测失败兜底 0，不影响出片。
+        w, h = _probe_video_size(f)
         add_history({
             'time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'file': prog['file'],
             'duration': round(float(probe_audio_len(f) or 0.0), 2),
+            'w': w,
+            'h': h,
             'music': (req.get('music') or {}).get('name') if isinstance(req.get('music'), dict) else None,
             'voice': has_voice,
             'captions': captions,
@@ -3005,18 +3010,26 @@ _PREVIEW_PROXY_LOCK = threading.Lock()
 _PREVIEW_PROXY_MAX_H = 720        # 预览副本目标高度上限（只缩不放，≤720p 的源片直接用原片）
 
 
-def _probe_video_height(path):
-    """探测视频高度（解码 1 帧到 null，从 stderr 解析 WxH）。失败返回 0。"""
+def _probe_video_size(path):
+    """探测视频宽高（解码 1 帧到 null，从 stderr 解析 WxH）。失败返回 (0, 0)。
+
+    【2026-11-09 B6】历史记录要写成片宽高（app.js 的标签 `WxH` 缺字段时只剩
+    孤零零的 "x"），故探测从「只要高度」升级为「宽高一起拿」。"""
     try:
         import re as _re
         rc, _o, e = ffmpeg_run(['-hide_banner', '-i', path, '-map', '0:v:0',
                                 '-frames:v', '1', '-f', 'null', '-'], timeout=120)
         if rc != 0:
-            return 0
+            return 0, 0
         m = _re.search(r'(\d{2,5})x(\d{2,5})', e.decode('utf-8', 'ignore'))
-        return int(m.group(2)) if m else 0
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
     except Exception:
-        return 0
+        return 0, 0
+
+
+def _probe_video_height(path):
+    """探测视频高度（解码 1 帧到 null，从 stderr 解析 WxH）。失败返回 0。"""
+    return _probe_video_size(path)[1]
 
 
 def _build_preview_proxy(src, dst):

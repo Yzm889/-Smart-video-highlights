@@ -1072,6 +1072,7 @@ def test_record_history_writes_entry(monkeypatch, tmp_path):
     assert len(items) == 1 and items[0]['file'] == 'r1/final.mp4'
     assert items[0]['kind'] == 'narrate' and items[0]['music'] == 'm.mp3'
     assert items[0]['duration'] == 0.0  # 假文件探测不到时长，兜底 0
+    assert items[0]['w'] == 0 and items[0]['h'] == 0  # 假文件探测不到宽高，兜底 0
     # 无成片（如联网解说只出稿）不应写历史
     S._record_history({}, {'file': ''}, 'movie')
     assert len(S.load_history()) == 1

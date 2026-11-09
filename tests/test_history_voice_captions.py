@@ -75,6 +75,7 @@ def test_record_history_writes_real_fields(tmp_path, monkeypatch):
     saved = {}
     monkeypatch.setattr(W, 'add_history', lambda rec: saved.update(rec))
     monkeypatch.setattr(W, 'probe_audio_len', lambda p: 209.52)
+    monkeypatch.setattr(W, '_probe_video_size', lambda p: (1920, 1080))
     W._record_history({'params': {}}, {
         'file': 'run-x/final.mp4',
         'tts_list': [{'index': 0, 'text': '开场钩子'}, {'index': 1, 'text': '因果推进'}],
@@ -82,3 +83,5 @@ def test_record_history_writes_real_fields(tmp_path, monkeypatch):
     assert saved['voice'] is True
     assert saved['captions'] == ['开场钩子', '因果推进']
     assert saved['duration'] == 209.52
+    # 【2026-11-09 B6】宽高必须落盘：app.js 标签渲染 `WxH`，缺字段只剩 "x"
+    assert saved['w'] == 1920 and saved['h'] == 1080

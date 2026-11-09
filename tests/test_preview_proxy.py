@@ -35,6 +35,8 @@ def test_probe_video_height(in_outdir):
     p = str(in_outdir / 'src.mp4')
     _make_clip(p, 1280, 800)
     assert S._probe_video_height(p) == 800
+    # 【2026-11-09 B6】宽高一起探测（历史记录 w/h 字段用）
+    assert S._probe_video_size(p) == (1280, 800)
 
 
 def test_proxy_built_for_high_res(in_outdir):
