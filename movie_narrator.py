@@ -1567,6 +1567,9 @@ _ACTION_LEXICON = {
     '嘶吼': ('怒吼', '咆哮', '嘶吼', '尖叫', '大喊', '吼'),
     '受伤': ('流血', '伤口', '倒地', '倒下', '重伤'),
     '爆炸': ('爆炸', '火光', '炸开', '爆燃'),
+    '持械': ('瞄准', '射击', '举枪', '持刀', '挥棒', '开枪'),
+    '搏斗': ('搏斗', '缠斗', '扭打', '摔落', '拉拽', '掀翻', '按倒'),
+    '劳作': ('敲打', '挥锤', '抡锤', '挖掘', '拆卸', '攀爬'),
 }
 _ACTION_WEIGHT = 1.6     # 动作命中相对普通词组的加权
 _ACTION_TOKENS = {}
@@ -2662,19 +2665,23 @@ NARR_TIERS = {
     # 只看台词附近：画面先不管，用来快速调文案与配音
     'speed':    {'label': '极速', 'interval': 20.0, 'max_points': 40,
                  'width': 448, 'batch': 8, 'fields': 1, 'tok_per_frame': 70,
-                 'story': False, 'dialogue_filter': True,  'action_weight': 1.6},
+                 'story': False, 'dialogue_filter': True,  'action_weight': 1.6,
+                 'sim': 0.60},
     # 全片覆盖 + 精简字段：静默段一个不漏，日常出片档
     'balanced': {'label': '平衡', 'interval': 12.0, 'max_points': 300,
                  'width': 512, 'batch': 6, 'fields': 3, 'tok_per_frame': 110,
-                 'story': True,  'dialogue_filter': False, 'action_weight': 1.6},
+                 'story': True,  'dialogue_filter': False, 'action_weight': 1.6,
+                 'sim': 0.85},
     # 更密抽样 + 5 字段：动作节奏快的片子
     'quality':  {'label': '质量', 'interval': 8.0,  'max_points': 300,
                  'width': 640, 'batch': 4, 'fields': 5, 'tok_per_frame': 220,
-                 'story': True,  'dialogue_filter': False, 'action_weight': 1.6},
+                 'story': True,  'dialogue_filter': False, 'action_weight': 1.6,
+                 'sim': 0.93},
     # 5 秒密度 + 动作匹配权重翻倍：要发出去的成片
     'ultra':    {'label': '极致', 'interval': 5.0,  'max_points': 300,
                  'width': 720, 'batch': 4, 'fields': 5, 'tok_per_frame': 220,
-                 'story': True,  'dialogue_filter': False, 'action_weight': 2.0},
+                 'story': True,  'dialogue_filter': False, 'action_weight': 2.0,
+                 'sim': 0.97},
 }
 NARR_TIER_DEFAULT = 'balanced'
 NARR_TIER_ORDER = ('speed', 'balanced', 'quality', 'ultra')
@@ -2775,8 +2782,10 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     # 键里必须带抽样策略：'grid' 与 'sub' 产出的时间点集合完全不同，
     # 共用键会让「改用台词对齐」这个改动被旧缓存整个短路掉。
     _plan_tag = 'sub' if _anchor_mode else 'grid'
+    # 缓存键必须带档位：不同档位的复用阈值/字段集不同，
+    # 只按「模型+间隔+抽样方式」会互相串用（极速与平衡间隔接近时尤其危险）。
     cache_key = _video_cache_key(
-        video_path, f'vlm_sample_{vlm_model}_{int(interval)}_{_plan_tag}')
+        video_path, f'vlm_sample_{vlm_model}_{int(interval)}_{_plan_tag}_{_tier}')
     cached = _cache_load(cache_key)
     if cached:
         _log.info(f'[DIAG] VLM抽样命中缓存: {len(cached)}个时间点')
@@ -2927,7 +2936,12 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
         except Exception:
             return 0.0
 
-    _SIM_THRESHOLD = 0.85  # [P0-1 低风险优化] 0.92→0.88→0.85，持续放宽以复用更多相似帧（省约10%~25% VLM调用）
+    # 相似帧复用阈值：**这才是「覆盖 vs 效率」真正的旋钮**。
+    # 相邻帧相似度 ≥ 阈值就复用上一帧的描述，不另花一次 VLM 调用。
+    # 0.85 很省（实测 20 分钟片 100 个点只发了 4 次请求），但静态对话/片头动画
+    # 会把**细微动作**一起抹掉——一个接吻、一个眼神变化就此消失，正是用户要的
+    # 「打戏、吻戏」被漏掉的原因。档位越高阈值越严：0.60 → 0.85 → 0.93 → 0.97。
+    _SIM_THRESHOLD = float(_T.get('sim', 0.85))
     _reuse = {}          # idx -> leader_idx（当前帧复用leader的分析结果）
     _key_frames = []     # 需要VLM分析的关键帧列表（子集 of need_vlm）
     for _item in need_vlm:

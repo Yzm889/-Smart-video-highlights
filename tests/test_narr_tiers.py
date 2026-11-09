@@ -115,3 +115,28 @@ def test_frontend_exposes_tier_selector():
     for v in ('speed', 'balanced', 'quality', 'ultra'):
         assert 'value="%s"' % v in html
     assert 'narrTier:' in js, '前端必须把档位发给后端'
+
+
+def test_similarity_reuse_threshold_rises_with_tier():
+    """相似帧复用阈值是「覆盖 vs 效率」真正的旋钮，必须逐档收紧。
+
+    实测（20 分钟素材）：阈值 0.85 时 100 个点只发 4 次 VLM 请求，
+    但动作镜头被当成「重复帧」抹掉；阈值 0.93 → 21 次请求、动作覆盖 6/150；
+    0.97 → 动作覆盖 9/239。极低（0.60）用于极速档换取最快。
+    """
+    sims = [MN.NARR_TIERS[t]['sim'] for t in MN.NARR_TIER_ORDER]
+    assert sims == sorted(sims), '复用阈值必须逐档收紧：%r' % sims
+    assert MN.NARR_TIERS['speed']['sim'] < MN.NARR_TIERS['balanced']['sim']
+    assert MN.NARR_TIERS['ultra']['sim'] >= 0.95
+
+
+def test_ultra_emphasises_actions_more():
+    assert MN.NARR_TIERS['ultra']['action_weight'] > MN.NARR_TIERS['balanced']['action_weight']
+
+
+def test_lexicon_covers_common_action_words():
+    """实测 ultra 档抓到的描述里有「亲吻」「瞄准射击」「敲打」，词表必须认得。"""
+    assert 'ACT:吻' in MN._action_tokens('两人正在亲吻')
+    assert MN._action_tokens('狙击枪瞄准远处') & MN._action_tokens('他举枪射击')
+    assert MN._action_tokens('工人用锤子敲打墙壁')
+

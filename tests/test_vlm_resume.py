@@ -129,6 +129,11 @@ def env():
     W.vlm_chat = e._chat_one  # _w.vlm_chat 晚绑定（单帧路径）
     M.vlm_cfg = lambda: {'model': 'test-model'}
     M._video_cache_key = lambda vp, suffix='': 'FINGERPRINT-A'
+    # 关掉「相似帧复用」：复用会让关键帧塌缩（实测极速档 40 个点只发 1 次请求），
+    # 断点续跑测试需要确定的批次数才能验证「取消后进度还在、下次接着跑」。
+    _tiers = dict(M.NARR_TIERS)
+    _tiers['speed'] = dict(_tiers['speed'], sim=1.01)
+    M.NARR_TIERS = _tiers
     M._cache_load = lambda key: None
     M._cache_save = lambda key, value: e.saved.append((key, value))
     M._sample_frame_cache_dir = lambda vp, itv, **kw: e.frame_dir
