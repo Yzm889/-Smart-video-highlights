@@ -1270,8 +1270,27 @@ def mirror_cfg():
 # 本地视觉理解 (VLM, Qwen2.5-VL 等)：看图 + 台词 + 梗概 → 真解说
 # ---------------------------------------------------------------------------
 def vlm_cfg():
+    """看图（VLM）配置。兼容两套键名，并规范化 base_url。
+
+    【为什么要有兼容】设置页的「视觉模型」输入框把配置写到 ai_config['vision']，
+    而运行时这里只读 ai_config['vlm'] —— 键名对不上，用户在设置页填了模型名、
+    或在下拉里选了已装模型，程序仍然认为「VLM 未启用」。实测 2026-11-09：
+    用户明明装了 MiniCPM-V 4.5 / qwen3-vl:8b，状态接口却是 enabled=false。
+
+    【base_url 去掉 /v1】探活请求打的是 Ollama 原生 /api/tags、对话打 /api/chat。
+    前端下拉传的是 http://localhost:11434/v1，直接拼会变成 /v1/api/tags（必然 404），
+    于是「选了已装模型也不生效」。
+    """
     cfg = load_ai_config().get('vlm') or {}
+    if not cfg:
+        _v = load_ai_config().get('vision') or {}
+        if _v.get('model'):
+            cfg = {'enabled': True, 'mode': 'ollama',
+                   'base_url': _v.get('base_url') or 'http://localhost:11434',
+                   'model': _v.get('model'), 'api_key': _v.get('api_key') or ''}
     base = (cfg.get('base_url') or 'http://localhost:11434').rstrip('/')
+    if base.endswith('/v1'):
+        base = base[:-3]
     return {
         'enabled': bool(cfg.get('enabled', False)),
         'mode': (cfg.get('mode') or 'ollama'),  # ollama(原生 /api/chat) | openai(/v1/chat/completions 多模态)

@@ -1632,7 +1632,15 @@ $('settingsSave').addEventListener('click', async () => {
   if($('setVisKey').value.trim()) payload.vision.api_key = $('setVisKey').value.trim();
   // 空地址不落盘（实测泄漏过 vlm.base_url='' → vlm_ping 建出 http:///api/chat 挂死）
   if($('setLocalBase').value.trim()) payload.local.base_url = $('setLocalBase').value.trim();
-  if($('setVlmBase').value.trim()) payload.vlm = {enabled: true, mode: 'ollama', base_url: $('setVlmBase').value.trim()};
+  // 【键名统一】运行时读的是 ai_config.vlm，设置页以前只写 vision →
+  // 用户填了模型名、状态仍是「VLM 未启用」。这里两份都写，以 vlm 为准。
+  const _vm = ($('setVisModel').value || '').trim();
+  const _vb = (($('setVisBase').value || $('setVlmBase').value || '').trim()
+               || 'http://localhost:11434').replace(/\/v1\/?$/, '');
+  if(_vm || $('setVlmBase').value.trim()){
+    payload.vlm = {enabled: true, mode: 'ollama', base_url: _vb};
+    if(_vm) payload.vlm.model = _vm;
+  }
   try {
     const r = await fetch('/api/ai/config', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
@@ -1731,6 +1739,18 @@ async function fillModelCenter(){
     const jobV = _envGet('/api/vlm/status').then(V => {
       if(!V) return;
       _fillModelPick($('setVlmPick'), VLM_MODEL_CATALOG, V.model || 'minicpm-v4.5', V.installed, V.pulling);
+      // 【不再假装已选】未启用时下拉首项给「（未启用）」并选中它。
+      // 以前默认显示「MiniCPM-V 4.5（已装）」，看着像已经在用，实际 enabled=false。
+      if(!V.enabled){
+        const sel = $('setVlmPick');
+        const o = document.createElement('option');
+        o.value = ''; o.textContent = '（未启用 · 选一个即生效）';
+        sel.insertBefore(o, sel.firstChild);
+        sel.value = '';
+        $('mcHint').textContent = '看图模型当前未启用；上面选一个已装模型会立即启用';
+      } else if(!$('mcHint').textContent){
+        $('mcHint').textContent = '当前看图模型：' + (V.model || '');
+      }
       _pullBar('vlmPullWrap', 'vlmPullFill', 'vlmPullMeta', V.pulling, V.pull_pct, V.pull_mb_done, V.pull_mb_total, V.pull_speed);
     });
     await Promise.all([jobL, jobV]);
@@ -1768,6 +1788,7 @@ $('setLocalPick').addEventListener('change', async () => {
 });
 $('setVlmPick').addEventListener('change', async () => {
   const m = $('setVlmPick').value;
+  if(!m) return;                 // 选「（未启用）」不写配置
   const V = _envData.vlm;
   const installed = ((V && V.installed) || []).some(n => (n || '').split(':')[0] === m.split(':')[0]);
   await fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
