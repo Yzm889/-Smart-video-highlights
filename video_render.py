@@ -1459,10 +1459,10 @@ def _compose_narration_video(video_path, segs, narr, tts_paths, run_dir, params,
             #   最后落到「丢弃配音」兜底 → 成片有画面有字幕有原声，唯独没有解说。
             #   实测：开配乐 + 有配音时 100% 触发（只看代码看不出，只有真跑才会撞到）。
             fparts.append(f'{"".join(tt_labels)}amix=inputs={len(tts_paths)}:normalize=0,'
-                          f'aformat=sample_fmts=fltp:channel_layouts=stereo,'
-                          f'asplit=2[vbus][vmix]')
-            fparts.append(f'[bgmraw][vbus]sidechaincompress='
-                          f'threshold=0.04:ratio=6:attack=15:release=250:detection=peak[bgm]')
+                          'aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                          'asplit=2[vbus][vmix]')
+            fparts.append('[bgmraw][vbus]sidechaincompress='
+                          'threshold=0.04:ratio=6:attack=15:release=250:detection=peak[bgm]')
             # 混音侧：人声走 vmix（[t*] 已被 amix 消费，不能再引用），BGM 走 bgm，原声照旧
             mixin = orig_label + '[vmix][bgm]'
         else:

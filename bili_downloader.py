@@ -7,7 +7,6 @@
 """
 import logging, os, sys
 import urllib.request as _urlreq
-import urllib.error as _urlerr
 import http.cookiejar as _cjar
 import json, re, threading
 

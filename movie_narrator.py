@@ -5,17 +5,16 @@
 约定与 beat_analysis.py / bili_downloader.py 一致：宿主符号经 _w.<name> 晚绑定，
 本模块公共符号在文件末尾注入回宿主命名空间。
 """
-import logging, os, sys, json, math, random, re, shutil, subprocess, threading, time, base64, itertools, tempfile
+import logging, os, sys, json, math, re, threading, time, tempfile
 
 from ai_providers import (load_ai_config, _aborted, _note_progress_warning, asr_segments,
     local_llm_cfg, local_llm_chat, local_llm_light_chat, vlm_cfg, vlm_chat_multi,
     vlm_unload, whisper_model_name, whisper_language, ollama_embed)
-from cache_utils import (ANALYSIS_VERSION, _file_fp, _analysis_cache_load, _analysis_cache_save,
-    _cache_load, _cache_save, _video_cache_key,
+from cache_utils import (_cache_load, _cache_save, _video_cache_key,
     _sample_frame_cache_dir, _sample_frame_cache_mark, _sample_frame_cache_ready,
     _sample_frame_cache_trim)
-from ffmpeg_utils import (AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS,
-    ffmpeg_exe, ffmpeg_run, probe_audio_len, _has_audio_track,
+from ffmpeg_utils import (AbortError, _TLS,
+    ffmpeg_run, probe_audio_len,
     probe_size, probe_is_hdr)
 from text_utils import _clean_caption, is_white_line
 from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
@@ -2880,7 +2879,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             for idx in range(total_samples):
                 ts = sample_times[idx]
                 fp = os.path.join(frame_dir, 'sample_%04d.jpg' % idx)
-                r2, _o2, _e2 = ffmpeg_run(['-y', '-ss', '%.3f' % ts, '-i', video_path,
+                r2, _o2, _e_raw = ffmpeg_run(['-y', '-ss', '%.3f' % ts, '-i', video_path,
                                            '-frames:v', '1', '-vf', 'scale=min(iw\\,%d):-2' % _fw,
                                            '-q:v', '4', '-an', fp])
         _sample_frame_cache_mark(frame_dir, total_samples)
@@ -6354,7 +6353,6 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         _qslots = (progress or {}).get('quote_slots') or {}
         tts_results = _generate_all_tts(narr, run_dir, progress=progress,
                                         skip_idx=set(_qslots))
-        import json as _json
         tts_state = {
             'video_path': os.path.abspath(video_path),
             'segs': [[float(s), float(e)] for s, e in segs],
@@ -6543,7 +6541,6 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             'final': os.path.abspath(final) if final else None,
         }
         # [P0-1] 增量状态原子写：长视频增量重生成路径若写到一半打断，下一次会从空状态重启
-        import json as _json
         _atomic_json_dump(os.path.join(run_dir, 'state.json'), _state)
         _log.info(f'[DIAG] 增量状态已保存: {len(narr)}段')
     except Exception as _e:

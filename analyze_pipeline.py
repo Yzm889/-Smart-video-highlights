@@ -14,7 +14,6 @@
   - 结果写 run_dir/analyze_result.json，供编辑台加载。
 """
 import os
-import json
 import logging
 
 from ffmpeg_utils import ffmpeg_run, probe_audio_len
@@ -401,7 +400,6 @@ def dispatch_analyze(req, prog):
     segments = []
     _thumb_fail = 0
     for i, (s, e) in enumerate(segs):
-        mid = (s + e) / 2.0
         jpg = os.path.join(thumb_dir, '%d.jpg' % i)
         try:
             has_thumb = bool(thumb_ok.get(i)) or (os.path.exists(jpg) and os.path.getsize(jpg) > 0)

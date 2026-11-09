@@ -868,7 +868,6 @@ def assemble(items, params, music=None, progress=None, run_dir=None):
         # pad each segment by `fade` so the xfade overlap keeps the total timeline
         seg_dur = disp + fade
         seg = os.path.join(run_dir, f'seg{idx}.mp4')
-        last_err = None
         for attempt in range(2):
             try:
                 if it['kind'] == 'image':
@@ -878,8 +877,7 @@ def assemble(items, params, music=None, progress=None, run_dir=None):
                     seg, real = _w.make_video_clip(it['src'], seg_dur, seg, w, h, fps)
                     real_durs.append(real)
                 break
-            except RuntimeError as e:
-                last_err = e
+            except RuntimeError:
                 if attempt == 0:
                     time.sleep(0.5)
                     continue
