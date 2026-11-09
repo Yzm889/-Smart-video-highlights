@@ -640,6 +640,29 @@ def qwen3tts_speak(text, out_path, instruct=None, diag=None):
     return ok and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000
 
 
+# 解说默认加速档：参考音是用 VoiceDesign 造的「沉稳克制…句间有自然停顿」，
+# 克隆会把这个慢节奏一起学过去（实测单句 5.3 字/秒，解说普遍 6 字/秒以上）。
+# 1.12 是「听起来赶但不飘」的档位。
+NARR_SPEED_DEFAULT = 1.12
+
+
+def rate_to_speed(rate, default_speed=NARR_SPEED_DEFAULT):
+    """把 rate（'+10%'，正数更快）换算成倍速；rate 为 0/缺省时用解说默认档。
+
+    【为什么不用 IndexTTS2 的 duration_factor】本机这版 indextts 的 infer()
+    不接受该参数，会被当成未知 model_kwargs 转给 HF generate 直接报错：
+    "The following model_kwargs are not used by the model: ['duration_factor']"。
+    所以语速统一在生成后用 ffmpeg atempo 做（保音高，1.12 倍听不出失真）。
+    """
+    pct = 0.0
+    try:
+        pct = float(str(rate or '').replace('%', '').replace('+', '').strip() or 0)
+    except Exception:
+        pct = 0.0
+    speed = (1.0 + pct / 100.0) if abs(pct) > 0.5 else float(default_speed)
+    return max(0.5, min(2.0, speed))
+
+
 def indextts2_speak(text, out_path, emo_vector=None, emo_text=None,
                     duration_factor=None, spk=None, diag=None):
     """IndexTTS2：8 维情感 + 时长控制；不传 spk 就用仓库自带示例音色。"""

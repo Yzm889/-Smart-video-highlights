@@ -3,7 +3,7 @@
 import os, time
 # ---- 跨模块依赖（拆分后显式导入） ----
 from ai_providers import load_ai_config, _gpu_slot
-from ffmpeg_utils import _TLS, _concat_audio_clips
+from ffmpeg_utils import _TLS, _concat_audio_clips, ffmpeg_run
 from text_utils import _split_long_text, _strip_tts_markup
 import tts2_engines as T2   # v1.4.16 新一代配音引擎（VoiceDesign / IndexTTS2）
 
@@ -919,6 +919,37 @@ def _ping_preferred_engine(run_dir):
                 except Exception:
                     pass
 
+def _apply_speed(path, speed):
+    """按倍速重写配音文件（ffmpeg atempo，保音高），原地替换同名文件。
+
+    只用 atempo 整数倍以外的单一倍速（0.5~2.0 内 atempo 原生支持），
+    1.12 倍这类轻微加速听不出失真。失败就原样返回，绝不让变速拖垮配音。
+    """
+    try:
+        speed = float(speed)
+    except Exception:
+        return path
+    if abs(speed - 1.0) < 0.02 or not path or not os.path.exists(path):
+        return path
+    _stem, _ext = os.path.splitext(path)
+    tmp = path + '.spd' + _ext
+    try:
+        rc, _o, _e = ffmpeg_run(['-y', '-i', path, '-filter:a', 'atempo=%.4f' % speed, tmp])
+    except Exception:
+        return path
+    if rc == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
+        try:
+            os.replace(tmp, path)     # 原地替换：断点续跑按原文件名找得到
+            return path
+        except Exception:
+            return path
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
+    return path
+
+
 def local_tts_speak(text, out_path):
     """本地免费配音统一入口。
 
@@ -1068,7 +1099,7 @@ def local_tts_speak(text, out_path):
             _base = cfg.get('instruct') or T2.DEFAULT_INSTRUCT
             if T2.qwen3tts_speak(_tts2_clean(text), wv,
                                  instruct=_base + _hint):
-                return _ok('qwen3tts', wv)
+                return _ok('qwen3tts', _apply_speed(wv, T2.rate_to_speed(rate)))
             _tts_note_fail('qwen3tts')
         elif eng == 'indextts2':
             if not T2.indextts2_ready():
@@ -1080,7 +1111,10 @@ def local_tts_speak(text, out_path):
             _ref = T2.voice_ref(cfg.get('instruct'))
             # 情绪词映射成 8 维向量，不再像旧引擎那样被 _strip_tts_markup 丢掉
             if T2.indextts2_speak(_tts2_clean(text), wv, emo_vector=_vec, spk=_ref):
-                return _ok('indextts2', wv)
+                # 语速：克隆会继承参考音的慢节奏（实测单句 5.3 字/秒），
+                # 这里统一按 rate 做保音高变速；本机 indextts 的 infer()
+                # 不接受 duration_factor（会当未知参数报错），只能事后调。
+                return _ok('indextts2', _apply_speed(wv, T2.rate_to_speed(rate)))
             _tts_note_fail('indextts2')
         elif eng == 'edge':
             if not edge_tts_available():
