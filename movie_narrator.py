@@ -1686,8 +1686,12 @@ def _beat_info_pen(text):
 
 
 def _default_jump_cap(scenes):
-    """默认 max_jump_seconds：3×场景平均时长（够跨过 1~2 段台词填充），
-    限在 [25, 150]s 避免过于苛刻/松懈。"""
+    """默认 max_jump_seconds 的「基数」：3×场景平均时长（够跨过 1~2 段台词填充），
+    限在 [25, 150]s 避免过于苛刻/松懈。
+
+    注意这是**基数**不是最终生效值：最终上限由 _effective_jump_cap 再抬到
+    max(本值, vdur/n_beats)，否则句数少的片子里语义正确的远处场景不可达
+    （实测 3 句/1200s 需 ≥180s，本值只有 35s）。"""
     durs = []
     for sc in scenes or []:
         try:
@@ -1701,6 +1705,55 @@ def _default_jump_cap(scenes):
     avg = sum(durs) / float(len(durs))
     v = max(25.0, min(150.0, 3.0 * avg))
     return round(v / 5.0) * 5.0
+
+
+# 跳跃上限的「每句平均画面份额」系数（2026-11-10 二次修正）。
+# 取 1.0 = 一句解说最多推进「整片时长 / 句数」——覆盖均匀铺开的语义锚所需间距，
+# 见 _effective_jump_cap 的实测。
+_JUMP_CAP_RATIO = 1.0
+
+
+def _effective_jump_cap(scenes, n_beats, max_jump_seconds=None):
+    """相邻解说句之间的画面跳跃上限（秒）——三处约束的统一入口。
+
+    base = max_jump_seconds（调用方显式给的上限，生产为 NAR_MAX_JUMP_SECONDS）；
+    传 0/负/None → 退回 _default_jump_cap(scenes)（3×场景平均时长，25~150s）。
+
+    【2026-11-10 修正：绝对秒数上限对「句子少」的片子是错的】
+    base 是绝对秒数，只对「句数多」的片子合适：真机 52 句配 1200 秒画面 →
+    平均每句 23 秒，20 秒上限正合适。但句数很少时（测试夹具 3 句配 1200 秒，
+    平均每句该推进 400 秒），绝对上限会把 DP 锁死：语义正确的远处场景
+    (医院 300s) 变成不可达，DP 只好就近取景 → 声画错位。
+
+    实测（100×12s 夹具，4 句各有一个唯一锚点，锚点间距 288s、vdur/n=300s）：
+      cap=20   → 命中 1/4 锚点（丢 3 个）    cap=100  → 1/4
+      cap=200  → 1/4                        cap=288  → 4/4 ✓
+      cap=300+ → 4/4 ✓
+    即「上限够不上锚点间距」时锚点被静默丢弃（此夹具的锚点间距 288s 恰好略小于
+    vdur/n=300s，所以 288 仍够用；间距越大所需上限越高）。锚点是按剧情均匀铺开
+    的，故以「每句平均应推进的画面时长 vdur/n」为基准最稳妥——它正好覆盖均匀
+    分布所需的间距，也随句数自适应：
+
+        cap = max(base, _JUMP_CAP_RATIO * vdur / n_beats)      RATIO = 1.0
+
+    RATIO 取 1.0 是「刚好覆盖均匀间距」的最小值，也是最防狂跳的值：只抬不降
+    （max），句数多的片子行为几乎不变——852s→1212s 那幕狂跳正是 52 句 / 1500s，
+    vdur/n=28.8s，上限仅从 20s 抬到 28.8s，狂跳照样挡住（实测该夹具第 12 句
+    落在 996s，远早于事故的 1212s；无上限时飞到 1212s、单句跃迁 379.4s）。
+    """
+    # base：调用方显式给的正数上限；0/负/None 一律按注释退回场景动态基数。
+    if max_jump_seconds and float(max_jump_seconds) > 0:
+        base = float(max_jump_seconds)
+    else:
+        base = _default_jump_cap(scenes)
+    n = int(n_beats or 0)
+    if n <= 0 or not scenes:
+        return max(1e-6, base)
+    try:
+        vdur = max(float(sc.get('end', 0) or 0) for sc in scenes)
+    except (ValueError, TypeError, AttributeError):
+        return max(1e-6, base)
+    return max(1e-6, base, _JUMP_CAP_RATIO * vdur / float(n))
 
 
 def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
@@ -1808,8 +1861,9 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
 
     # 【2026-11-10 强制单调约束】跳跃上限：句子间「新场景 start - 上一句
     # 前一场景 end」的允许值（之后的场景增量允许，之前的全部 -inf）。
-    _jump = float(max_jump_seconds) if max_jump_seconds else _default_jump_cap(scenes)
-    _jump = max(1e-6, _jump)
+    # 上限 = max(显式值, vdur/n)：句数少时绝对秒数会把语义正确的远处场景
+    # 变成不可达（详见 _effective_jump_cap 的实测）。
+    _jump = _effective_jump_cap(scenes, n, max_jump_seconds)
 
     _wts = [max(1, len(str(b or ''))) for b in beats]
     _tot = float(sum(_wts)) or 1.0
@@ -1943,9 +1997,9 @@ def _sanitize_alignment(merged, base, scenes, n_beats, max_span=3, factor=3.0,
     starts = [float(s.get('start', 0) or 0) for s in scenes]
     ends = [float(s.get('end', 0) or 0) for s in scenes]
     vdur = max(ends) if ends else 0.0
-    # 跳跃上限（2026-11-10 语义对齐重构）：缺省按场景平均时长动态算。
-    _jump = float(max_jump_seconds) if max_jump_seconds else _default_jump_cap(scenes)
-    _jump = max(1e-6, _jump)
+    # 跳跃上限（2026-11-10 语义对齐重构）：缺省按场景平均时长动态算；
+    # 同时抬到「每句平均画面份额」以适配句数少的片子（同 _effective_jump_cap）。
+    _jump = _effective_jump_cap(scenes, n_beats, max_jump_seconds)
 
     idxs, groups = [], {}
     for i in range(n_beats):
@@ -2344,6 +2398,10 @@ NAR_MAX_JUMP_SECONDS = 20.0  # 2026-11-10 语义对齐重构：相邻解说句�
                              # 候选场景 start < 上一句 end → -inf（倒流拒绝）；超过
                              # 上限 → -inf（最佳匹配在很久之前也必须丢弃，就近按序取景）。
                              # 传 0/负 则由 _default_jump_cap 按场景平均时长动态算（25~150s）。
+                             # 【2026-11-10 二次修正】实际生效值再抬到 max(本值, vdur/句数)
+                             # （_effective_jump_cap）：句数少时绝对秒数会把语义正确的远处
+                             # 场景锁成不可达（实测 3 句/1200s 需 ≥180s）。句数多时
+                             # （真机 52 句/1200s → 23s）结果与不加这一抬完全一致。
 # 语义精修权重（_allocate_script_spans 的 sem_weight）：0=关。
 # bigram 版 A/B 实测仅 +1.8% 噪声已关；向量版（scene_sem/余弦）A/B 赢了才调成 >0（2026-11-06）
 _SEM_WEIGHT = 0.0
@@ -4444,8 +4502,10 @@ def _allocate_script_spans(texts, vdur, asr=None, cps=None, min_dur=1.0, vlm_cap
     _kinds = (_kinds + [KIND_CONCRETE] * n)[:n]
     # 跳跃上限：候选起点不得早于 last_end（倒流 -inf），也不得超过
     # last_end + max_jump_seconds（超跳 -inf）——与 DP 对齐同一套约束。
-    _jump = float(max_jump_seconds) if max_jump_seconds else _default_jump_cap(scenes)
-    _jump = max(1e-6, _jump)
+    # 【2026-11-10 二次修正】上限 = max(显式值, vdur/n)：句数少时绝对秒数会把
+    # 语义正确的远处画面变成不可达（详见 _effective_jump_cap 的实测）；句数
+    # 与画面时长匹配时（真机 52 句/1200s）结果与原来完全一致。
+    _jump = _effective_jump_cap(scenes, n, max_jump_seconds)
     weights = [max(1, len(str(t or ''))) for t in texts]
     durs = [w / cps for w in weights]
     need = sum(durs)

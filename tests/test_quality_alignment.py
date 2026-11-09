@@ -174,6 +174,92 @@ def test_dp_align_far_jump_capped_by_window():
     assert sc[al[1][0]]['start'] >= 300, al
 
 
+def _wild_jump_scenes():
+    """复现 commit 3585294 记载的真机事故形状：
+
+    44 个「巡逻车 N 号对讲机」场景铺满 0~852s → 5 个稀疏「医院走廊」场景
+    852~1212s → 76 个密集「病房」场景 1212s 之后（只有第 1 个带
+    「花枯了 / 走廊尽头」这个唯一实义信号）。
+
+    事故原貌：第 12 句解说（讲「花枯了之后走廊尽头出现了她」）从 852 秒
+    直接飞到 1212 秒，跳过了全部走廊戏。
+    """
+    sc = []
+    for i in range(44):
+        s = i * (852.0 / 44)
+        sc.append({'start': s, 'end': s + 852.0 / 44, 'location': '街道',
+                   'event': '巡逻车里啃汉堡，%d号对讲机响了' % i,
+                   'summary': '巡逻车 %d号对讲机' % i})
+    for j in range(5):
+        s = 852.0 + j * 72.0
+        sc.append({'start': s, 'end': s + 72.0, 'location': '医院走廊',
+                   'event': '医院走廊里人来人往脚步声很轻', 'summary': '医院走廊'})
+    for j in range(76):
+        s = 1212.0 + j * (288.0 / 76)
+        d = ({'location': '病房', 'event': '花枯了之后她在走廊尽头出现',
+              'summary': '花枯了 走廊尽头 她'} if j == 0 else
+             {'location': '病房', 'event': '病房里输液管滴答作响',
+              'summary': '病房输液管'})
+        sc.append({'start': s, 'end': s + 288.0 / 76, **d})
+    return sc
+
+
+def _wild_jump_beats():
+    beats = []
+    for i in range(52):
+        if i < 12:
+            beats.append('他抓起%d号对讲机，低声说了一句，然后推开车门下车。' % i)
+        elif i < 16:
+            beats.append('花枯了之后，走廊尽头出现了她，一切都变了。')
+        else:
+            beats.append('病房里输液管一滴一滴，时间就这么过去了。')
+    return beats
+
+
+def test_jump_cap_does_not_scale_away_wild_jump_protection():
+    """【不开倒车】上限按 vdur/n 抬高后，852s→1212s 的狂跳必须依旧被挡住。
+
+    这是 commit 3585294 加跳跃上限的原始诉求。该夹具 52 句 / 1500s →
+    vdur/n = 28.8s，上限抬到 28.8s（仅比原 20s 高 8.8s），狂跳仍被拦在
+    < 1000s（实测第 12 句落在 996s；无上限时会飞到 1212s、单句跃迁 379.4s）。
+    """
+    sc, beats = _wild_jump_scenes(), _wild_jump_beats()
+    n = len(beats)
+    al = M._algo_align_beats_to_scenes(beats, sc,
+                                      max_jump_seconds=M.NAR_MAX_JUMP_SECONDS)
+    assert len(al) == n, len(al)
+    starts = [sc[al[i][0]]['start'] for i in range(n)]
+    # ① 单调不倒流
+    assert starts == sorted(starts), starts
+    # ② 第 12 句（「花枯了」）不得飞到 1212s 的密集病房区
+    assert starts[12] < 1000, ('狂跳重现：第12句落在 %.0fs' % starts[12])
+    # ③ 全程单句跃迁受上限约束（生效上限 = max(20, 1500/52) = 28.8s）
+    cap = M._effective_jump_cap(sc, n, M.NAR_MAX_JUMP_SECONDS)
+    assert cap < 30.0, cap                     # 「只抬不降」：抬幅极小
+    for i in range(n - 1):
+        d = sc[al[i + 1][0]]['start'] - sc[al[i][-1]]['end']
+        assert d <= cap + 1e-6, ('beat%d 跃迁 %.1fs 超过 cap %.1fs' % (i, d, cap))
+        assert d >= -1e-6, ('beat%d 倒流 %.1fs' % (i, d))
+
+
+def test_effective_jump_cap_scales_with_beats_and_never_shrinks():
+    """上限 = max(显式值, vdur/n)：句数少时必须抬高（否则远处语义锚不可达），
+    句数多时保持不变（不许降低，降低会改坏真机行为）。"""
+    sc = _big_scenes()                          # 100 × 12s，vdur = 1200
+    # 句数少 → 必须抬到 vdur/n：3 句 → 400s（实测 < 180s 就丢医院锚点）
+    cap3 = M._effective_jump_cap(sc, 3, M.NAR_MAX_JUMP_SECONDS)
+    assert abs(cap3 - 400.0) < 1e-6, cap3
+    # 句数多 → 只抬不降：52 句 → max(20, 1200/52) = 23.08s
+    cap52 = M._effective_jump_cap(sc, 52, M.NAR_MAX_JUMP_SECONDS)
+    assert abs(cap52 - 1200.0 / 52.0) < 1e-6, cap52
+    assert cap52 > M.NAR_MAX_JUMP_SECONDS
+    # 显式上限更大时以显式值为准（只抬不降）
+    assert M._effective_jump_cap(sc, 52, 90.0) == 90.0
+    # 句数为 0 / 无场景 → 退回基数，不得抛异常
+    assert M._effective_jump_cap(sc, 0, M.NAR_MAX_JUMP_SECONDS) > 0
+    assert M._effective_jump_cap(None, 5, M.NAR_MAX_JUMP_SECONDS) > 0
+
+
 def test_isotonic_minimal_displacement():
     """保序回归：乱序投影成不减序列，且是位移平方和最小的那种（不是单向棘轮）。"""
     out = M._isotonic([300, 320, 280, 290])
