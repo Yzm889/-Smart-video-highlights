@@ -36,11 +36,15 @@ def _run_compose(tmp_path, monkeypatch, items, segs=None):
 
     captured = {}
 
-    def fake_cut(video_path, segs_, rd, progress):
+    def fake_cut(video_path, segs_, rd, progress, **kw):
         captured['segs'] = [tuple(s) for s in segs_]
         raise _CutCaptured('captured')
 
     monkeypatch.setattr(mn, '_cut_video_by_spans', fake_cut)
+    # 本文件只验证 skip/分割的连线；「补画面让配音念完」见
+    # tests/test_narration_no_truncation.py，这里置恒等以免改变断言基准
+    monkeypatch.setattr(mn, '_fit_spans_to_voice',
+                        lambda sp, d, src=None, tail=0.35, **kw: (list(sp), {'grew': 0, 'added': 0.0}))
     monkeypatch.setattr(mn, 'probe_audio_len', lambda p: 12.0)
     try:
         mn.compose_movie_from_tts(str(run), progress={}, skip=[], adjusted_items=items)

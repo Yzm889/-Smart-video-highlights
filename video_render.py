@@ -88,33 +88,117 @@ def _fit_voice(voice_len, span_len):
     return {'speed': _NAR_MAX_SPEED, 'trim': True, 'over': over}
 
 
-def _display_factor(seg_len, v_len):
+def _display_factor(seg_len, v_len, tail=0.35):
     """画面微变速因子 f（供 setpts=f*PTS 使用）。P1-2 核心。
 
     让每段画面时长 D 贴合该段真实配音时长，从而「画面随声音走」，彻底消除
     「话说完画面还杵着」与「话没说完被腰斩」两类尴尬。
 
-    D = clamp(v_len + 0.35, 0.85*seg_len, 1.15*seg_len)
-      · v_len+0.35：画面比配音多 0.35s 收尾定格（念完即收，不突兀）。
+    D = clamp(v_len + tail, 0.85*seg_len, 1.15*seg_len)
+      · v_len+tail：画面比配音多 tail 秒收尾定格（念完即收，不突兀）。
+        tail 由调用方给（解说链路默认 0.5s，= 用户要的「画面留白」），
+        其余路径沿用 0.35s 的老口径。
       · ±15% 夹紧：超出此范围的变速观众可察觉（快进/慢动作感），故画面只在此带内微调，
         更极端的偏差交给配音 atempo（见 _render_narrate），二者配合覆盖全范围且不破音。
     返回 f = D / seg_len；seg_len 非法或无声段返回 1.0（原样保留）。"""
     try:
         seg_len = float(seg_len); v_len = float(v_len)
+        tail = float(tail)
     except Exception:
         return 1.0
     if seg_len <= 0.02 or v_len is None or v_len <= 0:
         return 1.0
-    D = v_len + 0.35
+    D = v_len + max(0.0, min(5.0, tail))
     D = max(0.85 * seg_len, min(1.15 * seg_len, D))
     if D <= 0:
         return 1.0
     return D / seg_len
 
 
+def _decoded_duration(path, timeout=900):
+    """解码一遍量真实时长（秒）；容器头不可信时用它兜底。失败返回 0。"""
+    import re as _re
+    try:
+        rc, _o, e = ffmpeg_run(['-hide_banner', '-i', path, '-f', 'null', '-'],
+                               timeout=timeout)
+    except Exception:
+        return 0.0
+    if rc != 0:
+        return 0.0
+    hits = _re.findall(r'time=(\d+):(\d+):(\d+\.\d+)', e.decode('utf-8', 'ignore'))
+    if not hits:
+        return 0.0
+    h, m, s = hits[-1]
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None):
+    """把画面段补长到「装得下它那句配音，还留一口气」。
+
+    【为什么必须补】合成端会把每段配音裁在本段内（避免跨段语音重叠，见
+    _compose_narration_video 的三元组语义）。于是画面段一旦短于配音，
+    尾音就被硬切——用户听到的正是「这句话没念完就切到下一个镜头」。
+    剪辑端的 ±15% 微变速（_display_factor）只能救 15% 以内的差，超过就得补素材。
+
+    【groups 是必须的】高密度分镜下 1 句解说会占多段画面：
+    实测 43 段画面 ↔ 37 句解说。若按「第 i 段配第 i 句」硬套，
+    后面的句子全会配错对象（曾把第 9 句的 7.2 秒套到只该装 4.7 秒的段上，
+    补了 12 段却仍有 12 句被切）。groups[j]=句序号 时按句归组，
+    每组的缺口补在该组最后一段的尾巴上（视觉上只多放一点画面，不动其它段）。
+
+    spans: [(start, end)] 源片坐标；voice_durs: {句序号: 配音秒数}
+    返回 (new_spans, {'grew': 补长了几段, 'added': 一共补了多少秒})
+    """
+    limit = float(src_dur) if src_dur else None
+    n = len(spans or [])
+    if groups is not None and len(groups) == n:
+        order = {}
+        for j, g in enumerate(groups):
+            order.setdefault(g, []).append(j)
+        plan = [(g, order[g]) for g in sorted(order)]
+    else:
+        plan = [(i, [i]) for i in range(n)]
+
+    out = [[0.0, 0.0] for _ in range(n)]
+    cursor, grew, added = 0.0, 0, 0.0
+    for g, idxs in plan:
+        # 先按原位摆放（起点不早于上一组的结尾，保证不重叠）
+        for j in idxs:
+            a = max(float(spans[j][0]), cursor)
+            b = max(float(spans[j][1]), a + 0.1)
+            out[j] = [a, b]
+            cursor = b
+        v = float((voice_durs or {}).get(g) or 0.0)
+        if v <= 0:
+            continue
+        need = v + tail
+        have = sum(out[j][1] - out[j][0] for j in idxs)
+        if have >= need - 1e-6:
+            continue
+        # 组内按比例拉伸：多镜头结构不变，总长恰好等于「配音 + 气口」。
+        # （旧做法只在组尾补，遇到首尾相接的段就顶死不动，实测仍有 3 句被切。）
+        k = need / have if have > 0 else 1.0
+        base = out[idxs[0]][0]
+        if limit and base + need > limit:          # 片尾不够就整体前移
+            base = max(cursor - need, limit - need)
+        cur = base
+        for j in idxs:
+            ln = (out[j][1] - out[j][0]) * k
+            out[j] = [cur, cur + ln]
+            cur += ln
+        grew += 1
+        added += need - have
+        cursor = cur
+    if limit:
+        for j in range(n):
+            if out[j][1] > limit:
+                shift = out[j][1] - limit
+                out[j] = [max(0.0, out[j][0] - shift), limit]
+    return [(round(a, 3), round(b, 3)) for a, b in out], {'grew': grew, 'added': round(added, 2)}
+
+
 def attach_importance(params, progress, segs):
     """把分析阶段落盘的剧情重要度接进 params['_importance']，供 BGM 情绪包络使用。
-
     只在长度严格一致时采用：outline 是「镜头段」粒度、narr 是「解说节」粒度，
     高密度剪辑聚合后两者长度不同，硬套索引会让配乐情绪整体错位——宁可不带。
     返回新的 params（不原地改，避免污染调用方共享的字典）。
@@ -374,7 +458,8 @@ def _warn(progress, msg):
             pass
 
 
-def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=None, skip_no_cut=False):
+def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=None,
+                        skip_no_cut=False, voice_tail=0.35):
     """按保留区间真剪辑：只留 spans 覆盖的画面，顺序拼成新片，并给出新时间轴。
 
     这是「剧情驱动剪辑」名副其实的关键。历史实现里解说链路只做「烧字幕 + 混音」，
@@ -456,17 +541,20 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
             seg_len = s1 - s0
             # [P1-2] 画面微变速：setpts 把画面时长掰到贴合配音（D=clamp(v_len+0.35, 0.85~1.15×段长)），
             #         同一段的场景原声同步 atempo=1/f，保证画面与原声不脱节。无声段(factor≈1)原样保留。
-            f = _display_factor(seg_len, (voice_durs or {}).get(i)) if voice_durs else 1.0
+            f = _display_factor(seg_len, (voice_durs or {}).get(i),
+                                tail=voice_tail) if voice_durs else 1.0
             cmd = ['-y', '-ss', '%.3f' % s0, '-i', video_path, '-t', '%.3f' % seg_len]
-            _vf = []
-            if abs(f - 1.0) > 0.005:
-                _vf.append('setpts=%.6f*PTS' % f)
+            # 【必须每段都归零时间戳】setpts=(PTS-STARTPTS)*f 把首帧 PTS 拉回 0。
+            # 只写 setpts=f*PTS 时，如果 -ss 落点让首帧 PTS 非 0，这一段的起始
+            # 时间戳就带着偏移；concat 分离器 (copy) 按各段时长累计偏移，混入
+            # 几段带偏移的片段后，拼出来的容器时长会被虚报——实测 43 段真长
+            # 289s 却写成 381s，下游按 381s 排时间轴，配音全被推走。
+            _vf = ['setpts=(PTS-STARTPTS)*%.6f' % f]
             if _tm_chain:
                 _vf.append(_tm_chain)
-            if _vf:
-                cmd += ['-vf', ','.join(_vf)]
-                if has_audio and abs(f - 1.0) > 0.005:
-                    cmd += ['-af', 'atempo=%.6f' % (1.0 / f)]
+            cmd += ['-vf', ','.join(_vf)]
+            if has_audio and abs(f - 1.0) > 0.005:
+                cmd += ['-af', 'atempo=%.6f' % (1.0 / f)]
             cmd += _w.video_encode_args_interim()
             if _tm_chain:
                 cmd += list(BT709_TAGS)
@@ -523,11 +611,17 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
         _d = piece_durs[len(new_spans)] if len(new_spans) < len(piece_durs) else (b - a)
         new_spans.append((round(cur, 3), round(cur + _d, 3)))
         cur += _d
-    # -c copy 拼接 VFR 视频时，各片段实际时长可能与 -t 指定的有偏差，
-    # 导致拼接后视频实际时长 != new_spans 总时长，后面的配音/字幕落在视频结束点之后。
-    # 修复：ffprobe 检查实际时长，偏差>0.5s 时按比例缩放 new_spans，保证与视频对齐。
+    # -c copy 拼接时，容器头里的时长可能被写脏：实测 43 段真长 289s 却报 381s。
+    # 若直接按头信息缩放时间轴，配音会被整体推走（话没说完就切、后面全错位）。
+    # 所以偏差超过 0.5s 时先解码量一次真实长度，只有真实长度也偏差才缩放。
     actual_dur = probe_audio_len(out) or cur
     expected_dur = cur
+    if actual_dur > 0 and abs(actual_dur - expected_dur) > 0.5:
+        _real = _decoded_duration(out)
+        if _real > 0 and abs(_real - actual_dur) > 0.5:
+            _log.info('[DIAG] 容器时长不可信（头=%.1fs 实测=%.1fs），以实测为准'
+                      % (actual_dur, _real))
+            actual_dur = _real
     if actual_dur > 0 and abs(actual_dur - expected_dur) > 0.5:
         scale = actual_dur / expected_dur
         _log.info(f'[DIAG] 拼接时长偏差: 预期={expected_dur:.1f}s 实际={actual_dur:.1f}s 缩放={scale:.3f}')

@@ -19,7 +19,7 @@ from ffmpeg_utils import (AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS,
     probe_size, probe_is_hdr)
 from text_utils import _clean_caption
 from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
-    _compose_narration_video, attach_importance, _warn)
+    _compose_narration_video, attach_importance, _warn, _fit_spans_to_voice)
 from beat_analysis import _cached_scene_cuts
 from tts_engines import (local_tts_speak, edge_tts_speak, edge_tts_available,
     edge_tts_dead_reason,
@@ -5579,6 +5579,19 @@ def _spec_warnings(video_path, params):
     return out
 
 
+def _voice_tail(params):
+    """每段画面在配音念完之后的留白秒数（用户说的「气口」，0~2 秒，默认 0.5）。
+
+    以前写死 0.35 且只在剪辑端的微变速里生效，配音一长就被段长硬切，
+    连这 0.35 秒也留不住。现在由它统一供给「补画面」与「微变速」两处。
+    """
+    try:
+        v = float((params or {}).get('voiceTail'))
+    except Exception:
+        v = 0.5
+    return max(0.0, min(2.0, v))
+
+
 def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_items=None, skip=None, user_params=None):
     """Phase 2：加载已保存的配音状态，裁剪视频+合成。用户确认配音后调用。
     adjusted_items: 用户调整后的片段列表 [{index, text, audio}]，None则用原始状态
@@ -5798,7 +5811,30 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     # 再裁剪（segs现在是每节一个时间范围，数量=解说词段数，TTS索引直接对应）
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 60)
-        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress)
+        # 【2026-11-09】先让画面装得下配音。合成端把每段配音裁在本段内（防跨段重叠），
+        # 于是画面段短于配音时尾音被硬切——用户实测就是「这句话没念完就切下一个镜头」。
+        # 实测那一次：37 段配音合计 235.1s，画面只留 208.8s，被切掉 25.6s。
+        _vdur = {}
+        for _ti, _clip in tts_results:
+            _d = probe_audio_len(_clip) or 0.0
+            if _d > 0:
+                _vdur[_ti] = _d
+        if _vdur:
+            _tail = _voice_tail(params)
+            # 高密度分镜下 1 句占多段（实测 43 段 ↔ 37 句）：必须按 narr_map 归组补，
+            # 否则「第 i 段配第 i 句」会错配到别的句子身上，补了也白补。
+            _groups = narr_map if (narr_map and len(narr_map) == len(segs)) else None
+            segs, _fit = _fit_spans_to_voice(segs, _vdur, cut_info['src_dur'],
+                                             tail=_tail, groups=_groups)
+            if _fit['grew']:
+                _log.info('[DIAG] 画面补长 %d 段 / +%.1fs（让每句念完再切，留 %.2fs 气口）'
+                          % (_fit['grew'], _fit['added'], _tail))
+            if _groups:
+                # 分组时逐段时长与配音不一一对应，微变速会算错倍数 → 关掉
+                _vdur = {}
+        src_video, segs, cut_sec = _cut_video_by_spans(video_path, segs, run_dir, progress,
+                                                       voice_durs=_vdur or None,
+                                                       voice_tail=_voice_tail(params))
         cut_info['cut_sec'] = cut_sec
     # 剪辑后聚合：把同属一个beat的多个seg在剪辑后的时间轴上合并（此时无空白，聚合安全）
     if orig_narr_map and len(orig_narr_map) == orig_segs_count and len(segs) == orig_segs_count:
@@ -5858,7 +5894,9 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                     clip = _cand2
         tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol, _fade[0], _fade[1]))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
-        voice_spans[i] = (seg_span[0] + _offset, min(seg_span[1] + _offset, seg_span[0] + _offset + v_len + 0.35))
+        voice_spans[i] = (seg_span[0] + _offset,
+                          min(seg_span[1] + _offset,
+                              seg_span[0] + _offset + v_len + _voice_tail(params)))
     _log.info('[DIAG] 合成阶段: %d段配音, %d个画面片段' % (len(tts_paths), len(segs)))
     up('混音+烧字幕+配乐', 80)
     # 字幕必须去掉 TTS 标记：narr 里带 {情绪:紧张}/{停顿:0.5}，直接烧进字幕
@@ -6018,21 +6056,36 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
         _log.info(f'[DIAG] 高密度聚合: {len(narr)}节 -> {len(segs)}个片段')
-    # 主线程继续做裁剪（TTS在后台跑，segs现在是每节一个范围）
+    # 主线程等 TTS 完成后才裁剪：剪辑要按「真实配音时长」补画面，否则配音尾音
+    # 会被段长硬切（用户实测「话没说完就切镜头」）。代价是串行，但实测 43 段
+    # 剪辑只要 12 秒，相对整条链路的配音耗时可以忽略。
+    _tts_thread.join()
+    if _tts_error[0]:
+        raise _tts_error[0]
+    # 用真实配音时长补长画面段，再交给剪辑端做 ±15% 微变速贴合
+    _vdur = {}
+    for _ti, _clip in _tts_results:
+        _d = probe_audio_len(_clip) or 0.0
+        if _d > 0:
+            _vdur[_ti] = _d
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 54)
+        if _vdur:
+            _tail = _voice_tail(params)
+            segs, _fit = _fit_spans_to_voice(segs, _vdur, cut_info['src_dur'], tail=_tail)
+            if _fit['grew']:
+                _log.info('[DIAG] 画面补长 %d 段 / +%.1fs（让每句念完再切，留 %.2fs 气口）'
+                          % (_fit['grew'], _fit['added'], _tail))
         # 第一步已剔除被剪段（cut_plan.removed>0）→ 强制真剪，杜绝「没剪」静默发生
         _cp3 = (progress or {}).get('cut_plan') or {}
         src_video, segs, cut_sec = _cut_video_by_spans(
             video_path, segs, run_dir, progress,
+            voice_durs=_vdur,
+            voice_tail=_voice_tail(params),
             skip_no_cut=bool(int(_cp3.get('removed') or 0)))
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
-    # 等待TTS线程完成
-    _tts_thread.join()
-    if _tts_error[0]:
-        raise _tts_error[0]
     # 用裁剪后的segs计算voice_spans和tts_paths
     tts_paths = []
     voice_spans = {}
@@ -6040,7 +6093,8 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         seg_span = segs[i] if i < len(segs) else (0.0, 10.0)
         tts_paths.append((clip, seg_span[0], seg_span[1]))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
-        voice_spans[i] = (seg_span[0], min(seg_span[1], seg_span[0] + v_len + 0.35))
+        voice_spans[i] = (seg_span[0],
+                          min(seg_span[1], seg_span[0] + v_len + _voice_tail(params)))
     _log.info(f'[DIAG] TTS并行完成: {len(tts_paths)}/{len(narr)}段配音成功')
     up('混音+烧字幕+配乐', 70)
     # 字幕必须去掉 TTS 标记：narr 里带 {情绪:紧张}/{停顿:0.5}，直接烧进字幕

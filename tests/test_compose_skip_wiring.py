@@ -36,11 +36,15 @@ def test_compose_skip_drops_segment_before_real_cut(tmp_path, monkeypatch):
 
     captured = {}
 
-    def fake_cut(video_path, segs, rd, progress):
+    def fake_cut(video_path, segs, rd, progress, **kw):
         captured['segs'] = [tuple(s) for s in segs]
         raise _CutCaptured('captured')
 
     monkeypatch.setattr(mn, '_cut_video_by_spans', fake_cut)
+    # 本文件只验证 skip/分割的连线；「补画面让配音念完」见
+    # tests/test_narration_no_truncation.py，这里置恒等以免改变断言基准
+    monkeypatch.setattr(mn, '_fit_spans_to_voice',
+                        lambda sp, d, src=None, tail=0.35, **kw: (list(sp), {'grew': 0, 'added': 0.0}))
     monkeypatch.setattr(mn, 'probe_audio_len', lambda p: 6.0)
 
     # skip 中间第 2 段（index 1）→ 应只剩 (0,2) 与 (4,6)
@@ -71,11 +75,15 @@ def test_compose_no_skip_keeps_all_segments(tmp_path, monkeypatch):
 
     captured = {}
 
-    def fake_cut(video_path, segs, rd, progress):
+    def fake_cut(video_path, segs, rd, progress, **kw):
         captured['segs'] = [tuple(s) for s in segs]
         raise _CutCaptured('captured')
 
     monkeypatch.setattr(mn, '_cut_video_by_spans', fake_cut)
+    # 本文件只验证 skip/分割的连线；「补画面让配音念完」见
+    # tests/test_narration_no_truncation.py，这里置恒等以免改变断言基准
+    monkeypatch.setattr(mn, '_fit_spans_to_voice',
+                        lambda sp, d, src=None, tail=0.35, **kw: (list(sp), {'grew': 0, 'added': 0.0}))
     monkeypatch.setattr(mn, 'probe_audio_len', lambda p: 6.0)
 
     try:
