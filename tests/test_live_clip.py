@@ -214,7 +214,9 @@ def test_clip_name_is_ascii_and_encodes_start():
 
 
 def test_write_report_files_and_structure(tmp_path):
-    meta = {'video': r'C:\rec\live.mkv', 'vdur': 1200.0, 'window': 2.0, 'asr_used': True}
+    # 源片路径故意带 Windows 反斜杠：报告里的 video 字段必须只剩文件名
+    # （write_report 会先归一化 \ 为 / 再 basename；CI 的 Linux 上曾因此红过）
+    meta = {'video': 'C:\\rec\\live.mkv', 'vdur': 1200.0, 'window': 2.0, 'asr_used': True}
     clips = [{'start': 100.0, 'end': 150.0, 'dur': 50.0, 'score': 0.91,
               'peak_t': 120.0, 'reasons': ['音量峰值（全片前5%）']},
              {'start': 600.0, 'end': 650.0, 'dur': 50.0, 'score': 0.85,

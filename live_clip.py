@@ -635,7 +635,9 @@ def write_report(meta, clips, files, run_dir, covers=None, aspect='orig'):
                       'score': c.get('score'), 'peak_t': c.get('peak_t'),
                       'reasons': c.get('reasons') or [],
                       'cover': os.path.basename(cov) if cov else ''})
-    data = {'video': os.path.basename(meta.get('video') or ''),
+    # 源片路径可能是 Windows 反斜杠形态（Docker/Linux 上 os.path.basename 不认 \，
+    # 会把整个 C:\rec\x.mkv 当文件名写进报告——CI 实测踩中），先归一化再取尾。
+    data = {'video': os.path.basename(str(meta.get('video') or '').replace('\\', '/')),
             'video_dur': meta.get('vdur'), 'window': meta.get('window'),
             'asr_used': meta.get('asr_used'),
             'aspect': _aspect_names.get(aspect, aspect),
