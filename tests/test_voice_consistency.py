@@ -41,6 +41,39 @@ def test_auto_prefers_clone_over_per_sentence_design():
     assert 'qwen3tts' in order, 'Qwen3 仍要留着造音色/兜底'
 
 
+def test_explicitly_chosen_qwen3_also_clones(tmp_path, monkeypatch):
+    """手动把引擎选成「Qwen3-TTS」时，也必须走克隆，不能逐句现场造人。
+
+    v1.4.20 只改了 _auto_order()（auto 档），而「显式选中引擎」在
+    local_tts_speak 里走的是另一条分支（if eng_set == 'qwen3tts': order = [...]），
+    绕过了 _auto_order()。主人配置恰好是 engine='qwen3tts'，于是他遇到的是：
+    自动档已修好、他手里的档没修 —— 「音色不稳定，昨天修过又出现」。
+    实测他 2026-11-10 那次 run 的 tts_log：52/52 段全是 qwen3tts。
+    """
+    monkeypatch.setattr(T, 'tts_local_cfg',
+                        lambda: {'engine': 'qwen3tts', 'rate': '+0%', 'instruct': ''})
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: True)
+    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+    monkeypatch.setattr(T2, 'voice_ref', lambda instruct=None: r'C:\ref\voice.wav')
+    seen = []
+
+    def fake_idx(text, out, spk=None, **kw):
+        seen.append(spk)
+        open(out, 'wb').write(b'0' * 4096)
+        return True
+
+    def fake_qwen(*a, **k):
+        raise AssertionError('显式选 Qwen3 时不该逐句 VoiceDesign 造音色')
+
+    monkeypatch.setattr(T2, 'indextts2_speak', fake_idx)
+    monkeypatch.setattr(T2, 'qwen3tts_speak', fake_qwen)
+    ok, eng, _ = T.local_tts_speak('第1句话测试', str(tmp_path / 'a.wav'))
+    assert ok and eng == 'indextts2', (ok, eng)
+    assert seen == [r'C:\ref\voice.wav']
+    # 钉住「两条分支必须一致」，防止有人只改一处又让它分叉
+    assert T._engine_order_for('qwen3tts')[0] == T._auto_order()[0] == 'indextts2'
+
+
 def test_voice_ref_reuses_cached_sample(tmp_path, monkeypatch):
     """已经造过就不该再花 20 秒重造 —— 跨集复用同一把嗓子。"""
     monkeypatch.setattr(T2, 'BIN_DIR', str(tmp_path))

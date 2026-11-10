@@ -106,3 +106,19 @@ def test_frontend_dropdown_has_no_legacy_engines():
     assert 'qwen3tts' in block and 'indextts2' in block
     for legacy in ("'cosyvoice'", "'sherpa'", "'sapi'", "'chattts'"):
         assert legacy not in block, '下拉里仍有旧引擎 %s' % legacy
+
+
+def test_qwen3tts_label_matches_its_real_behaviour():
+    """选了 Qwen3 之后实际也是克隆，标签不能再说「逐句文字造音色」。
+
+    修 P1-3 之前 qwen3tts 排在链首、逐句 VoiceDesign 现造人，标签写
+    「文字造音色」是对的；修完之后它退到第二位、由 IndexTTS2 克隆，
+    标签还写旧话就是在骗用户（与 P1-1「谎报未装引擎」同一类缺陷）。
+    """
+    js = open(JS, encoding='utf-8').read()
+    start = js.index('const TTS_ENGINES')
+    block = js[start:start + 400]
+    line = [l for l in block.splitlines() if "'qwen3tts'" in l][0]
+    assert '克隆' in line, 'qwen3tts 的实际行为是「造参考音 + 克隆」，标签要写出来：%s' % line
+    assert '文字造音色，无需录音' not in line, \
+        '旧标签暗示逐句现造人，与 _engine_order_for(\'qwen3tts\') 已不符：%s' % line

@@ -2173,8 +2173,11 @@ let _setupTimer = null;
 /* ── 设置：配音引擎与音色 ── */
 // auto 的真实顺序是 _auto_order() = ['indextts2','qwen3tts']（克隆优先，整片同一把嗓子），
 // 标签以前写成「Qwen3-TTS 优先」，与代码相反，用户按标签理解就会选错引擎。
+// 【2026-11-10】qwen3tts 这一项原来标「VoiceDesign（文字造音色）」——修完 P1-3 后
+// 它也是克隆（Qwen3 只负责按描述造那一条参考音，逐句合成由 IndexTTS2 克隆完成），
+// 标签再写「文字造音色」会让人以为还是逐句现造。按实际行为改。
 const TTS_ENGINES = [['auto','自动（IndexTTS2 克隆优先）'],
-  ['qwen3tts','Qwen3-TTS · VoiceDesign（文字造音色，无需录音）'],
+  ['qwen3tts','Qwen3 按文字描述造音色 → IndexTTS2 克隆（无需录音）'],
   ['indextts2','IndexTTS2（情感 / 时长可控）']];
 async function fillTtsSettings(){
   try {

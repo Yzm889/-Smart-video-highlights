@@ -80,12 +80,45 @@ def test_preview_defaults_to_clone_with_fixed_ref(monkeypatch, tmp_path):
     assert 'IndexTTS2' in msg
 
 
-def test_preview_explicit_qwen3_still_passes_instruct(monkeypatch, tmp_path):
-    """显式选 Qwen3 时仍要能试听它，自定义音色描述照旧生效。"""
+def test_preview_explicit_qwen3_also_uses_clone(monkeypatch, tmp_path):
+    """显式选 Qwen3 时，试听也走克隆 —— 与成片同一条嗓子。
+
+    2026-11-10 修 P1-3 前，显式选 qwen3tts 的成片是逐句 VoiceDesign 现造人；
+    修完变成「Qwen3 造一条参考音 → IndexTTS2 克隆」。试听若不同步，用户就会
+    听到 Qwen3 现造的声音、成片却是克隆 —— 正是 v1.4.17 修过的那类误导。
+    """
+    monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
+    monkeypatch.setattr(S, 'tts_local_cfg',
+                        lambda: {'engine': 'qwen3tts', 'instruct': '低沉男声',
+                                 'rate': '+0%'})
+    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: True)
+    monkeypatch.setattr(T2, 'voice_ref', lambda instruct=None: r'C://ref.wav')
+    monkeypatch.setattr(T2, 'rate_to_speed', lambda r: 1.0)
+    got = {}
+
+    def _idx(text, out, spk=None, diag=None, **k):
+        got['spk'] = spk
+        return _fake_wav(out)
+
+    monkeypatch.setattr(T2, 'indextts2_speak', _idx)
+    monkeypatch.setattr(T2, 'qwen3tts_speak',
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError('显式选 Qwen3 的试听也不该逐句现造人')))
+    monkeypatch.setattr(S, 'probe_audio_len', lambda p: 2.0)
+    ok, msg, eng, rel = S.tts_test_speak('试听一句。')
+    assert ok is True and eng == 'indextts2', (ok, msg, eng)
+    assert got['spk'] == r'C://ref.wav', '必须用成片那条参考音'
+    assert 'IndexTTS2' in msg
+
+
+def test_preview_explicit_qwen3_falls_back_when_clone_missing(monkeypatch, tmp_path):
+    """IndexTTS2 没就绪时，显式选 Qwen3 仍要能试听，自定义音色描述照旧生效。"""
     monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
     monkeypatch.setattr(S, 'tts_local_cfg',
                         lambda: {'engine': 'qwen3tts', 'instruct': '低沉男声'})
     monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: False)
     got = {}
 
     def _speak(text, out, instruct=None, diag=None):

@@ -956,6 +956,44 @@ def _apply_speed(path, speed):
     return path
 
 
+def _engine_order_for(eng_set):
+    """配置里「选中」的引擎 → 实际尝试顺序。
+
+    【为什么单独抽成函数】以前这段 if/elif 内联在 local_tts_speak 里，
+    「显式选中」和「auto」是两条互不相干的分支，于是 v1.4.20 修音色割裂时
+    只改了 _auto_order()，显式分支原地不动、悄悄分叉（主人的配置正好是
+    engine='qwen3tts'）。抽出来才能用一个断言同时钉住两条路。
+    """
+    # CosyVoice 进自动兜底链的前提：常驻 worker 三件套齐全（否则 venv 单发
+    # 子进程逐句重载 9GB 模型，实测 ~100s/句）。用户显式选 cosyvoice 不受此限。
+    _cosy_fb = ['cosyvoice'] if (_COSY_IN_FALLBACK_CHAIN and cosyvoice_resident_ready()) else []
+    if eng_set == 'qwen3tts':
+        # 【2026-11-10 修音色割裂：显式选 Qwen3 也必须走克隆】
+        # 以前这里是 ['qwen3tts', 'indextts2'] —— 首句起就逐句 VoiceDesign 现场造音色，
+        # 每条请求重新采样一个发音人（实测组内 F0 离散 16.8%~19.3%，贪心也 17.5%），
+        # 听感「一句一个人」。这正是主人报的「音色不稳定，昨天修过又出现」：
+        # v1.4.20 只改了 _auto_order()（auto 档），**显式选中引擎走这个直达分支、绕过了它**，
+        # 而主人的配置恰好是 engine='qwen3tts'，所以修好的是他没用到的路。
+        # 现在与 auto 一致：先让 IndexTTS2 拿「Qwen3 按文字描述造的那一条参考音」克隆
+        # （离散 1.4%），Qwen3 退到第二位，只在 IndexTTS2 不可用时才逐句兜底。
+        order = ['indextts2', 'qwen3tts']
+    elif eng_set == 'indextts2':
+        order = ['indextts2', 'qwen3tts']
+    elif eng_set == 'edge':
+        order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
+    elif eng_set == 'cosyvoice':
+        order = ['cosyvoice', 'edge', 'chattts', 'sherpa', 'sapi']
+    elif eng_set == 'chattts':
+        order = ['chattts'] + _cosy_fb + ['edge', 'sherpa', 'sapi']
+    elif eng_set == 'sherpa':
+        order = ['sherpa', 'edge'] + _cosy_fb + ['sapi']
+    elif eng_set == 'sapi':
+        order = ['sapi', 'sherpa', 'edge']
+    else:   # auto：本地优先（v1.4.14），顺序统一由 _auto_order() 给出
+        order = _auto_order()
+    return order
+
+
 def local_tts_speak(text, out_path):
     """本地免费配音统一入口。
 
@@ -976,25 +1014,7 @@ def local_tts_speak(text, out_path):
     text = prosody_for_tts(text)
     cfg = tts_local_cfg()
     eng_set = cfg['engine']
-    # CosyVoice 进自动兜底链的前提：常驻 worker 三件套齐全（否则 venv 单发
-    # 子进程逐句重载 9GB 模型，实测 ~100s/句）。用户显式选 cosyvoice 不受此限。
-    _cosy_fb = ['cosyvoice'] if (_COSY_IN_FALLBACK_CHAIN and cosyvoice_resident_ready()) else []
-    if eng_set == 'qwen3tts':
-        order = ['qwen3tts', 'indextts2']
-    elif eng_set == 'indextts2':
-        order = ['indextts2', 'qwen3tts']
-    elif eng_set == 'edge':
-        order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
-    elif eng_set == 'cosyvoice':
-        order = ['cosyvoice', 'edge', 'chattts', 'sherpa', 'sapi']
-    elif eng_set == 'chattts':
-        order = ['chattts'] + _cosy_fb + ['edge', 'sherpa', 'sapi']
-    elif eng_set == 'sherpa':
-        order = ['sherpa', 'edge'] + _cosy_fb + ['sapi']
-    elif eng_set == 'sapi':
-        order = ['sapi', 'sherpa', 'edge']
-    else:   # auto：本地优先（v1.4.14），顺序统一由 _auto_order() 给出
-        order = _auto_order()
+    order = _engine_order_for(eng_set)
     # 本任务已锁定过引擎 → 优先沿用，其余仍作后备
     locked = getattr(_TLS, 'tts_engine', None)
     if locked in order:
@@ -1347,28 +1367,30 @@ def local_tts_label():
         t = load_ai_config().get('tts') or {}
         return '云端 %s' % (t.get('provider') or 'tts')
     cfg = tts_local_cfg()
-    if cfg['engine'] == 'qwen3tts':
-        return 'Qwen3-TTS · VoiceDesign（文字造音色）' if T2.qwen3tts_ready() else 'Qwen3-TTS（未安装）'
-    if cfg['engine'] == 'indextts2':
-        return 'IndexTTS2（情感 / 时长可控）' if T2.indextts2_ready() else 'IndexTTS2（未安装）'
-    if cfg['engine'] == 'edge':
+    _eng = cfg['engine']
+    if _eng == 'edge':
         return 'edge-tts（%s）' % cfg['voice'] if edge_tts_available() else 'edge-tts（不可用，已回退系统 SAPI）'
-    if cfg['engine'] == 'cosyvoice':
+    if _eng == 'cosyvoice':
         return 'CosyVoice（质量最高·%s）' % _COSYVOICE['voice'] if cosyvoice_available() else 'CosyVoice（未安装，已回退）'
-    if cfg['engine'] == 'chattts':
+    if _eng == 'chattts':
         return 'ChatTTS（自然·本地GPU）' if chattts_available() else 'ChatTTS（未安装，已回退）'
-    if cfg['engine'] == 'sherpa':
+    if _eng == 'sherpa':
         _m = (SHERPA_TTS_MODELS.get(sherpa_model_key()) or {}).get('label') or '已就绪'
         return '离线模型 · %s' % _m if sherpa_tts_available() else '离线模型（未下载，已回退系统 SAPI）'
-    if cfg['engine'] == 'sapi':
+    if _eng == 'sapi':
         return '系统 SAPI'
-    # auto（v1.4.14）：与 local_tts_speak 共用 _auto_order()，标签不许再说谎
-    _first = _first_available_engine(_auto_order())
+    # 新引擎（auto / qwen3tts / indextts2）统一走 _first_available_engine(_engine_order_for())，
+    # 与 local_tts_speak 同一条链。以前 qwen3tts 有个独立分支直接写「文字造音色」，
+    # 2026-11-10 修 P1-3 后它实际也是克隆（Qwen3 造参考音 → IndexTTS2 逐句克隆），
+    # 标签再照旧写就是在骗用户 —— 与 P1-1「谎报未装引擎」同一类缺陷。
+    _first = _first_available_engine(_engine_order_for(_eng))
     if _first == 'qwen3tts':
-        return 'Qwen3-TTS · VoiceDesign（文字造音色）'
+        # 只在 IndexTTS2 不可用、真的退化成逐句现造时才这么说
+        return 'Qwen3-TTS · VoiceDesign（逐句文字造音色）'
     if _first == 'indextts2':
         # 说清楚「为什么不再是一句一个音色」：Qwen3 只负责造一条参考音，
         # 整片由 IndexTTS2 克隆它。用户听到的是同一个人从片头讲到片尾。
+        # auto 与显式选 qwen3tts / indextts2 都是这条。
         return 'IndexTTS2 · 克隆音色（整片同一把嗓子，情感可控）'
     if _first == 'edge':
         return 'edge-tts（%s）' % cfg['voice']
@@ -1379,6 +1401,10 @@ def local_tts_label():
     if _first == 'sherpa':
         _m = (SHERPA_TTS_MODELS.get(sherpa_model_key()) or {}).get('label') or '已就绪'
         return '离线模型 · %s' % _m
+    # 显式选的新引擎没就绪 → 说清是这个没装，别含糊成「都没装」
+    _nm = {'qwen3tts': 'Qwen3-TTS', 'indextts2': 'IndexTTS2'}.get(_eng)
+    if _nm:
+        return '%s（未安装）' % _nm
     return '⚠ 未安装配音引擎：请在设置页装 Qwen3-TTS 或 IndexTTS2'
 
 def parse_tts_markup(text):

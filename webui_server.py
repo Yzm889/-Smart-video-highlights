@@ -5584,13 +5584,16 @@ def tts_test_speak(text='这是一段中文配音试听。'):
     os.makedirs(out_dir, exist_ok=True)
     cfg = tts_local_cfg()
     eng_set = cfg.get('engine') or 'auto'
-    # auto 必须跟 _auto_order() 一致（克隆优先）。旧判定是「Qwen3 装好就用 Qwen3」，
-    # 结果试听听到 Qwen3 逐句造音色（每句换人、也更慢），成片却是 IndexTTS2 克隆
-    # —— 用户点试听以为配音又坏了。试听要听的就是成片那把嗓子。
-    if eng_set == 'auto':
-        use_idx = bool(T2.indextts2_ready())
-    else:
-        use_idx = (eng_set == 'indextts2')
+    # 试听要听的就是**成片那把嗓子**，所以这里必须跟成片用同一套顺序 ——
+    # 否则用户拿试听判断音色，成片却是另一个人。
+    # 旧判定是「auto 看 indextts2 就绪否、显式选就照直用」：auto 修好了，
+    # 显式档没修。2026-11-10 修 P1-3 时成片把显式档也改成克隆优先，这里
+    # 如果不同步，就又变成「试听 Qwen3 现造人 / 成片 IndexTTS2 克隆」。
+    # 现在两边共用 _engine_order_for()：只取链上第一个真正能用的引擎，
+    # 失败绝不降级到第二个（v1.4.17 的「试听不许静默降级」依然成立）。
+    from tts_engines import _engine_order_for, _first_available_engine
+    _first = _first_available_engine(_engine_order_for(eng_set))
+    use_idx = (_first == 'indextts2')
     # 时间戳文件名避免连点两次互相覆盖；新引擎输出 wav
     out = os.path.join(out_dir, 'sample_%d.wav' % int(time.time() * 1000))
     diag = {}

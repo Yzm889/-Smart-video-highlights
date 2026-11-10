@@ -43,9 +43,25 @@ def test_first_available_engine_handles_legacy_names():
 
 
 def test_shared_order_source_is_used_everywhere():
+    """顺序只能有一个真相来源：auto 与显式档都必须走 _engine_order_for()。
+
+    【2026-11-10 改】原来这里钉的是字面量 `"_first = _first_available_engine(_auto_order())"`。
+    修 P1-3 时把顺序抽成了 `_engine_order_for(eng_set)`（auto 与显式档共用），
+    标签那处也跟着改走它 —— 字面量一改就红，但它本意想守的是「别再有第二条链」。
+    所以改成守**性质**：auto 档的结果必须等于 _auto_order()，且两个调用点都经过
+    _engine_order_for()。这样重构不会再误伤，真的分叉出来才会红。
+    """
+    import tts_engines as T
+    # auto 档的语义不能被抽函数改掉
+    assert T._engine_order_for('auto') == T._auto_order()
     src = open(os.path.join(ROOT, 'tts_engines.py'), encoding='utf-8').read()
-    assert 'order = _auto_order()' in src
-    assert "_first = _first_available_engine(_auto_order())" in src
+    assert 'def _engine_order_for(' in src, '顺序必须集中在一个函数里'
+    assert 'order = _engine_order_for(eng_set)' in src, '合成路径要走共享顺序'
+    assert '_first_available_engine(_engine_order_for(' in src, \
+        '标签/试听也要走共享顺序，否则又会各自漂移（P1-3 就是这么漏的）'
+    # 旧的「显式档给死顺序」写法不该再有
+    assert "if eng_set == 'qwen3tts':\n        order = [" not in src, \
+        '显式档不许再内联写死顺序，那正是它与 auto 分叉的根因'
     assert 'import tts2_engines as T2' in src
 
 
