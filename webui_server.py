@@ -62,7 +62,7 @@ _EMOTION_MAP = tts_engines._EMOTION_MAP
 _EMOTION_VOICES = tts_engines._EMOTION_VOICES
 _CHATTS = tts_engines._CHATTS
 
-from ai_providers import AI_CONFIG_PATH, TEXT_MODEL_VRAM, VLM_MODEL_VRAM, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, gpu_vram_gb, load_ai_config, local_llm_cfg, local_llm_chat, local_llm_infer_probe, local_llm_last_error, mirror_cfg, recommend_text_model, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # noqa: F401  # [3.2] 引擎层 re-export
+from ai_providers import AI_CONFIG_PATH, TEXT_MODEL_VRAM, VLM_MODEL_VRAM, _VLM_NUM_CTX, _aborted, _gpu_slot, _is_local_url, _strip_think, _whisper_env_setup, _whisper_load_path, asr_segments, gpu_vram_gb, load_ai_config, local_llm_cfg, local_llm_chat, local_llm_infer_probe, local_llm_last_error, mirror_cfg, recommend_text_model, vlm_cfg, vlm_chat_multi, whisper_device, whisper_model_name, whisper_models_dir, refresh_whisper_models  # noqa: F401  # [3.2] 引擎层 re-export
 
 from text_utils import (_clamp_line, _clean_caption, _strip_tts_markup,  # noqa: F401
                         is_white_line)
@@ -1265,7 +1265,10 @@ def vlm_chat(image_path, text, system=None, timeout=180, keep_alive=None):
     if c['mode'] == 'ollama':
         msg = {'role': 'user', 'content': text, 'images': [b64]}
         messages = ([{'role': 'system', 'content': system}] if system else []) + [msg]
-        payload = {'model': c['model'], 'messages': messages, 'stream': False}
+        # num_ctx 必须和 vlm_chat_multi 一致：ctx 一变 Ollama 就要重载模型，
+        # 批量里混着单帧调用会变成「每帧重载 5.4GB」，比不设还慢。
+        payload = {'model': c['model'], 'messages': messages, 'stream': False,
+                   'options': {'num_ctx': _VLM_NUM_CTX}}
         if keep_alive is not None:
             payload['keep_alive'] = keep_alive
         url = c['base_url'] + '/api/chat'

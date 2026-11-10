@@ -5651,7 +5651,15 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         _warn(progress, 'VLM 未启用：跳过画面索引，解说只能按时间位置均匀配画面，声画可能错位。'
                         '请在「AI 配置 → ⑤ 本地视觉理解」勾选启用并测试通过。')
     # VLM缓存：同视频同模型不重复分析（最耗时的步骤，1小时视频约20分钟）
-    vlm_model = (load_ai_config().get('vlm') or {}).get('model', 'default')
+    # 必须走 vlm_cfg()：ai_config.json 的 vlm 段可以只有 enabled/base_url 而没有
+    # model 键（本机实测就是这样），直接读配置会拿到字符串 'default' —— 于是
+    # ① 缓存键里写着 default，与 _vlm_sample_timeline 内部按真实模型名算的键对不上；
+    # ② 腾显存时按 'default' 查不到模型体积，阈值退化成拍脑袋的常数。
+    # vlm_cfg() 里有 `or 'qwen3-vl:8b'` 兜底（fe766f8），与探活/调用同源。
+    try:
+        vlm_model = vlm_cfg().get('model') or 'qwen3-vl:8b'
+    except Exception:
+        vlm_model = 'qwen3-vl:8b'
     # 质量模式判定提前到缓存之前：画面理解的「覆盖策略」变了（全片覆盖 vs 台词过滤），
     # 旧缓存是缺一半画面的脏数据，必须换 key，否则改良后的分析会被旧缓存短路。
     _q_param = params.get('fast', params.get('fast_mode', params.get('fastMode')))
@@ -5669,16 +5677,18 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
             progress['pct'] = 46
     else:
         # 【VRAM 守卫】质量档会把 VLM 常驻 30 分钟（_VLM_KEEP='30m'），本机 12GB 卡
-        # 放不下 VLM(6.1GB) + 文本模型(5.0GB) + 常驻配音 worker(4.4GB)。WDDM 下显存
-        # 占满不报错，而是把权重静默换页到内存 → GPU 利用率 0%、表现为「永远合成中」
-        # （tts2_engines.gpu_vram 的实测注释，2026-11-09 试听失败即此因）。
-        # 所以**抽样前**先按 VLM 体积腾一次位：free_vram_for_llm 会按模型体积估需求，
-        # 不够就停掉常驻 TTS worker；它带 5s 冷却，不会给逐句调用加负担。
+        # 放不下 VLM + 文本模型 + 常驻配音 worker。WDDM 下显存占满不报错，而是把权重
+        # 静默换页到内存 → GPU 利用率 0%、表现为「永远合成中」（tts2_engines.gpu_vram）。
+        # 【2026-11-10 修正】上一版这里用了 free_vram_for_llm(vlm_model)：它只会停 TTS
+        # worker，压根不碰 Ollama，而真正的对手是 Ollama 里常驻的写稿模型（实测
+        # qwen3:8b 驻留 9.12GB）。结果显存一点没腾、VLM 只剩 2.6GB，七成层跑 CPU，
+        # 主人实测「VLM 推理到一点点就卡住、16G 内存也爆」。改用 VLM 专用腾位：
+        # 停 worker + 把 Ollama 里除 VLM 之外的模型请出显存。
         try:
             import tts2_engines as _T2
-            _freed = _T2.free_vram_for_llm(vlm_model)
+            _freed = _T2.free_vram_for_vlm(vlm_model)
             if _freed:
-                _log.info('[DIAG] VLM 抽样前已腾显存: 停掉 %s' % _freed)
+                _log.info('[DIAG] VLM 抽样前已腾显存: %s' % '、'.join(_freed))
         except Exception as _e:
             _log.warning('[DIAG] VLM 抽样前腾显存失败(不阻断): %s', _e)
         if progress:

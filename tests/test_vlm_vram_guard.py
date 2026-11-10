@@ -26,9 +26,9 @@ def _src():
 
 
 def _vlm_block():
-    """截取 _narrate_by_plot 里「else: VLM 抽样」那一段，避免全文误匹配。"""
+    """截取 _narrate_by_plot 里「取模型名 → 抽样 → 卸载」整段，避免全文误匹配。"""
     s = _src()
-    i = s.index('vlm_cache_key = _video_cache_key(')
+    i = s.index('# VLM缓存：同视频同模型不重复分析')
     j = s.index('保存scene_descs到run_dir', i)
     return s[i:j]
 
@@ -36,8 +36,8 @@ def _vlm_block():
 def test_vram_guard_runs_before_vlm_sampling():
     """抽样前必须腾显存，且顺序上在 _vlm_sample_timeline 之前。"""
     b = _vlm_block()
-    assert 'free_vram_for_llm' in b, '抽样前缺少显存守卫'
-    assert b.index('free_vram_for_llm') < b.index('_vlm_sample_timeline('), (
+    assert 'free_vram_for_vlm' in b, '抽样前缺少显存守卫'
+    assert b.index('free_vram_for_vlm') < b.index('_vlm_sample_timeline('), (
         '腾位必须发生在抽样之前，否则 VLM 已把显存灌满')
 
 
@@ -65,7 +65,7 @@ def test_guard_failure_does_not_block_sampling():
     b = _vlm_block()
     assert 'except Exception' in b and '不阻断' in b
     # 守卫自己也包在 try 内，不在主 try 之外
-    assert b.index('free_vram_for_llm') < b.index('try:\n            scene_descs')
+    assert b.index('free_vram_for_vlm') < b.index('try:\n            scene_descs')
 
 
 def test_unload_keeps_existing_cache_save_behaviour():
@@ -88,6 +88,56 @@ def test_non_vacuous_proof_against_pre_fix_source():
     b = old[i:j]
     # 三条关键能力在旧版都不存在
     assert 'free_vram_for_llm' not in b, '旧版竟然已有腾位守卫？探针失效'
+    assert 'free_vram_for_vlm' not in b, '旧版竟然已有 VLM 专用腾位？探针失效'
     assert 'finally:' not in b, '旧版竟然已有 finally？探针失效'
     assert '常驻显存' not in b, '旧版竟然已有 UI 提示？探针失效'
     assert 'vlm_unload()' in b, '旧版应仍有正常路径卸载（证明取的是正确版本）'
+
+
+# ---------------------------------------------------------------------------
+# 第二轮（2026-11-10 深夜）：主人报「每次跑显存内存都占满、VLM 推理到一点点就卡住、
+# 16G 内存也卡」。上一轮的 free_vram_for_llm 只停 TTS worker、**不碰 Ollama**，
+# 而真正的对手是 Ollama 里常驻的写稿模型（实测 qwen3:8b 驻留 9.12GB）。
+# 另外 Ollama 默认按 32768 加载，qwen3-vl:8b 权重 5.38GB 却驻留 10.2GB ——
+# KV 缓存吃掉 4.8GB。两条一起把 12GB 卡打到 11959/12288。
+# ---------------------------------------------------------------------------
+def test_vlm_guard_targets_ollama_not_just_tts_worker():
+    """腾位必须点名 Ollama：只用 free_vram_for_llm（只停 worker）等于没修。
+
+    断言用调用形态 `_T2.free_vram_for_llm`：注释里会提到旧写法做对照，
+    纯字符串匹配会把说明文字也算进来。"""
+    b = _vlm_block()
+    assert 'free_vram_for_vlm' in b
+    assert '_T2.free_vram_for_llm' not in b, (
+        'free_vram_for_llm 只停 TTS worker、不卸 Ollama 模型，'
+        '用它为 VLM 腾位是本轮 bug 的直接原因')
+
+
+def test_vlm_num_ctx_is_pinned_to_both_call_paths():
+    """num_ctx 必须显式给定且两条调用路径共用同一个值。
+
+    不给 num_ctx 时 Ollama 按模型默认 32768 加载，KV 缓存和权重一样大。
+    两条路径各写各的值更坑：ctx 一变就要重载模型，批量里混单帧调用会
+    变成「每帧重载 5.4GB」。"""
+    import io as _io
+    ap = _io.open(os.path.join(ROOT, 'ai_providers.py'), encoding='utf-8').read()
+    ws = _io.open(os.path.join(ROOT, 'webui_server.py'), encoding='utf-8').read()
+    assert '_VLM_NUM_CTX = 16384' in ap, '上下文上限没钉住'
+    # vlm_chat_multi（批量）
+    assert "'num_ctx': _VLM_NUM_CTX" in ap
+    # vlm_chat（单帧）必须复用它，而不是自己写一个数
+    i = ws.index('def vlm_chat(image_path')
+    seg = ws[i:i + 2000]
+    assert "'num_ctx': _VLM_NUM_CTX" in seg, '单帧调用没有 num_ctx，会按 32K 重载'
+
+
+def test_vlm_model_does_not_fall_back_to_literal_default():
+    """vlm 段缺 model 键时不能拿到字符串 'default'。
+
+    ai_config.json 实测就只有 enabled/base_url，没有 model。旧代码直接读配置 →
+    'default' → 缓存键与内层对不上、腾位时查不到模型体积。"""
+    b = _vlm_block()
+    assert "get('model', 'default')" not in b, (
+        "别再退回字面量 'default'，要走 vlm_cfg() 的 qwen3-vl:8b 兜底")
+    assert 'vlm_cfg()' in b
+

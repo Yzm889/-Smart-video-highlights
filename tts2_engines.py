@@ -608,6 +608,83 @@ def free_vram_for_llm(model=None, min_free_mb=7000):
     return release_engines()
 
 
+def _same_ollama_model(a, b):
+    """判断两个 Ollama 模型名是不是同一个。
+
+    Ollama 会给缺省 tag 补 :latest（配置写 qwen3-vl、实际叫 qwen3-vl:8b），
+    所以要允许「一边没 tag」的宽松匹配；但两边都带 tag 时必须是同一个——
+    否则 qwen3-vl:4b 与 qwen3-vl:8b 会被当成一个，该卸的没卸。
+    """
+    a = str(a or '').strip().lower()
+    b = str(b or '').strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    ap, bp = a.split(':'), b.split(':')
+    if len(ap) > 1 and len(bp) > 1:
+        return False
+    return ap[0] == bp[0]
+
+
+def free_vram_for_vlm(vlm_model=None, need_mb=None, wait_sec=10):
+    """画面理解开工前腾显存：停配音 worker + 把 Ollama 里**别的**模型请出去。
+
+    【为什么不能用 free_vram_for_llm —— 2026-11-10 主人实测教训】
+    free_vram_for_llm 的 need 是按「文本模型」的经验式估的：size*1.35+2500。
+    拿它来为 VLM 腾位，会把 VLM 的磁盘体积也乘 1.35 再加 2500（qwen3-vl:8b 磁盘
+    5.38GB → 要 10242MB 空闲），12GB 卡上**永远判不够** → 每次都白停一遍 worker，
+    显存一点没腾出来，用户只觉得「改了之后更慢、还是卡」。
+    而且它只会停 TTS worker，**完全不碰 Ollama**——而 VLM 阶段真正的对手恰恰是
+    Ollama 里常驻的写稿模型（实测 qwen3:8b 驻留 9.12GB），不把它请出去，VLM 只剩
+    约 2.6GB，七成层跑在 CPU/内存上，就是「推理到一点点就卡住」。
+
+    与 release_vram 的区别：那个是配音前的通用腾位，会把**所有** loaded 模型都卸，
+    包括正要用的 VLM 自己（卸了再重载 5.4GB，反而更慢）。这里用 keep 把它保住。
+
+    返回本次真正释放掉的模型名列表（可能为空 = 本来就不缺）。
+    """
+    used, total = gpu_vram(0)
+    if not total:
+        return []                            # 拿不到显存信息：不阻断，让引擎自己撞
+    keep = str(vlm_model or '').strip().lower()
+    names = ollama_loaded()
+    # VLM 已经驻留（上一段任务残留 / 刚试听过）→ 它已经成功占住自己的位置了，
+    # 这时再「腾位」只会白停一遍 worker。直接放行。
+    if keep:
+        for n in names:
+            if _same_ollama_model(n, keep):
+                return []
+    if need_mb is None:
+        # 12GB 卡给 VLM 留 6.5GB（权重 5.4GB + 16K KV 约 1.2GB）；
+        # 小卡按六成算，免得阈值比总显存还高、永远判不够。
+        need_mb = 6500 if total >= 11000 else int(total * 0.6)
+    if total - used >= need_mb:
+        return []                            # 已经够：别乱停 worker（停一次重载很贵）
+    freed = release_engines()
+    for n in names:
+        if not str(n or '').strip():
+            continue
+        if keep and _same_ollama_model(n, keep):
+            continue                         # 自己马上要用，别卸
+        try:
+            _http(base='http://127.0.0.1:11434', path='/api/generate',
+                  payload={'model': n, 'keep_alive': 0}, timeout=6)
+            freed.append(n)
+        except Exception:
+            pass
+    if not freed:
+        return []
+    # Ollama 卸载是异步的，等显存真的回落再开始抽样（不然第一批照样撞墙）
+    deadline = time.time() + wait_sec
+    while time.time() < deadline:
+        u2, t2 = gpu_vram(0)
+        if t2 and t2 - u2 >= need_mb:
+            break
+        time.sleep(0.5)
+    return freed
+
+
 def _fill(diag, srv, engine, err):
     if diag is None:
         return

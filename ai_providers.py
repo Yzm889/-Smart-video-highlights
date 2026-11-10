@@ -1303,6 +1303,18 @@ def vlm_cfg():
 # 取低温让同一次分析可复现（同一段视频两次跑出的画面描述一致，便于对照问题）。
 _VLM_TEMPERATURE = 0.3
 
+# VLM 上下文上限。【2026-11-10 主人实测：显存/内存双爆、VLM 推理到一点点就卡住】
+# 不给 num_ctx 时 Ollama 按模型默认 32768 加载。实测本机 qwen3-vl:8b 权重只有
+# 5.38GB，驻留却是 10.2GB —— **KV 缓存吃掉 4.8GB，和权重一样大**。12GB 卡上再叠加
+# 写稿用的 qwen3:8b（权重 4.68GB / 驻留 9.12GB），nvidia-smi 直接 11959/12288 打满；
+# VLM 只剩约 2.6GB，七成层被迫跑在 CPU/内存上，于是「推理到一点点就卡住」，
+# 16GB 内存也被换页拖爆。
+# 本项目单批最多 8 帧（极速档）×720px ≈ 每帧约 2600 token + 提示词，16K 足够，
+# 减半后 VLM 总驻留降到约 7.8GB，给写稿模型留出整块显存。
+# **改这个值会让 Ollama 重载模型**（ctx 变了要重新分配 KV），所以要全局统一：
+# vlm_chat 与 vlm_chat_multi 共用，别各写各的。
+_VLM_NUM_CTX = 16384
+
 
 def vlm_chat_multi(image_paths, text, system=None, timeout=240, max_tokens=None, keep_alive=0):
     """调用本地/云端 VLM：一次传入多张图（按时间先后顺序），返回模型文本回复。失败抛异常。
@@ -1336,7 +1348,8 @@ def vlm_chat_multi(image_paths, text, system=None, timeout=240, max_tokens=None,
         payload = {'model': c['model'], 'messages': messages, 'stream': False,
                    'think': False, 'keep_alive': keep_alive,
                    'options': {'num_predict': max_tokens or 1500,
-                                               'temperature': _VLM_TEMPERATURE}}
+                               'temperature': _VLM_TEMPERATURE,
+                               'num_ctx': _VLM_NUM_CTX}}
         url = c['base_url'] + '/api/chat'
     else:
         content = []
