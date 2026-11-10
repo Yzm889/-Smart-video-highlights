@@ -1047,11 +1047,13 @@ def finalize(video_path, params, music, captions, durations=None, progress=None)
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/')
     return final
 # ---------------------------------------------------------------------------
-# S1 · 上传后后台预热 ASR+VLM（把 1h 视频约 20-50 分钟的分析挪到上传后的空闲时间）
+# S1 · 上传后后台预热 ASR（把转写挪到上传后的空闲时间；VLM 画面理解不再预热，
+#      2026-11-11 主人拍板——预热固定按平衡档抽样，对质量/极致档用户 100% 白算，
+#      详见 _warmup_worker docstring）
 # ---------------------------------------------------------------------------
-# 预热与正式任务共用同一套分析缓存（_video_cache_key 指纹 + asr_/vlm_sample_ 键）：
+# 预热与正式任务共用同一套 ASR 缓存（_video_cache_key 指纹 + asr_ 键）：
 # 预热完成 → 正式任务缓存命中秒过；预热未完成 → 正式任务等 timeout 后标记让位，
-# 预热线程在 VLM 批次间退出，正式任务自行分析（S7 的 _gpu_slot 保证两者不互抢本地推理）。
+# 正式任务自行分析（S7 的 _gpu_slot 保证两者不互抢本地推理）。
 _WARMUP_LOCK = threading.Lock()
 _WARMUP_STATE = {'video_fp': None, 'running': False, 'cancel': False,
                  'event': threading.Event()}
@@ -1074,7 +1076,7 @@ def _warmup_cancelled():
 
 
 def _warmup_start(video_path):
-    """上传完成后的空闲期后台预热：ASR + VLM 写入共享缓存。
+    """上传完成后的空闲期后台预热：只做 ASR 写入共享缓存（VLM 不再预热，见 _warmup_worker）。
     同视频已在预热则忽略；换了新视频则让旧预热让位。失败静默（不影响主流程）。"""
     if not video_path or not os.path.isfile(video_path):
         return
@@ -1099,15 +1101,24 @@ def _warmup_start(video_path):
 
 
 def _warmup_worker(video_path, fp):
-    """预热执行体：ASR（写 asr_* 缓存）→ VLM（_vlm_sample_timeline 写 vlm_sample_* 缓存）。
-    与正式任务共用缓存键，完成后正式任务直接命中。"""
-    run_dir = None
-    _w._bump_task_running(1)   # 预热的 VLM 阶段同样经不起推理探针来抢显存/杀 worker
+    """预热执行体：只做 ASR（写 asr_* 缓存，与正式任务共用缓存键，完成后直接命中）。
+
+    【2026-11-11 主人拍板②：预热不再跑 VLM 画面索引】原设计是空闲期把画面索引
+    也预热好，实测三个机制叠加让它对质量/极致档用户 100% 白算：
+    ① 预热不知道用户会选什么档位，固定按默认平衡档抽 100 点，正式任务质量档要
+       150 点，帧集完全不同——代码本就禁止跨档复用（字段数/帧宽不同，复用等于
+       用旧数据糊弄）；
+    ② 预热的断点进度写在自己私有的 _warmup_* 目录且收尾即删（S8），正式任务读不到；
+    ③ 共享缓存只在全部批次跑完时落盘（S1 防污染），被让位的预热什么都不留。
+    结果就是「预热抽 100 点 → 让位 → 正式任务重抽 150 点 → 已保留0个场景进度」，
+    空档期白烧显卡，还在正式任务开工时留一堆要腾的显存。ASR 预热保留——
+    那是「选片时已准备好」体感的真正来源；画面理解全交给正式任务。"""
+    _w._bump_task_running(1)   # ASR 占着 GPU/内存的时段，推理探针同样不许来捣乱
     try:
         vdur = probe_audio_len(video_path) or 0.0
         if vdur <= 0:
             return
-        # 1) ASR（与正式任务同一缓存键）
+        # ASR（与正式任务同一缓存键）
         asr_key = _video_cache_key(video_path, 'asr_' + whisper_model_name())
         asr = _cache_load(asr_key)
         if not asr:
@@ -1115,39 +1126,20 @@ def _warmup_worker(video_path, fp):
             if asr:
                 _cache_save(asr_key, asr)
                 _log.info('[WARMUP] ASR完成: %d段' % len(asr))
-        if _warmup_cancelled():
-            return
-        # 2) VLM（画面索引，最耗时）：无台词信息时跳过（VLM 只分析台词窗口附近，收益低）
-        if not asr or not _w.vlm_enabled():
-            return
-        try:
-            if not _w.vlm_ping()[0]:
-                return
-        except Exception:
-            return
-        run_dir = os.path.join(_w.OUTDIR, '_warmup_' + fp)
-        os.makedirs(run_dir, exist_ok=True)
-        _w._vlm_sample_timeline(video_path, vdur, asr, run_dir, cancel_check=_warmup_cancelled)
-        _log.info('[WARMUP] VLM画面索引完成')
     except Exception as e:
         _log.info('[WARMUP] 预热失败（静默，不影响主流程）: %s' % e)
     finally:
         _w._bump_task_running(-1)
-        # S8: 预热产品（ASR/VLM 缓存）已写入 analysis_cache，_warmup_* 仅临时工作区，收尾即删
-        if run_dir and os.path.isdir(run_dir):
-            try:
-                shutil.rmtree(run_dir, ignore_errors=True)
-                _log.info('[WARMUP] 预热临时目录已清理: %s' % os.path.basename(run_dir))
-            except Exception:
-                pass
+        # 【拍板②】预热不再产生任何临时目录（原 S8 的 _warmup_* rmtree 随 VLM 段一并退场）：
+        # ASR 缓存直接落 analysis_cache，没有需要收尾的工作区。
         with _WARMUP_LOCK:
             _WARMUP_STATE['running'] = False
             _WARMUP_STATE['event'].set()  # 通知等待者（完成/失败都通知）
 
 
 def _warmup_wait(video_path, timeout=15.0):
-    """正式任务钩子：若同一视频正在后台预热，等它完成（命中缓存）；
-    超时则标记让位，预热线程在 VLM 批次间退出，正式任务自行分析。"""
+    """正式任务钩子：若同一视频正在后台预热，等它完成（命中 ASR 缓存）；
+    超时则标记让位，正式任务自行分析（预热已不做 VLM，等待通常很短）。"""
     try:
         fp = _warmup_fp(video_path)
     except Exception:

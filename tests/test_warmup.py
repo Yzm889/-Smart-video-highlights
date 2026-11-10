@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""S1 回归：上传后后台预热 ASR+VLM。
+"""S1 回归：上传后后台预热 ASR。
 
 锁定：
   1. 触发：仅视频扩展名；同视频只预热一次；换视频让旧预热让位
   2. 等待：预热完成 → 正式任务直接返回（命中缓存）；超时 → 标记让位不阻塞
-  3. 执行体：ASR 写 asr_* 缓存 → VLM 写 vlm_sample_* 缓存；无台词信息跳过 VLM；结束复位状态
-  4. 缺陷修复：VLM 取消/失败不再写部分结果缓存（防缺口永久化、断点续跑被短路）
-  5. cancel_check：预热让位时 VLM 在批次间退出，进度保留在进度文件
+  3. 执行体：ASR 写 asr_* 缓存，结束复位状态
+  4. 【2026-11-11 主人拍板②】预热不再跑 VLM 画面索引——预热固定按平衡档抽样，
+     对质量/极致档用户 100% 白算（抽 100 点被让位、正式任务重抽 150 点、进度
+     互不相通、半成品不落缓存）。ASR 照旧预热，「选片时已准备好」体感不变。
+  5. 缺陷修复（沿用）：_vlm_sample_timeline 的取消/失败仍不写部分结果缓存
 """
 import os
 import threading
@@ -140,7 +142,9 @@ def test_warmup_wait_timeout_cancels(monkeypatch):
 # ---------------------------------------------------------------------------
 # 3) 执行体
 # ---------------------------------------------------------------------------
-def test_warmup_worker_writes_cache_and_calls_vlm(monkeypatch, tmp_path):
+def test_warmup_worker_writes_cache_and_skips_vlm(monkeypatch, tmp_path):
+    """【2026-11-11 拍板②】预热只做 ASR：即使 vlm_enabled 且画面索引函数伸手可及，
+    也绝不去调它——预热固定按平衡档抽样，对质量/极致档用户是纯浪费。"""
     v = _mk_video(_TEST_VID)
     saved = {}
     called = {}
@@ -156,9 +160,8 @@ def test_warmup_worker_writes_cache_and_calls_vlm(monkeypatch, tmp_path):
                         lambda *a, **k: called.update({'args': a, 'kwargs': k}) or [])
     try:
         W._warmup_worker(v, W._warmup_fp(v))
-        assert len(saved) == 1 and 'asr_base' in next(iter(saved))
-        assert 'args' in called, 'VLM 必须被调用'
-        assert 'cancel_check' in called['kwargs'], '必须传入让位回调'
+        assert len(saved) == 1 and 'asr_base' in next(iter(saved)), 'ASR 缓存必须照写'
+        assert called == {}, '预热绝不能再调 _vlm_sample_timeline（拍板②，别回退）'
         with W._WARMUP_LOCK:
             assert W._WARMUP_STATE['running'] is False, '结束时必须复位状态'
     finally:
