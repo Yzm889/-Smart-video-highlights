@@ -72,7 +72,7 @@ from cache_utils import ANALYSIS_VERSION, WORKDIR, _analysis_cache_load, \
     _sample_frame_cache_trim, _video_cache_key  # noqa: F401
 from ffmpeg_utils import AbortError, PROGRESS, RUN_PROCS, _PROC_LOCK, _TLS, \
     _has_audio_track, ffmpeg_exe, ffmpeg_run, probe_audio_len, \
-    probe_duration, probe_is_hdr  # noqa: F401
+    probe_duration, probe_is_hdr, _NO_WIN  # noqa: F401
 from video_render import _NAR_CPS, _NAR_MIN_CHARS, _NAR_MAX_CHARS, _NAR_MAX_SPEED, _NAR_MIN_SPEED, \
     _target_chars, _fit_voice, _render_narrate, \
     _merge_spans, _cut_video_by_spans, \
@@ -827,7 +827,8 @@ def dispatch_ollama_install(req, prog):
                     raise RuntimeError('下载多次失败，请开代理后重试（或手动下 https://ollama.com/download/OllamaSetup.exe）')
         P['phase'] = '静默安装 Ollama...'
         P['pct'] = 92
-        subprocess.run([exe, '/VERYSILENT', '/NORESTART'], check=True, timeout=300)
+        subprocess.run([exe, '/VERYSILENT', '/NORESTART'], check=True, timeout=300,
+                         creationflags=_NO_WIN)
         P['phase'] = '等待 Ollama 服务启动...'
         P['pct'] = 97
         for _ in range(30):
@@ -1914,7 +1915,7 @@ def detect_hardware():
     try:
         import subprocess
         r = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits'],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=5, creationflags=_NO_WIN)
         if r.returncode == 0 and r.stdout.strip():
             parts = r.stdout.strip().split(',')
             info['gpu'] = parts[0].strip()
@@ -4920,7 +4921,8 @@ def _run_pip(pip, args, timeout=600, cwd=None, label=''):
         # 插入到install之后、包名之前
         args = [args[0]] + extra + args[1:]
     try:
-        r = subprocess.run([pip] + args, capture_output=True, timeout=timeout, cwd=cwd)
+        r = subprocess.run([pip] + args, capture_output=True, timeout=timeout, cwd=cwd,
+                              creationflags=_NO_WIN)
         if r.returncode != 0:
             err = (r.stderr or b'').decode('utf-8', 'ignore')[-500:]
             return r.returncode, (label + '失败：' + err if label else err)
@@ -4953,7 +4955,8 @@ def cosyvoice_install_async():
             # 检查已有venv的Python版本，如果是3.13+（不兼容PyTorch）则删除重建
             if os.path.exists(COSYVOICE_VENV_PY):
                 try:
-                    vr = subprocess.run([COSYVOICE_VENV_PY, '--version'], capture_output=True, text=True, timeout=10)
+                    vr = subprocess.run([COSYVOICE_VENV_PY, '--version'], capture_output=True, text=True, timeout=10,
+                                    creationflags=_NO_WIN)
                     ver = vr.stdout.strip()
                     if '3.13' in ver or '3.14' in ver or '3.15' in ver:
                         TTS_SETUP.update(pct=5, msg='检测到旧venv为%s（不兼容PyTorch），删除重建…' % ver)
@@ -4963,7 +4966,8 @@ def cosyvoice_install_async():
                     pass
             if not os.path.exists(COSYVOICE_VENV_PY):
                 # 用找到的Python 3.11创建venv，而不是当前的3.14
-                r = subprocess.run([base_py, '-m', 'venv', venv_dir], capture_output=True, timeout=120)
+                r = subprocess.run([base_py, '-m', 'venv', venv_dir], capture_output=True, timeout=120,
+                               creationflags=_NO_WIN)
                 if r.returncode != 0:
                     TTS_SETUP.update(ok=False, pct=5, msg='❌ venv创建失败：' + (r.stderr or b'').decode('utf-8','ignore')[:200], running=False)
                     return
@@ -4985,7 +4989,7 @@ def cosyvoice_install_async():
             torch_ok = False
             try:
                 _chk = subprocess.run([py, '-c', 'import torch; print(torch.__version__)'],
-                                      capture_output=True, text=True, timeout=60)
+                                      capture_output=True, text=True, timeout=60, creationflags=_NO_WIN)
                 if _chk.returncode == 0 and _chk.stdout.strip():
                     torch_ok = True
                     TTS_SETUP.update(pct=25, msg='✅ PyTorch %s 已安装，跳过下载' % _chk.stdout.strip())
@@ -5041,12 +5045,14 @@ def cosyvoice_install_async():
                 try:
                     r = subprocess.run(['git', 'clone', '--depth', '1',
                                         'https://github.com/FunAudioLLM/CosyVoice.git', COSYVOICE_REPO_DIR],
-                                       capture_output=True, timeout=300, cwd=HERE)
+                                       capture_output=True, timeout=300, cwd=HERE,
+                                       creationflags=_NO_WIN)
                     if r.returncode != 0:
                         # git失败，尝试用gitee镜像
                         r2 = subprocess.run(['git', 'clone', '--depth', '1',
                                              'https://gitee.com/mirrors/CosyVoice.git', COSYVOICE_REPO_DIR],
-                                            capture_output=True, timeout=300, cwd=HERE)
+                                            capture_output=True, timeout=300, cwd=HERE,
+                                            creationflags=_NO_WIN)
                         if r2.returncode != 0:
                             TTS_SETUP.update(ok=False, pct=35,
                                              msg='❌ git clone失败：' + (r.stderr or r2.stderr or b'').decode('utf-8','ignore')[:200],
@@ -5129,7 +5135,8 @@ def cosyvoice_install_async():
 snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
 ''' % COSYVOICE_MODEL_DIR.replace('\\', '\\\\'))
                 try:
-                    r = subprocess.run([py, dl_script], capture_output=True, timeout=3600, cwd=HERE)
+                    r = subprocess.run([py, dl_script], capture_output=True, timeout=3600, cwd=HERE,
+                                   creationflags=_NO_WIN)
                     if r.returncode != 0:
                         dl_err = (r.stderr or b'').decode('utf-8', 'ignore')[-400:]
                         TTS_SETUP.update(ok=False, pct=65, msg='❌ 模型下载失败：' + dl_err, running=False)
@@ -5177,7 +5184,8 @@ snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
                         [py, '-c',
                          "import sys; sys.path.insert(0, r'%s\\third_party\\Matcha-TTS'); sys.path.insert(0, r'%s'); from cosyvoice.cli.cosyvoice import CosyVoice2; print('OK')"
                          % (COSYVOICE_REPO_DIR, COSYVOICE_REPO_DIR)],
-                        capture_output=True, text=True, timeout=120, cwd=HERE)
+                        capture_output=True, text=True, timeout=120, cwd=HERE,
+                        creationflags=_NO_WIN)
                     if _vfy.returncode == 0 and 'OK' in _vfy.stdout:
                         TTS_SETUP.update(ok=True, pct=100, msg='✅ CosyVoice 安装完成！引擎选「CosyVoice」即可使用', running=False)
                     else:
@@ -5364,24 +5372,29 @@ def tts_install_chattts_async():
             if not os.path.exists(venv_py):
                 TTS_SETUP.update(pct=10, msg='创建 Python 3.11 虚拟环境…')
                 subprocess.run(['uv', 'venv', '--python', '3.11', '.venv_tts'],
-                               cwd=HERE, capture_output=True, timeout=120)
+                               cwd=HERE, capture_output=True, timeout=120,
+                               creationflags=_NO_WIN)
             TTS_SETUP.update(pct=20, msg='安装 CUDA torch（约2.5GB，较慢）…')
             subprocess.run(['uv', 'pip', 'install', '--python', venv_py,
                             'torch', 'torchaudio', '--index-url',
                             'https://download.pytorch.org/whl/cu121'],
-                           cwd=HERE, capture_output=True, timeout=1800)
+                           cwd=HERE, capture_output=True, timeout=1800,
+                           creationflags=_NO_WIN)
             TTS_SETUP.update(pct=80, msg='安装 ChatTTS…')
             # 国内直连官方 PyPI 易失败，ChatTTS/soundfile/numpy 走阿里云镜像
             subprocess.run(['uv', 'pip', 'install', '--python', venv_py,
                             'ChatTTS', 'soundfile', 'numpy',
                             '--index-url', 'https://mirrors.aliyun.com/pypi/simple/'],
-                           cwd=HERE, capture_output=True, timeout=600)
+                           cwd=HERE, capture_output=True, timeout=600,
+                           creationflags=_NO_WIN)
             # uv 镜像失败时回退默认源再试一次，避免单次网络抖动直接判失败
             if not _chattts_venv_python() or subprocess.run(
-                    [venv_py, '-c', 'import ChatTTS'], capture_output=True, timeout=30).returncode != 0:
+                    [venv_py, '-c', 'import ChatTTS'], capture_output=True, timeout=30,
+                    creationflags=_NO_WIN).returncode != 0:
                 subprocess.run(['uv', 'pip', 'install', '--python', venv_py,
                                 'ChatTTS', 'soundfile', 'numpy'],
-                               cwd=HERE, capture_output=True, timeout=600)
+                               cwd=HERE, capture_output=True, timeout=600,
+                               creationflags=_NO_WIN)
             TTS_SETUP.update(ok=True, pct=100, msg='✅ ChatTTS 安装完成（点「🧪 试听」验证）')
         except Exception as e:
             TTS_SETUP.update(ok=False, pct=100, msg='❌ 安装异常：' + str(e)[-300:])

@@ -13,6 +13,11 @@ import re
 import subprocess
 import sys
 import threading
+
+# Windows 下从 GUI 进程起控制台子进程会新建一个黑框；本模块多处逐句/探测调用
+# 会在出片期连成一片闪跳。与 ffmpeg_utils.py / tts2_engines.py 保持同一写法：
+# 非 Windows 取不到该常量时为 0，无副作用。
+_NO_WIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # ---- 熔断 / 降权 / 引擎缓存 / 模型表（原 webui_server 全局，随引擎层迁入，webui 经 re-export 共享同一对象） ----
 HERE = os.path.dirname(os.path.abspath(__file__))
 _EDGE_RETRY = 3
@@ -158,7 +163,8 @@ def _edge_tts_installed():
             pass
         if not result:
             try:
-                r = subprocess.run(['edge-tts', '--version'], capture_output=True, timeout=25)
+                r = subprocess.run(['edge-tts', '--version'], capture_output=True, timeout=25,
+                                   creationflags=_NO_WIN)
                 result = (r.returncode == 0)
             except Exception:
                 result = False
@@ -325,7 +331,8 @@ def chattts_speak(text, out_path, progress=None):
             worker = os.path.join(HERE, 'chattts_worker.py')
             with _gpu_slot():
                 r = subprocess.run([venv_py, worker, txt_file, out_path],
-                                   capture_output=True, timeout=300, cwd=HERE)
+                                   capture_output=True, timeout=300, cwd=HERE,
+                                   creationflags=_NO_WIN)
             try:
                 os.unlink(txt_file)
             except Exception:
@@ -357,7 +364,8 @@ def _find_cosyvoice_python():
     if os.path.exists(chattts_venv):
         try:
             r = subprocess.run([chattts_venv, '-c', 'import sys; print(sys.base_prefix)'],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, timeout=10,
+                               creationflags=_NO_WIN)
             if r.returncode == 0:
                 base = r.stdout.strip()
                 candidates.insert(0, os.path.join(base, 'python.exe'))
@@ -366,7 +374,8 @@ def _find_cosyvoice_python():
     for p in candidates:
         if p and os.path.exists(p):
             try:
-                r = subprocess.run([p, '--version'], capture_output=True, text=True, timeout=10)
+                r = subprocess.run([p, '--version'], capture_output=True, text=True, timeout=10,
+                                   creationflags=_NO_WIN)
                 ver = r.stdout.strip()
                 if '3.11' in ver or '3.12' in ver:
                     return p
@@ -484,7 +493,8 @@ def _cosy_serve_start():
             [venv_py, worker, 'serve', COSYVOICE_MODEL_DIR],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE,
-            text=True, encoding='utf-8', errors='replace', bufsize=1)
+            text=True, encoding='utf-8', errors='replace', bufsize=1,
+            creationflags=_NO_WIN)
     except Exception as e:
         _COSYVOICE['error'] = str(e)[:300]
         return False
@@ -606,7 +616,8 @@ def _cosyvoice_prompt_text(ref_wav):
             _COSY_ASR['dir'] = wdir
         exe = imageio_ffmpeg.get_ffmpeg_exe()
         raw = subprocess.run([exe, '-i', ref_wav, '-f', 'f32le', '-ac', '1', '-ar', '16000', '-'],
-                             capture_output=True, timeout=60).stdout
+                             capture_output=True, timeout=60,
+                             creationflags=_NO_WIN).stdout
         audio = np.frombuffer(raw, dtype=np.float32)
         if audio.size < 1600:
             return ''
@@ -664,7 +675,9 @@ def cosyvoice_speak(text, out_path, progress=None):
             worker = os.path.join(HERE, 'cosyvoice_worker.py')
             with _gpu_slot():
                 r = subprocess.run([venv_py, worker, txt_file, out_path, COSYVOICE_MODEL_DIR, _ref_wav],
-                                   capture_output=True, timeout=300, cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE)
+                                   capture_output=True, timeout=300,
+                                   cwd=COSYVOICE_REPO_DIR if os.path.isdir(COSYVOICE_REPO_DIR) else HERE,
+                                   creationflags=_NO_WIN)
             try:
                 os.unlink(txt_file)
             except Exception:
@@ -763,7 +776,8 @@ def edge_tts_speak(text, out_path, voice=None, rate=None):
                 pass
             try:
                 r = subprocess.run(cmd, capture_output=True,
-                                   timeout=_EDGE_SUBPROC_TIMEOUT)
+                                   timeout=_EDGE_SUBPROC_TIMEOUT,
+                                   creationflags=_NO_WIN)
                 if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
                     _edge_internal().update(fails=0, dead_until=0.0, reason='')   # 成功即复位熔断（[2.4] 线程级，无线程态时回退全局）
                     return True

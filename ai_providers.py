@@ -3,7 +3,7 @@
 import os, json, threading, time
 # ---- 跨模块依赖（拆分后显式导入） ----
 from cache_utils import HERE, WORKDIR
-from ffmpeg_utils import AbortError, PROGRESS, _TLS, ffmpeg_run, probe_duration
+from ffmpeg_utils import AbortError, PROGRESS, _TLS, ffmpeg_run, probe_duration, _NO_WIN
 
 # 本来在 webui 模块级、仅供本模块使用的常量（随迁移）；webui 侧通过 re-export 保持旧命名空间
 AI_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_config.json')
@@ -1461,7 +1461,7 @@ def gpu_vram_gb():
     try:
         import subprocess
         r = subprocess.run(['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=5, creationflags=_NO_WIN)
         if r.returncode == 0 and r.stdout.strip():
             val = round(int(r.stdout.strip().splitlines()[0].strip()) / 1024.0, 1)
     except Exception:
@@ -1541,7 +1541,7 @@ def _cuda_available():
     try:
         import subprocess
         r = subprocess.run(['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=5, creationflags=_NO_WIN)
         if r.returncode == 0 and r.stdout.strip():
             result = True
     except Exception:
