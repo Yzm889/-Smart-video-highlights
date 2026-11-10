@@ -26,6 +26,30 @@ import time
 DEFAULT_INSTRUCT = ('沉稳克制的中文男声，影视剧情解说风格，语气有起伏但不夸张，'
                     '句间有自然停顿，咬字清晰，不要播报腔')
 
+import sys as _sys
+
+class _StdoutGuard:
+    """第三方库会往 stdout 裸 print（如 IndexTTS2 的 print(wav.shape)），
+    而 stdout 是本进程与父进程的 JSON 协议通道。管道一断，那句 print 会抛
+    OSError 22，把整句配音一起毁掉。包一层：写失败就丢弃，绝不让一句
+    调试输出毁掉一次推理。"""
+    def __init__(self, real):
+        self._real = real
+    def write(self, s):
+        try:
+            return self._real.write(s)
+        except Exception:
+            return len(s) if s else 0
+    def flush(self):
+        try:
+            self._real.flush()
+        except Exception:
+            pass
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+_sys.stdout = _StdoutGuard(_sys.stdout)
+
 
 def main():
     if len(sys.argv) < 2:

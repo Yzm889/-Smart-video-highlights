@@ -348,10 +348,16 @@ class _Serve:
             os.makedirs(TTS2_DIR, exist_ok=True)
             self._errf = open(os.path.join(TTS2_DIR, self.name + '.log'),
                               'a', encoding='utf-8')
+            si = None
+            if os.name == 'nt':
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=self._errf,
                                  text=True, encoding='utf-8', errors='replace',
-                                 bufsize=1, env=env, creationflags=_NO_WIN)
+                                 bufsize=1, env=env, startupinfo=si,
+                                 creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0))
         except Exception as e:
             self.error = str(e)[:300]
             return False
@@ -392,6 +398,22 @@ class _Serve:
         self.proc = None
         return False
 
+    def _reap(self, p):
+        """判定这一轮结束/失败时回收进程。
+        以前只写 self.proc = None，进程还活着却没人读它的管道 ——
+        它算完往 stdout 写结果时抛 Errno 22，整句配音白算。
+        """
+        try:
+            if p and p.poll() is None:
+                p.kill()
+        except Exception:
+            pass
+        try:
+            if p and p.stdin:
+                p.stdin.close()
+        except Exception:
+            pass
+
     def ask(self, req, timeout=240):
         with self.lock:
             if self.proc is None or self.proc.poll() is not None:
@@ -404,6 +426,7 @@ class _Serve:
                 p.stdin.write(json.dumps(req) + '\n')
                 p.stdin.flush()
             except Exception as e:
+                self._reap(p)
                 self.proc = None
                 return False, str(e)[:300]
             deadline = time.time() + timeout
@@ -415,6 +438,7 @@ class _Serve:
                         break
                     continue
                 if msg.get('_eos'):
+                    self._reap(p)
                     self.proc = None
                     break
                 if 'ok' in msg:
