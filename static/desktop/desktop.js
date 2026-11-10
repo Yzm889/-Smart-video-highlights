@@ -1687,7 +1687,45 @@ async function importSrt(){
   _browserFileInput('.srt,.ass,.ssa,.vtt', f => _loadSrtFile(f));
 }
 
-/* ── 拖拽导入：.srt 拖进窗口任意位置（EXE/浏览器都行，绕开原生对话框） ── */
+/* ── 稿件/字幕拖入窗口（EXE/浏览器都行，绕开原生对话框） ── */
+/* 【2026-11-10 加】主人反馈「稿子拖不进去」：以前只认 ['srt','ass','ssa','vtt']，
+   把写好的 .txt/.md 稿子拖进来**一点反应都没有**（连提示都没有），看起来像坏了。
+   现在：
+     - 字幕类 → 走原来的 _loadSrtFile（按台词找画面），仍要求在新项目页；
+     - 文稿类（txt/md/markdown/text）→ 直接回填剧情稿框 npPlot；
+     - .docx 明确告诉用户「请另存为 txt」——不静默吞掉。
+       为什么不做 docx：python-docx 虽在本机开发环境装了，但既不在
+       requirements.txt 里也不在 FrameCut.spec 的打包清单里，打包版没有它。
+       为拖一个稿子去加一条新运行时依赖，不符合本仓「不乱做」的约束。 */
+const _SCRIPT_EXT = ['txt', 'md', 'markdown', 'text'];
+function _loadScriptIntoPlot(file){
+  const r = new FileReader();
+  r.onload = () => {
+    const txt = String(r.result || '');
+    const el = $('npPlot');
+    if(!el) return;
+    if(!txt.trim()){ toast('这个文件是空的：' + file.name, 'bad'); return; }
+    // 已有内容时不静默覆盖——同一窗口里主人可能刚手打过一段
+    const cur = (el.value || '').trim();
+    const put = () => {
+      el.value = txt;
+      // 与 T2 草稿层联动：立刻存草稿，并刷新「已填/未填」的按钮状态
+      if(typeof draftScheduleSave === 'function') draftScheduleSave();
+      if(typeof updateNewProj === 'function') updateNewProj();
+      toast('✅ 稿件已导入：' + file.name + '（' + txt.length + ' 字）', 'ok');
+      if($('newProj') && $('newProj').style.display === 'none') switchView('story');
+    };
+    if(cur && cur !== txt.trim()){
+      uiConfirm('导入稿件会覆盖当前的剧情稿',
+        '框里已有 ' + cur.length + ' 字。导入后会被这个文件（' + txt.length + ' 字）替换，且无法撤销。',
+        '覆盖').then(ok => { if(ok) put(); });
+    } else {
+      put();
+    }
+  };
+  r.onerror = () => toast('稿件读取失败：' + file.name, 'bad');
+  r.readAsText(file, 'utf-8');
+}
 document.addEventListener('dragover', e => { e.preventDefault(); });
 document.addEventListener('drop', e => {
   e.preventDefault();
@@ -1697,7 +1735,18 @@ document.addEventListener('drop', e => {
   if(['srt', 'ass', 'ssa', 'vtt'].indexOf(ext) >= 0){
     if($('newProj').style.display === 'none'){ toast('先点「新建项目」回到引导页再导入字幕', 'bad'); return; }
     _loadSrtFile(f);
+    return;
   }
+  if(_SCRIPT_EXT.indexOf(ext) >= 0){ _loadScriptIntoPlot(f); return; }
+  if(ext === 'docx'){
+    toast('暂不支持 .docx：请在 Word 里「另存为」纯文本 (.txt) 再拖进来', 'bad');
+    return;
+  }
+  if(['mp4', 'mov', 'mkv', 'avi', 'webm', 'flv', 'm4v', 'wmv'].indexOf(ext) >= 0){
+    toast('视频请用「从电脑选择视频」按钮（或拖到视频框里）', 'bad');
+    return;
+  }
+  toast('认不出这个文件类型：.' + ext + '（支持字幕 srt/ass/ssa/vtt、稿件 txt/md）', 'bad');
 });
 
 /* ── 配乐（桌面：本地路径直连） ── */
@@ -2039,6 +2088,46 @@ setInterval(() => {
   fillModelCenter();
 }, 2500);
 
+/* ── 配音状态栏文案（纯函数，便于 monkeypatch / 单元测试直测） ──
+   【2026-11-10 修】这里以前只看 sherpa/cosyvoice（上一代引擎），完全没看 v.tts2。
+   主人换成 Qwen3-TTS/IndexTTS2 之后 sherpa/cosyvoice 都是 false，于是
+   明明两个新引擎都就绪，状态栏却写「⚠ 还没装本地引擎：…建议在下方装离线模型」——
+   把「已就绪」说成「没装」，正好就是主人报的「选了引擎还提示没有配置」。
+
+   顺带把语义拆开：「已选 X」是配置，「X 就绪」是能力，两者不等价。
+   选了一个没就绪的引擎时要说清「会换用另一个本地引擎」，而不是笼统地说没装。 */
+function _ttsStateHint(v, cfg){
+  v = v || {}; cfg = cfg || {};
+  const st = [];
+  if(v.degrade_msg) st.push('⚠ ' + v.degrade_msg);
+  if(v.edge_dead) st.push('⚠ 微软服务不可用：' + v.edge_dead);
+  if(v.degrade_msg || v.edge_dead || (cfg.engine || 'auto') === 'sapi') return st;
+
+  const t2 = v.tts2 || {};
+  const t2any = !!(t2.qwen3tts || t2.indextts2);
+  const legacy = !!(v.sherpa_installed || v.cosyvoice_installed);
+  if(!t2any && !legacy){
+    st.push('⚠ 还没装本地引擎：微软服务不稳时会退回机械音，建议在下方装离线模型');
+    return st;
+  }
+  const eng = (cfg.engine || 'auto');
+  // auto 的真实顺序是 _auto_order() = ['indextts2','qwen3tts']（克隆优先）
+  const name = (eng === 'indextts2') ? 'IndexTTS2'
+             : (eng === 'qwen3tts')  ? 'Qwen3-TTS'
+             : (t2.indextts2 ? 'IndexTTS2' : 'Qwen3-TTS');
+  const want = (eng === 'indextts2') ? t2.indextts2
+             : (eng === 'qwen3tts')  ? t2.qwen3tts
+             : (t2.indextts2 || t2.qwen3tts);
+  if(want){
+    st.push('✓ 本地配音就绪（' + name + '），联网服务只作兜底');
+  } else if(t2any){
+    st.push('⚠ 已选 ' + name + '，但它的引擎资产没就绪：合成时会自动换用另一个本地引擎');
+  } else {
+    st.push('✓ 本地引擎优先（' + name + ' 之外的老引擎），联网服务只作兜底');
+  }
+  return st;
+}
+
 /* ── 设置：配音引擎安装（缺哪个装哪个，装完自动可用） ── */
 function renderTtsInstalls(v){
   const box = $('ttsInstalls');
@@ -2106,16 +2195,7 @@ async function fillTtsSettings(){
       '<option value="' + _esc(x.name) + '">' + _esc(x.name) + (x.custom ? '（克隆）' : '') + '</option>').join('');
     $('setCosyVoice').value = cfg.cosy_voice || '中文女';
     $('ttsTestHint').textContent = v.label || '';
-    // v1.4.14：静默降级 / 微软服务熔断必须摆到台面上，别让用户只觉得「配音变难听」
-    const st = [];
-    if(v.degrade_msg) st.push('⚠ ' + v.degrade_msg);
-    if(v.edge_dead) st.push('⚠ 微软服务不可用：' + v.edge_dead);
-    if(!v.degrade_msg && !v.edge_dead && (cfg.engine || 'auto') !== 'sapi'){
-      st.push((v.sherpa_installed || v.cosyvoice_installed)
-        ? '✓ 本地引擎优先，联网服务只作兜底'
-        : '⚠ 还没装本地引擎：微软服务不稳时会退回机械音，建议在下方装离线模型');
-    }
-    $('ttsStateHint').textContent = st.join('   ');
+    $('ttsStateHint').textContent = _ttsStateHint(v, cfg).join('   ');
     renderTtsInstalls(v);
   } catch(e){ $('ttsTestHint').textContent = '读取配音配置失败：' + e.message; }
 }
