@@ -91,6 +91,7 @@ function setStatus(s, kind){
 function showEditor(on){
   $('editor').style.display = on ? 'flex' : 'none';
   $('newProj').style.display = on ? 'none' : 'flex';
+  _setEntryActive('tbNarrate');   // 编辑器/解说页都是「解说」入口的领地
 }
 function switchView(v){
   /* adjust = 编辑器（预览+时间轴）；export = 导出面板替换预览区；
@@ -260,6 +261,11 @@ function _envGet(u){
     .catch(() => null).finally(() => clearTimeout(k));
 }
 
+/* 【2026-11-11 主人拍板】环境检查改为按需：就绪时不占首屏（自动收起），
+   没就绪才自动展开；顶栏「环境检查」按钮随时可开/收（再点一次收起）。 */
+let _envOpen = false;    // 用户主动点开了环境卡（点收起/再点按钮 = 关）
+let _envReady = null;    // null=检测中 / true / false
+
 function renderEnv(){
   const box = $('envRows');
   if(!box || $('newProj').style.display === 'none') return;
@@ -349,6 +355,11 @@ function renderEnv(){
       : '⏳ 还差以下组件（点按钮自动完成，约需几分钟）') + '</div></div>');
   box.innerHTML = rows.join('');
   _envActive = !!(L && L.pulling) || !!(W && W.downloading) || !!(V && V.pulling) || !!(L && L.ollama_installing);
+  _envReady = coreOk;
+  if(!_envOpen){
+    // 就绪 = 不弹（解说页直接可用）；没就绪 = 自动展开，别让用户猜
+    $('envCard').style.display = coreOk ? 'none' : '';
+  }
 }
 
 function refreshEnv(){
@@ -2658,6 +2669,7 @@ setTimeout(() => {
 
 /* ── 启动 ── */
 setStatus(_draftRestored ? '就绪 · 已恢复上次未提交的剧情稿' : '就绪');
+_setEntryActive('tbNarrate');
 
 
 /* ── 直播切片（两阶段：①自动分析出候选 → ②用户删改候选/圈段 → 导出）──
@@ -2684,6 +2696,7 @@ function showLiveClip(on){
   }
   if(!on && _lcPollTimer){ clearInterval(_lcPollTimer); _lcPollTimer = null; }
   updateLiveClip();
+  _setEntryActive(on ? 'tbLiveClip' : 'tbNarrate');
 }
 
 function updateLiveClip(){
@@ -2989,3 +3002,51 @@ function renderLiveClips(p){
   box.appendChild(foot);
   toast('✅ 导出完成，共 ' + p.clips.length + ' 条', 'ok');
 }
+
+/* ── 顶栏三入口（解说 / 直播切片 / 环境检查）：视图切换 + 激活态 ──
+   解说是主线：默认落在解说页；直播切片/环境检查是并列入口。
+   环境卡平时收起（就绪时不占首屏），按钮可开/收。 */
+function _setEntryActive(id){
+  ['tbNarrate', 'tbLiveClip', 'tbEnvCheck'].forEach(b => {
+    const el = $(b);
+    if(el) el.classList.toggle('active', b === id);
+  });
+}
+
+function showNewProj(){
+  const lc = $('liveClip'), np = $('newProj');
+  if(lc) lc.style.display = 'none';
+  if(np) np.style.display = 'flex';
+  if(_lcPollTimer){ clearInterval(_lcPollTimer); _lcPollTimer = null; }
+  updateLiveClip();
+  _setEntryActive('tbNarrate');
+}
+
+$('tbNarrate').addEventListener('click', () => {
+  // 已在解说工作台（编辑器）就不动；否则回到解说页
+  if($('editor').style.display !== 'none') return;
+  showNewProj();
+});
+
+$('tbEnvCheck').addEventListener('click', () => {
+  const card = $('envCard');
+  const opening = card.style.display === 'none';
+  if(opening){
+    _envOpen = true;
+    if($('editor').style.display !== 'none') showEditor(false);
+    showNewProj();
+    card.style.display = '';
+    refreshEnv();
+    _setEntryActive('tbEnvCheck');
+  } else {
+    _envOpen = false;
+    card.style.display = 'none';
+    _setEntryActive('tbNarrate');
+  }
+});
+
+$('envHide').addEventListener('click', () => {
+  _envOpen = false;
+  $('envCard').style.display = 'none';
+  _setEntryActive('tbNarrate');
+});

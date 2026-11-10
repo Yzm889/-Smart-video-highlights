@@ -481,3 +481,6 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
 .lc-seg-why{flex-basis:100%;font-size:11.5px;color:var(--dim);line-height:1.6}
 /* 候选编辑器容器：JS 里 display:'flex' 后必须竖排（漏了这条会横排挤成一行） */
 #lcEditor{flex-direction:column;gap:10px;width:100%}
+
+/* 顶栏三入口的当前视图高亮（解说/直播切片/环境检查） */
+.tb-btn.active{background:var(--acc-dim);border-color:rgba(61,126,255,.5);color:#cfe0ff}

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=20">
+<link rel="stylesheet" href="desktop.css?v=21">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -71,9 +71,12 @@
 <div class="toolbar">
   <span class="proj-name" id="projName">未打开项目</span>
   <span class="tb-sep"></span>
+  <button class="tb-btn" id="tbNarrate" title="解说项目：写剧情 → 配音 → 成片"><svg class="ic"><use href="#i-mic"/></svg>解说</button>
+  <button class="tb-btn" id="tbLiveClip" title="直播录像自动找高光，切成 N 条保留原声的短视频"><svg class="ic"><use href="#i-film"/></svg>直播切片</button>
+  <button class="tb-btn" id="tbEnvCheck" title="环境检查：引擎/模型/显存状态（就绪时平时不弹）"><svg class="ic"><use href="#i-search"/></svg>环境检查</button>
+  <span class="tb-sep"></span>
   <button class="tb-btn primary" id="tbGenerate"><svg class="ic"><use href="#i-mic"/></svg>生成方案</button>
   <button class="tb-btn" id="tbCompose" disabled><svg class="ic"><use href="#i-film"/></svg>合成视频</button>
-  <button class="tb-btn" id="tbLiveClip" title="直播录像自动找高光，切成 N 条保留原声的短视频"><svg class="ic"><use href="#i-film"/></svg>直播切片</button>
   <span class="tb-flex"></span>
   <button class="tb-btn" id="tbSrt" title="导入 SRT 字幕文件（字幕是命脉：剧情理解准+时间轴零偏差）"><svg class="ic"><use href="#i-subtitle"/></svg>导入字幕</button>
   <button class="tb-btn" id="tbMusic" title="选择本地音乐文件（加配乐）"><svg class="ic"><use href="#i-music"/></svg>配乐</button>
@@ -98,8 +101,13 @@
       <div class="np-logo">🎬</div>
       <div class="np-title">新建解说项目</div>
       <div class="np-sub">选择一段本地视频，写下剧情——AI 按剧情挑画面、写解说、配音，全程本地免费</div>
-      <div class="env-card" id="envCard">
-        <div class="env-head"><span>第一步 · 环境检查（缺什么，去设置里装）</span><button class="mini-btn" id="envRefresh">刷新</button></div>
+      <div class="env-card" id="envCard" style="display:none">
+        <div class="env-head"><span>环境检查（缺什么，去设置里装）</span>
+          <span style="display:flex;gap:6px">
+            <button class="mini-btn" id="envRefresh">刷新</button>
+            <button class="mini-btn" id="envHide">收起</button>
+          </span>
+        </div>
         <div class="env-rows" id="envRows"><div class="ins-empty">检查中…</div></div>
       </div>
       <div class="env-card" id="recentCard" style="display:none">
@@ -512,6 +520,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=20"></script>
+<script src="desktop.js?v=21"></script>
 </body>
 </html>
