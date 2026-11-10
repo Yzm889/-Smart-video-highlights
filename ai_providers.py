@@ -284,8 +284,42 @@ def _sec_to_float(t):
         return 0.0
 
 
+def _parse_notes_timeline(lines):
+    """解析「笔记式时间轴」字幕：每行 `\[MM:SS\] 台词` 或 `\[HH:MM:SS\] 台词`。
+
+    主人手写稿 / 速记工具最常输出的就是这种格式（无序号、无 `-->` 时间轴、
+    只有每段起始时间）——对「台词吸附 / 引用让位」完全够用：
+    start = 行首标注时间，end = 下一行标注时间（最后一条 +15 秒兜底）。
+    不带时间标注的行 → 视为上一条的换行续文，拼回去。
+    条目 <2 视为不是这种格式，返回 []（防止把普通带方括号文本的文件误判）。"""
+    import re as _re
+    pat = _re.compile(r'^\s*[\[【]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[\]】]\s*(.*)$')
+    cues = []
+    for line in lines:
+        m = pat.match(line or '')
+        if m:
+            parts = [int(x) for x in m.group(1).split(':')]
+            if len(parts) == 2:
+                st = float(parts[0] * 60 + parts[1])
+            else:
+                st = float(parts[0] * 3600 + parts[1] * 60 + parts[2])
+            cues.append([st, str(m.group(2) or '').strip()])
+        elif cues and (line or '').strip():
+            cues[-1][1] = (cues[-1][1] + ' ' + line.strip()).strip()
+    if len(cues) < 2:
+        return []
+    segs = []
+    for i, (st, txt) in enumerate(cues):
+        en = cues[i + 1][0] if i + 1 < len(cues) else st + 15.0
+        if en <= st:
+            en = st + 1.0
+        if txt:
+            segs.append({'start': st, 'end': en, 'text': txt})
+    return segs
+
+
 def parse_subtitle_file(path):
-    """解析字幕文件 → [{start,end,text}]。支持 SRT / VTT / ASS / SSA。解析不了返回 []。
+    """解析字幕文件 → [{start,end,text}]。支持 SRT / VTT / ASS / SSA / 笔记式时间轴。
 
     供两条路径复用：① 容器内字幕轨抽取出来的 .srt；② 外挂字幕文件（同目录同名）。
     """
@@ -356,7 +390,12 @@ def parse_subtitle_file(path):
             buf.append(line)
     if cur_start is not None and buf:
         segs.append({'start': cur_start, 'end': cur_end, 'text': ' '.join(buf).strip()})
-    return [s for s in segs if s['text']]
+    segs = [s for s in segs if s['text']]
+    # 笔记式时间轴：`\[MM:SS\] 台词`（手写速记最常见格式）——SRT/ASS 都没命中时尝试。
+    # 主人 2026-11-11 的手稿正是这种格式，旧解析器整份拒收 → 静默退回 ASR 白跑 3 分钟。
+    if not segs:
+        segs = _parse_notes_timeline(lines)
+    return segs
 
 
 def _external_subtitle_segments(video_path):

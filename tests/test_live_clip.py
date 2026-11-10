@@ -464,3 +464,47 @@ def test_select_clips_merges_never_exceed_max_sec():
         assert c['end'] - c['start'] <= 60.0 + 2.0 * 2.0, (
             '合并段 %.1fs 超出 max_sec=60（±一窗容差）' % (c['end'] - c['start']))
         assert c['start'] >= 0 and c['end'] <= 2400.0
+
+
+# ---------------------------------------------------------------------------
+# 笔记式时间轴字幕（2026-11-11 主人手稿正是这种格式，旧解析器整份拒收）
+# ---------------------------------------------------------------------------
+def test_parse_notes_timeline_basic():
+    """`[MM:SS] 台词` 逐条解析：start=标注时间，end=下一条时间，最后一条 +15s。"""
+    from ai_providers import _parse_notes_timeline
+    lines = ['[00:15] -准备好了？ -好了', '', '[00:26] 爸', '', '[01:07] （阿拉巴马乡间）']
+    segs = _parse_notes_timeline(lines)
+    assert [(s['start'], s['end'], s['text']) for s in segs] == [
+        (15.0, 26.0, '-准备好了？ -好了'),
+        (26.0, 67.0, '爸'),
+        (67.0, 82.0, '（阿拉巴马乡间）')]
+
+
+def test_parse_notes_timeline_hhmmss_and_continuation():
+    """`[HH:MM:SS]` 三段式 + 不带时间标注的行拼回上一条。"""
+    from ai_providers import _parse_notes_timeline
+    lines = ['[01:00:05] 第一条', '续行内容', '[01:02:10] 第二条']
+    segs = _parse_notes_timeline(lines)
+    assert segs[0]['start'] == 3605.0 and segs[0]['end'] == 3730.0
+    assert '续行内容' in segs[0]['text']
+    assert segs[1]['start'] == 3730.0
+
+
+def test_parse_notes_timeline_rejects_single_cue():
+    """只有一条带时间标注的行 → 不是笔记式时间轴，返回 []（防误判普通文本）。"""
+    from ai_providers import _parse_notes_timeline
+    assert _parse_notes_timeline(['[00:15] 只有这条']) == []
+    assert _parse_notes_timeline(['普通文本行', '再来一行']) == []
+
+
+def test_save_user_subtitle_accepts_notes_format(tmp_path):
+    """端到端：_save_user_subtitle 不再拒收笔记式字幕（曾静默退回 ASR 白跑 3 分钟）。"""
+    import webui_server as S
+    vp = os.path.join(str(tmp_path), 'src.mp4')
+    open(vp, 'wb').write(b'x' * 64)
+    srt_text = '[00:15] -准备好了？ -好了\n\n[00:26] 爸\n\n[01:07] （阿拉巴马乡间）'
+    saved = S._save_user_subtitle({'name': '前二十分钟字幕.srt', 'text': srt_text}, vp)
+    assert saved and os.path.isfile(saved), '笔记式字幕必须能落盘'
+    from ai_providers import parse_subtitle_file
+    segs = parse_subtitle_file(saved)
+    assert len(segs) == 3 and segs[0]['start'] == 15.0
