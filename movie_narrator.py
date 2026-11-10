@@ -5668,16 +5668,34 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
             progress['phase'] = '画面索引（缓存命中）'
             progress['pct'] = 46
     else:
-        scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir,
-                                           progress=progress, quality=_quality_mode,
-                                           tier=_tier)
-        # 画面理解结束后立刻卸载 VLM：12GB 卡放不下 VLM(6.1GB) + 文本模型(5.0GB)，
-        # 不让位会让后续写稿/对齐/润色每次调用都触发换入换出。
-        if vlm_unload():
-            _log.info('[DIAG] 画面理解完成，已释放 VLM 显存（让位给文本模型）')
-        if scene_descs:
-            _cache_save(vlm_cache_key, scene_descs)
-            _log.info(f'[DIAG] 画面索引: {len(scene_descs)}个时间点已建立并缓存')
+        # 【VRAM 守卫】质量档会把 VLM 常驻 30 分钟（_VLM_KEEP='30m'），本机 12GB 卡
+        # 放不下 VLM(6.1GB) + 文本模型(5.0GB) + 常驻配音 worker(4.4GB)。WDDM 下显存
+        # 占满不报错，而是把权重静默换页到内存 → GPU 利用率 0%、表现为「永远合成中」
+        # （tts2_engines.gpu_vram 的实测注释，2026-11-09 试听失败即此因）。
+        # 所以**抽样前**先按 VLM 体积腾一次位：free_vram_for_llm 会按模型体积估需求，
+        # 不够就停掉常驻 TTS worker；它带 5s 冷却，不会给逐句调用加负担。
+        try:
+            import tts2_engines as _T2
+            _freed = _T2.free_vram_for_llm(vlm_model)
+            if _freed:
+                _log.info('[DIAG] VLM 抽样前已腾显存: 停掉 %s' % _freed)
+        except Exception as _e:
+            _log.warning('[DIAG] VLM 抽样前腾显存失败(不阻断): %s', _e)
+        if progress:
+            progress['phase'] = '画面理解中（VLM 常驻显存，完成后自动释放）'
+        try:
+            scene_descs = _vlm_sample_timeline(video_path, vdur, asr, run_dir,
+                                               progress=progress, quality=_quality_mode,
+                                               tier=_tier)
+            if scene_descs:
+                _cache_save(vlm_cache_key, scene_descs)
+                _log.info(f'[DIAG] 画面索引: {len(scene_descs)}个时间点已建立并缓存')
+        finally:
+            # 【必须兜底】正常结束、用户取消、任何异常/AbortError 都要卸载 VLM。
+            # 旧实现只在正常路径调用，一旦取消或抛错，VLM 会按 keep_alive='30m'
+            # 继续占着显存 30 分钟，下一个任务一开局显存就是满的（主人实测打满）。
+            if vlm_unload():
+                _log.info('[DIAG] 画面理解结束，已释放 VLM 显存（让位给文本模型）')
     # 保存scene_descs到run_dir，供AI候选推荐和手动调整页使用
     if scene_descs and run_dir:
         try:
