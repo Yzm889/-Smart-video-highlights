@@ -2654,3 +2654,175 @@ setTimeout(() => {
 
 /* ── 启动 ── */
 setStatus(_draftRestored ? '就绪 · 已恢复上次未提交的剧情稿' : '就绪');
+
+/* ── 直播切片（方案 A：本地录像 → 自动高光 → N 条原声独立 mp4）──
+   独立视图：newProj / editor 之外第三张卡。高光判定在后端 live_clip.py
+   （音量+画面运动+台词密度，全片分位次相对化），前端只管选片、进度、预览。 */
+let _lcVideo = null;          // {name, path} 本地直连 或 {name, upload_id} 浏览器上传
+let _lcPollTimer = null;
+let _lcFromEditor = false;
+
+function showLiveClip(on){
+  const lc = $('liveClip'), np = $('newProj'), ed = $('editor');
+  if(on) _lcFromEditor = !!(ed && ed.style.display !== 'none');
+  if(lc) lc.style.display = on ? 'flex' : 'none';
+  if(on){
+    if(np) np.style.display = 'none';
+    if(ed) ed.style.display = 'none';
+  } else {
+    if(_lcFromEditor && ed){ ed.style.display = 'flex'; }
+    else if(np) np.style.display = 'flex';
+  }
+  if(!on && _lcPollTimer){ clearInterval(_lcPollTimer); _lcPollTimer = null; }
+  updateLiveClip();
+}
+
+function updateLiveClip(){
+  if(!$('lcGo')) return;
+  const busy = $('lcProg').style.display !== 'none';
+  const ready = !!(_lcVideo || ($('lcPath').value || '').trim());
+  $('lcGo').disabled = !ready || busy;
+  $('lcHint').textContent = busy ? '切片进行中，可以随时点右上角关闭窗口（任务会取消）'
+    : (ready ? '高光判定：音量 + 画面动作 + 台词密度，全部按全片相对分位评分，不改你的原声'
+             : '选择录像或填写本地路径后开始');
+}
+
+function _lcVideoObj(){
+  if(_lcVideo){
+    return _lcVideo.upload_id ? {name: _lcVideo.name, upload_id: _lcVideo.upload_id}
+                              : {name: _lcVideo.name, path: _lcVideo.path, desktop_token: _token};
+  }
+  return null;
+}
+
+$('tbLiveClip').addEventListener('click', () => showLiveClip(true));
+$('lcBack').addEventListener('click', () => showLiveClip(false));
+$('lcPath').addEventListener('input', updateLiveClip);
+
+$('lcPick').addEventListener('click', async () => {
+  if(await _ensureBridge()){
+    try {
+      const r = await window.pywebview.api.pick_video();
+      if(r && r.path){
+        _lcVideo = {name: r.name || r.path.split(/[\/]/).pop(), path: r.path};
+        $('lcPickLabel').textContent = '✅ ' + _lcVideo.name;
+        updateLiveClip();
+      }
+    } catch(e){ toast('选择失败：' + e.message, 'bad'); }
+  } else {
+    _browserFileInput('video/*', async f => {
+      try {
+        $('lcPickLabel').textContent = '⬆ 上传中 0%…';
+        const uid = await _chunkUpload(f, done => {
+          $('lcPickLabel').textContent = '⬆ 上传中 ' + Math.round(done * 100 / f.size) + '%';
+        });
+        _lcVideo = {name: f.name, upload_id: uid};
+        $('lcPickLabel').textContent = '✅ ' + f.name;
+        updateLiveClip();
+        toast('✅ 录像已上传，可以开始切片', 'ok');
+      } catch(e){
+        $('lcPickLabel').textContent = '选择直播录像（OBS 录制 / 平台回放）';
+        toast('上传失败：' + e.message, 'bad');
+      }
+    });
+  }
+});
+
+$('lcGo').addEventListener('click', async () => {
+  const vo = _lcVideoObj();
+  const body = {
+    n_clips: parseInt($('lcN').value, 10) || 5,
+    min_sec: parseInt($('lcMin').value, 10) || 20,
+    max_sec: parseInt($('lcMax').value, 10) || 60,
+    use_asr: $('lcAsr').checked,
+  };
+  if(vo){ body.video = vo; }
+  else {
+    const p = ($('lcPath').value || '').trim();
+    if(!p){ toast('先选择录像或填写本地路径', 'bad'); return; }
+    body.src_path = p;
+    body.desktop_token = _token || '';
+  }
+  $('lcProg').style.display = 'block';
+  $('lcFill').style.width = '0%';
+  $('lcMeta').textContent = '提交中…';
+  $('lcResults').style.display = 'none';
+  updateLiveClip();
+  try {
+    const r = await fetch('/api/live_clip', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '提交失败');
+    if(_lcPollTimer) clearInterval(_lcPollTimer);
+    _lcPollTimer = setInterval(async () => {
+      const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
+      $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
+      $('lcMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
+      if(p.error){
+        clearInterval(_lcPollTimer); _lcPollTimer = null;
+        $('lcProg').style.display = 'none'; updateLiveClip();
+        toast('切片失败：' + p.error, 'bad');
+        return;
+      }
+      if(p.done && p.clips && p.clips.length){
+        clearInterval(_lcPollTimer); _lcPollTimer = null;
+        $('lcProg').style.display = 'none'; updateLiveClip();
+        renderLiveClips(p);
+      }
+    }, 1500);
+  } catch(e){
+    $('lcProg').style.display = 'none'; updateLiveClip();
+    toast('切片失败：' + e.message, 'bad');
+  }
+});
+
+function renderLiveClips(p){
+  const box = $('lcResults');
+  box.style.display = 'flex';
+  box.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'lc-results-head';
+  head.textContent = '✅ 切出 ' + p.clips.length + ' 条高光（点开预览，原声保留）';
+  box.appendChild(head);
+  p.clips.forEach((c, i) => {
+    const item = document.createElement('div');
+    item.className = 'lc-item';
+    const v = document.createElement('video');
+    v.className = 'lc-video';
+    v.controls = true;
+    v.preload = 'metadata';
+    v.src = '/media/' + c.rel;                       // rel 是 ASCII 路径（/media/ 不做 URL 解码）
+    const meta = document.createElement('div');
+    meta.className = 'lc-item-meta';
+    meta.innerHTML = '<b>#' + (i + 1) + '</b> 第' + Math.round(c.start) + '秒 ~ 第' + Math.round(c.end)
+      + '秒（' + Math.round(c.dur) + '秒）'
+      + '<div class="lc-why">' + (c.reasons || []).map(x => '· ' + x).join('<br>') + '</div>';
+    item.appendChild(v);
+    item.appendChild(meta);
+    box.appendChild(item);
+  });
+  const foot = document.createElement('div');
+  foot.className = 'lc-foot';
+  const bFolder = document.createElement('button');
+  bFolder.className = 'mini-btn';
+  bFolder.textContent = '📁 打开切片文件夹';
+  bFolder.addEventListener('click', () => {
+    fetch('/api/reveal', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file: p.clips[0].rel})});
+  });
+  const bReport = document.createElement('button');
+  bReport.className = 'mini-btn';
+  bReport.textContent = '📄 查看报告';
+  bReport.addEventListener('click', async () => {
+    try {
+      const t = await fetch('/media/' + p.report_txt).then(x => x.text());
+      const pre = box.querySelector('.lc-report') || document.createElement('div');
+      pre.className = 'lc-report';
+      pre.textContent = t;
+      if(!box.contains(pre)) box.appendChild(pre);
+    } catch(e){ toast('报告读取失败：' + e.message, 'bad'); }
+  });
+  foot.appendChild(bFolder);
+  foot.appendChild(bReport);
+  box.appendChild(foot);
+  toast('✅ 切片完成，共 ' + p.clips.length + ' 条', 'ok');
+}

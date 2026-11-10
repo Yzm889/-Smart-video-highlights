@@ -695,6 +695,62 @@ def dispatch_tts_regen_all(req, prog):
         _w.fail_task(prog, e)
 
 
+def dispatch_live_clip(req, prog):
+    """直播切片：本地直播录像 → 自动找高光 → N 条保留原声的独立 mp4 + 可读报告。
+
+    输入三选一：上传的 video 对象（分片上传/素材库/桌面本地直连）、
+    src_path（本机已有录播文件的绝对路径，扩展名白名单校验）。
+    引擎在 live_clip.py（独立模块，不碰解说对齐管线）；算法与阈值见其模块头注释。"""
+    try:
+        import live_clip as LC
+        if not LC.enabled():
+            raise RuntimeError('直播切片已被 LIVE_CLIP=0 关闭（环境变量回滚开关）')
+        run_dir = prog.get('run_dir') or os.path.join(_w.OUTDIR, time.strftime('%Y%m%d-%H%M%S'))
+        os.makedirs(run_dir, exist_ok=True)
+        vp = _w._resolve_upload_video(req.get('video'), run_dir, 'src')
+        if vp is None and req.get('src_path'):
+            # src_path 直读本机文件是「桌面版专属」能力，与 _resolve_upload_video 的
+            # path+desktop_token 同一条安全红线：令牌不匹配（或纯浏览器模式没有令牌）
+            # 一律拒绝——否则任意网页都能借本服务把本地文件切片后读走。
+            if not _w.DESKTOP_TOKEN or str(req.get('desktop_token') or '') != _w.DESKTOP_TOKEN:
+                raise RuntimeError('本地路径直连仅限桌面版（缺少有效会话令牌），请改用文件选择上传')
+            sp = str(req.get('src_path') or '').strip()
+            if not os.path.isabs(sp) or not os.path.isfile(sp):
+                raise RuntimeError('本地文件不存在：%s' % sp)
+            if os.path.splitext(sp)[1].lower() not in LC.LIVE_EXTS:
+                raise RuntimeError('不支持的录像格式（要 mp4/mkv/flv/ts/mov/webm/avi）')
+            vp = sp
+        if not vp:
+            raise RuntimeError('未收到直播录像：请选择文件，或填写本机录播文件的完整路径')
+        prog['phase'] = '读取录像信息'
+        prog['pct'] = 3
+        meta = LC.analyze_highlights(vp, run_dir, progress=prog,
+                                     n_clips=req.get('n_clips'),
+                                     min_sec=req.get('min_sec'),
+                                     max_sec=req.get('max_sec'),
+                                     use_asr=bool(req.get('use_asr', True)))
+        meta['video'] = vp
+        files = LC.export_clips(vp, meta['clips'], run_dir, progress=prog)
+        jp_rel, txt_rel = LC.write_report(meta, meta['clips'], files, run_dir)
+        base = os.path.basename(run_dir)
+        prog['clips'] = [{'file': os.path.basename(f),
+                          'rel': base + '/' + os.path.basename(f),
+                          'start': c['start'], 'end': c['end'], 'dur': c.get('dur'),
+                          'score': c.get('score'), 'reasons': c.get('reasons')}
+                         for c, f in zip(meta['clips'], files)]
+        prog['report_txt'] = base + '/' + txt_rel
+        prog['report_json'] = base + '/' + jp_rel
+        # 对外只暴露目录名（与 dispatch_movie_compose 同约定：_safe_dir 只认 basename）
+        prog['run_dir'] = base
+        prog['file'] = prog['clips'][0]['rel']     # 历史记录指向第一条切片
+        prog['done'] = True
+        prog['pct'] = 100
+        prog['phase'] = '切片完成'
+        _w._record_history(req, prog, 'live_clip')
+    except Exception as e:
+        _w.fail_task(prog, e)
+
+
 def dispatch_instruct(req, prog):
     """指令解析层：解析自然语言 → 路由到对应工作流。与 /api/instruct 共用。"""
     instr = req.get('instruction', '')
@@ -1265,6 +1321,7 @@ for _name in (
     'dispatch_movie_compose',
     'dispatch_tts_single',
     'dispatch_tts_regen_all',
+    'dispatch_live_clip',
     'dispatch_instruct',
     'collect_partial',
     'assemble',

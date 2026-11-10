@@ -5724,6 +5724,7 @@ dispatch_movie_tts = getattr(_workflows_mod, 'dispatch_movie_tts', None)
 dispatch_movie_compose = getattr(_workflows_mod, 'dispatch_movie_compose', None)
 dispatch_tts_single = getattr(_workflows_mod, 'dispatch_tts_single', None)
 dispatch_tts_regen_all = getattr(_workflows_mod, 'dispatch_tts_regen_all', None)
+dispatch_live_clip = getattr(_workflows_mod, 'dispatch_live_clip', None)
 dispatch_instruct = getattr(_workflows_mod, 'dispatch_instruct', None)
 import analyze_pipeline  # noqa: E402  (人机协同两段式·阶段①自动分析)
 dispatch_analyze = analyze_pipeline.dispatch_analyze

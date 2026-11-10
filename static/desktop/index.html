@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=16">
+<link rel="stylesheet" href="desktop.css?v=17">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -66,6 +66,7 @@
   <span class="tb-sep"></span>
   <button class="tb-btn primary" id="tbGenerate"><svg class="ic"><use href="#i-mic"/></svg>生成方案</button>
   <button class="tb-btn" id="tbCompose" disabled><svg class="ic"><use href="#i-film"/></svg>合成视频</button>
+  <button class="tb-btn" id="tbLiveClip" title="直播录像自动找高光，切成 N 条保留原声的短视频"><svg class="ic"><use href="#i-film"/></svg>直播切片</button>
   <span class="tb-flex"></span>
   <button class="tb-btn" id="tbSrt" title="导入 SRT 字幕文件（字幕是命脉：剧情理解准+时间轴零偏差）"><svg class="ic"><use href="#i-subtitle"/></svg>导入字幕</button>
   <button class="tb-btn" id="tbMusic" title="选择本地音乐文件（加配乐）"><svg class="ic"><use href="#i-music"/></svg>配乐</button>
@@ -175,6 +176,36 @@
       </div>
       <button class="btn primary big" id="npGo" disabled>🎙 开始生成</button>
       <div class="np-hint" id="npHint">选择视频并填写剧情后开始</div>
+    </div>
+  </div>
+
+  <!-- 直播切片（方案 A：本地录像 → 自动高光 → N 条原声独立 mp4） -->
+  <div class="newproj" id="liveClip" style="display:none">
+    <div class="np-card">
+      <button class="mini-btn" id="lcBack" style="align-self:flex-start">← 返回新建项目</button>
+      <div class="np-title">✂ 直播切片</div>
+      <div class="np-sub">自动找出直播录像里的高光时刻（音量峰值 + 画面动作 + 台词密度综合评分），切成 N 条<b>保留原声</b>的独立短视频，可直接发平台</div>
+      <button class="np-pick" id="lcPick">
+        <svg class="ic ic-big"><use href="#i-folder"/></svg>
+        <span id="lcPickLabel">选择直播录像（OBS 录制 / 平台回放）</span>
+      </button>
+      <div class="field">
+        <label>或填写本机已有录像的完整路径</label>
+        <input type="text" id="lcPath" placeholder="例如 D:\Recordings\2026-11-11 20-30-15.mkv">
+      </div>
+      <div class="lc-row">
+        <label>出几条 <input type="number" id="lcN" value="5" min="1" max="10"></label>
+        <label>单条最短(秒) <input type="number" id="lcMin" value="20" min="10" max="120"></label>
+        <label>单条最长(秒) <input type="number" id="lcMax" value="60" min="15" max="180"></label>
+        <label class="chk"><input type="checkbox" id="lcAsr" checked> 用台词辅助找高光（更准，转写稍慢）</label>
+      </div>
+      <button class="btn primary big" id="lcGo" disabled>✂ 开始切片</button>
+      <div class="np-hint" id="lcHint">选择录像或填写本地路径后开始</div>
+      <div class="lc-progress" id="lcProg" style="display:none">
+        <div class="lc-bar"><div class="lc-fill" id="lcFill"></div></div>
+        <div class="np-hint" id="lcMeta"></div>
+      </div>
+      <div id="lcResults" style="display:none"></div>
     </div>
   </div>
 
@@ -455,6 +486,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=16"></script>
+<script src="desktop.js?v=17"></script>
 </body>
 </html>

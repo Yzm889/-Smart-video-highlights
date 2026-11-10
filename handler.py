@@ -1863,6 +1863,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
 
+    def _post_live_clip(self):
+        """直播切片：本地直播录像 → 自动高光 → N 条原声切片。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=64 * 1024)
+            if req is None:
+                req = {}
+            runid = self._spawn(_w.dispatch_live_clip, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
     def _post_reveal(self):
         """[P1 输出可发现性] 在系统文件管理器中显示成片位置。
 
@@ -2183,6 +2197,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/model/remove': '_post_model_remove',
         '/api/movie_compose': '_post_movie_compose',
         '/api/movie_tts': '_post_movie_tts',
+        '/api/live_clip': '_post_live_clip',
         '/api/narrate': '_post_narrate',
         '/api/narrate/align': '_post_narrate_align',
         '/api/narrate_movie': '_post_narrate_movie',
