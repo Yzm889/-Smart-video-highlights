@@ -436,3 +436,29 @@ def test_dispatch_export_without_draft_fails_cleanly(monkeypatch, tmp_path):
     W.dispatch_live_clip_export({'run_dir': 'no-such-dir'}, prog)
     assert prog.get('done') is True and prog.get('error'), '缺草稿必须报错而不是静默成功'
     assert '草稿' in prog['error'] or '分析' in prog['error']
+
+
+def test_rms_profile_chunked_matches_naive():
+    """分块 RMS 必须与一次性算法逐窗一致——这是评测修复的正确性钉子。
+    （内存收益不进单测：4 小时合成 PCM 在真机上实测 RSS 增长 0MB，
+    旧一次性实现要瞬吃 ~700MB float32。）"""
+    rng = np.random.default_rng(5)
+    pcm = (rng.standard_normal(8000 * 600) * 3000).astype(np.int16)   # 10 分钟
+    chunked = LC._rms_profile(pcm, 8000, 2.0)
+    win = 16000
+    x = pcm[:len(pcm) // win * win].reshape(-1, win).astype(np.float32) / 32768.0
+    naive = np.sqrt((x ** 2).mean(axis=1))
+    assert np.allclose(chunked, naive, atol=1e-6)
+
+
+def test_select_clips_merges_never_exceed_max_sec():
+    """贴脸高光合并后不得超出用户设定的单条最长时长。
+    （90min 实测：两段贴脸峰合并出 124s > max_sec=60，违反「单条最长」承诺。）"""
+    s = _mk_score([(100, 0.95), (118, 0.93), (131, 0.92)], nwin=1200)  # 三连贴脸峰
+    clips = LC.select_clips(s, window=2.0, vdur=2400.0, n_clips=5,
+                            min_sec=20, max_sec=60, min_gap=45)
+    assert clips, '高光必须选出'
+    for c in clips:
+        assert c['end'] - c['start'] <= 60.0 + 2.0 * 2.0, (
+            '合并段 %.1fs 超出 max_sec=60（±一窗容差）' % (c['end'] - c['start']))
+        assert c['start'] >= 0 and c['end'] <= 2400.0

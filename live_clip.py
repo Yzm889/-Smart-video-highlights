@@ -263,6 +263,15 @@ def select_clips(score, window, vdur, n_clips=None, min_sec=None, max_sec=None,
             m['peak_t'] = c['peak_t'] if c['score'] > m['score'] else m['peak_t']
         else:
             merged.append(dict(c))
+    # 合并可能产出超长段（两段贴脸高光连成一片，90min 实测出过 124s > max_sec=60）：
+    # 以峰值为中心收缩回 max_sec，保住能量最高的部分，兑现「单条最长」的用户承诺。
+    for m in merged:
+        if m['end'] - m['start'] > max_sec:
+            mid = min(max(m['peak_t'], m['start'] + max_sec / 2),
+                      m['end'] - max_sec / 2)
+            m['start'] = max(0.0, mid - max_sec / 2)
+            m['end'] = min(vdur, m['start'] + max_sec)
+            m['start'] = max(0.0, m['end'] - max_sec)
     merged.sort(key=lambda c: -c['score'])
     out = merged[:n_clips]
     out.sort(key=lambda c: c['start'])
