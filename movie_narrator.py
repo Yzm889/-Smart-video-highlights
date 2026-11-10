@@ -3264,6 +3264,8 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             _reuse[_idx] = _idx  # 自己是leader
             _key_frames.append(_item)
     _vlm_saved = len(need_vlm) - len(_key_frames)
+    _log.info('[DIAG] 画面索引开始: %d个抽样点 → %d个关键帧（复用省%d帧）'
+              % (len(sample_times), len(_key_frames), _vlm_saved))
 
     # === 断点续跑标识：用「场景起始时间」而非索引，视频/间隔变化都不会串号 ===
     def _start_key_of(ts, idx=None):
@@ -3339,6 +3341,7 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     # 此时必须放弃逐帧重试，否则每批再多跑 8 次 180s 超时，整任务会被拖成几小时。
     _consec_fail = 0
     _RETRY_MAX_CONSEC = 2
+    _est_batches = (len(_pending_frames) + batch_size - 1) // batch_size
     for bi in range(0, len(_pending_frames), batch_size):
         # 协作式取消：用户点「停止」时立即退出，已分析的部分保留在进度文件里
         if _aborted():
@@ -3362,6 +3365,9 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
             progress['pct'] = 44 + int(6 * len(_analyzed) / max(1, total_key))
         frames = [b[2] for b in batch]
         vlm_count += 1
+        if vlm_count % 5 == 1:
+            _log.info('[DIAG] 场景理解 %d/%d 批（已完成%d帧）'
+                      % (vlm_count, _est_batches, len(_analyzed)))
         objs = None
         try:
             objs = _call_frames(frames)
@@ -6188,6 +6194,9 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
                               'duration_ms': _dur, 'source': source})
         done += 1
         processed = skipped + done
+        if done % 10 == 0:
+            _log.info('[DIAG] 配音 %d/%d 句（最近一句 %.1fs）'
+                      % (processed, len(narr), _dur / 1000.0))
         if _parallel:
             _update_progress('逐段配音 %d/%d（并发%d路）' % (processed, len(narr), _n_workers),
                              55 + int(25 * processed / max(1, len(narr))))
