@@ -302,7 +302,19 @@ def _run_desktop_window(url):
     # 【曾犯的错】这里曾写死网页版根地址 '/'——EXE 打开的是网页版而非桌面 UI
     # （主人实测抓到）。必须加载调用方传入的桌面 UI 地址。
     webview.create_window('一帧成片', url, width=1440, height=900, min_size=(1100, 700))
-    webview.start()   # 阻塞直到窗口关闭
+    # 【必须关掉 private_mode，否则 localStorage 不跨重启】pywebview 默认
+    # private_mode=True，winforms.init_storage() 只在 `not private_mode or storage_path`
+    # 时才用持久目录 %APPDATA%\pywebview，否则 cache_dir = tempfile.TemporaryDirectory().name
+    # ——每次启动一个全新随机临时目录，且 edgechromium 在关窗时 rmtree 它。
+    # 结果是 localStorage（剧情稿草稿 framecut_desktop_draft_v1、参数记忆
+    # framecut_desktop_adv_v1、参数预设 framecut_param_presets）**全部不跨重启**，
+    # 用户下次开窗一切归零。磁盘旁证：%APPDATA%\pywebview 与 %LOCALAPPDATA%\pywebview
+    # 都不存在，而 %LOCALAPPDATA%\Temp 下有 6 个 tmp*/EBWebView 临时 profile
+    # （BrowserMetrics 里含字面量 FrameCut.exe），每个 leveldb 都是「Creating DB since
+    # it was missing.」的空库 → 从未以保留存储模式跑过。
+    # 这里没有安全损失：数据只落在本机 %APPDATA%，服务只监听 127.0.0.1，且会话令牌
+    # （_TOKEN）每次启动重新生成、经 js_api 下发，并不依赖 localStorage。
+    webview.start(private_mode=False)   # 阻塞直到窗口关闭
     return True
 
 
