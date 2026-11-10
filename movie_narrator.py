@@ -5431,6 +5431,11 @@ def _literal_score(a, b):
 def _score_block(qtext, block):
     """让模型逐条判「是否表达了同一意思」，返回命中条目。
 
+    返回 `None` 表示**这次没有任何可用的模型输出**（本地文字模型与视觉模型的文字
+    通道都不可用 / 超时 / 报错），与「问到了但一条都不像」的 `[]` 严格区分。
+    调用方据此可以「后端不可用就别再逐块问下去」：判据放宽后（[2.6]）只配了视觉
+    模型但服务没起 / 模型没拉的机器会被放行进来，若不分这两种情况就会白等满 8 块。
+
     【为什么不是「从这些里挑一个」】实测 8B 模型面对「挑一个」时总会硬选一个：
     给 12 条（都不对）它能挑出「每个人都以为你是智障」；给 60 条又过度保守全判 0。
     换成逐条判 0/1 并写死判据（同一件事/同一个态度，措辞沾边不算）后校准正常：
@@ -5444,7 +5449,7 @@ def _score_block(qtext, block):
               '候选：\n%s' % (qtext, listing))
     r = _llm_text(prompt, timeout=120)
     if not r:
-        return []
+        return None          # 后端无输出（不是「没有命中」）：让调用方据此早停
     try:
         m = re.search(r'\{.*\}', r, re.S)
         hits = json.loads(m.group(0) if m else r).get('hit') or []
@@ -5469,8 +5474,14 @@ def _pick_quote_span(qtext, asr, near=None, window=240.0, block_sec=60.0,
       · 字面：SequenceMatcher 去标点后比对，「我死了，柯蒂斯，你没听说吗？」
         对「我是死了，科提斯，你没听说吗？」能到 0.8+，直接命中；
       · 语义：字面救不了「我不想交朋友」对「但我不是在找同伴」（实词重合 0），
-        交给本地模型**按 60 秒一块、由近及远**逐块判分，第一块有命中就停。
+        交给可用的 chat 后端**按 60 秒一块、由近及远**逐块判分，第一块有命中就停。
     宁可漏（照常念稿），不可错（播错画面比念稿更伤）。
+
+    [2.6] 语义档的入口判据必须与 `_llm_text` 的真实能力对齐：`_llm_text`（:1490）自己
+    就会在本地文字模型不可用时回退**视觉模型的文字通道**（`_w.vlm_text`），所以只装了
+    视觉模型的机器本来也能跑语义匹配。旧判据只认 `_local_model_available()`，把这些机器
+    静默挡在门外（实测 `quote_slots` 恒为空 = 功能看着有、其实永不生效）。
+    现在改成「任一后端可用即可」，与 `_llm_text` 一致。
     """
     cands = []
     for a in (asr or []):
@@ -5492,7 +5503,7 @@ def _pick_quote_span(qtext, asr, near=None, window=240.0, block_sec=60.0,
     best = max(cands, key=lambda c: _literal_score(qtext, c[2]))
     if _literal_score(qtext, best[2]) >= 0.55:
         return best[0], best[1], best[2], 'literal'
-    if not _local_model_available():
+    if not (_local_model_available() or _w.vlm_enabled()):
         return None
     anchor = near if near is not None else cands[len(cands) // 2][0]
     # 由近及远：0, +1, -1, +2, -2 …（单位 block_sec）
@@ -5500,13 +5511,36 @@ def _pick_quote_span(qtext, asr, near=None, window=240.0, block_sec=60.0,
     for k in range(1, max_blocks):
         order += [k, -k]
     order = order[:max_blocks]
+    # [2.6] 语义阶段总闸：每次 `_score_block` 都会起一次模型调用（timeout=120s），
+    # 一块不中就会继续试下一块。最坏 `max_blocks` 次 × 120s 会把整条合成流程拖到
+    # 几十分钟；而搜索是**由近及远**的，越靠后的块越不可能命中，所以给这一句的语义
+    # 搜索设一道墙钟预算：超时就停，照常念稿（宁可漏，不可错，也不可让用户干等）。
+    # 默认 100s 的取值理由：单次调用最长会烧掉 120s 的 timeout，所以
+    #   · 模型活着、几秒就答（正常情况）→ 100s 足够搜满 max_blocks=8 块，语义档不缩水；
+    #   · 模型挂住/一直超时（病态情况）→ 第一次 120s 之后就该放弃，而不是再罚 7 次。
+    # `NARRATE_QUOTE_BUDGET=0` 可关闭该闸（回到逐块搜到底的旧行为）。
+    _budget = 100.0
+    try:
+        _budget = float(os.environ.get('NARRATE_QUOTE_BUDGET', '100') or 100)
+    except Exception:
+        _budget = 100.0
+    _deadline = (time.time() + _budget) if _budget > 0 else None
     for k in order:
+        if _deadline is not None and time.time() > _deadline:
+            _log.info('[DIAG] 引用语义匹配：预算 %.0fs 用尽，停止搜索（照常念稿）' % _budget)
+            break
         b0 = anchor + k * block_sec
         block = [c for c in cands if b0 <= c[0] < b0 + block_sec]
         if not block:
             continue
         block.sort(key=lambda c: c[0])
         hits = _score_block(qtext, block)
+        if hits is None:
+            # 后端这次完全没输出（服务没起 / 模型没拉 / 超时）：判据只是配置层
+            # （`vlm_enabled()` 不探活），所以这条路会走到这里。再问下一块只是白等，
+            # 直接放弃这一句的语义让位，照常念稿。
+            _log.info('[DIAG] 引用语义匹配：无可用文本后端，跳过语义让位（照常念稿）')
+            return None
         if not hits:
             continue
         hits.sort(key=lambda c: (-_literal_score(qtext, c[2]), abs(c[0] - anchor)))
