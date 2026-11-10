@@ -17,8 +17,28 @@ import io
 import os
 import subprocess
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'movie_narrator.py')
+
+
+def _git_has_commit(rev):
+    """本地是否有这个 revision 的对象。
+
+    2026-11-10：CI 的 actions/checkout@v4 默认 fetch-depth=1（浅克隆），
+    仓库里只有当前一个 commit，`git show 09ca29b^:...` 会 `fatal: invalid
+    object name`（returncode 128）。非空转证明本质是**开发者在本地写代码
+    那一刻的一次性验证**，不是每轮必跑的回归 —— 取不到历史就明示 skip，
+    绝不假装通过。
+    """
+    try:
+        r = subprocess.run(
+            ['git', 'rev-parse', '--verify', '--quiet', '%s^{commit}' % rev],
+            capture_output=True, cwd=ROOT, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def _src():
@@ -77,6 +97,9 @@ def test_unload_keeps_existing_cache_save_behaviour():
 def test_non_vacuous_proof_against_pre_fix_source():
     """非空转证明：修复前的源码跑上面三条断言必须变红。"""
     rev = '09ca29b^'  # 本次修复前的 HEAD
+    if not _git_has_commit(rev):
+        pytest.skip('仓库没有 %s 的历史对象（CI 浅克隆 fetch-depth=1），'
+                    '此证明仅在本地完整克隆下执行' % rev)
     r = subprocess.run(
         ['git', 'show', '%s:movie_narrator.py' % rev],
         capture_output=True, cwd=ROOT, timeout=30)

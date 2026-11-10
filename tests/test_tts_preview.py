@@ -50,6 +50,12 @@ def test_preview_uses_explicitly_selected_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
     monkeypatch.setattr(S, 'tts_local_cfg',
                         lambda: {'engine': 'indextts2', 'instruct': ''})
+    # 必须显式钉住「引擎就绪」：不钉的话，本用例断言的结果取决于**这台机器装没装
+    # IndexTTS2**。开发机装的是 True（本地一直绿），CI 的 Linux 没有模型是 False
+    # → 引擎链走到别处 → eng != 'indextts2' 当场红（2026-11-10 CI 实际踩到）。
+    # 与第六节坑条目第 14 条同源：给判定函数加环境探测，测试必须同步隔离。
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: True)
+    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: False)
     monkeypatch.setattr(T2, 'indextts2_speak', lambda text, out, **k: _fake_wav(out))
     monkeypatch.setattr(S, 'probe_audio_len', lambda p: 2.0)
     ok, msg, eng, rel = S.tts_test_speak('试听一句。')
