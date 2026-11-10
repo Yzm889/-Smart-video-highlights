@@ -695,7 +695,7 @@ def _fmt_mmss(sec):
     return '%d:%02d' % (s // 60, s % 60) if s < 3600 else '%d:%02d:%02d' % (s // 3600, s % 3600 // 60, s % 60)
 
 
-def asr_segments(video_path, progress=None, pct_range=None):
+def asr_segments(video_path, progress=None, pct_range=None, language=None):
     """本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
     自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
 
@@ -703,6 +703,11 @@ def asr_segments(video_path, progress=None, pct_range=None):
     用了哪种来源会写进当前任务的 warnings，用户在结果里能直接看到。
     用字幕时还会做一次「字幕与视频是否同版本」的校验（见 subtitle_sync_report）：
     错版字幕不会产出幻觉，但会让旁白与画面整体错位，且看起来一切正常，必须提示出来。
+
+    language：可选，本次调用的语言覆盖（'zh'/'en'/'ja'…；'' 或 'auto' 表示交给
+    模型判别）。不传 = 走全局配置 whisper.language（见 whisper_language）。
+    直播切片等场景音频语言用户心里有数，固定下来可以避免自动判别翻车
+    （2026-11-11 实测：中文直播被误判成 en，台词文本打折）。
 
     progress / pct_range：可选。传了就逐段推进进度并响应取消——
     旧实现一次性消费 transcribe 的生成器，长视频（十几分钟）转写期间进度条
@@ -758,6 +763,10 @@ def asr_segments(video_path, progress=None, pct_range=None):
             #    『林顿省警察受伤』×4 这类重复垃圾），而下游剧情理解/语义对齐
             #    会把这些垃圾当台词证据，解说质量从源头就歪了。
             _lang = whisper_language()
+            # 本次调用的显式覆盖优先（'auto'/空 = 不覆盖，走全局配置）
+            _ovr = str(language or '').strip().lower()
+            if _ovr and _ovr != 'auto':
+                _lang = _ovr
             _auto = (_lang in ('', 'auto', None))
             _eff_lang = None if _auto else _lang
             # initial_prompt 只对中文有效：给英文音频塞『以下是普通话的句子』

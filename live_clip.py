@@ -281,7 +281,7 @@ def _reasons(peak_idx, ranks, kw, keywords_names=('音量', '画面动作', '台
 
 
 def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
-                       min_sec=None, max_sec=None, use_asr=True):
+                       min_sec=None, max_sec=None, use_asr=True, asr_language=None):
     """主入口：一条录像 → 高光段列表（含可读理由）。
 
     进度约定与全产品一致：progress['phase']/['pct']，用户取消抛 AbortError
@@ -312,9 +312,10 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
 
     asr = []
     if use_asr and vdur <= ASR_MAX_SEC:
-        up('转写台词（Whisper，长片请耐心）', 40)
+        _lang_note = {'auto': '自动判别'}.get(asr_language or '', asr_language)
+        up('转写台词（Whisper · %s，长片请耐心）' % (_lang_note or '自动判别'), 40)
         try:
-            asr = asr_segments(video_path) or []
+            asr = asr_segments(video_path, language=asr_language or None) or []
         except Exception as e:
             _log.info('[LIVE] ASR 失败（降级为音量+画面双信号）: %s', e)
             asr = []
@@ -372,6 +373,112 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
             'asr_used': bool(asr)}
 
 
+def _vf_chain(aspect, tm):
+    """按输出画幅构造 -vf 滤镜链。aspect：orig=原始 / crop=竖屏9:16居中裁切 /
+    blur=竖屏9:16全景+虚化背景（发抖音推荐：侧边摄像头和弹幕都不丢）。
+    tm 为 HDR tonemap 链（可能为空），永远排在最前（先调色再构图形）。
+
+    【为什么竖屏默认给 blur 而不是硬裁】直播画面里主播摄像头在角落、弹幕在侧边，
+    居中裁切会把它们全部切掉；虚化背景板（剪映同款）保留全部信息还更上镜。
+    crop 留给「主体居中」的素材。"""
+    _base = 'setpts=(PTS-STARTPTS)' + ((',' + tm) if tm else '')
+    if aspect == 'crop':
+        # 居中裁 9:16，再统一到 720x1280（短视频标准竖屏，无奇数维）
+        crop = ("crop=w='min(iw\\,ih*9/16)':h=ih:"
+                "x='(iw-min(iw\\,ih*9/16))/2':y=0")
+        return _base + ',' + crop + ',scale=720:1280:flags=lanczos'
+    if aspect == 'blur':
+        # 背景：放大裁满 9:16 再高斯虚化；前景：**完整画面等比缩进画布**居中叠加
+        # （decrease 而非 increase——increase 会把 16:9 前景放到 2276x1280 直接溢出
+        # 720 宽画布，效果退化成居中裁切，虚化板完全被盖住，侧边内容照样丢：
+        # 2026-11-11 E2E 抽帧实测踩中）。带 [标签] 的完整 filtergraph 必须走
+        # -filter_complex（-vf 只收简单线性链），末尾标 [vout] 供 -map 精确取轨。
+        return ('[0:v]' + _base + ',scale=720:1280:force_original_aspect_ratio=increase,'
+                'crop=720:1280,gblur=sigma=24,setsar=1[bg];'
+                '[0:v]' + _base + ',scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos[fg];'
+                '[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[vout]')
+    return _base
+
+
+def make_covers(video_path, clips, run_dir, progress=None, aspect='orig'):
+    """每条切片自动挑一张封面：在切片时间窗内采 6 个候选帧（峰值时刻 + 均布 5 点），
+    复用产品已有的封面打分器（对比度+细节-过曝过暗）选最佳一帧，存 ASCII 文件名。
+    aspect 为竖屏（crop/blur）时封面同步居中裁成 9:16——直发抖音用得上。
+    返回与 clips 等长的封面路径列表（失败的位置为 ''，不阻断导出）。"""
+    _w = _host()
+    up = (lambda phase, pct: progress.update({'phase': phase, 'pct': pct})
+          if progress else (lambda phase, pct: None))
+    cand_dir = os.path.join(run_dir, '_covers')
+    covers = []
+    try:
+        for i, c in enumerate(clips):
+            up('挑封面 %d/%d' % (i + 1, len(clips)),
+               90 + int(6 * i / max(1, len(clips))))
+            span = max(1.0, c['end'] - c['start'])
+            peak_t = c.get('peak_t') or (c['start'] + span / 2)
+            ts_list = [min(max(t, c['start'] + 0.2), c['end'] - 0.2) for t in (
+                peak_t,
+                c['start'] + span * 0.25,
+                c['start'] + span * 0.45,
+                c['start'] + span * 0.65,
+                c['start'] + span * 0.85,
+                c['start'] + span * 0.5,
+            )]
+            try:
+                _w._cover_candidates_sequential(video_path, cand_dir, ts_list)
+            except Exception as e:
+                _log.info('[LIVE] 封面候选抽帧失败（跳过该封面）: %s', e)
+                covers.append('')
+                continue
+            best, best_s = '', float('-inf')
+            from PIL import Image
+            for k in range(len(ts_list)):
+                fp = os.path.join(cand_dir, 'cand_%02d.jpg' % k)
+                if not os.path.exists(fp) or os.path.getsize(fp) < 1024:
+                    continue
+                try:
+                    im = Image.open(fp)
+                    s = float(_w._cover_score(im))
+                except Exception:
+                    continue
+                if s > best_s:
+                    best, best_s = fp, s
+            if not best:
+                covers.append('')
+                continue
+            out = os.path.join(run_dir, _cover_name(i + 1, clips[i]['start']))
+            try:
+                from PIL import Image as _I
+                im = _I.open(best).convert('RGB')
+                if aspect in ('crop', 'blur'):
+                    # 封面跟随输出画幅：居中裁 9:16，发抖音不用再手动裁
+                    w, h = im.size
+                    cw = min(w, int(h * 9 / 16))
+                    if cw % 2:
+                        cw -= 1
+                    x0 = (w - cw) // 2
+                    im = im.crop((x0, 0, x0 + cw, h))
+                im.save(out, 'JPEG', quality=88)
+                covers.append(out)
+            except Exception as e:
+                _log.info('[LIVE] 封面落盘失败: %s', e)
+                covers.append('')
+    finally:
+        try:
+            import shutil as _sh
+            _sh.rmtree(cand_dir, ignore_errors=True)
+        except Exception:
+            pass
+    return covers
+
+
+def _cover_name(i, start):
+    h = int(start // 3600)
+    m = int(start % 3600 // 60)
+    s = int(start % 60)
+    return 'cover%02d_%02dh%02dm%02ds.jpg' % (i, h, m, s)
+
+
 def _clip_name(i, start):
     """ASCII 文件名（/media/ 路由 + 跨编码安全），中文说明留给报告文本。"""
     h = int(start // 3600)
@@ -380,9 +487,10 @@ def _clip_name(i, start):
     return 'clip%02d_%02dh%02dm%02ds.mp4' % (i, h, m, s)
 
 
-def export_clips(video_path, clips, run_dir, progress=None):
+def export_clips(video_path, clips, run_dir, progress=None, aspect='orig'):
     """把高光段剪成独立 mp4（重编码，-ss 前置秒级 seek + 帧精确重编码）。
 
+    aspect：orig / crop / blur（见 _vf_chain）。
     编码契约与 video_render 的中间产物一致（NVENC p1/qp16 或 x264 ultrafast/crf16，
     音轨 aac 160k 44100/2）；HDR 直播录像（少见但存在）套 tonemap 链，失败不阻断。"""
     _w = _host()
@@ -398,14 +506,20 @@ def export_clips(video_path, clips, run_dir, progress=None):
             _tags = list(BT709_TAGS)
     except Exception as _e:
         _log.info('[LIVE] HDR 探测跳过: %s', _e)
+    vf = _vf_chain(aspect, _tm)
     outs = []
     for i, c in enumerate(clips):
         up('导出切片 %d/%d' % (i + 1, len(clips)),
            70 + int(25 * i / max(1, len(clips))))
         out = os.path.join(run_dir, _clip_name(i + 1, c['start']))
         cmd = ['-y', '-ss', '%.3f' % c['start'], '-i', video_path,
-               '-t', '%.3f' % (c['end'] - c['start']),
-               '-vf', 'setpts=(PTS-STARTPTS)' + ((',' + _tm) if _tm else '')] + enc
+               '-t', '%.3f' % (c['end'] - c['start'])]
+        if vf.startswith('[0:v]'):
+            # 带 [标签] 的完整 filtergraph：走 -filter_complex 并显式映射视频/音频
+            cmd += ['-filter_complex', vf, '-map', '[vout]', '-map', '0:a?']
+        else:
+            cmd += ['-vf', vf]
+        cmd += enc
         if _tm:
             cmd += _tags
         cmd += ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
@@ -418,29 +532,38 @@ def export_clips(video_path, clips, run_dir, progress=None):
     return outs
 
 
-def write_report(meta, clips, files, run_dir):
+def write_report(meta, clips, files, run_dir, covers=None, aspect='orig'):
     """落 report.json（机器可读）+ 切片报告.txt（人可读）。返回 (json_rel, txt_rel)。"""
+    covers = covers or []
+    _aspect_names = {'orig': '原始横屏', 'crop': '竖屏 9:16（居中裁切）',
+                     'blur': '竖屏 9:16（全景+虚化背景）'}
     items = []
-    for c, f in zip(clips, files):
+    for k, (c, f) in enumerate(zip(clips, files)):
+        cov = covers[k] if k < len(covers) else ''
         items.append({'file': os.path.basename(f), 'start': c['start'],
                       'end': c['end'], 'dur': c.get('dur'),
                       'score': c.get('score'), 'peak_t': c.get('peak_t'),
-                      'reasons': c.get('reasons') or []})
+                      'reasons': c.get('reasons') or [],
+                      'cover': os.path.basename(cov) if cov else ''})
     data = {'video': os.path.basename(meta.get('video') or ''),
             'video_dur': meta.get('vdur'), 'window': meta.get('window'),
-            'asr_used': meta.get('asr_used'), 'generated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'asr_used': meta.get('asr_used'),
+            'aspect': _aspect_names.get(aspect, aspect),
+            'generated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
             'clips': items}
     jp = os.path.join(run_dir, 'live_clip_report.json')
     with open(jp, 'w', encoding='utf-8') as fh:
         json.dump(data, fh, ensure_ascii=False, indent=1)
     lines = ['直播切片报告（%s）' % data['generated_at'],
-             '源片：%s（时长 %.1f 分钟）' % (data['video'], (meta.get('vdur') or 0) / 60.0),
+             '源片：%s（时长 %.1f 分钟）｜输出画幅：%s'
+             % (data['video'], (meta.get('vdur') or 0) / 60.0, data['aspect']),
              '共 %d 条切片：' % len(items)]
     for i, it in enumerate(items):
-        lines.append('%d. %s  第%.0f秒~第%.0f秒（%d 秒）  %s'
+        cov = ('（封面 %s）' % it['cover']) if it['cover'] else ''
+        lines.append('%d. %s  第%.0f秒~第%.0f秒（%d 秒）  %s%s'
                      % (i + 1, it['file'], it['start'], it['end'], int(it['dur'] or 0),
-                        '；'.join(it['reasons'])))
-    lines.append('切片为保留原声的独立 mp4，可直接发短视频平台。')
+                        '；'.join(it['reasons']), cov))
+    lines.append('切片为保留原声的独立 mp4（含同名封面 jpg），可直接发短视频平台。')
     tp = os.path.join(run_dir, 'live_clip_report.txt')
     with open(tp, 'w', encoding='utf-8') as fh:
         fh.write('\n'.join(lines) + '\n')

@@ -2735,6 +2735,8 @@ $('lcGo').addEventListener('click', async () => {
     min_sec: parseInt($('lcMin').value, 10) || 20,
     max_sec: parseInt($('lcMax').value, 10) || 60,
     use_asr: $('lcAsr').checked,
+    aspect: $('lcAspect') ? $('lcAspect').value : 'blur',
+    asr_language: $('lcLang') ? $('lcLang').value : 'auto',
   };
   if(vo){ body.video = vo; }
   else {
@@ -2791,10 +2793,12 @@ function renderLiveClips(p){
     v.controls = true;
     v.preload = 'metadata';
     v.src = '/media/' + c.rel;                       // rel 是 ASCII 路径（/media/ 不做 URL 解码）
+    if (c.cover) v.poster = '/media/' + c.cover;     // 自动封面：高光峰值附近挑的最佳帧
     const meta = document.createElement('div');
     meta.className = 'lc-item-meta';
     meta.innerHTML = '<b>#' + (i + 1) + '</b> 第' + Math.round(c.start) + '秒 ~ 第' + Math.round(c.end)
       + '秒（' + Math.round(c.dur) + '秒）'
+      + (c.cover ? '<div class="lc-cover-tag">🖼 已生成封面</div>' : '')
       + '<div class="lc-why">' + (c.reasons || []).map(x => '· ' + x).join('<br>') + '</div>';
     item.appendChild(v);
     item.appendChild(meta);

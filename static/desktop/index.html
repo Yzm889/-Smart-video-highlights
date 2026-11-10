@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=18">
+<link rel="stylesheet" href="desktop.css?v=19">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -199,6 +199,24 @@
       <div class="field">
         <label>或填写本机已有录像的完整路径</label>
         <input type="text" id="lcPath" placeholder="例如 D:\Recordings\2026-11-11 20-30-15.mkv">
+      </div>
+      <div class="lc-row">
+        <label>输出画幅
+          <select id="lcAspect">
+            <option value="blur" selected>竖屏 9:16 · 全景+虚化背景（发抖音推荐）</option>
+            <option value="crop">竖屏 9:16 · 居中裁切</option>
+            <option value="orig">保持原始横屏</option>
+          </select>
+        </label>
+        <label>台词语言
+          <select id="lcLang">
+            <option value="auto" selected>自动判别</option>
+            <option value="zh">中文（直播常固定，防误判）</option>
+            <option value="en">英文</option>
+            <option value="ja">日文</option>
+            <option value="ko">韩文</option>
+          </select>
+        </label>
       </div>
       <div class="lc-row">
         <label>出几条 <input type="number" id="lcN" value="5" min="1" max="10"></label>
@@ -493,6 +511,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=18"></script>
+<script src="desktop.js?v=19"></script>
 </body>
 </html>

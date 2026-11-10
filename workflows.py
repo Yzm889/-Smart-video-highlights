@@ -724,20 +724,29 @@ def dispatch_live_clip(req, prog):
             raise RuntimeError('未收到直播录像：请选择文件，或填写本机录播文件的完整路径')
         prog['phase'] = '读取录像信息'
         prog['pct'] = 3
+        _aspect = str(req.get('aspect') or 'blur').strip().lower()
+        if _aspect not in ('orig', 'crop', 'blur'):
+            _aspect = 'blur'
         meta = LC.analyze_highlights(vp, run_dir, progress=prog,
                                      n_clips=req.get('n_clips'),
                                      min_sec=req.get('min_sec'),
                                      max_sec=req.get('max_sec'),
-                                     use_asr=bool(req.get('use_asr', True)))
+                                     use_asr=bool(req.get('use_asr', True)),
+                                     asr_language=req.get('asr_language'))
         meta['video'] = vp
-        files = LC.export_clips(vp, meta['clips'], run_dir, progress=prog)
-        jp_rel, txt_rel = LC.write_report(meta, meta['clips'], files, run_dir)
+        files = LC.export_clips(vp, meta['clips'], run_dir, progress=prog,
+                                aspect=_aspect)
+        covers = LC.make_covers(vp, meta['clips'], run_dir, progress=prog,
+                                aspect=_aspect)
+        jp_rel, txt_rel = LC.write_report(meta, meta['clips'], files, run_dir,
+                                          covers=covers, aspect=_aspect)
         base = os.path.basename(run_dir)
         prog['clips'] = [{'file': os.path.basename(f),
                           'rel': base + '/' + os.path.basename(f),
+                          'cover': (base + '/' + os.path.basename(cov)) if cov else '',
                           'start': c['start'], 'end': c['end'], 'dur': c.get('dur'),
                           'score': c.get('score'), 'reasons': c.get('reasons')}
-                         for c, f in zip(meta['clips'], files)]
+                         for c, f, cov in zip(meta['clips'], files, covers)]
         prog['report_txt'] = base + '/' + txt_rel
         prog['report_json'] = base + '/' + jp_rel
         # 对外只暴露目录名（与 dispatch_movie_compose 同约定：_safe_dir 只认 basename）

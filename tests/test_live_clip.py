@@ -193,7 +193,7 @@ def test_analyze_synthetic_pipeline_end_to_end(monkeypatch, tmp_path):
     monkeypatch.setattr(LC, '_motion_profile', lambda *a, **k: (None, 0.0))
     asr = [{'start': 101.0, 'end': 109.0, 'text': '卧槽这波操作太强了真的绝了'},
            {'start': 201.0, 'end': 211.0, 'text': '哈哈哈笑死我了名场面'}]
-    monkeypatch.setattr(LC, 'asr_segments', lambda p: asr)
+    monkeypatch.setattr(LC, 'asr_segments', lambda p, language=None: asr)
     res = LC.analyze_highlights('fake.mp4', run_dir=str(tmp_path),
                                 n_clips=2, min_sec=20, max_sec=60, use_asr=True)
     assert res['asr_used'] is True and res['clips']
@@ -239,3 +239,104 @@ def test_enabled_switch():
     finally:
         os.environ.pop('LIVE_CLIP', None)
     assert LC.enabled() is True
+
+
+# ---------------------------------------------------------------------------
+# 竖屏画幅 / 自动封面 / 语言固定（2026-11-11 主人拍板补齐，直发抖音）
+# ---------------------------------------------------------------------------
+def test_vf_chain_aspects():
+    """三种画幅的滤镜链：orig 原样、crop 居中裁 9:16、blur 虚化背景板；
+    HDR tonemap 链永远排在最前（先调色再构图形）。"""
+    orig = LC._vf_chain('orig', '')
+    assert orig == 'setpts=(PTS-STARTPTS)'
+    assert 'crop=' not in orig and 'gblur' not in orig
+
+    crop = LC._vf_chain('crop', '')
+    assert "min(iw\\,ih*9/16)" in crop, '居中裁切必须按 9:16 计算裁宽'
+    assert 'scale=720:1280' in crop, '竖屏输出统一 720x1280（短视频标准）'
+
+    blur = LC._vf_chain('blur', '')
+    assert 'gblur=sigma=24' in blur and 'overlay=(W-w)/2:(H-h)/2' in blur
+    assert '[bg];' in blur and '[fg];' in blur, '全景+虚化 = 背景/前景两层叠加'
+    assert blur.endswith('[vout]'), 'filtergraph 末尾必须标 [vout] 供 -map 取轨'
+
+    crop_tm = LC._vf_chain('crop', 'zscale=...tonemap...')
+    assert crop_tm.index('tonemap') < crop_tm.index('crop='), '调色必须在构图形之前'
+
+
+def test_write_report_includes_covers_and_aspect(tmp_path):
+    meta = {'video': 'live.mkv', 'vdur': 600.0, 'window': 2.0, 'asr_used': True}
+    clips = [{'start': 100.0, 'end': 150.0, 'dur': 50.0, 'score': 0.9,
+              'peak_t': 120.0, 'reasons': ['音量峰值（全片前3%）']}]
+    files = [os.path.join(str(tmp_path), 'clip01_00h01m40s.mp4')]
+    covers = [os.path.join(str(tmp_path), 'cover01_00h01m40s.jpg')]
+    jp, tp = LC.write_report(meta, clips, files, str(tmp_path),
+                             covers=covers, aspect='blur')
+    data = json.loads(open(os.path.join(str(tmp_path), jp), encoding='utf-8').read())
+    assert data['clips'][0]['cover'] == 'cover01_00h01m40s.jpg'
+    assert '虚化' in data['aspect']
+    txt = open(os.path.join(str(tmp_path), tp), encoding='utf-8').read()
+    assert '封面' in txt
+
+
+def test_make_covers_picks_and_saves(monkeypatch, tmp_path):
+    """封面挑选：候选帧 → 打分 → 最佳帧落 ASCII 文件名；候选目录收尾清理。"""
+    import types
+    from PIL import Image
+    import io as _io
+
+    made = {}
+
+    def fake_seq(video_path, cand_dir, ts_list, max_side=640, only=None):
+        os.makedirs(cand_dir, exist_ok=True)
+        rng = np.random.default_rng(k_seed)
+        for k in range(len(ts_list)):
+            # 带噪声的渐变帧（纯色 JPEG <1KB 会被防垃圾帧下限拦掉，不是真实帧形态）
+            base = np.full((90, 160, 3), (20, 30, 40) if k != 1 else (200, 205, 215),
+                           dtype=np.uint8)
+            im = Image.fromarray(base + rng.integers(0, 60, (90, 160, 3), dtype=np.uint8))
+            buf = _io.BytesIO()
+            im.save(buf, 'JPEG')
+            with open(os.path.join(cand_dir, 'cand_%02d.jpg' % k), 'wb') as f:
+                f.write(buf.getvalue())
+        made['ts'] = list(ts_list)
+
+    fake_host = types.SimpleNamespace(
+        _cover_candidates_sequential=fake_seq,
+        _cover_score=lambda im: round(float(np.asarray(im.convert('L')).std()), 1))
+    monkeypatch.setattr(LC, '_host', lambda: fake_host)
+    k_seed = 11
+
+    clips = [{'start': 100.0, 'end': 150.0, 'peak_t': 120.0, 'dur': 50.0}]
+    covers = LC.make_covers('fake.mp4', clips, str(tmp_path), aspect='blur')
+    assert len(covers) == 1 and covers[0], '至少产出一张封面'
+    assert os.path.basename(covers[0]) == 'cover01_00h01m40s.jpg'
+    assert all(ord(ch) < 128 for ch in os.path.basename(covers[0]))
+    assert os.path.getsize(covers[0]) > 1024
+    # 竖屏画幅时封面同步裁 9:16（源 160x90 → 宽 = 90*9/16 = 50）
+    im = Image.open(covers[0])
+    assert im.size == (50, 90), '竖屏封面必须居中裁成 9:16，实际 %s' % (im.size,)
+    assert not os.path.exists(os.path.join(str(tmp_path), '_covers')), '候选目录必须清理'
+    assert made['ts'][0] == 120.0, '峰值时刻必须进候选'
+
+
+def test_analyze_passes_language_to_asr(monkeypatch, tmp_path):
+    """语言固定：asr_language 逐次传给 asr_segments（不传/传 auto = 走全局配置）。"""
+    seen = {}
+    nwin = 150
+    pcm = (np.random.default_rng(3).standard_normal(nwin * 16000) * 500).astype(np.int16)
+    monkeypatch.setattr(LC, '_probe_duration', lambda p: (300.0, True))
+    monkeypatch.setattr(LC, '_load_pcm', lambda *a, **k: (pcm, 8000))
+    monkeypatch.setattr(LC, '_motion_profile', lambda *a, **k: (None, 0.0))
+
+    def fake_asr(path, language=None):
+        seen['language'] = language
+        return [{'start': 40.0, 'end': 60.0, 'text': '哈哈哈'}]
+
+    monkeypatch.setattr(LC, 'asr_segments', fake_asr)
+    LC.analyze_highlights('x.mp4', run_dir=str(tmp_path), n_clips=1,
+                          min_sec=20, max_sec=60, use_asr=True, asr_language='zh')
+    assert seen['language'] == 'zh', '固定语言必须逐次穿透到 asr_segments'
+    LC.analyze_highlights('x.mp4', run_dir=str(tmp_path), n_clips=1,
+                          min_sec=20, max_sec=60, use_asr=True, asr_language=None)
+    assert seen['language'] is None, '不指定 = 交给全局配置'
