@@ -484,3 +484,5 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
 
 /* 顶栏三入口的当前视图高亮（解说/直播切片/环境检查） */
 .tb-btn.active{background:var(--acc-dim);border-color:rgba(61,126,255,.5);color:#cfe0ff}
+.lc-thumb{width:120px;aspect-ratio:16/9;object-fit:cover;border-radius:6px;
+  border:1px solid var(--line);flex:none;background:#000}

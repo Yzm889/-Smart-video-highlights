@@ -508,3 +508,24 @@ def test_save_user_subtitle_accepts_notes_format(tmp_path):
     from ai_providers import parse_subtitle_file
     segs = parse_subtitle_file(saved)
     assert len(segs) == 3 and segs[0]['start'] == 15.0
+
+
+def test_make_candidate_thumbs_writes_ascii_files(monkeypatch, tmp_path):
+    """候选缩略图：每段一帧峰值画面，ASCII 文件名，落 run_dir 根目录（不能自毁）。"""
+    from PIL import Image
+
+    def fake_ffmpeg_run(cmd, **kw):
+        out = cmd[-1]
+        Image.new('RGB', (320, 180), (90, 140, 200)).save(out, 'JPEG', quality=85)
+        return 0, b'', b''
+
+    import ffmpeg_utils
+    monkeypatch.setattr(ffmpeg_utils, 'ffmpeg_run', fake_ffmpeg_run)  # 函数内 import 从模块取
+    clips = [{'start': 100.0, 'end': 150.0, 'peak_t': 120.0, 'dur': 50.0},
+             {'start': 300.0, 'end': 350.0, 'peak_t': 320.0, 'dur': 50.0}]
+    thumbs = LC.make_candidate_thumbs('fake.mp4', clips, str(tmp_path))
+    assert len(thumbs) == 2 and all(thumbs), '两段都要出图'
+    for t in thumbs:
+        assert all(ord(ch) < 128 for ch in os.path.basename(t))
+        assert os.path.getsize(t) > 512
+        assert os.path.dirname(t) == str(tmp_path), '缩略图必须留在 run_dir 根（临时目录会被删）'

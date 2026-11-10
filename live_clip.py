@@ -660,3 +660,33 @@ def write_report(meta, clips, files, run_dir, covers=None, aspect='orig'):
     with open(tp, 'w', encoding='utf-8') as fh:
         fh.write('\n'.join(lines) + '\n')
     return os.path.basename(jp), os.path.basename(tp)
+
+
+def make_candidate_thumbs(video_path, clips, run_dir, progress=None):
+    """阶段①给每个候选段抽一帧峰值画面（封面候选的同款姿势，1 帧/段），
+    供候选编辑器直出缩略图——主人调段时不用盲猜每段是什么画面。
+    返回与 clips 等长的缩略图路径列表（失败位为 ''，不阻断分析）。"""
+    from ffmpeg_utils import ffmpeg_run as _fr
+    outs = []
+    for i, c in enumerate(clips):
+        span = max(1.0, c['end'] - c['start'])
+        t = min(max(c.get('peak_t') or (c['start'] + span / 2),
+                    c['start'] + 0.2), c['end'] - 0.2)
+        out = os.path.join(run_dir, _thumb_name(i + 1, c['start']))
+        try:
+            rc, _o, e = _fr(['-y', '-ss', '%.3f' % t, '-i', video_path,
+                             '-frames:v', '1', '-q:v', '3', out])
+            if rc == 0 and os.path.isfile(out) and os.path.getsize(out) > 512:
+                outs.append(out)
+            else:
+                outs.append('')
+        except Exception:
+            outs.append('')
+    return outs
+
+
+def _thumb_name(i, start):
+    h = int(start // 3600)
+    m = int(start % 3600 // 60)
+    s = int(start % 60)
+    return 'thumb%02d_%02dh%02dm%02ds.jpg' % (i, h, m, s)

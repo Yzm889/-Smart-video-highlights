@@ -2817,6 +2817,10 @@ function renderLcEditor(){
   head.textContent = '候选高光 ' + _lcCandidates.length + ' 条 —— 可删除 / 改起止秒数 / 手动圈段，确认后导出';
   box.appendChild(head);
   _lcCandidates.forEach((c, i) => box.appendChild(_lcRow(c, i)));
+  const tip = document.createElement('div');
+  tip.className = 'lc-seg-why';
+  tip.textContent = '缩略图 = 每段峰值时刻的画面；确认导出后还会按峰值重新挑封面';
+  box.appendChild(tip);
   const acts = document.createElement('div');
   acts.className = 'lc-foot';
   const bAdd = document.createElement('button');
@@ -2886,6 +2890,13 @@ function _lcRow(c, i){
     if(k >= 0) _lcCandidates.splice(k, 1);
     renderLcEditor();
   });
+  if (c.thumb) {
+    const img = document.createElement('img');
+    img.className = 'lc-thumb';
+    img.src = '/media/' + c.thumb;
+    img.alt = '峰值画面';
+    row.appendChild(img);
+  }
   row.append(n, lS, lE, dur, bDel, why);
   refreshDur();
   return row;

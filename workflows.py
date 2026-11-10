@@ -741,9 +741,17 @@ def dispatch_live_clip(req, prog):
             'aspect_default': str(req.get('aspect') or 'blur'),
             'clips': meta.get('clips') or [],
         })
+        thumbs = LC.make_candidate_thumbs(vp, meta.get('clips') or [], run_dir,
+                                          progress=prog)
+        base = os.path.basename(run_dir)
+        cand_prog = []
+        for c, t in zip(meta.get('clips') or [], thumbs):
+            d = dict(c)
+            d['thumb'] = (base + '/' + os.path.basename(t)) if t else ''
+            cand_prog.append(d)
         prog['run_dir'] = base          # 对外只暴露目录名（_safe_dir 只认 basename）
         prog['vdur'] = meta.get('vdur')
-        prog['clips'] = meta.get('clips') or []   # 候选清单，前端据此渲染编辑器
+        prog['clips'] = cand_prog       # 候选清单（含缩略图），前端据此渲染编辑器
         prog['draft_saved'] = True
         prog['done'] = True
         prog['pct'] = 100
