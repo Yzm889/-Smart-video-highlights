@@ -41,7 +41,10 @@ def _calls_without_flag(path):
     src = io.open(path, encoding='utf-8', errors='replace').read().splitlines()
     bad = []
     for i, line in enumerate(src, 1):
-        if not re.search(r'subprocess\.(run|Popen|call|check_output)', line):
+        # 【2026-11-10 补漏】原来只匹配 run|Popen|call|check_output，**漏了 check_call**
+        # —— ensure_deps() 的 pip install 正好是 check_call，于是长期躲过门禁。
+        # 词表要与「Windows 下会新建控制台」的 API 全集对齐。
+        if not re.search(r'subprocess\.(run|Popen|call|check_call|check_output)', line):
             continue
         # 参数可能跨多行；向后看 9 行足够覆盖本项目的调用形态
         chunk = ' '.join(src[i - 1:i + 9])

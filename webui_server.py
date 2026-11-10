@@ -3786,7 +3786,7 @@ def ensure_deps():
     if not has('yt_dlp'): missing.append('yt-dlp')
     if missing:
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
-                               '--no-input'] + missing)
+                               '--no-input'] + missing, creationflags=_NO_WIN)
 
 
 import numpy as np
