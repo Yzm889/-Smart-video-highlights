@@ -302,7 +302,14 @@ def test_vlm_cfg_defaults(monkeypatch):
     assert c['enabled'] is False
     assert c['mode'] == 'ollama'
     assert c['base_url'] == 'http://localhost:11434'
-    assert c['model'] == 'qwen2.5vl:latest'
+    # 【2026-11-10 改】兜底值原来是 2024 代 'qwen2.5vl:latest'。主人真机装的是 qwen3-vl:8b，
+    # 配置里又没写 model → 探活拿旧名去查、永远「未拉取」，而点「拉取」拉的是新名，
+    # 于是「画面索引为空 → 退化为按位置盲切」，修不好也看不出为什么。
+    # 兜底必须与「模型中心」的当前默认一致：desktop.js 的 VLM_MODEL_CATALOG
+    # = [{minicpm-v4.5}, {qwen3-vl:8b}]，且主人真机装的正是 qwen3-vl:8b。
+    # （注：webui_server.py 的 HARDWARE_MODEL_RECS 各档用的是 qwen3-vl:4b/30b/minicpm-v4.5，
+    #   那是「按显存推荐」，不是缺省兜底，别拿它当依据。）
+    assert c['model'] == 'qwen3-vl:8b'
 
 
 def test_vlm_enabled_reflects_config(monkeypatch):
@@ -1794,17 +1801,29 @@ def test_model_align_parses_valid_json(monkeypatch):
 
 
 def test_model_align_rejects_bad_output(monkeypatch):
-    """模型输出不合法时必须返回 None，由调用方回退算法，而不是产出错乱分镜。"""
+    """模型输出不合法时必须返回 None，由调用方回退算法，而不是产出错乱分镜。
+
+    【2026-11-10 修】原来 patch 的是 S._llm_text。_model_align_shots 定义在
+    movie_narrator 里，读的是 **movie_narrator 自己的模块全局** _llm_text，
+    所以打在 webui_server 上的补丁根本没生效 —— 真实模型一直被调用。
+    以前本机没开本地模型（local.enabled 默认 False）时 _llm_text 返回 None，
+    这条测试靠「模型不可用」侥幸通过，其实一次都没验证过它声称的东西。
+    主人这次打开 local.enabled 后真机上模型答得出来，它就红了。
+    正确的做法见上面 :1796 的 test_model_align_parses_valid_json —— patch M._llm_text。
+    """
     import webui_server as S
+    import movie_narrator as M
     lines = ['甲。', '乙。', '丙。', '丁。']
     for bad in ['这不是JSON', '[3, 6]', '[]', '[9, 3, 6, 12]', '', None]:
-        monkeypatch.setattr(S, '_llm_text', lambda *a, **k: bad)
+        monkeypatch.setattr(M, '_llm_text', lambda *a, **k: bad)
         assert S._model_align_shots(_shots(12), lines) is None, '应拒绝非法输出: %r' % bad
 
 
 def test_align_falls_back_to_algo_when_model_unavailable(monkeypatch):
+    """【2026-11-10 修】同上的补丁打空问题：必须 patch movie_narrator._llm_text。"""
     import webui_server as S
-    monkeypatch.setattr(S, '_llm_text', lambda *a, **k: None)
+    import movie_narrator as M
+    monkeypatch.setattr(M, '_llm_text', lambda *a, **k: None)
     segs, src = S._align_shots_to_lines(_shots(12), ['甲。', '乙。', '丙。'])
     assert src == 'algo' and len(segs) == 3
 

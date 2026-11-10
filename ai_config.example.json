@@ -31,7 +31,7 @@
     "enabled": false,
     "mode": "ollama",
     "base_url": "http://localhost:11434",
-    "model": "qwen2.5vl:latest",
+    "model": "qwen3-vl:8b",
     "api_key": ""
   },
   "mirror": {

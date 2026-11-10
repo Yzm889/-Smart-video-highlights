@@ -1765,7 +1765,13 @@ function openSettings(sec){
   fetch('/api/ai/config').then(r => r.json()).then(d => {
     const c = d.config || {};
     $('setVisBase').value = (c.vision || {}).base_url || '';
-    $('setVisModel').value = (c.vision || {}).model || '';
+    // 【2026-11-10 修数据丢失】以前只读 c.vision.model，而运行时真正生效的是 c.vlm.model。
+    // 主人真机上 vision.model="" 而 vlm.model 才是实际值 → 输入框显示空白 →
+    // 保存时 desktop.js 下面 `const _vm = setVisModel.value` 取到空 →
+    // payload.vlm 不带 model 键 → handler.py:1176 的 `elif k in cur: del cur[k]` 把它删掉。
+    // 于是「下拉里选好了看图模型，下次一点保存就没了」，反复出现、用户看不出原因。
+    // 这里改成「vision 优先、回退 vlm」，输入框始终显示实际生效的模型名。
+    $('setVisModel').value = (c.vision || {}).model || (c.vlm || {}).model || '';
     $('setVisKey').value = '';   // 已配置的不回显，留空=不修改
     $('setVisKey').placeholder = (c.vision || {}).api_key ? '已配置（不改请留空）' : '未配置';
     $('setLocalBase').value = (c.local || {}).base_url || '';

@@ -1295,7 +1295,7 @@ def vlm_cfg():
         'enabled': bool(cfg.get('enabled', False)),
         'mode': (cfg.get('mode') or 'ollama'),  # ollama(原生 /api/chat) | openai(/v1/chat/completions 多模态)
         'base_url': base,
-        'model': cfg.get('model') or 'qwen2.5vl:latest',
+        'model': cfg.get('model') or 'qwen3-vl:8b',
         'api_key': cfg.get('api_key') or '',
     }
 
