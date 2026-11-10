@@ -351,7 +351,7 @@ class _Serve:
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=self._errf,
                                  text=True, encoding='utf-8', errors='replace',
-                                 bufsize=1, env=env)
+                                 bufsize=1, env=env, creationflags=_NO_WIN)
         except Exception as e:
             self.error = str(e)[:300]
             return False

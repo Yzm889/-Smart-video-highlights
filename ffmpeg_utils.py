@@ -12,6 +12,13 @@ _PROC_LOCK = threading.Lock()
 
 _TLS = threading.local()   # 每个任务线程绑定自己的 runid，供 ffmpeg_run 读取
 
+# 【P0-2 闪窗】Windows 下 GUI（pythonw/EXE 无控制台）启动控制台子进程时，
+# 系统默认会给子进程新建一个控制台窗口 —— 主人实测「命令行窗口不断闪跳」。
+# 一次出片要调几十次 ffmpeg（抽帧/场景探测/单段剪辑/合成/探测），于是黑框连成一片。
+# CREATE_NO_WINDOW 让子进程不要窗口；非 Windows 上 getattr 取不到该常量 → 0（无副作用）。
+# 项目里 webui_server.py:753 与 tts2_engines.py:96 早已这么写，只是没覆盖 ffmpeg 主路径。
+_NO_WIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 class AbortError(Exception):
 
     """任务被用户取消时抛出。"""
@@ -78,8 +85,8 @@ def ffmpeg_run(args, input_data=None, on_progress=None, timeout=FFMPEG_MAX_SECON
     runid = getattr(_TLS, 'runid', None)
 
     proc = subprocess.Popen([exe] + args, stdin=subprocess.PIPE,
-
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=_NO_WIN)
 
     if runid:
 
