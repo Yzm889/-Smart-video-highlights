@@ -1102,6 +1102,7 @@ def _warmup_worker(video_path, fp):
     """预热执行体：ASR（写 asr_* 缓存）→ VLM（_vlm_sample_timeline 写 vlm_sample_* 缓存）。
     与正式任务共用缓存键，完成后正式任务直接命中。"""
     run_dir = None
+    _w._bump_task_running(1)   # 预热的 VLM 阶段同样经不起推理探针来抢显存/杀 worker
     try:
         vdur = probe_audio_len(video_path) or 0.0
         if vdur <= 0:
@@ -1131,6 +1132,7 @@ def _warmup_worker(video_path, fp):
     except Exception as e:
         _log.info('[WARMUP] 预热失败（静默，不影响主流程）: %s' % e)
     finally:
+        _w._bump_task_running(-1)
         # S8: 预热产品（ASR/VLM 缓存）已写入 analysis_cache，_warmup_* 仅临时工作区，收尾即删
         if run_dir and os.path.isdir(run_dir):
             try:
@@ -1190,6 +1192,7 @@ def _start_next_queued():
     _log.info('排队任务启动: %s，剩余队列=%d', runid, len(_w._TASK_QUEUE))
     def _queued_runner():
         _w._TLS.runid = runid
+        _w._bump_task_running(1)   # 与 handler._runner 同口径：探针据此停手
         try:
             del _w._TLS.tts_engine
         except Exception:
@@ -1217,6 +1220,7 @@ def _start_next_queued():
         except Exception as e:
             _w.fail_task(prog_p, e)
         finally:
+            _w._bump_task_running(-1)
             _w._clear_active_task()   # 任务结束，清除活动状态
             _w._TASK_SEM.release()
             _w._start_next_queued()

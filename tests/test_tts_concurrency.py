@@ -148,3 +148,30 @@ def test_tts_mimo_stays_serial(monkeypatch, tmp_path):
     assert len(res) == 3
     assert seen['max'] == 1, 'mimo 必须串行：max_active=%d' % seen['max']
     assert local_calls['n'] == 0, 'mimo 成功时不走本地引擎'
+
+
+# ---------------------------------------------------------------------------
+# v1.4.28：并发路数按可用内存算。
+# 2026-11-11 主人实测：16GB 内存机器「并发跑每次都炸内存，导致卡住」——
+# 显存被大模型换页挤爆后内存只剩 8GB，旧实现写死默认 3 路等于雪上加霜。
+# 每路并发是独立 edge-tts CLI 子进程（Python 解释器 + 缓冲，100~300MB）。
+# ---------------------------------------------------------------------------
+def test_concurrency_env_override_still_wins(monkeypatch):
+    """显式配置优先：内存再紧，TTS_CONCURRENCY 说了算（钳制 1~5）。"""
+    monkeypatch.setattr(M, '_free_sys_ram_mb', lambda: 1000)
+    monkeypatch.setenv('TTS_CONCURRENCY', '3')
+    assert M._tts_concurrency() == 3
+    monkeypatch.setenv('TTS_CONCURRENCY', '1')
+    assert M._tts_concurrency() == 1
+    monkeypatch.setenv('TTS_CONCURRENCY', '99')
+    assert M._tts_concurrency() == 5, '超配钳到 5'
+
+
+def test_concurrency_scales_with_free_ram(monkeypatch):
+    """未显式配置时按可用内存分档：<4GB → 1 路，<8GB → 2 路，其余 3 路；
+    拿不到内存信息（返回 0）回退默认 3 路，不许把拿不到信息的机器判死。"""
+    monkeypatch.delenv('TTS_CONCURRENCY', raising=False)
+    for free, want in ((1000, 1), (3999, 1), (4000, 2), (7999, 2),
+                       (8000, 3), (0, 3)):
+        monkeypatch.setattr(M, '_free_sys_ram_mb', lambda v=free: v)
+        assert M._tts_concurrency() == want, '可用 %sMB 应得 %s 路' % (free, want)

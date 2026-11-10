@@ -299,6 +299,7 @@ class Handler(BaseHTTPRequestHandler):
             def _runner():
                 nonlocal prog
                 _w._TLS.runid = runid
+                _w._bump_task_running(1)   # 真实推理探针据此停手（见 webui_server 定义处）
                 # 清掉上一次任务锁定的配音引擎：每个任务重新选，避免沿用旧音色
                 try:
                     del _w._TLS.tts_engine
@@ -329,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     _w.fail_task(prog, e)
                 finally:
+                    _w._bump_task_running(-1)
                     _w._clear_active_task()   # 任务结束，清除活动状态
                     _w._TASK_SEM.release()   # 无论成功/失败/取消都必须归还名额
                     # 失败/取消的任务：回收 run_dir 里的源片副本与中间物
@@ -1015,6 +1017,17 @@ class Handler(BaseHTTPRequestHandler):
         now = _t.time()
         if st['running'] or now - st['ts'] < 60:
             return st
+        # 【2026-11-11 显存拉锯战】生成任务/预热运行期间必须停掉真实推理探针：
+        # 探针真打一次生成（把 qwen3:8b 重新灌进显存 5 分钟），还会先调
+        # free_vram_for_llm 杀掉常驻的配音 worker 腾地方——而桌面 UI 每 15s
+        # 轮询一次 /api/local/status（desktop.js refreshEnv），配音全程探针每 60s
+        # 重演一遍「杀 worker + 灌模型」→ 换页卡死 + worker 反复重启闪黑窗 +
+        # 「显存卸了又弹回」。探针是开跑前检查的事，任务跑着时看结果就知道。
+        try:
+            if _w.is_task_running():
+                return st
+        except Exception:
+            pass
         st['running'] = True
         def _job():
             try:

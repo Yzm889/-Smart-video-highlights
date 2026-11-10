@@ -60,7 +60,12 @@ def test_release_vram_leaves_ollama_alone_when_enough(monkeypatch):
 
 
 def test_release_vram_unloads_ollama_and_reports(monkeypatch):
-    """缺显存 → 给 Ollama 每个在驻模型发 keep_alive=0，腾够就放行并说明。"""
+    """缺显存 → 给 Ollama 每个在驻模型发卸载请求，腾够就放行并说明。
+
+    【2026-11-11 升级】卸载请求必须带最小化生成参数（prompt 空 + num_predict=1 +
+    think=False）并等完成（timeout 90s）：旧行为 6s 就断开，碰上「ps 之后被别人
+    抢先卸载」的竞态会触发一次重载、keep_alive=0 没落地、模型继续驻留。
+    对照实验见 tts2_engines._ollama_unload 文档。"""
     seen = []
 
     def _http(base=None, path=None, payload=None, timeout=4):
@@ -74,7 +79,9 @@ def test_release_vram_unloads_ollama_and_reports(monkeypatch):
     _reset(monkeypatch)
     ok, note = T2.release_vram(want=5200)
     assert ok is True
-    assert ('/api/generate', {'model': 'qwen3:8b', 'keep_alive': 0}) in seen
+    assert ('/api/generate', {'model': 'qwen3:8b', 'prompt': '', 'stream': False,
+                              'think': False, 'keep_alive': 0,
+                              'options': {'num_predict': 1}}) in seen
     assert 'qwen3:8b' in note and '已临时腾出显存' in note
 
 
@@ -349,3 +356,126 @@ def test_chinese_text_survives_the_pipe(monkeypatch, tmp_path):
     assert srv.ask({'text': text, 'out': 'x'})[0] is True
     assert got.read_text(encoding='utf-8') == text, '中文走到 worker 不能变形'
     srv.proc.kill()
+
+
+# ---------------------------------------------------------------------------
+# v1.4.28：显存拉锯战三连（2026-11-11 主人实测「配音卡死+炸内存+频繁黑窗」）
+# qwen3:8b（默认 32K ctx 驻留 9.65GB）+ IndexTTS2 worker（6.6GB）= 15.6GB > 12GB
+# → WDDM 静默换页进内存 → 每句 5s 变 60~100s → ask 超时 → worker 反复重启闪黑窗。
+# ---------------------------------------------------------------------------
+
+def test_ollama_unload_sends_minimal_generate(monkeypatch):
+    """卸载请求必须是「最小代价生成」：空 prompt + num_predict=1 + think=False +
+    等 90s。6s 就断开的旧写法，竞态下会让 keep_alive=0 没落地、模型继续驻留。"""
+    seen = []
+
+    def _http(base=None, path=None, payload=None, timeout=4):
+        seen.append({'path': path, 'payload': payload, 'timeout': timeout})
+        return b'{}'
+
+    monkeypatch.setattr(T2, '_http', _http)
+    freed = T2._ollama_unload(['qwen3:8b', '', None, 'nomic-embed-text:latest'])
+    assert freed == ['qwen3:8b', 'nomic-embed-text:latest'], '空名必须被跳过'
+    assert len(seen) == 2
+    p = seen[0]
+    assert p['path'] == '/api/generate'
+    assert p['payload']['keep_alive'] == 0
+    assert p['payload']['prompt'] == ''
+    assert p['payload']['think'] is False
+    assert p['payload']['options'] == {'num_predict': 1}
+    assert p['timeout'] >= 60, '竞态下要冷加载 40~60s，客户端必须等它完成'
+
+
+def test_ollama_unload_swallows_http_errors(monkeypatch):
+    """Ollama 没开/请求失败：只跳过该模型，绝不抛——腾位失败不该阻断配音。"""
+
+    def _boom(**k):
+        raise RuntimeError('connection refused')
+
+    monkeypatch.setattr(T2, '_http', _boom)
+    assert T2._ollama_unload(['qwen3:8b']) == []
+
+
+def test_ensure_tts_vram_noop_when_headroom_ok(monkeypatch):
+    """余量够 → 纯只读检查，不许动 Ollama（每 10 句调用一次，必须是零开销）。"""
+    called = []
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (7500, 12288))
+    monkeypatch.setattr(T2, 'ollama_loaded', lambda *a, **k: called.append(1) or ['qwen3:8b'])
+    assert T2.ensure_tts_vram() == []
+    assert not called, '余量 4.7GB 足够时动 Ollama 就是白折腾'
+
+
+def test_ensure_tts_vram_unloads_when_short(monkeypatch):
+    """余量不足（比如 qwen3:8b 被谁灌回来了）→ 卸 Ollama，返回卸掉的名字。"""
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (12100, 12288))
+    monkeypatch.setattr(T2, 'ollama_loaded', lambda *a, **k: ['qwen3:8b'])
+    monkeypatch.setattr(T2, '_ollama_unload', lambda names: list(names))
+    assert T2.ensure_tts_vram(wait_sec=0) == ['qwen3:8b']
+
+
+def test_ensure_tts_vram_no_gpu_info_does_not_block(monkeypatch):
+    monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (0, 0))
+    assert T2.ensure_tts_vram() == []
+
+
+def test_ask_reports_worker_death_not_generic_timeout(monkeypatch, tmp_path):
+    """worker 死了必须报真实原因（退出码+日志尾巴），不能再谎报「合成超时」。
+    2026-11-11：worker 被显存换页拖死后，旧文案把排障引向「显存被抢占」歧途。"""
+    worker = tmp_path / 'die_on_request.py'
+    worker.write_text('\n'.join([
+        'import sys, os, json',
+        'print(json.dumps({"event": "ready"}), flush=True)',
+        'for line in sys.stdin:',
+        '    os._exit(3)',                # 收到请求直接死，一行答复都不留
+    ]) + '\n', encoding='utf-8')
+    monkeypatch.setattr(T2, 'TTS2_DIR', str(tmp_path))
+    monkeypatch.setattr(T2, 'release_vram', lambda **k: (True, ''))
+    srv = T2._Serve('die', [sys.executable, '-u', str(worker)],
+                    ready_timeout=30, need_mb=1)
+    assert srv._start() is True
+    ok, err = srv.ask({'text': 'x', 'out': 'y'}, timeout=20)
+    assert ok is False
+    assert '合成超时' not in err, 'worker 都死了还报超时就是误导'
+    assert '配音进程已退出' in err and '退出码 3' in err
+    assert srv.proc is None, '死掉的进程不许留在 self.proc 上'
+
+
+def test_ask_still_reports_plain_timeout_when_worker_alive():
+    """worker 活着但没算完 → 仍报「合成超时」（这是真的算得慢/被抢显存）。"""
+    src = open(os.path.join(ROOT, 'tts2_engines.py'), encoding='utf-8').read()
+    assert '合成超时' in src, '超时也要说人话，别只说 worker 无响应'
+    assert '配音进程已退出' in src, 'worker 死亡必须单独成句，不许混进超时文案'
+
+
+def test_text_model_num_ctx_is_pinned_and_shared():
+    """文本模型必须显式给 num_ctx=16384，且真实调用与推理探针共用同一处。
+
+    不给 num_ctx 时 Ollama 按模型默认 32768 加载（KV 缓存吃掉 ~4.8GB，本机
+    qwen3:8b 驻留 9.65GB），12GB 卡上和配音 worker 必然对撞。ctx 一变 Ollama
+    就重载——探针和正式调用若不同值会互相踢（主人拍板降到 16K，2026-11-11）。"""
+    import io
+    src = io.open(os.path.join(ROOT, 'ai_providers.py'), encoding='utf-8').read()
+    assert '_LLM_NUM_CTX = 16384' in src, '文本模型 ctx 必须显式钉在 16384'
+    assert "'num_ctx': _LLM_NUM_CTX" in src, '必须用共享常量，不许写死数字'
+    i = src.index('def _ollama_native_chat')
+    assert "'num_ctx': _LLM_NUM_CTX" in src[i:], 'options 里没有 num_ctx 会按 32K 重载'
+
+
+def test_infer_probe_is_gated_on_running_tasks():
+    """任务/预热运行期间，真实推理探针必须停手（源码级钉子）。
+
+    实测机理：桌面 UI 每 15s 轮询 /api/local/status → 探针每 60s force 真打一次
+    生成 → 先 free_vram_for_llm 杀掉配音 worker、再把 qwen3:8b 灌回显存 5 分钟
+    →「卸了又弹回」+ worker 重启闪黑窗 + 换页卡死。探针只在无任务时跑。"""
+    import io
+    hs = io.open(os.path.join(ROOT, 'handler.py'), encoding='utf-8').read()
+    i = hs.index('def _local_infer_probe_async')
+    assert '_w.is_task_running()' in hs[i:i + 2000], (
+        '探针必须先问 is_task_running()，任务跑着时不许真打生成请求')
+    ws = io.open(os.path.join(ROOT, 'webui_server.py'), encoding='utf-8').read()
+    assert 'def is_task_running' in ws and 'def _bump_task_running' in ws
+    # 任务与预热的进出必须配对增减（漏一处就是探针永久停手或永久误伤）
+    for fn_src in ('handler', 'workflows'):
+        s = io.open(os.path.join(ROOT, fn_src + '.py'), encoding='utf-8').read()
+        assert s.count('_bump_task_running(1)') >= 1, fn_src + ' 没有登记任务开始'
+        assert s.count('_bump_task_running(-1)') >= 1, fn_src + ' 没有登记任务结束'

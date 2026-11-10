@@ -271,6 +271,25 @@ def _max_concurrent_tasks():
 # 超限采用「直接拒绝并提示」而不是无限排队——排队没有任何可见反馈，用户只会以为卡死。
 _MAX_CONCURRENT_TASKS = _max_concurrent_tasks()
 _TASK_SEM = threading.Semaphore(_MAX_CONCURRENT_TASKS)
+# 正在执行的「重活」计数（生成任务 + 上传预热）：真实推理探针据此停手。
+# 2026-11-11 实锤：桌面 UI 每 15s 轮询 /api/local/status → 探针每 60s force 真打
+# 一次生成 → 先 free_vram_for_llm 杀掉常驻配音 worker、再把 qwen3:8b 灌回显存
+# 5 分钟——配音全程被它反复拆台（换页卡死 + worker 重启闪黑窗 + 「卸了又弹回」）。
+# 探针是「开跑前检查」的事，任务跑着的时候模型好不好，看结果就知道。
+_TASK_RUNNING_LOCK = threading.Lock()
+_TASK_RUNNING = 0
+
+def _bump_task_running(delta):
+    """任务/预热线程进出时增减计数；真实推理探针（handler._local_infer_probe_async）
+    读 is_task_running() 决定要不要真打生成请求。"""
+    global _TASK_RUNNING
+    with _TASK_RUNNING_LOCK:
+        _TASK_RUNNING += delta
+
+def is_task_running():
+    with _TASK_RUNNING_LOCK:
+        return _TASK_RUNNING > 0
+
 _TASK_QUEUE = []  # 排队中的任务 [(fn, req, runid, run_dir, prog), ...]
 _TASK_QUEUE_LOCK = threading.Lock()
 

@@ -6060,14 +6060,52 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     return segs, texts, asr, {}, 'movie', events, narr_map
 
 
+def _free_sys_ram_mb():
+    """系统可用物理内存 MB（Windows GlobalMemoryStatusEx，无第三方依赖）；
+    拿不到返回 0，调用方回退默认路数。"""
+    try:
+        if os.name == 'nt':
+            import ctypes
+
+            class _MEMSTAT(ctypes.Structure):
+                _fields_ = [('dwLength', ctypes.c_ulong),
+                            ('dwMemoryLoad', ctypes.c_ulong),
+                            ('ullTotalPhys', ctypes.c_ulonglong),
+                            ('ullAvailPhys', ctypes.c_ulonglong),
+                            ('ullTotalPageFile', ctypes.c_ulonglong),
+                            ('ullAvailPageFile', ctypes.c_ulonglong),
+                            ('ullTotalVirtual', ctypes.c_ulonglong),
+                            ('ullAvailVirtual', ctypes.c_ulonglong),
+                            ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
+
+            m = _MEMSTAT()
+            m.dwLength = ctypes.sizeof(_MEMSTAT)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+                return int(m.ullAvailPhys // (1024 * 1024))
+    except Exception:
+        pass
+    return 0
+
+
 def _tts_concurrency():
-    """TTS 并发路数：环境变量 TTS_CONCURRENCY 覆盖，默认 3，钳制 1~5。
+    """TTS 并发路数：环境变量 TTS_CONCURRENCY 显式配置优先（钳制 1~5）；
+    未配置时按系统可用内存算——每路并发是独立的 edge-tts CLI 子进程
+    （Python 解释器 + 探测/合成缓冲，每路 100~300MB），显存换页把内存吃满的
+    16GB 机器再开 3 路就是雪上加霜（2026-11-11 主人实测「并发跑每次都炸内存」）。
+    可用 <4GB → 1 路；<8GB → 2 路；其余 3 路。
     仅「本地引擎 + edge-tts 可用」时生效（网络等待可重叠）；mimo/本地 CPU 引擎保持串行。"""
     try:
-        v = int(os.environ.get('TTS_CONCURRENCY', '') or 3)
+        v = int(os.environ.get('TTS_CONCURRENCY', '') or 0)
     except ValueError:
-        v = 3
-    return max(1, min(5, v))
+        v = 0
+    if v > 0:
+        return max(1, min(5, v))
+    free_mb = _free_sys_ram_mb()
+    if free_mb and free_mb < 4000:
+        return 1
+    if free_mb and free_mb < 8000:
+        return 2
+    return 3
 
 
 def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
@@ -6134,6 +6172,17 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
     done = 0
     _log.info('[DIAG] TTS开始: 共%d段, 需生成%d, 跳过%d, 并发%d路' % (
         len(narr), total, skipped, _n_workers if _parallel else 1))
+    # 【显存保活·开工】配音 worker（6.6GB）常驻后，谁再把 qwen3:8b（32K ctx 时
+    # 9.65GB）灌进显存，12GB 卡立刻装不下 → WDDM 静默换页 → 每句 5s 变 60~100s。
+    # 写稿/画面理解到这里都结束了，Ollama 里的模型纯属抢地盘的——余量不足就请出去。
+    try:
+        import tts2_engines as _T2g
+        _freed_tts = _T2g.ensure_tts_vram()
+        if _freed_tts:
+            _log.info('[DIAG] 配音开工前腾显存: %s（写稿/画面理解已结束，下次用到会自动重载）'
+                      % '、'.join(_freed_tts))
+    except Exception as _e:
+        _log.info('[DIAG] 配音开工显存检查失败（不阻断）: %s' % _e)
 
     def _update_progress(phase, pct):
         if progress:
@@ -6197,6 +6246,15 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
         if done % 10 == 0:
             _log.info('[DIAG] 配音 %d/%d 句（最近一句 %.1fs）'
                       % (processed, len(narr), _dur / 1000.0))
+            # 【显存保活·每 10 句】防配音中途有谁把大模型灌回显存（探针/预热/手滑），
+            # 撞上换页就整批拖死。余量足时是零开销的只读检查。
+            try:
+                import tts2_engines as _T2g
+                _freed_mid = _T2g.ensure_tts_vram()
+                if _freed_mid:
+                    _log.info('[DIAG] 配音中途显存告急，已请出: %s' % '、'.join(_freed_mid))
+            except Exception:
+                pass
         if _parallel:
             _update_progress('逐段配音 %d/%d（并发%d路）' % (processed, len(narr), _n_workers),
                              55 + int(25 * processed / max(1, len(narr))))

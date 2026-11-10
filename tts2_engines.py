@@ -150,6 +150,65 @@ def ollama_loaded(base='http://127.0.0.1:11434'):
     return names
 
 
+def _ollama_unload(names, base='http://127.0.0.1:11434', timeout=90):
+    """把一组**已驻留**的模型从 Ollama 显存里请出去，返回发出成功请求的名字列表。
+
+    【2026-11-11 对照实验（A/B/C 三种卸载方式 × 75s 观察）】模型驻留时
+    /api/generate{keep_alive:0} 秒回、卸载干净、75s 内零弹回——「卸了又弹回」的
+    真凶不是卸载 API，是真实推理探针每 60s 把模型重新灌回来（handler 的
+    /api/local/status 探针，桌面 UI 每 15s 轮询触发）。这里仍做三处加固：
+    ① prompt 置空 + num_predict=1 + think=False——就算碰上「ps 之后被别人抢先
+       卸载」的竞态，这条请求触发的重载也是最小代价（空 prompt 不再让 qwen3
+       进思考自由发挥）；② timeout 从 6s 放宽到 90s——竞态下要冷加载 40~60s，
+       6s 就断开会让 keep_alive=0 没生效、模型按旧 keep_alive 继续驻留；
+    ③ 等请求完成再返回（旧实现 6s 客户端断开，服务端可能没把卸载落地）。"""
+    freed = []
+    for n in names:
+        if not str(n or '').strip():
+            continue
+        try:
+            _http(base=base, path='/api/generate',
+                  payload={'model': n, 'prompt': '', 'stream': False, 'think': False,
+                           'keep_alive': 0, 'options': {'num_predict': 1}},
+                  timeout=timeout)
+            freed.append(n)
+        except Exception:
+            pass
+    return freed
+
+
+def ensure_tts_vram(headroom_mb=2000, wait_sec=10):
+    """配音开工/进行中的显存保活：余量低于 headroom 就把 Ollama 模型请出去。
+
+    与 release_vram 的区别：release_vram 服务于「worker 还没起，要给它腾出 want」；
+    这里服务于「worker 已经常驻/正要常驻，配音阶段写稿和画面理解都用不上 Ollama」。
+    2026-11-11 主人实测：qwen3:8b（默认 32K ctx 驻留 9.65GB）+ IndexTTS2（6.6GB）
+    = 15.6GB > 12GB 显存 → WDDM 静默换页进内存 → 每句推理 5s 变 60~100s →
+    ask 超时 → worker 反复重启（每次闪一个黑窗）。配音期间 Ollama 的模型纯属
+    抢地盘的，卸了下次用到会自动重载。
+    只卸 Ollama，绝不抛错/不返回失败：卸完还不够也只是慢，不值得为它中断配音。
+    返回本次真正卸掉的模型名列表。"""
+    used, total = gpu_vram(0)
+    if not total:
+        return []                            # 拿不到显存信息：不阻断，让引擎自己撞
+    if total - used >= headroom_mb:
+        return []                            # 余量够：什么都不做
+    names = ollama_loaded()
+    if not names:
+        return []
+    freed = _ollama_unload(names)
+    if not freed:
+        return []
+    # Ollama 卸载是异步的，等显存真的回落（不达标也不算失败，配音继续）
+    deadline = time.time() + wait_sec
+    while time.time() < deadline:
+        u2, t2 = gpu_vram(0)
+        if t2 and t2 - u2 >= headroom_mb:
+            break
+        time.sleep(0.5)
+    return freed
+
+
 def release_vram(want=5200, wait_sec=15):
     """开工前确认显存够用；不够就让 Ollama 把模型请出显存（keep_alive=0）。
 
@@ -163,14 +222,7 @@ def release_vram(want=5200, wait_sec=15):
     if total - used >= want:
         return True, ''
     names = ollama_loaded()
-    freed = []
-    for n in names:
-        try:
-            _http(base='http://127.0.0.1:11434', path='/api/generate',
-                  payload={'model': n, 'keep_alive': 0}, timeout=6)
-            freed.append(n)
-        except Exception:
-            pass
+    freed = _ollama_unload(names)
     if not freed:
         return False, ('显存不足：%d/%d MB 已用，配音需要约 %d MB。'
                        '请关闭占显卡的程序（Ollama、其它 AI 工具、游戏）后重试'
@@ -445,6 +497,18 @@ class _Serve:
                     if msg.get('ok'):
                         return True, ''
                     return False, str(msg.get('error') or '引擎返回失败')[:300]
+            # 循环出来的两种结局必须分开说：worker 死了 ≠ 算得慢。
+            # 旧实现统一报「合成超时」，worker 早就崩了还让人等满 240s，
+            # 排障时被引向「显存被抢占」这个错误方向（2026-11-11 主人实测踩中）。
+            if p.poll() is not None:
+                detail = '退出码 %s' % p.poll()
+                tail = self._log_tail()
+                if tail:
+                    detail += '｜' + tail
+                self._reap(p)
+                self.proc = None
+                return False, ('配音进程已退出（%s）。通常是显存不足被系统换页拖死'
+                               '或模型崩溃——日志尾巴里是它最后的话' % detail)
             return False, ('合成超时（%d 秒）：模型已加载但没算完，'
                            '通常是显存被别的程序抢占' % timeout)
 
@@ -686,17 +750,9 @@ def free_vram_for_vlm(vlm_model=None, need_mb=None, wait_sec=10):
     if total - used >= need_mb:
         return []                            # 已经够：别乱停 worker（停一次重载很贵）
     freed = release_engines()
-    for n in names:
-        if not str(n or '').strip():
-            continue
-        if keep and _same_ollama_model(n, keep):
-            continue                         # 自己马上要用，别卸
-        try:
-            _http(base='http://127.0.0.1:11434', path='/api/generate',
-                  payload={'model': n, 'keep_alive': 0}, timeout=6)
-            freed.append(n)
-        except Exception:
-            pass
+    _targets = [n for n in names
+                if str(n or '').strip() and not (keep and _same_ollama_model(n, keep))]
+    freed += _ollama_unload(_targets)        # 自己马上要用的（keep）已在 _targets 里排除
     if not freed:
         return []
     # Ollama 卸载是异步的，等显存真的回落再开始抽样（不然第一批照样撞墙）

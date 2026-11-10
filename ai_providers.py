@@ -990,6 +990,17 @@ def _is_local_ollama(base_url):
     return ('localhost' in u or '127.0.0.1' in u) and '11434' in u
 
 
+# 文本模型上下文：不给 num_ctx 时 Ollama 按模型默认 32768 加载，KV 缓存吃掉约 4.8GB
+#（实测本机 qwen3:8b 驻留 9.65GB，其中权重只有 ~4.7GB）。12GB 卡上它和配音 worker
+# 的 6.6GB 必然对撞（15.6GB > 12GB）→ WDDM 把权重静默换页进内存 → 每句配音 5s 变
+# 60~100s → ask 超时 → worker 反复重启闪黑窗（2026-11-11 主人实测）。
+# 【主人拍板降为 16384，驻留约 5.5GB】代价：超长片写稿 prompt 超 16K 会被 Ollama
+# 截断（质量略降、不崩），换来「配音阶段显存装得下」的确定性。
+# 注意：真实调用与推理探针都走 _ollama_native_chat，两条路径共用同一个值——
+# ctx 一变 Ollama 就要重载，探针和正式调用若不同值会互相踢。VLM 见 _VLM_NUM_CTX。
+_LLM_NUM_CTX = 16384
+
+
 def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
     """走 Ollama **原生** /api/chat 端点（仅本机 Ollama）。
 
@@ -1016,7 +1027,8 @@ def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
     payload = {'model': cfg['model'], 'messages': messages, 'stream': False,
                'think': False,
                'options': {'num_predict': int(max_tokens or 1500),
-                           'temperature': temperature}}
+                           'temperature': temperature,
+                           'num_ctx': _LLM_NUM_CTX}}
     req = urllib.request.Request(url, data=_j.dumps(payload).encode('utf-8'),
                                  headers={'Content-Type': 'application/json'})
     try:
