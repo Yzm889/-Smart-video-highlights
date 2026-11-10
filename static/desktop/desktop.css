@@ -479,3 +479,5 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
   box-shadow:0 0 0 3px rgba(61,126,255,.12)}
 .lc-seg-dur{flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
 .lc-seg-why{flex-basis:100%;font-size:11.5px;color:var(--dim);line-height:1.6}
+/* 候选编辑器容器：JS 里 display:'flex' 后必须竖排（漏了这条会横排挤成一行） */
+#lcEditor{flex-direction:column;gap:10px;width:100%}

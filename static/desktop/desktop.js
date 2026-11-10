@@ -2646,6 +2646,10 @@ $('exNew').addEventListener('click', () => newProject());
    只提示、不自动下载、不改配置。 */
 setTimeout(() => {
   fetch('/api/version_check').then(r => r.json()).then(v => {
+    // 顶栏版本胶囊从 APP_VERSION 动态回填：HTML 里的静态文字只是无网兜底，
+    // 版本写两处必然漂移（评测 2026-11-11：发版忘改 HTML 胶囊就会说谎）。
+    const pill = document.querySelector('.menu-title');
+    if(pill && v && v.current) pill.textContent = v.current;
     if(v && v.ok && v.has_update){
       toast('发现新版本 ' + v.latest + '（当前 ' + v.current + '），可在 GitHub Releases 下载', 'ok');
     }

@@ -112,13 +112,21 @@ def _load_pcm(video_path, rate=8000, run_dir=None):
 
 
 def _rms_profile(pcm, rate, window):
-    """每 window 秒一个 RMS（0~1 原始值）。pcm 为空/时长不足一个窗口 → 空数组。"""
+    """每 window 秒一个 RMS（0~1 原始值）。pcm 为空/时长不足一个窗口 → 空数组。
+
+    分块计算：一次性 reshape 成 float32 会让 6 小时录像（1.7 亿采样）瞬吃
+    700MB+ 内存（16GB 机器正在被显存换页折磨时这就是压死骆驼的一块砖）。"""
     win = max(1, int(rate * window))
     nwin = len(pcm) // win
     if nwin <= 0:
         return np.zeros(0, dtype=np.float32)
-    x = pcm[:nwin * win].reshape(nwin, win).astype(np.float32) / 32768.0
-    return np.sqrt((x ** 2).mean(axis=1))
+    out = np.empty(nwin, dtype=np.float32)
+    CH = 512                                   # 每批 512 个窗口（~1024 秒音频）
+    for lo in range(0, nwin, CH):
+        hi = min(nwin, lo + CH)
+        x = pcm[lo * win:hi * win].reshape(hi - lo, win).astype(np.float32) / 32768.0
+        out[lo:hi] = np.sqrt((x ** 2).mean(axis=1))
+    return out
 
 
 def _motion_profile(video_path, window, progress=None):
@@ -303,7 +311,9 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
     nwin = audio.size
 
     up('检测画面运动（逐帧分析）', 18)
-    motion, _mdur = _motion_profile(video_path, win, progress=None)
+    # progress 透传：逐帧分析长片要跑几十秒~几分钟，beat_analysis 会在同一段
+    # progress 上推进百分比——不透传的话进度条在这段全程冻结，像卡死。
+    motion, _mdur = _motion_profile(video_path, win, progress=progress)
     if motion is not None and motion.size and motion.size != nwin:
         n = min(nwin, motion.size)
         m2 = np.zeros(nwin, dtype=np.float32)
