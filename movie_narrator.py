@@ -6012,7 +6012,9 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
       - mimo（云端）/ 本地 CPU 引擎（cosyvoice/chattts/sherpa/sapi）保持串行，避免抢资源/限流。
     【熔断探测恢复】并发下探测文件（.edge_probe.mp3）用任务级锁互斥；
     各 worker 按自己处理的段数每 3 段检查一次，edge-tts 成功后内部自动复位熔断。
-    【诊断日志】逐段记录 {idx, engine, ok, error, duration_ms} 到 tts_log.json。"""
+    【诊断日志】逐段记录 {idx, engine, ok, error, duration_ms} 到 tts_log.json。
+    summary 口径：[2.5] 起 `failed`＝最终仍缺失、`first_failures`＝首轮失败段数、
+    `retried`＝被重试兜回的段数；正常（非取消）路径下 `failed + retried == first_failures`。"""
     import time as _time
     import concurrent.futures as _cf
     # 路径修复：progress_state 中的 run_dir 可能是相对路径（如 "run-1-..."），
@@ -6197,10 +6199,22 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
     _log_path = os.path.join(run_dir, 'tts_log.json')
     try:
         _bad = [e for e in _tts_diag if not e.get('ok')]
+        # [2.5] 首轮口径：`failed` 统计的是「最终仍缺失」= len(narr)-len(results)-skipped，
+        # 只要重试兜回，它恒为 0 —— 于是「第一轮曾经失败过」这件事在日志里彻底不可见。
+        # 实测真机产物 run-1-20261109-185905：summary 里 failed=0，但 failed_segments 明明有
+        # 一条 {idx:0, engine:"none", error:"all_engines_failed"}（首段冷启动失败 3273ms，
+        # 1 秒后重试成功 8004ms）——同一份 summary 两个字段自相矛盾，排障时看不到真因。
+        # 这里把首轮失败与重试兜回各自单独计数，互不干扰。不变量：failed + retried == first_failures。
+        _first_bad_idx = set(e.get('idx') for e in _tts_diag
+                             if not e.get('ok') and (e.get('source') or '') == 'fresh')
+        _retried_idx = set(e.get('idx') for e in _tts_diag
+                           if e.get('ok') and (e.get('source') or '') == 'retry')
         _jd = {'segments': _tts_diag,
                'summary': {'total': len(narr), 'success': len(results),
                            'failed': len(narr) - len(results) - skipped,   # [2.2] 计数（兼容旧字段）
                            'skipped': skipped,
+                           'first_failures': len(_first_bad_idx),   # [2.5] 首轮失败段数（曾经失败过，可能已被重试救回）
+                           'retried': len(_retried_idx),            # [2.5] 重试兜回段数
                            'engines_used': list(set(e.get('engine', '') for e in _tts_diag if e.get('engine'))),
                            'broken_until': _edge_internal().get('dead_until', 0.0),  # [2.4] 线程级熔断状态
                            'failed_segments': [{'idx': e.get('idx'), 'engine': e.get('engine'),
