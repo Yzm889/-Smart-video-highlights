@@ -2328,8 +2328,9 @@ def test_strip_think_qwen3():
 # ai_status().voice（生成前置引导：语音模型未配齐应硬拦截 narrate/movie）
 # ---------------------------------------------------------------------------
 def _voice_cfg(monkeypatch, engine='auto', cloud_tts=None, edge=False, cosy=False,
-               chat=False, sherpa=False):
+               chat=False, sherpa=False, qwen3=False, idx=False):
     import webui_server as S
+    import tts2_engines as T2
     def fake_cfg():
         return {'engine': engine, 'voice': 'zh-CN-XiaoxiaoNeural', 'rate': '+0%'}
     def fake_load():
@@ -2345,6 +2346,11 @@ def _voice_cfg(monkeypatch, engine='auto', cloud_tts=None, edge=False, cosy=Fals
     monkeypatch.setattr(S, 'cosyvoice_available', lambda: cosy)
     monkeypatch.setattr(S, 'chattts_available', lambda: chat)
     monkeypatch.setattr(S, 'sherpa_tts_ready', lambda: sherpa)
+    # 新引擎（2026-11-10）：_voice_status 现在也探 Qwen3-TTS / IndexTTS2。
+    # 不隔离这两个就会变成「本机装没装引擎决定测试结果」——开发机把引擎装好之后，
+    # hard_block 用例立刻翻红（1108621 修过同一类环境依赖）。默认 False = 旧基线。
+    monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: qwen3)
+    monkeypatch.setattr(T2, 'indextts2_ready', lambda: idx)
     return S
 
 
@@ -2377,6 +2383,66 @@ def test_ai_status_voice_ok_when_explicit_sapi(monkeypatch):
     S = _voice_cfg(monkeypatch, engine='sapi')
     v = S._voice_status()
     assert v['ready'] is True
+
+
+# ---------------------------------------------------------------------------
+# 新引擎（Qwen3-TTS / IndexTTS2）必须进 voice 判定 —— 2026-11-10 主人实测
+#
+# 症状：两个引擎都装好了（engine_status() 双双 True），首页配音行仍恒显示「未就绪」，
+# 网页版点生成还被硬拦截「未配置可用的自然配音引擎」。根因是 _voice_status()
+# 的引擎表与 chain 只列到上一代（edge/CosyVoice/ChatTTS/sherpa）。
+# ---------------------------------------------------------------------------
+def test_voice_status_engines_expose_new_engine_keys(monkeypatch):
+    """钉住引擎表里有 qwen3tts / indextts2 —— 少了它俩，下面就全都算不出来。"""
+    S = _voice_cfg(monkeypatch)
+    v = S._voice_status()
+    assert 'qwen3tts' in v['engines']
+    assert 'indextts2' in v['engines']
+
+
+def test_voice_status_ready_when_qwen3tts_selected_and_ready(monkeypatch):
+    """主人实测场景：显式选 Qwen3-TTS + 资产就绪 → 不得再报未就绪、不得硬拦截。"""
+    S = _voice_cfg(monkeypatch, engine='qwen3tts', qwen3=True, idx=True)
+    v = S._voice_status()
+    assert v['ready'] is True
+    assert v['selected_ready'] is True
+    assert v['engines']['qwen3tts']['ready'] is True
+
+
+def test_voice_status_ready_when_only_indextts2_ready(monkeypatch):
+    """只装 IndexTTS2 也要算就绪：_engine_order_for('qwen3tts') 本就是 indextts2 优先，
+    成片会真的走 IndexTTS2 克隆，不算「没引擎」。"""
+    S = _voice_cfg(monkeypatch, engine='qwen3tts', qwen3=False, idx=True)
+    v = S._voice_status()
+    assert v['ready'] is True
+    assert v['selected_ready'] is False   # 所选 qwen3tts 自身没就绪，但链上有人接
+
+
+def test_voice_status_reason_never_contradicts_ready(monkeypatch):
+    """ready=True 时 reason 不许再说「均未就绪」——旧版就是 label 说能用、
+    reason 说全没装，用户不知道信哪句。"""
+    S = _voice_cfg(monkeypatch, engine='qwen3tts', qwen3=True, idx=True)
+    v = S._voice_status()
+    assert v['ready'] is True
+    assert v['reason'].startswith('配音就绪')
+    assert '均未就绪' not in v['reason']
+
+
+def test_voice_status_chain_wiring_covers_new_engines():
+    """源码级钉子：chain 表达式必须真的引用两个新引擎。
+
+    这次 bug 最容易的复发姿势不是「忘了加 e 字典」，而是加了字典却忘了接进
+    chain —— 探测结果算出来了、写在返回值里，却完全不参与 ready 判定，
+    表现和没修一模一样。"""
+    import inspect
+    import re
+    import webui_server as S
+    src = inspect.getsource(S._voice_status)
+    m = re.search(r'chain = cloud.*?\n(?=    # selected_ready)', src, re.S)
+    assert m, '找不到 chain 表达式（改结构了？同步更新这条测试）'
+    expr = m.group(0)
+    assert "e['qwen3tts']['ready']" in expr
+    assert "e['indextts2']['ready']" in expr
 
 
 # ---------------------------------------------------------------------------

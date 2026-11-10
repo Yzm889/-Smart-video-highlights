@@ -1810,6 +1810,10 @@ function preflight(task){
           if (!(eng.cosyvoice||{}).ready) miss.push('CosyVoice');
           if (!(eng.chattts||{}).ready) miss.push('ChatTTS');
           if (!(eng.sherpa||{}).ready) miss.push('离线 sherpa 模型');
+          // 新引擎也列上：漏了它们时后端会算出「全都没就绪」，用户明明装好 Qwen3-TTS /
+          // IndexTTS2 却看不到缺的到底是哪一项（2026-11-10）。
+          if (!(eng.qwen3tts||{}).ready) miss.push('Qwen3-TTS 引擎');
+          if (!(eng.indextts2||{}).ready) miss.push('IndexTTS2 引擎');
           const cfg = v.engine && v.engine !== 'auto' ? '（当前配置：<b>' + escapeHtml(v.label || v.engine) + '</b>）' : '';
           $('pfMsg').innerHTML = '本任务需要<b>配音</b>，但当前没有任何可用的<b>自然语音引擎</b>' + cfg + '。'
             + '<br>未就绪：' + (miss.length ? miss.join('、') : '——') + '；仅剩系统 SAPI（机械音）。'

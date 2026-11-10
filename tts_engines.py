@@ -1797,7 +1797,10 @@ def strip_tts_markup(text):
 
 
 def _tts_available():
-    """TTS 是否可用：云端 API 或本地任一引擎（edge-tts/ChatTTS/sherpa/SAPI）。"""
+    """TTS 是否可用：云端 API 或本地任一引擎。
+
+    本地口径：edge-tts / ChatTTS / sherpa / Qwen3-TTS / IndexTTS2 / SAPI 任一。
+    """
     # 1. 云端 TTS
     if _cloud_tts_ready():
         return True
@@ -1817,6 +1820,18 @@ def _tts_available():
             return True
     except Exception:
         pass
+    # 2b. 新一代引擎（Qwen3-TTS / IndexTTS2）。【2026-11-10 补】
+    # 这里以前也只列老引擎，主人换到新引擎后本函数仍判 False，后果比「显示未就绪」
+    # 更硬：workflows.py:989 的 `if voice_over and _w._tts_available():` 会**整段跳过
+    # 配音**（narration_path 保持 None），成片没声音却照样报成功。
+    # 与 _voice_status() 是同一个漏项的第二个出口，必须一起修。
+    # 两个 ready 都是纯文件系统检查（解释器 + worker + 权重目录），不起进程。
+    for _fn in (T2.qwen3tts_ready, T2.indextts2_ready):
+        try:
+            if _fn():
+                return True
+        except Exception:
+            pass
     # 3. SAPI 兜底（Windows 自带，pyttsx3 存在即视为可用——仅探测不使用）
     try:
         import importlib.util

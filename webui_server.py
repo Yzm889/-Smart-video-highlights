@@ -2003,9 +2003,18 @@ def _voice_status():
     就绪定义（防「静默掉到 SAPI 机械音」）：
     - 显式选 sapi → 用户已知情接受机械音，视为就绪；
     - 其余情况：云端 TTS Key 或本地任一「自然语音引擎」可用即视为就绪
-      （edge / CosyVoice / ChatTTS / 离线 sherpa 任一可用，配音会自动按序兜底，
-       不会静默落 SAPI）。
+      （edge / CosyVoice / ChatTTS / 离线 sherpa / Qwen3-TTS / IndexTTS2 任一可用，
+       配音会自动按序兜底，不会静默落 SAPI）。
     全部探测均为本地导入/文件系统检查，不联网、不下载；单点探测异常按不可用处理。
+
+    【2026-11-10 修 P1-1 补漏】此前引擎表和 chain 只列到上一代（edge / CosyVoice /
+    ChatTTS / sherpa），**完全没列 Qwen3-TTS 与 IndexTTS2**。主人换到新引擎后两个
+    都已装好（engine_status() 双双 True），本函数却算出 chain=False → ready=False，
+    于是 app.js:1797 直接**硬拦截**「未配置可用的自然配音引擎」不让生成，
+    desktop.js:343 的配音行也恒显示「未就绪」。
+    最刺眼的是同一份返回值里 label 已经写着「IndexTTS2 · 克隆音色…」——一个说能用、
+    一个说全都没装，用户根本不知道该信哪句。0dec3fd 只修了前端 _ttsStateHint，
+    漏的正是这里。
     """
     e = {
         'cloud': {'ready': False},
@@ -2013,6 +2022,8 @@ def _voice_status():
         'cosyvoice': {'ready': False},
         'chattts': {'ready': False},
         'sherpa': {'ready': False},
+        'qwen3tts': {'ready': False},
+        'indextts2': {'ready': False},
         'sapi': {'ready': False},
     }
 
@@ -2043,10 +2054,21 @@ def _voice_status():
     e['cosyvoice']['ready'] = _probe(cosyvoice_available)
     e['chattts']['ready'] = _probe(chattts_available)
     e['sherpa']['ready'] = _probe(sherpa_tts_ready)
+    # 新引擎（Qwen3-TTS / IndexTTS2）：纯文件系统检查（venv 解释器 + worker 脚本 +
+    # 权重/checkpoints 目录），不起进程、不读显存，可以跟着 ai_status 的 5s 缓存轮询。
+    # 故意不用 tts2_engines.engine_status()：那个为了显示显存条会去调 nvidia-smi，
+    # 放进被前端高频轮询的 ai_status 里就是给每次轮询挂一个子进程。
+    try:
+        import tts2_engines as _T2
+        e['qwen3tts']['ready'] = _probe(_T2.qwen3tts_ready)
+        e['indextts2']['ready'] = _probe(_T2.indextts2_ready)
+    except Exception:
+        pass  # 探测不了就当没装：只让新引擎缺席，不连累其它引擎的判定
     e['sapi']['ready'] = True  # Windows 系统兜底（pyttsx3 存在即视为可用）
 
     chain = cloud or e['edge']['ready'] or e['cosyvoice']['ready'] \
-        or e['chattts']['ready'] or e['sherpa']['ready']
+        or e['chattts']['ready'] or e['sherpa']['ready'] \
+        or e['qwen3tts']['ready'] or e['indextts2']['ready']
     # selected_ready：所选引擎自身是否就绪（auto → 看整条自然链）
     selected_ready = chain if engine == 'auto' else (
         True if engine == 'sapi' else bool(e.get(engine, {}).get('ready')))
@@ -2066,6 +2088,10 @@ def _voice_status():
             missing.append('ChatTTS(需安装)')
         if not e['sherpa']['ready']:
             missing.append('离线 sherpa 模型(需下载)')
+        if not e['qwen3tts']['ready']:
+            missing.append('Qwen3-TTS(引擎资产未到位)')
+        if not e['indextts2']['ready']:
+            missing.append('IndexTTS2(引擎资产未到位)')
         reason = '当前无可用的自然配音引擎（' + '、'.join(missing) + '均未就绪），只剩系统 SAPI 机械音。'
     return {
         'engine': engine,
