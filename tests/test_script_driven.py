@@ -163,7 +163,24 @@ def test_no_hard_30char_truncation_in_beat_length():
 
 @pytest.mark.parametrize('target,lo,hi', [(60, 4, 12), (300, 12, 40), (None, None, None)])
 def test_target_sec_controls_beat_count(monkeypatch, target, lo, hi):
-    """目标时长应反馈到「写多少节」，避免 3 分钟片只写 3 句或写 200 句。"""
+    """目标时长应反馈到「写多少节」，避免 3 分钟片只写 3 句或写 200 句。
+
+    【2026-11-10 修：本用例以前依赖「本机没有可用模型」这个巧合】
+    本用例断言的是**直连路径**的 prompt（`这一版请写成约 N 节`，见 llm_movie_full_script
+    的 ② 分支）。但 target=300 时 n_beats=24 ≥ 12，会**先**走 _llm_script_sectioned
+    分批路径（`movie_narrator.py:5156`），而分批路径用的是另一套 prompt
+    （`第 %d-%d 节（全稿共 %d 节）`，`movie_narrator.py:4955`），根本不含那句话。
+
+    以前能过是因为分批路径本身**写不出稿**：它经 _llm_light → _llm_text 回退到
+    `_w.vlm_text`（`movie_narrator.py:1501-1502`），而当时 vlm 兜底模型名是
+    `qwen2.5vl:latest`（P0-1 修的旧名），**本机没装** → 回退链全空 → 分批路径
+    返回 None → 才落到直连路径、命中被 patch 的 local_llm_chat。
+    P0-1 把兜底名改成本机确实装着的 `qwen3-vl:8b` 之后，VLM 真的能写稿了
+    → 分批路径成功提前 return → 直连路径没走 → 抓不到 prompt → 本用例才暴露。
+
+    也就是说这是**测试隔离不足**，不是产品行为倒退（分批路径写成功才是对的）。
+    修法：显式把分批路径挡掉，让用例只考它自己声称要考的那条路径。
+    """
     seen = {}
 
     def fake_chat(prompt, *a, **k):
@@ -174,6 +191,9 @@ def test_target_sec_controls_beat_count(monkeypatch, target, lo, hi):
     monkeypatch.setattr(S, 'local_llm_enabled', lambda: True)
     monkeypatch.setattr(S, 'local_llm_ping', lambda: (True, 'ok'))
     monkeypatch.setattr(M, 'local_llm_chat', fake_chat)  # 绑定 movie_narrator.local_llm_chat
+    # 分批路径先出纲要；让它拿不到内容 → 确定性回落到直连路径。
+    # 不这么钉的话，结果会随「本机装没装那个看图模型」而变（见 docstring）。
+    monkeypatch.setattr(M, '_llm_light', lambda *a, **k: None)
     S.llm_movie_full_script('X', '剧情', target_sec=target)
     if target is None:
         assert '这一版请写成约' not in seen.get('prompt', '')
