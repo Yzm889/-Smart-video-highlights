@@ -106,6 +106,10 @@
 8. **history.json 只能合并不能覆盖**（migrate_from 已实现按 file 键合并）
 9. 模型中心/环境卡的探测有成本：拉取中跳过推理探针；轮询间隔拉取中 2.5s / 平时 15s
 10. 8899 是验证实例端口；8765 是主人实例；`_verify_env_8899.py` 是现成的验证服务启动器（带桌面令牌）
+11. **腾显存之前先问一句「这次是谁在占」——别拿为 A 设计的工具去修 B**。`free_vram_for_llm()` 是给 **Ollama 文本模型**让位的：只停常驻 TTS worker，需求按 `size*1.35+2500` 估（那套系数是为文本模型 32K KV 标定的）。2026-11-10 拿它去给 VLM 腾位 → 需求被算成 `5.38GB*1.35+2500 ≈ 10242MB`，12GB 卡上**永远判不够**，于是每次都白停一遍 worker，而真正占显存的 Ollama 写稿模型（实测 9.12GB）一动不动 —— 显存一点没腾出来，主人只感觉「改了之后更慢、还是卡」。VLM 阶段要用 `tts2_engines.free_vram_for_vlm()`（够就不动 / VLM 已驻留就放行 / 真缺才停 worker + 卸 Ollama 里**除 VLM 外**的模型）。同理 `release_vram()` 是配音前的通用腾位，会把 VLM 自己也卸掉，别混用。
+12. **Ollama 不传 `num_ctx` 就按模型默认 32768 加载，KV 缓存能和权重一样大**。实测 `qwen3-vl:8b` 磁盘权重 5.38GB、驻留 **10.2GB**；`qwen3:8b` 4.68GB → **9.12GB**；两个都想常驻时 nvidia-smi `11959/12288` 打满。本项目 VLM 固定 `ai_providers._VLM_NUM_CTX=16384`（降到 7.29GB），**`vlm_chat` 与 `vlm_chat_multi` 必须共用同一个值** —— ctx 一变 Ollama 就要重新分配 KV、重载模型，批量里混着单帧调用就会退化成「每帧重载 5.4GB」。改任何 Ollama 调用（含新加的参数）前后都扫一眼 `/api/ps` 的 `size` 与 `context_length`。
+13. **同一个模型名有两处取法，必须都走 `vlm_cfg()`**。`ai_config.json` 的 `vlm` 段可能只有 `enabled`/`base_url` **没有 `model` 键**（主人本机就是这样）。直接 `load_ai_config()['vlm'].get('model','default')` 会拿到字面量 `'default'`：缓存键与内层对不上（永远 miss）、腾位时查不到模型体积（退化成拍脑袋常数）。`vlm_cfg()` 里有 `or 'qwen3-vl:8b'` 兜底。
+14. **测试断言写错，等于给 bug 上锁**。同一个坑踩过两次：一次是断言「显存不够时 `free_vram_for_vlm` 返回 `[]`」，实际该返回停掉的 worker 名；一次是给 `_voice_status()` 加新探测却没隔离 `tts2_engines`，开发机装好引擎后 `hard_block` 用例立刻翻红。**测试第一次红的时候，先怀疑自己的断言，再怀疑代码**；凡给判定函数加「本机环境探测」，必须同步 monkeypatch 掉，否则测试结果取决于这台机器装了什么。
 
 ## 七、下一步候选（主人体验后拍板）
 
