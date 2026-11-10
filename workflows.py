@@ -696,11 +696,13 @@ def dispatch_tts_regen_all(req, prog):
 
 
 def dispatch_live_clip(req, prog):
-    """直播切片：本地直播录像 → 自动找高光 → N 条保留原声的独立 mp4 + 可读报告。
+    """直播切片·阶段①（分析）：本地直播录像 → 自动找高光候选 → 存草稿等用户调整。
 
-    输入三选一：上传的 video 对象（分片上传/素材库/桌面本地直连）、
-    src_path（本机已有录播文件的绝对路径，扩展名白名单校验）。
-    引擎在 live_clip.py（独立模块，不碰解说对齐管线）；算法与阈值见其模块头注释。"""
+    与解说链路「先生成配音 → 用户确认 → 再合成」同款两阶段模式：本阶段只做
+    信号分析与候选挑选，**不导出视频**——用户在界面上删段/改起止/自己圈段后，
+    由 dispatch_live_clip_export（阶段②）按调整后的清单出片。
+    分析结果落 run_dir/live_clip_draft.json（含已拷贝进任务目录的源片路径），
+    阶段②凭 run_dir 就能续上，天然支持中断后续跑。"""
     try:
         import live_clip as LC
         if not LC.enabled():
@@ -724,32 +726,83 @@ def dispatch_live_clip(req, prog):
             raise RuntimeError('未收到直播录像：请选择文件，或填写本机录播文件的完整路径')
         prog['phase'] = '读取录像信息'
         prog['pct'] = 3
-        _aspect = str(req.get('aspect') or 'blur').strip().lower()
-        if _aspect not in ('orig', 'crop', 'blur'):
-            _aspect = 'blur'
         meta = LC.analyze_highlights(vp, run_dir, progress=prog,
                                      n_clips=req.get('n_clips'),
                                      min_sec=req.get('min_sec'),
                                      max_sec=req.get('max_sec'),
                                      use_asr=bool(req.get('use_asr', True)),
                                      asr_language=req.get('asr_language'))
-        meta['video'] = vp
-        files = LC.export_clips(vp, meta['clips'], run_dir, progress=prog,
-                                aspect=_aspect)
-        covers = LC.make_covers(vp, meta['clips'], run_dir, progress=prog,
-                                aspect=_aspect)
-        jp_rel, txt_rel = LC.write_report(meta, meta['clips'], files, run_dir,
+        base = os.path.basename(run_dir)
+        LC.save_draft(run_dir, {
+            'video_src': vp,
+            'vdur': meta.get('vdur'),
+            'window': meta.get('window'),
+            'asr_used': meta.get('asr_used'),
+            'aspect_default': str(req.get('aspect') or 'blur'),
+            'clips': meta.get('clips') or [],
+        })
+        prog['run_dir'] = base          # 对外只暴露目录名（_safe_dir 只认 basename）
+        prog['vdur'] = meta.get('vdur')
+        prog['clips'] = meta.get('clips') or []   # 候选清单，前端据此渲染编辑器
+        prog['draft_saved'] = True
+        prog['done'] = True
+        prog['pct'] = 100
+        prog['phase'] = '候选已出——可调整段落后再导出'
+    except Exception as e:
+        _w.fail_task(prog, e)
+
+
+def dispatch_live_clip_export(req, prog):
+    """直播切片·阶段②（导出）：按用户调整后的段落清单出片 + 封面 + 报告。
+
+    输入：run_dir（阶段①的任务目录名，草稿里有源片与分析元数据）、
+    segments（调整后的 [{start,end}]，可为空 = 按草稿原样导出）、
+    aspect（导出画幅，用户在确认前还能改）。理由继承规则见 live_clip.carry_reasons。"""
+    try:
+        import live_clip as LC
+        if not LC.enabled():
+            raise RuntimeError('直播切片已被 LIVE_CLIP=0 关闭（环境变量回滚开关）')
+        run_dir_name = req.get('run_dir') or prog.get('run_dir') or ''
+        if not run_dir_name:
+            raise RuntimeError('缺少任务目录（先做高光分析）')
+        run_dir = _w._safe_dir(_w.OUTDIR, os.path.basename(run_dir_name))
+        draft = LC.load_draft(run_dir)
+        if not draft or not draft.get('video_src'):
+            raise RuntimeError('找不到分析草稿（live_clip_draft.json）——请先跑高光分析')
+        vp = draft['video_src']
+        if not os.path.isfile(vp):
+            raise RuntimeError('源录像不在了（任务目录被清理？），请重新分析')
+        vdur = float(draft.get('vdur') or 0)
+        segs = LC.validate_segments(req.get('segments') or draft.get('clips') or [],
+                                    vdur)
+        if not segs:
+            raise RuntimeError('没有可导出的段落：每段至少 3 秒且不超过 600 秒')
+        # 理由继承：自动候选原样/微调带说明，用户手圈标「手动指定」
+        inherited = LC.carry_reasons(segs, draft.get('clips') or [])
+        for s, inh in zip(segs, inherited):
+            s['score'] = inh['score']
+            s['reasons'] = inh['reasons']
+            s['peak_t'] = (s['start'] + s['end']) / 2
+        prog['phase'] = '准备导出'
+        prog['pct'] = 5
+        _aspect = str(req.get('aspect') or draft.get('aspect_default') or 'blur').strip().lower()
+        if _aspect not in ('orig', 'crop', 'blur'):
+            _aspect = 'blur'
+        files = LC.export_clips(vp, segs, run_dir, progress=prog, aspect=_aspect)
+        covers = LC.make_covers(vp, segs, run_dir, progress=prog, aspect=_aspect)
+        meta = {'video': vp, 'vdur': vdur, 'window': draft.get('window'),
+                'asr_used': draft.get('asr_used')}
+        jp_rel, txt_rel = LC.write_report(meta, segs, files, run_dir,
                                           covers=covers, aspect=_aspect)
         base = os.path.basename(run_dir)
         prog['clips'] = [{'file': os.path.basename(f),
                           'rel': base + '/' + os.path.basename(f),
                           'cover': (base + '/' + os.path.basename(cov)) if cov else '',
-                          'start': c['start'], 'end': c['end'], 'dur': c.get('dur'),
-                          'score': c.get('score'), 'reasons': c.get('reasons')}
-                         for c, f, cov in zip(meta['clips'], files, covers)]
+                          'start': s['start'], 'end': s['end'], 'dur': s.get('dur'),
+                          'score': s.get('score'), 'reasons': s.get('reasons')}
+                         for s, f, cov in zip(segs, files, covers)]
         prog['report_txt'] = base + '/' + txt_rel
         prog['report_json'] = base + '/' + jp_rel
-        # 对外只暴露目录名（与 dispatch_movie_compose 同约定：_safe_dir 只认 basename）
         prog['run_dir'] = base
         prog['file'] = prog['clips'][0]['rel']     # 历史记录指向第一条切片
         prog['done'] = True
@@ -1331,6 +1384,7 @@ for _name in (
     'dispatch_tts_single',
     'dispatch_tts_regen_all',
     'dispatch_live_clip',
+    'dispatch_live_clip_export',
     'dispatch_instruct',
     'collect_partial',
     'assemble',

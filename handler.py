@@ -1877,6 +1877,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
                        'application/json')
 
+    def _post_live_clip_export(self):
+        """直播切片·阶段②：按用户调整后的段落清单导出。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=256 * 1024)
+            if req is None:
+                req = {}
+            runid = self._spawn(_w.dispatch_live_clip_export, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
     def _post_reveal(self):
         """[P1 输出可发现性] 在系统文件管理器中显示成片位置。
 
@@ -2198,6 +2212,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/movie_compose': '_post_movie_compose',
         '/api/movie_tts': '_post_movie_tts',
         '/api/live_clip': '_post_live_clip',
+        '/api/live_clip/export': '_post_live_clip_export',
         '/api/narrate': '_post_narrate',
         '/api/narrate/align': '_post_narrate_align',
         '/api/narrate_movie': '_post_narrate_movie',

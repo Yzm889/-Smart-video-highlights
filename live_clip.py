@@ -532,6 +532,77 @@ def export_clips(video_path, clips, run_dir, progress=None, aspect='orig'):
     return outs
 
 
+def validate_segments(segs, vdur, min_sec=3.0, max_sec=600.0, max_count=20):
+    """半手动路线：把用户调整后的段落清单清洗净化成可导出形态。
+
+    规则：数值转 float、钳制到 [0, vdur]、start<end 且时长 ≥ min_sec（防手滑出
+    1 秒碎片）、上限 max_sec（防把整场录像当一条）、按时间排序、最多 max_count 条。
+    无效段直接丢弃（不报错——用户在界面上的每次删改都不该被一行坏数据卡死）。
+    返回 [{'start','end','dur'}]。"""
+    out = []
+    for s in (segs or []):
+        try:
+            a = float(s.get('start'))
+            b = float(s.get('end'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        a = max(0.0, min(a, vdur))
+        b = max(0.0, min(b, vdur))
+        if b - a < min_sec:
+            continue
+        if b - a > max_sec:
+            b = a + max_sec
+        out.append({'start': round(a, 2), 'end': round(b, 2),
+                    'dur': round(b - a, 2)})
+    out.sort(key=lambda c: c['start'])
+    return out[:max_count]
+
+
+def carry_reasons(segs, draft_clips, overlap_ratio=0.5):
+    """半手动路线：调整后的段落尽量继承原候选的分数/理由（按重叠占比匹配）。
+
+    重叠 ≥ 50% 且边界没动（±1 秒内）→ 原样继承；动了边界 → 继承理由并标注
+    「已调整」；完全对不上（用户自己圈的段）→ 标「手动指定」。"""
+    res = []
+    for s in segs:
+        best, best_ol = None, 0.0
+        for d in (draft_clips or []):
+            ol = min(s['end'], float(d.get('end') or 0)) - max(s['start'], float(d.get('start') or 0))
+            if ol > best_ol:
+                best, best_ol = d, ol
+        if best is not None and best_ol / max(1e-6, s['dur']) >= overlap_ratio:
+            reasons = list(best.get('reasons') or [])
+            score = best.get('score')
+            untouched = (abs(s['start'] - float(best.get('start') or 0)) < 1.0
+                         and abs(s['end'] - float(best.get('end') or 0)) < 1.0)
+            if not untouched:
+                reasons = list(reasons) + ['（边界已手动调整）']
+                score = round(float(score or 0) * 0.9, 3)
+            res.append({'score': score, 'reasons': reasons or ['手动指定']})
+        else:
+            res.append({'score': '', 'reasons': ['手动指定']})
+    return res
+
+
+def save_draft(run_dir, data):
+    """阶段①分析结果落草稿（阶段②按它导出；也天然支持中断后续跑）。"""
+    fp = os.path.join(run_dir, 'live_clip_draft.json')
+    with open(fp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    return fp
+
+
+def load_draft(run_dir):
+    fp = os.path.join(run_dir, 'live_clip_draft.json')
+    if not os.path.exists(fp):
+        return None
+    try:
+        with open(fp, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def write_report(meta, clips, files, run_dir, covers=None, aspect='orig'):
     """落 report.json（机器可读）+ 切片报告.txt（人可读）。返回 (json_rel, txt_rel)。"""
     covers = covers or []

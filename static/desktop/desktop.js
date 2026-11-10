@@ -2655,12 +2655,17 @@ setTimeout(() => {
 /* ── 启动 ── */
 setStatus(_draftRestored ? '就绪 · 已恢复上次未提交的剧情稿' : '就绪');
 
-/* ── 直播切片（方案 A：本地录像 → 自动高光 → N 条原声独立 mp4）──
-   独立视图：newProj / editor 之外第三张卡。高光判定在后端 live_clip.py
-   （音量+画面运动+台词密度，全片分位次相对化），前端只管选片、进度、预览。 */
+
+/* ── 直播切片（两阶段：①自动分析出候选 → ②用户删改候选/圈段 → 导出）──
+   与解说链路「先生成配音 → 确认 → 再合成」同款两阶段模式：
+   阶段①调 /api/live_clip 只做分析落草稿（不出片）；候选渲染成可编辑清单，
+   每段可删、起止秒数可改、可手动圈段；阶段②调 /api/live_clip/export 出片。 */
 let _lcVideo = null;          // {name, path} 本地直连 或 {name, upload_id} 浏览器上传
 let _lcPollTimer = null;
 let _lcFromEditor = false;
+let _lcRunDir = '';           // 阶段①草稿所在任务目录名（阶段②凭它导出）
+let _lcVdur = 0;              // 源片时长（秒），编辑器边界钳制用
+let _lcCandidates = [];       // 阶段①候选段（[{start,end,dur,score,peak_t,reasons}]）
 
 function showLiveClip(on){
   const lc = $('liveClip'), np = $('newProj'), ed = $('editor');
@@ -2682,8 +2687,9 @@ function updateLiveClip(){
   const busy = $('lcProg').style.display !== 'none';
   const ready = !!(_lcVideo || ($('lcPath').value || '').trim());
   $('lcGo').disabled = !ready || busy;
-  $('lcHint').textContent = busy ? '切片进行中，可以随时点右上角关闭窗口（任务会取消）'
-    : (ready ? '高光判定：音量 + 画面动作 + 台词密度，全部按全片相对分位评分，不改你的原声'
+  $('lcGo').textContent = '① 分析高光（先出候选，不会直接出片）';
+  $('lcHint').textContent = busy ? '分析进行中（转写+逐帧+评分），候选出来后可自由调整'
+    : (ready ? '① 先自动分析出候选高光 → ② 你删改确认后才会导出成片'
              : '选择录像或填写本地路径后开始');
 }
 
@@ -2704,7 +2710,7 @@ $('lcPick').addEventListener('click', async () => {
     try {
       const r = await window.pywebview.api.pick_video();
       if(r && r.path){
-        _lcVideo = {name: r.name || r.path.split(/[\/]/).pop(), path: r.path};
+        _lcVideo = {name: r.name || r.path.split(/[\\/]/).pop(), path: r.path};
         $('lcPickLabel').textContent = '✅ ' + _lcVideo.name;
         updateLiveClip();
       }
@@ -2719,7 +2725,7 @@ $('lcPick').addEventListener('click', async () => {
         _lcVideo = {name: f.name, upload_id: uid};
         $('lcPickLabel').textContent = '✅ ' + f.name;
         updateLiveClip();
-        toast('✅ 录像已上传，可以开始切片', 'ok');
+        toast('✅ 录像已上传', 'ok');
       } catch(e){
         $('lcPickLabel').textContent = '选择直播录像（OBS 录制 / 平台回放）';
         toast('上传失败：' + e.message, 'bad');
@@ -2728,6 +2734,7 @@ $('lcPick').addEventListener('click', async () => {
   }
 });
 
+/* 阶段①：分析（不出片，落草稿） */
 $('lcGo').addEventListener('click', async () => {
   const vo = _lcVideoObj();
   const body = {
@@ -2749,6 +2756,7 @@ $('lcGo').addEventListener('click', async () => {
   $('lcFill').style.width = '0%';
   $('lcMeta').textContent = '提交中…';
   $('lcResults').style.display = 'none';
+  $('lcEditor').style.display = 'none';
   updateLiveClip();
   try {
     const r = await fetch('/api/live_clip', {method: 'POST',
@@ -2762,20 +2770,162 @@ $('lcGo').addEventListener('click', async () => {
       if(p.error){
         clearInterval(_lcPollTimer); _lcPollTimer = null;
         $('lcProg').style.display = 'none'; updateLiveClip();
-        toast('切片失败：' + p.error, 'bad');
+        toast('分析失败：' + p.error, 'bad');
         return;
       }
-      if(p.done && p.clips && p.clips.length){
+      if(p.done && p.draft_saved){
         clearInterval(_lcPollTimer); _lcPollTimer = null;
-        $('lcProg').style.display = 'none'; updateLiveClip();
-        renderLiveClips(p);
+        $('lcProg').style.display = 'none';
+        _lcRunDir = p.run_dir || '';
+        _lcVdur = p.vdur || 0;
+        _lcCandidates = p.clips || [];
+        updateLiveClip();
+        renderLcEditor();
+        toast('✅ 候选高光已出：' + _lcCandidates.length + ' 条，可调整后导出', 'ok');
       }
     }, 1500);
   } catch(e){
     $('lcProg').style.display = 'none'; updateLiveClip();
-    toast('切片失败：' + e.message, 'bad');
+    toast('分析失败：' + e.message, 'bad');
   }
 });
+
+/* ── 候选编辑器 ── */
+function renderLcEditor(){
+  const box = $('lcEditor');
+  box.style.display = 'flex';
+  box.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'lc-results-head';
+  head.textContent = '候选高光 ' + _lcCandidates.length + ' 条 —— 可删除 / 改起止秒数 / 手动圈段，确认后导出';
+  box.appendChild(head);
+  _lcCandidates.forEach((c, i) => box.appendChild(_lcRow(c, i)));
+  const acts = document.createElement('div');
+  acts.className = 'lc-foot';
+  const bAdd = document.createElement('button');
+  bAdd.className = 'mini-btn';
+  bAdd.textContent = '＋ 手动圈一段';
+  bAdd.addEventListener('click', () => {
+    _lcCandidates.push({start: 0, end: Math.min(30, Math.max(5, _lcVdur)), dur: 0,
+                        score: '', reasons: ['手动指定'], peak_t: 0});
+    renderLcEditor();
+  });
+  const bRe = document.createElement('button');
+  bRe.className = 'mini-btn';
+  bRe.textContent = '↻ 重新分析';
+  bRe.addEventListener('click', () => { $('lcEditor').style.display = 'none'; $('lcGo').click(); });
+  const bGo = document.createElement('button');
+  bGo.className = 'btn primary';
+  bGo.textContent = '✂ 导出切片（' + _lcCandidates.length + ' 条）';
+  bGo.addEventListener('click', lcExport);
+  acts.appendChild(bAdd);
+  acts.appendChild(bRe);
+  acts.appendChild(bGo);
+  box.appendChild(acts);
+}
+
+function _lcRow(c, i){
+  const row = document.createElement('div');
+  row.className = 'lc-seg';
+  const n = document.createElement('span');
+  n.className = 'lc-seg-n';
+  n.textContent = '#' + (i + 1);
+  const mkInput = (cls, val) => {
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.className = cls;
+    inp.step = '0.1';
+    inp.min = '0';
+    inp.max = String(Math.max(1, _lcVdur));
+    inp.value = Number(val).toFixed(1);
+    return inp;
+  };
+  const lS = document.createElement('label');
+  lS.append('起(秒)', mkInput('lc-s', c.start));
+  const lE = document.createElement('label');
+  lE.append('止(秒)', mkInput('lc-e', c.end));
+  const dur = document.createElement('span');
+  dur.className = 'lc-seg-dur';
+  const why = document.createElement('div');
+  why.className = 'lc-seg-why';
+  const refreshDur = () => {
+    const a = parseFloat(row.querySelector('.lc-s').value) || 0;
+    const b = parseFloat(row.querySelector('.lc-e').value) || 0;
+    const d = Math.max(0, b - a);
+    dur.textContent = '时长 ' + d.toFixed(1) + ' 秒' + (d < 3 ? '（≥3 秒才能导出）' : '');
+    dur.style.color = d < 3 ? 'var(--bad)' : 'var(--muted)';
+    c.start = Math.min(a, Math.max(0, _lcVdur));
+    c.end = Math.min(b, Math.max(0, _lcVdur));
+    why.textContent = (c.reasons && c.reasons.length ? c.reasons.join('；') : '手动指定')
+      + (c.score !== '' && c.score !== undefined ? '  ·  分 ' + c.score : '');
+  };
+  lS.querySelector('input').addEventListener('input', refreshDur);
+  lE.querySelector('input').addEventListener('input', refreshDur);
+  const bDel = document.createElement('button');
+  bDel.className = 'mini-btn lc-del';
+  bDel.textContent = '删除';
+  bDel.addEventListener('click', () => {
+    const k = _lcCandidates.indexOf(c);
+    if(k >= 0) _lcCandidates.splice(k, 1);
+    renderLcEditor();
+  });
+  row.append(n, lS, lE, dur, bDel, why);
+  refreshDur();
+  return row;
+}
+
+function _lcCollectSegments(){
+  const rows = Array.from($('lcEditor').querySelectorAll('.lc-seg'));
+  const segs = [];
+  rows.forEach(r => {
+    const a = parseFloat(r.querySelector('.lc-s').value);
+    const b = parseFloat(r.querySelector('.lc-e').value);
+    if(isFinite(a) && isFinite(b) && b - a >= 3) segs.push({start: a, end: b});
+  });
+  return segs;
+}
+
+/* 阶段②：按调整后的清单导出 */
+async function lcExport(){
+  const segs = _lcCollectSegments();
+  if(!segs.length){ toast('没有可导出的段落：每段至少 3 秒', 'bad'); return; }
+  if(!_lcRunDir){ toast('草稿丢失，请重新分析', 'bad'); return; }
+  const body = {run_dir: _lcRunDir, segments: segs,
+                aspect: $('lcAspect') ? $('lcAspect').value : 'blur'};
+  $('lcProg').style.display = 'block';
+  $('lcFill').style.width = '0%';
+  $('lcMeta').textContent = '导出中…';
+  $('lcEditor').style.display = 'none';
+  $('lcResults').style.display = 'none';
+  updateLiveClip();
+  try {
+    const r = await fetch('/api/live_clip/export', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '提交失败');
+    if(_lcPollTimer) clearInterval(_lcPollTimer);
+    _lcPollTimer = setInterval(async () => {
+      const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
+      $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
+      $('lcMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
+      if(p.error){
+        clearInterval(_lcPollTimer); _lcPollTimer = null;
+        $('lcProg').style.display = 'none';
+        renderLcEditor();
+        toast('导出失败：' + p.error, 'bad');
+        return;
+      }
+      if(p.done && p.clips && p.clips.length){
+        clearInterval(_lcPollTimer); _lcPollTimer = null;
+        $('lcProg').style.display = 'none';
+        renderLiveClips(p);
+      }
+    }, 1500);
+  } catch(e){
+    $('lcProg').style.display = 'none';
+    renderLcEditor();
+    toast('导出失败：' + e.message, 'bad');
+  }
+}
 
 function renderLiveClips(p){
   const box = $('lcResults');
@@ -2783,7 +2933,7 @@ function renderLiveClips(p){
   box.innerHTML = '';
   const head = document.createElement('div');
   head.className = 'lc-results-head';
-  head.textContent = '✅ 切出 ' + p.clips.length + ' 条高光（点开预览，原声保留）';
+  head.textContent = '✅ 导出 ' + p.clips.length + ' 条（点开预览，原声保留）';
   box.appendChild(head);
   p.clips.forEach((c, i) => {
     const item = document.createElement('div');
@@ -2806,6 +2956,10 @@ function renderLiveClips(p){
   });
   const foot = document.createElement('div');
   foot.className = 'lc-foot';
+  const bBack = document.createElement('button');
+  bBack.className = 'mini-btn';
+  bBack.textContent = '← 回到候选调整';
+  bBack.addEventListener('click', () => { box.style.display = 'none'; renderLcEditor(); });
   const bFolder = document.createElement('button');
   bFolder.className = 'mini-btn';
   bFolder.textContent = '📁 打开切片文件夹';
@@ -2825,8 +2979,9 @@ function renderLiveClips(p){
       if(!box.contains(pre)) box.appendChild(pre);
     } catch(e){ toast('报告读取失败：' + e.message, 'bad'); }
   });
+  foot.appendChild(bBack);
   foot.appendChild(bFolder);
   foot.appendChild(bReport);
   box.appendChild(foot);
-  toast('✅ 切片完成，共 ' + p.clips.length + ' 条', 'ok');
+  toast('✅ 导出完成，共 ' + p.clips.length + ' 条', 'ok');
 }

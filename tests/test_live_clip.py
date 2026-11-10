@@ -340,3 +340,99 @@ def test_analyze_passes_language_to_asr(monkeypatch, tmp_path):
     LC.analyze_highlights('x.mp4', run_dir=str(tmp_path), n_clips=1,
                           min_sec=20, max_sec=60, use_asr=True, asr_language=None)
     assert seen['language'] is None, '不指定 = 交给全局配置'
+
+
+# ---------------------------------------------------------------------------
+# 半手动路线（两阶段：①分析落草稿 → ②按用户调整后的清单导出）
+# ---------------------------------------------------------------------------
+def test_validate_segments_clamps_sorts_drops():
+    """用户输入的段落数据不可信：钳制边界、丢短段、按时间排序、截超长段。"""
+    segs = [
+        {'start': 'abc', 'end': 50},          # 非数字 → 丢弃
+        {'start': 700, 'end': 720},           # 超出时长 → 钳制后 <3s → 丢弃
+        {'start': 200, 'end': 210.5},         # 合法
+        {'start': 100, 'end': 105},           # 合法（乱序输入）
+        {'start': -30, 'end': 50},            # 负起点 → 钳到 0
+        {'start': 300, 'end': 2000},          # 超长 → 截到 600s
+    ]
+    out = LC.validate_segments(segs, vdur=600.0, min_sec=3.0, max_sec=600.0)
+    assert [(c['start'], c['end']) for c in out] == [(0.0, 50.0), (100.0, 105.0), (200.0, 210.5), (300.0, 600.0)]
+    assert all(c['dur'] >= 3.0 for c in out)
+    assert out == sorted(out, key=lambda c: c['start'])
+    assert LC.validate_segments([], 600.0) == []
+    assert LC.validate_segments([{'start': 0, 'end': 1}], 600.0, min_sec=3.0) == []
+
+
+def test_carry_reasons_inherits_adjusts_or_marks_manual():
+    draft = [{'start': 100.0, 'end': 150.0, 'score': 0.9, 'reasons': ['音量峰值（全片前3%）']},
+             {'start': 600.0, 'end': 650.0, 'score': 0.8, 'reasons': ['台词密度峰值（全片前8%）']}]
+    # 原样保留 → 原样继承
+    r = LC.carry_reasons([{'start': 100.0, 'end': 150.0, 'dur': 50.0}], draft)
+    assert r[0]['score'] == 0.9 and r[0]['reasons'] == ['音量峰值（全片前3%）']
+    # 改了边界 → 继承理由 + 标注 + 分数微降
+    r = LC.carry_reasons([{'start': 105.0, 'end': 160.0, 'dur': 55.0}], draft)
+    assert r[0]['score'] == round(0.9 * 0.9, 3)
+    assert any('边界已手动调整' in x for x in r[0]['reasons'])
+    # 完全对不上 → 手动指定
+    r = LC.carry_reasons([{'start': 400.0, 'end': 430.0, 'dur': 30.0}], draft)
+    assert r[0]['score'] == '' and r[0]['reasons'] == ['手动指定']
+
+
+def test_dispatch_export_reads_draft_and_exports(monkeypatch, tmp_path):
+    """阶段②全流程（引擎 mock）：读草稿 → 校验/继承理由 → 导出 → 封面 → 报告。"""
+    import webui_server as S
+    import workflows as W
+    run_dir = os.path.join(str(S.OUTDIR), 'live-draft-test')
+    os.makedirs(run_dir, exist_ok=True)
+    fake_src = os.path.join(run_dir, 'src.mp4')
+    with open(fake_src, 'wb') as f:
+        f.write(b'0' * 1024)
+    draft = {'video_src': fake_src, 'vdur': 600.0, 'window': 2.0, 'asr_used': True,
+             'aspect_default': 'blur',
+             'clips': [{'start': 100.0, 'end': 150.0, 'score': 0.9, 'peak_t': 120.0,
+                        'reasons': ['音量峰值（全片前3%）']}]}
+    import json as _j
+    with open(os.path.join(run_dir, 'live_clip_draft.json'), 'w', encoding='utf-8') as f:
+        _j.dump(draft, f, ensure_ascii=False)
+
+    def fake_export(video, clips, rdir, progress=None, aspect='orig'):
+        outs = []
+        for i, c in enumerate(clips):
+            fp = os.path.join(rdir, LC._clip_name(i + 1, c['start']))
+            with open(fp, 'wb') as f2:
+                f2.write(b'0' * 20480)
+            outs.append(fp)
+        return outs
+
+    def fake_covers(video, clips, rdir, progress=None, aspect='orig'):
+        outs = []
+        for i, c in enumerate(clips):
+            fp = os.path.join(rdir, LC._cover_name(i + 1, c['start']))
+            with open(fp, 'wb') as f2:
+                f2.write(b'0' * 4096)
+            outs.append(fp)
+        return outs
+
+    monkeypatch.setattr(LC, 'export_clips', fake_export)
+    monkeypatch.setattr(LC, 'make_covers', fake_covers)
+    prog = {'phase': '', 'pct': 0, 'done': False, 'run_dir': run_dir}
+    # 用户调整：候选①改了边界；另手动圈了一段
+    req = {'run_dir': 'live-draft-test',
+           'segments': [{'start': 105.0, 'end': 160.0}, {'start': 400.0, 'end': 430.0}],
+           'aspect': 'blur'}
+    W.dispatch_live_clip_export(req, prog)
+    assert prog.get('done') is True, prog.get('error')
+    assert len(prog['clips']) == 2
+    assert prog['clips'][0]['rel'].startswith('live-draft-test/')
+    assert any('边界已手动调整' in x for x in prog['clips'][0]['reasons'])
+    assert prog['clips'][1]['reasons'] == ['手动指定']
+    assert os.path.exists(os.path.join(run_dir, 'live_clip_report.json'))
+    assert os.path.exists(os.path.join(run_dir, 'live_clip_report.txt'))
+
+
+def test_dispatch_export_without_draft_fails_cleanly(monkeypatch, tmp_path):
+    import workflows as W
+    prog = {'phase': '', 'pct': 0, 'done': False, 'run_dir': ''}
+    W.dispatch_live_clip_export({'run_dir': 'no-such-dir'}, prog)
+    assert prog.get('done') is True and prog.get('error'), '缺草稿必须报错而不是静默成功'
+    assert '草稿' in prog['error'] or '分析' in prog['error']
