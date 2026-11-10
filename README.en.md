@@ -1,8 +1,8 @@
 # FrameCut · 一帧成片
 
-[中文文档](README.md) · v1.4.26
+[中文文档](README.md) · v1.4.29
 
-A local-first AI movie-commentary and short-video editor for Windows. Give it a film and a plot summary (or your own script), and it writes the narration, voices every line, picks shots by content, cuts only after each line finishes, and renders the final video.
+A local-first AI movie-commentary, live-clip and short-video editor for Windows. Give it a film and a plot summary (or your own script), and it writes the narration, voices every line, picks shots by content, cuts only after each line finishes, and renders the final video.
 
 All AI runs locally: no API bills, no uploads, works offline.
 
@@ -32,7 +32,11 @@ All AI runs locally: no API bills, no uploads, works offline.
 
 Speech rate is controlled by `tts_local.rate` (default 1.12×, pitch-preserving via ffmpeg `atempo`).
 
-**Also included**: beat-synced cutting, local material library, Bilibili search/download, auto cover generation, NVENC encoding, a VRAM guard that swaps models in and out, and searchable render history.
+**Live clipping**
+
+Turn a stream recording (OBS capture / platform VOD) into ready-to-post short clips. Two routes: fully automatic, or **review-and-adjust** (delete segments, re-trim in/out points, add your own) before export. Highlights are scored from three relative signals — loudness, motion, speech density + hype keywords — so a quiet or a loud-only stream both work, and every clip ships with a human-readable reason. Vertical 9:16 output (blurred-background pad or center crop), auto covers trimmed to 9:16, fixed dialogue language. A 90-minute recording finishes in ~4 minutes with +6 MB RAM.
+
+**Also included**: beat-synced cutting, local material library, Bilibili search/download, auto cover generation, NVENC encoding, a VRAM guard that swaps models in and out (and silences the inference probe while a task runs), and searchable render history.
 
 ---
 
@@ -40,7 +44,7 @@ Speech rate is controlled by `tts_local.rate` (default 1.12×, pitch-preserving 
 
 **[⬇️ Download for Windows x64](https://github.com/Yzm889/-Smart-video-highlights/releases/latest)**
 
-Unzip and run `FrameCut.exe`. No Python required. On first launch, open the setup guide to install the models.
+Unzip and run `FrameCut.exe`. No Python required. The toolbar has three entries — **Narrate / Live clip / Environment check**; when the environment is ready the app opens straight into the narration page. Upgrading from an older build? The first-launch banner imports your config, renders, history and models from the old folder.
 
 ---
 
@@ -89,7 +93,7 @@ Settings live in `ai_config.json` (git-ignored). See `ai_config.example.json`.
 
 ```bash
 pip install -r requirements-dev.txt
-py -m pytest tests -q        # 897 passed / 12 skipped
+py -m pytest tests -q        # 1090 passed / 12 skipped
 
 py -m PyInstaller FrameCut.spec --noconfirm   # desktop build → dist/FrameCut/
 ```
