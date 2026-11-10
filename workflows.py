@@ -1221,7 +1221,29 @@ def _start_next_queued():
             _w._TASK_SEM.release()
             _w._start_next_queued()
     t = threading.Thread(target=_queued_runner, daemon=True)
-    t.start()
+    # [T3] 线程启动失败必须兜底：上面 :1182 已经拿到名额、:1176 已把队列项 pop 掉，
+    # 若 start() 抛 RuntimeError（线程耗尽 / "can't start new thread"），旧实现会让
+    # 名额永久不归还、且该任务从队列里彻底消失（既不执行也不再排队）——攒够并发上限
+    # 后所有新任务都被拒，只能重启服务。handler.py:344 的直接任务路径把 start() 放在
+    # try 内、由 :345-347 的 except 归还名额，这里补齐同款兜底。
+    try:
+        t.start()
+    except Exception:
+        prog['queued'] = True
+        with _w._TASK_QUEUE_LOCK:
+            _w._TASK_QUEUE.insert(0, (fn, req, runid, run_dir, prog))
+            # 位置显示只由重排循环写入（含刚放回的这一项，下标 0），
+            # 与 handler.py:278 / :1447、workflows.py:1179 同一套 `i + 1` 口径，
+            # 避免「先写死一句、再被循环覆盖」出现两个真相来源。
+            for i, (_f, _r, _rid, _rd, _p) in enumerate(_w._TASK_QUEUE):
+                _p['phase'] = '排队中（前面还有%d个任务）' % (i + 1)
+            _w._persist_queue_unlocked()
+        _w._TASK_SEM.release()     # 名额必须归还，否则泄漏
+        _log.info('[T3] 排队任务线程启动失败，已放回队首并归还名额: %s', runid)
+        # 不 re-raise：本函数在 _runner/_queued_runner 的 finally 里被调用
+        # （handler.py:342、:1222 上方），在 finally 中抛出会顶掉原本的异常。
+        # 名额已归还、队列项已放回，下一个任务收尾时自会重试启动它。
+        return
 
 
 # ---------------------------------------------------------------------------
