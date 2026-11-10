@@ -48,6 +48,7 @@ let _pollRunId = '';         // 当前生成任务（供取消）
 let _lastExport = '';         // 最近一次合成成片（供打开文件夹）
 let _undoStack = [], _redoStack = [];
 let _projName = '';
+let _draftTimer = null;       // 草稿写入 debounce 句柄
 
 /* ── 小工具 ── */
 const _esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -381,6 +382,106 @@ function updateNewProj(){
     : !plot ? '写下剧情，或勾选「完整解说稿」'
     : $('npScript').checked ? '将按稿找画面配音（文字不改）' : 'AI 按剧情写解说、挑画面';
 }
+
+/* ── 剧情稿 / 片名 草稿自动保存 ──
+   【主人实测痛点】长篇剧情稿（可能上千字）此前没有任何持久化：刷新页面、关窗口、
+   或误按一次 Ctrl+N 就当场蒸发且无法撤销。这里把「项目级输入」存进 localStorage，
+   下次打开自动回填；只有用户在 newProject() 里明确确认后才真正清除。
+
+   进草稿的三项，其余刻意排除（宁少勿滥）：
+   - npPlot  剧情稿/自写解说稿，最长最贵 → 必存
+   - npName  片名，是「查剧情」的关键字，重做同一影片时每次都要重打 → 必存
+   - npScript（复选框）→ 必存，而且**必须与 npPlot 同生共死**：它决定同一段
+     npPlot 文本的语义（勾上 = 这是写好的一字不改的完整解说稿；不勾 = 这是
+     剧情梗概，由 AI 自己写解说）。只回填文字不回填勾选，恢复出来的就是一份
+     自相矛盾的半份状态：主人明明写好了整篇稿子，却被静默当成剧情稿重写，
+     「文字不改」的承诺当场失效。
+     （注意：npScript 不在 ADV_IDS、也不在 ADV_CHECKS 里 —— 那是 npCut/npBgm，
+       与 advSave() 无关，所以它此前没有任何持久化，不是一个「已存在的真相来源」。）
+   排除：coverTitle / coverSub —— 每次点「生成封面」都会被 _projName 覆盖 / 清空；
+        musicQ —— 每次打开音乐库都被清空。这三者是会话瞬态，存了反而会盖掉用户新输入。
+   排除：setXxx 走 ai_config 后端持久化，cloneName / presetNameInput 是模态输入框。
+   注意坑 3：所有 DOM 取用一律守卫式（const el = $('x'); if(el) ...），
+   本文件顶层任何一次裸取不存在的 id 都会让它之后的顶层代码静默死亡。 */
+const DRAFT_KEY = 'framecut_desktop_draft_v1';
+const DRAFT_TEXT_IDS = ['npPlot', 'npName'];
+const DRAFT_CHECKS = ['npScript'];
+const DRAFT_DEBOUNCE_MS = 400;
+function draftRead(){
+  try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null') || null; }
+  catch(e){ return null; }
+}
+function draftSnapshot(){
+  const v = {};
+  DRAFT_TEXT_IDS.forEach(id => { const el = $(id); if(el) v[id] = el.value; });
+  // 复选框不能走 el.value（永远得到 'on'）：按 checked 存布尔。
+  DRAFT_CHECKS.forEach(id => { const el = $(id); if(el) v[id] = !!el.checked; });
+  return v;
+}
+/* 「有没有内容」只看**文本**字段。只勾了复选框、稿子却空着，不算有内容 ——
+   否则一个纸一样白的窗口点「新建」都会弹确认框，把空白零打扰的手感毁掉。
+   （只勾复选框没意义：那个勾只有在有稿子时才有语义，单独恢复一个勾等于没事找事。） */
+function draftHasContent(v){
+  return !!v && DRAFT_TEXT_IDS.some(id => typeof v[id] === 'string' && v[id].trim() !== '');
+}
+function draftSave(){
+  const v = draftSnapshot();
+  try {
+    // 用户把稿子自己清空了 → 草稿跟着删，免得下次打开又冒出来
+    if(draftHasContent(v)) localStorage.setItem(DRAFT_KEY, JSON.stringify(v));
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch(e){}
+}
+function draftClear(){
+  // 先把还没落盘的 debounce 取消：否则清空后 400ms 内那个定时器又会把旧稿写回去
+  if(_draftTimer){ clearTimeout(_draftTimer); _draftTimer = null; }
+  try { localStorage.removeItem(DRAFT_KEY); } catch(e){}
+}
+function draftRestore(){
+  const v = draftRead();
+  if(!draftHasContent(v)) return false;
+  DRAFT_TEXT_IDS.forEach(id => {
+    const el = $(id);
+    if(el && typeof v[id] === 'string') el.value = v[id];
+  });
+  // 复选框必须跟文本一起回填：只回填文字不回填勾选，恢复出来的是半份状态
+  // —— 主人写好整篇稿子（勾了「完整解说稿」）会被静默当成剧情稿重写。
+  DRAFT_CHECKS.forEach(id => {
+    const el = $(id);
+    if(el && typeof v[id] === 'boolean') el.checked = v[id];
+  });
+  if(typeof updateNewProj === 'function') updateNewProj();
+  return true;
+}
+/* newProject 用：返回「当前框里有没有会被清掉的内容」，没有就返回 null，
+   好让「完全空白时点新建」保持零打扰（一键清空的老手感不丢）。 */
+function draftPending(){
+  const v = draftSnapshot();
+  return draftHasContent(v) ? v : null;
+}
+/* 输入即存：debounce 400ms，停止敲字后就落盘，切换视图/下次打开都在。
+   用 'input' 而不是 'change'——textarea 的 change 要等失焦才触发，
+   主人写了一千字直接关窗口就白写了。 */
+function draftScheduleSave(){
+  if(_draftTimer) clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(() => { _draftTimer = null; draftSave(); }, DRAFT_DEBOUNCE_MS);
+}
+DRAFT_TEXT_IDS.forEach(id => {
+  const el = $(id);
+  if(el) el.addEventListener('input', draftScheduleSave);
+});
+// 复选框绑 'change'（checkbox 不发 input 事件）。注意 newProjectReset() 里的
+// `checked = false` 是**程序赋值**，不会触发 change，所以清空后不会反而把草稿写回去。
+DRAFT_CHECKS.forEach(id => {
+  const el = $(id);
+  if(el) el.addEventListener('change', draftScheduleSave);
+});
+/* 页面加载即回填草稿。放在这里（updateNewProj 已定义、且在任何异步任务之前），
+   保证刷新/重开窗口后剧情稿和片名都还在；回填不算「用户输入」，故不触发 draftSave。
+   注意：状态栏文字统一在文件末尾的「启动」段落地（这里若也 setStatus，
+   会被末尾那句 setStatus('就绪') 立刻盖掉）。 */
+const _draftRestored = draftRestore();
+
 $('npPick').addEventListener('click', async () => {
   if(await _ensureBridge()){
     try {
@@ -1499,8 +1600,27 @@ document.addEventListener('keydown', e => {
 $('capAdd').addEventListener('click', addCaptionAtPlayhead);
 $('capDel').addEventListener('click', delSelected);
 
-/* ── 新建/导出/打开文件夹 ── */
-function newProject(){
+/* ── 新建/导出/打开文件夹 ──
+   新建项目 = 清空当前项目（用户点「新建」时期望的确实是清空这个手感，不删）。
+   但剧情稿是主人最贵的一份输入，此前是无条件静默清空、误按 Ctrl+N 就没了。
+   现在只有「框里真有内容」时才停下来问一句；完全空白时直接清，零打扰。
+   注意用 uiConfirm 而不是 window.confirm —— pywebview/WebView2 的原生对话框
+   会被压到窗口后或静默失败（v1.4.1 事故），且 tests/test_preset_no_native_dialog.py
+   全文禁止 confirm(/prompt(/alert(。 */
+async function newProject(){
+  const draft = draftPending();
+  if(draft){
+    const n = (draft.npPlot || '').trim().length;
+    const keep = await uiConfirm('新建项目会清空当前剧情稿',
+      '当前剧情稿 ' + n + ' 字、片名「' + ((draft.npName || '').trim() || '未填')
+      + '」都会被清掉，且无法撤销。\n想留就先复制一下，或点「取消」继续留在本项目。',
+      '清空并新建');
+    if(!keep) return;                 // 用户反悔：一个字都不许动
+  }
+  draftClear();                       // 到这一步才真正销毁草稿
+  newProjectReset();
+}
+function newProjectReset(){
   _pushUndo();
   _items = []; _runDir = ''; _videoFile = ''; _vdur = 0; _sel = -1; _curSeg = -1;
   _narrEls = {};
@@ -1516,7 +1636,10 @@ function newProject(){
   $('npPick').classList.remove('has');
   const ep = $('exportPanel'); if(ep) ep.style.display = 'none';
   const vs = $('videoShell'); if(vs) vs.style.display = '';
+  const pn = $('npName'); if(pn) pn.value = '';   // 片名与剧情稿一起清，否则「查剧情」还留着旧片名
   $('npPlot').value = '';
+  if($('npScript')) $('npScript').checked = false;
+  if(typeof updateNewProj === 'function') updateNewProj();
   setStatus('就绪');
 }
 function openOutFolder(){
@@ -2441,4 +2564,4 @@ setTimeout(() => {
 }, 2000);
 
 /* ── 启动 ── */
-setStatus('就绪');
+setStatus(_draftRestored ? '就绪 · 已恢复上次未提交的剧情稿' : '就绪');
