@@ -15,8 +15,6 @@ VLM 只剩约 2.6GB，七成层跑在 CPU/内存上 —— 就是「推理到一
 
 本文件钉住三条：显存够时别乱动、不够时卸别的模型、绝不卸马上要用的那个。
 """
-import pytest
-
 import tts2_engines as T2
 
 
