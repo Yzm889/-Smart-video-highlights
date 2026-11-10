@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=17">
+<link rel="stylesheet" href="desktop.css?v=18">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -27,6 +27,13 @@
 
 <!-- 菜单栏 -->
 <div class="menubar">
+  <span class="brand" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 8.5 17.5 4.5 19 9 5.5 13z"/><path d="M6.5 6.8l1 2.4M10.8 5.5l1 2.4M15 4.3l1 2.4"/>
+      <path d="M5.5 13v5.5a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5V9"/>
+    </svg>
+    <b>一帧成片</b><i>FrameCut Studio</i>
+  </span>
   <div class="menu" data-menu="file"><span>文件</span>
     <div class="menu-dd">
       <div class="mi" data-act="new">新建项目 <span class="hk">Ctrl+N</span></div>
@@ -57,7 +64,7 @@
       <div class="mi" data-act="about">关于一帧成片</div>
     </div>
   </div>
-  <span class="menu-title">一帧成片</span>
+  <span class="menu-title">v1.4.28</span>
 </div>
 
 <!-- 工具栏 -->
@@ -486,6 +493,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=17"></script>
+<script src="desktop.js?v=18"></script>
 </body>
 </html>
