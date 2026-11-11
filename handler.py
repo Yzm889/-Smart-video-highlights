@@ -653,6 +653,33 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, json.dumps(_w.PROGRESS[runid]).encode('utf-8'), 'application/json')
 
+    def _get_logs_tail(self):
+        """服务端日志尾部：夜间无人值守/真机卡死时远程自诊，不必登机器 grep。
+
+        参数 lines（默认 200，钳制 1~2000）。日志由 start_server 的
+        RotatingFileHandler 落到 WORKDIR/framecut.log；用 deque 只读尾部，
+        不把 5MB 文件整个读进内存。文件不存在/不可读时返回 ok:false 与空
+        lines —— 调试端点绝不把主请求打挂。服务只监听 127.0.0.1，日志不外发。
+        """
+        import collections
+        qs = _w.parse_qs(_w.urlparse(self.path).query)
+        try:
+            n = int(qs.get('lines', [200])[0])
+        except (TypeError, ValueError):
+            n = 200
+        n = max(1, min(2000, n))
+        path = os.path.join(_w.WORKDIR, 'framecut.log')
+        lines, ok = [], os.path.isfile(path)
+        if ok:
+            try:
+                with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                    lines = [ln.rstrip('\r\n') for ln in collections.deque(f, maxlen=n)]
+            except OSError:
+                ok = False
+        self._send(200, json.dumps({
+            'ok': ok, 'path': path, 'count': len(lines), 'lines': lines
+        }, ensure_ascii=False).encode('utf-8'), 'application/json')
+
     def _get_model_remove(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
@@ -2155,6 +2182,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/history': '_get_history',
         '/api/local/status': '_get_local_status',
         '/api/local/test': '_get_local_test',
+        '/api/logs/tail': '_get_logs_tail',
         '/api/material/list': '_get_material_list',
         '/api/material/tags': '_get_material_tags',
         '/api/music/search': '_get_music_search',
