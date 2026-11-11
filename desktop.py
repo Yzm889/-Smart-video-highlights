@@ -291,6 +291,32 @@ def _launch_app_window(url):
     return 'browser'
 
 
+def _calc_window_geometry(screen_w, screen_h, screen_x=0, screen_y=0):
+    """按主屏分辨率算桌面窗口的 (width, height, x, y)：自适应比例 + 工作区居中。
+
+    【为什么不能写死 1440×900 且不给 x/y】主人实报「窗口不在正中间、不自适应
+    本机分辨率和比例」：旧代码不传 x/y 时 Windows 上按系统默认位置摆（偏右下
+    的级联位，不居中）；尺寸写死则在 2K/4K 屏上偏小、1080p 笔记本上 900 高
+    被任务栏顶出可视区。规则：
+      · 尺寸 = 主屏的 85%（宽高同比例缩，2K/4K/1080p 观感一致）；
+      · 高度上限 = 屏高 − 80（任务栏余量），宽度上限 = 屏宽 − 40；
+      · 下限 = 1100×700（正常桌面都放得下）；极小屏放不下 min 就贴屏上限，
+        绝不让窗口超出屏幕；
+      · x/y = 主屏起点 + 工作区（屏高减任务栏）居中偏移。
+    拿不到屏幕信息（screen_w/h 非正数）返回 None，调用方退回系统默认摆放。
+    """
+    sw, sh = int(screen_w or 0), int(screen_h or 0)
+    if sw <= 0 or sh <= 0:
+        return None
+    avail_w, avail_h = max(1, sw - 40), max(1, sh - 80)
+    width = min(max(int(sw * 0.85), 1100), avail_w)
+    height = min(max(int(sh * 0.85), 700), avail_h)
+    width, height = min(width, avail_w), min(height, avail_h)
+    x = int(screen_x or 0) + max(0, (sw - width) // 2)
+    y = int(screen_y or 0) + max(0, (avail_h - height) // 2)
+    return width, height, x, y
+
+
 def _run_desktop_window(url):
     """原生桌面窗口（pywebview，Windows 用 Edge WebView2 渲染）。
     关闭窗口 = 退出程序。返回 True=正常走完；False=环境不支持，调用方回退。"""
@@ -305,8 +331,22 @@ def _run_desktop_window(url):
     # 于是 window.pywebview 有对象但 window.pywebview.api.get_desktop_info 永远不存在：
     # 状态栏恒显示「● 桥连接中…」，原生选片/打开文件夹/会话令牌全部失效（选 20 分钟片
     # 会退化成上传 5GB）。这里必须实例化，不能只 import 类。
-    webview.create_window('一帧成片', url, width=1440, height=900,
-                          min_size=(1100, 700), js_api=DesktopApi())
+    # 【v1.4.43 居中+自适应】按主屏分辨率算窗口几何（85% 比例 + 工作区居中），
+    # 不再写死 1440×900、不再让系统随机摆位。screens 取不到/异常时退回旧行为。
+    _w, _h, _x, _y = 1440, 900, None, None
+    _min = (1100, 700)
+    try:
+        _scr = (getattr(webview, 'screens', None) or [None])[0]
+        _geom = _calc_window_geometry(getattr(_scr, 'width', 0), getattr(_scr, 'height', 0),
+                                      getattr(_scr, 'x', 0), getattr(_scr, 'y', 0))
+        if _geom:
+            _w, _h, _x, _y = _geom
+            # 极小屏：min_size 不许比窗口还大，否则 winforms 会把窗口顶出屏幕
+            _min = (min(1100, _w), min(700, _h))
+    except Exception:
+        pass
+    webview.create_window('一帧成片', url, width=_w, height=_h, x=_x, y=_y,
+                          min_size=_min, js_api=DesktopApi())
     # 【必须关掉 private_mode，否则 localStorage 不跨重启】pywebview 默认
     # private_mode=True，winforms.init_storage() 只在 `not private_mode or storage_path`
     # 时才用持久目录 %APPDATA%\pywebview，否则 cache_dir = tempfile.TemporaryDirectory().name
