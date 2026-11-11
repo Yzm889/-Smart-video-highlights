@@ -544,7 +544,20 @@ class Handler(BaseHTTPRequestHandler):
                     'video_start': span['start'],
                     'video_end': span['end']
                 })
-            self._send(200, json.dumps({'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list, 'video_duration': video_dur, 'video_path': os.path.basename(state['video_path'])}).encode('utf-8'), 'application/json')
+            resp = {'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list,
+                    'video_duration': video_dur, 'video_path': os.path.basename(state['video_path'])}
+            # 【v1.4.45】成片时间轴：compose 落盘的 composed_plan.json（每段在成片上的
+            # out_start/out_end + 源片 src_start/src_end + 配音时长）。没有就缺省——
+            # 前端回落源片坐标演算（兼容旧任务）。
+            _plan_path = os.path.join(run_dir, 'composed_plan.json')
+            if os.path.isfile(_plan_path):
+                try:
+                    _plan = _j.load(open(_plan_path, encoding='utf-8'))
+                    if isinstance(_plan, dict) and _plan.get('segments'):
+                        resp['composed'] = _plan
+                except Exception:
+                    pass
+            self._send(200, json.dumps(resp).encode('utf-8'), 'application/json')
         except Exception as e:
             kind, msg = _classify_exception(e)
             self._send_err(500, kind, msg, stage='读取 tts_state.json', detail=str(e))

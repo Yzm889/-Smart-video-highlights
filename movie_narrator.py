@@ -4881,8 +4881,10 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         if _fit_overflow > 0:
             _log.info('[DIAG] 稿子念白总长超过源片可用时长 %.1fs：末段画面定格补足（保稿子念完）'
                       % _fit_overflow)
+    _pre_cut_segs = None
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 60)
+        _pre_cut_segs = [tuple(s) for s in segs]   # fit 后、真剪前：调整页要的源片坐标
         src_video, segs, cut_sec = _cut_video_by_spans(
             video_path, segs, run_dir, progress,
             voice_durs=_vdur_pos, voice_tail=_tail, tail_pad=_fit_overflow)
@@ -4899,9 +4901,22 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
         segs = beat_ranges
         _log.info('[DIAG] 剪辑后聚合: %d节 -> %d个片段（已跳过空白）' % (len(narr), len(segs)))
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
+    # 【v1.4.45】源片坐标（调整页「这段画面在源片的哪里」）：与上面聚合同一套分组
+    _src_segs = None
+    if _pre_cut_segs is not None:
+        if (orig_narr_map and len(orig_narr_map) == orig_segs_count
+                and len(_pre_cut_segs) == orig_segs_count):
+            _src_segs = []
+            for _bi in range(len(narr)):
+                _bs = [_pre_cut_segs[k] for k in range(len(_pre_cut_segs))
+                       if orig_narr_map[k] == _bi]
+                _src_segs.append((_bs[0][0], _bs[-1][1]) if _bs else (0.0, 0.0))
+        else:
+            _src_segs = _pre_cut_segs
     # 计算voice_spans和tts_paths（segs[i]就是第i节解说词对应的画面范围）
     tts_paths = []
     voice_spans = {}
+    _plan_dur = {}   # 【v1.4.45】每句配音实长（composed_plan 用，省二次 probe）
     # 建立new_idx -> old_idx的反向映射（用于查找audio_offset）
     _rev_map = {}
     if adjusted_items:
@@ -4945,6 +4960,7 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                     clip = _cand2
         tts_paths.append((clip, seg_span[0] + _offset, seg_span[1] + _offset, _orig_vol, _narr_vol, _fade[0], _fade[1]))
         v_len = probe_audio_len(clip) or max(0.5, seg_span[1] - seg_span[0])
+        _plan_dur[i] = v_len
         voice_spans[i] = (seg_span[0] + _offset,
                           min(seg_span[1] + _offset,
                               seg_span[0] + _offset + v_len + _voice_tail(params)))
@@ -4969,6 +4985,35 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,
                                      music_path=music_path, voice_spans=voice_spans,
                                      quote_spans=quote_spans, white_spans=_white_spans)
+    # 【v1.4.45 成片时间轴落盘】调整页要按「成片坐标」展示与调段；此前剪后时间轴
+    # /配音窗口用完即弃，前端只能拿源片坐标（对不上成片，主人实测「调不了」）。
+    # 只在 len(segs)==len(narr)（段↔句一一对应）时落盘，否则前端回落演算。
+    try:
+        if final and len(segs) == len(narr):
+            _tts_by_idx = {i: c for i, c in tts_results}
+            _rows = []
+            for _i in range(len(narr)):
+                _s0, _s1 = ((_src_segs[_i][0], _src_segs[_i][1])
+                            if _src_segs and _i < len(_src_segs)
+                            else (segs[_i][0], segs[_i][1]))
+                _rows.append({
+                    'index': _i,
+                    'out_start': round(float(segs[_i][0]), 3),
+                    'out_end': round(float(segs[_i][1]), 3),
+                    'src_start': round(float(_s0), 3), 'src_end': round(float(_s1), 3),
+                    'text': narr[_i],
+                    'audio': _tts_by_idx.get(_i, ''),
+                    'duration': round(float(_plan_dur.get(_i, 0.0)), 2),
+                })
+            _atomic_json_dump(os.path.join(run_dir, 'composed_plan.json'), {
+                'version': 1,
+                'final': os.path.relpath(final, run_dir).replace('\\', '/'),
+                'total': round(float(cut_info.get('out_dur') or 0.0), 3),
+                'segments': _rows,
+            })
+            _log.info('[DIAG] 成片时间轴已落盘 composed_plan.json（%d 段）' % len(_rows))
+    except Exception as _e:
+        _log.info('[DIAG] composed_plan 落盘失败（不阻断）: %s' % _e)
     if progress:
         progress['done'] = True; progress['pct'] = 100
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/') if final else ''
