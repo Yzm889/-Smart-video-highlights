@@ -151,14 +151,14 @@ class TestCacheVersionBump(unittest.TestCase):
     """缓存版本号 bump 到 24。"""
 
     def test_desktop_js_v24(self):
-        """desktop.js?v=29。"""
+        """desktop.js?v=30。"""
         html = _read_index_html()
-        self.assertIn('desktop.js?v=29', html)
+        self.assertIn('desktop.js?v=30', html)
 
     def test_desktop_css_v24(self):
-        """desktop.css?v=29。"""
+        """desktop.css?v=30。"""
         html = _read_index_html()
-        self.assertIn('desktop.css?v=29', html)
+        self.assertIn('desktop.css?v=30', html)
 
     def test_js_css_versions_equal(self):
         """desktop.js 和 desktop.css 的版本号必须相等。"""
@@ -321,3 +321,20 @@ def test_srt_import_flow_actually_runs():
     assert not out.get("harnessErr"), "harness 错误：%r" % out.get("harnessErr")
     assert out.get("lsHas"), "localStorage 未写入（导入链没跑完）"
     assert out.get("lsName") == "t.srt" and out.get("readName") == "t.srt", out
+
+
+def test_music_persist_and_reuse_all():
+    """v1.4.51 配乐记忆 + 一键复用全部（源码钉）。"""
+    js = _read_desktop_js()
+    assert "LAST_MUSIC_KEY = 'framecut_desktop_last_music_v1'" in js
+    assert 'function lastMusicSave()' in js and 'function lastMusicRead()' in js
+    assert 'function reuseLastMusic()' in js
+    # 只存本地路径形态（与视频/字幕同一规则：upload_id/base64 不存）
+    assert 'isLocalPath && _music.path' in js
+    assert 'lastMusicSave();   // v1.4.51' in js, '选曲（桥路径）必须写盘'
+    # 复用按钮三件套 + 一键全部
+    assert 'npReuseMusic' in js and 'npReuseAll' in js
+    assert '一键复用上次全部' in js
+    assert 'reuseLastMusic()' in js
+    html = _read_index_html()
+    assert 'desktop.js?v=30' in html and 'desktop.css?v=30' in html

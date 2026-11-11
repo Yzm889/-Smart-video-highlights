@@ -28,6 +28,8 @@ DYNAMIC_IDS = {
     'narr-',          # 前缀拼接的动态 id（$('narr-' + i)）
     'npReuseVideo',   # v1.4.37：_renderLastMedia 动态生成的「上次视频」复用按钮
     'npReuseSrt',     # v1.4.37：_renderLastMedia 动态生成的「上次字幕」复用按钮
+    'npReuseMusic',   # v1.4.51：_renderLastMedia 动态生成的「上次配乐」复用按钮
+    'npReuseAll',     # v1.4.51：_renderLastMedia 动态生成的「一键复用上次全部」按钮
 }
 
 

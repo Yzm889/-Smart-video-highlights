@@ -455,10 +455,40 @@ function lastSrtClear(){
   try { localStorage.removeItem(LAST_SRT_KEY); } catch(e){}
 }
 
+/* v1.4.51：配乐持久化——视频/字幕记住了，但选中的 BGM 每次开窗还要重新选。
+   与视频/字幕同一规则：只存桌面版本地路径（isLocalPath=true）；
+   浏览器上传的 upload_id 会过期、base64 太大，都不存。 */
+const LAST_MUSIC_KEY = 'framecut_desktop_last_music_v1';
+function lastMusicSave(){
+  try {
+    if(_music && _music.isLocalPath && _music.path){
+      localStorage.setItem(LAST_MUSIC_KEY, JSON.stringify({name: _music.name, path: _music.path}));
+    }
+  } catch(e){}
+}
+function lastMusicRead(){
+  try { return JSON.parse(localStorage.getItem(LAST_MUSIC_KEY) || 'null') || null; }
+  catch(e){ return null; }
+}
+function lastMusicClear(){
+  try { localStorage.removeItem(LAST_MUSIC_KEY); } catch(e){}
+}
+/* 复用上次的配乐：本地路径形态直接可用（合成时带 desktop_token） */
+function reuseLastMusic(){
+  const lm = lastMusicRead();
+  if(!lm) return false;
+  _music = {name: lm.name, path: lm.path, isLocalPath: true};
+  setBtnIcon('tbMusic', 'i-music', _music.name.slice(0, 14));
+  const bg = $('npBgm');
+  if(bg) bg.checked = true;
+  return true;
+}
+
 /* 新建项目页渲染复用按钮（有历史记录时才显示） */
 function _renderLastMedia(){
   const lv = lastVideoRead();
   const ls = lastSrtRead();
+  const lm = lastMusicRead();
   const slot = $('npLastMedia');
   if(!slot) return;
   let html = '';
@@ -469,6 +499,15 @@ function _renderLastMedia(){
   if(ls){
     html += '<button class="mini-btn" id="npReuseSrt" title="复用上次的字幕">'
           + '<svg class="ic"><use href="#i-subtitle"/></svg>📝 上次字幕：' + _esc(ls.name) + '</button>';
+  }
+  if(lm){
+    html += '<button class="mini-btn" id="npReuseMusic" title="复用上次的配乐">'
+          + '<svg class="ic"><use href="#i-music"/></svg>🎵 上次配乐：' + _esc(lm.name) + '</button>';
+  }
+  // v1.4.51：三样都在时给「一键全部复用」——重做同一部片子的最后一步也省掉
+  if(lv && ls && lm){
+    html += '<button class="mini-btn" id="npReuseAll" title="视频+字幕+配乐一次复用">'
+          + '<svg class="ic"><use href="#i-folder"/></svg>📦 一键复用上次全部</button>';
   }
   slot.innerHTML = html;
   if(lv){
@@ -487,6 +526,22 @@ function _renderLastMedia(){
         _syncSrtUi();
         toast('✅ 已复用上次字幕：' + ls.name, 'ok');
       });
+    });
+  }
+  if(lm){
+    const b = $('npReuseMusic');
+    if(b) b.addEventListener('click', () => {
+      if(reuseLastMusic()) toast('✅ 已复用上次配乐：' + lm.name + '（已勾选 BGM）', 'ok');
+    });
+  }
+  if(lv && ls && lm){
+    const b = $('npReuseAll');
+    if(b) b.addEventListener('click', () => {
+      let n = 0;
+      if(lv){ acceptVideo(lv.name, lv.path); n++; }
+      _srt = {name: ls.name, text: ls.text}; _syncSrtUi(); n++;   // 一键复用免弹窗（主动选择即已知提醒）
+      if(reuseLastMusic()) n++;
+      toast('✅ 已复用上次全部：视频 + 字幕 + 配乐（' + n + ' 项）', 'ok');
     });
   }
 }
@@ -2080,6 +2135,7 @@ async function pickLocalMusic(){
   window.pywebview.api.pick_music().then(r => {
     if(!r || !r.path) return;
     _music = {name: r.name, path: r.path, isLocalPath: true};
+    lastMusicSave();   // v1.4.51：记住上次配乐（仅本地路径形态）
     setBtnIcon('tbMusic', 'i-music', _music.name.slice(0, 14));
     const bg = $('npBgm'); if(bg) bg.checked = true;
     toast('配乐已选：' + _music.name);
