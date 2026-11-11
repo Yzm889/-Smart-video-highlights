@@ -1892,7 +1892,8 @@ $('tbGenerate').addEventListener('click', () => {
    【v1.4.48 文案修正（主人实测教训）】不要建议用户「把字幕交给 AI 改」——
    网页版 LLM 重写长结构化文件必然偷懒：合并字幕条（216→64 条、单条 51 行/
    120s）、丢时间精度、甚至自创格式（[00:15] 台词式），主人两份 AI 改的字幕
-   全废。正确姿势：字幕保持原样导入，让 AI 只改解说稿的人名（稿子短，安全）。 */
+   全废。正确姿势：字幕保持原样导入，让 AI 只改解说稿的人名（稿子短，安全）。
+   文案内联在函数里（拖拽夹具按块抽取，别拆出去）。 */
 function _confirmSrtNames(){
   return uiConfirm('导入前提醒：人名译名要对齐',
     '解说稿和字幕里的人名必须是同一套译名。\n'
@@ -1903,15 +1904,65 @@ function _confirmSrtNames(){
     + '叫法（稿子短，改起来安全），再回来导入。',
     '已对齐，继续导入');
 }
-let _srt = null;   // {name, text}
+/* 【v1.4.49 编码自适应】字幕站点下载的 srt 大量是 GBK/GB2312（Netflix 官方
+   简体实测就是 GBK），旧实现 FileReader 固定 utf-8 → 官方中文字幕直接乱码。
+   改为 arrayBuffer + 解码器链：BOM(uft-16) → utf-8 严格（fatal，坏字节即失败）
+   → gbk（WebView2/Chromium 内置）→ utf-8 兜底。与后端 parse_subtitle_file
+   的顺序一致。 */
+function _decodeSubtitleBytes(buf){
+  const bytes = new Uint8Array(buf);
+  if(bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE){
+    try { return new TextDecoder('utf-16le').decode(buf); } catch(e){}
+  }
+  if(bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF){
+    try { return new TextDecoder('utf-16be').decode(buf); } catch(e){}
+  }
+  try { return new TextDecoder('utf-8', {fatal: true}).decode(buf); } catch(e){}
+  try { return new TextDecoder('gbk').decode(buf); } catch(e){}
+  try { return new TextDecoder('utf-8').decode(buf); } catch(e){}
+  return null;
+}
+/* 导入体检（只提醒不阻断）：SRT 里「一条 ≥3 行文本」的大块，多半是 AI 重排
+   时把多条字幕合并了——台词定位会变粗（主人实测 216 条被 DeepSeek 合并成
+   64 条，画面配不准）。 */
+function _warnMergedBlocks(text){
+  try {
+    const lines = String(text || '').split(/\r?\n/);
+    const tsRe = /^\s*\d{1,2}:\d{1,2}:\d{1,2}[.,]\d{1,3}\s*-->/;
+    let merged = 0, i = 0;
+    while(i < lines.length){
+      if(/^\s*\d+\s*$/.test(lines[i]) && i + 1 < lines.length && tsRe.test(lines[i + 1])){
+        let j = i + 2, c = 0;
+        while(j < lines.length && lines[j].trim()){ c++; j++; }
+        if(c >= 3) merged++;
+        i = j + 1;
+      } else {
+        i++;
+      }
+    }
+    if(merged >= 3){
+      toast('⚠ 这份字幕有 ' + merged + ' 条疑似被合并的大块，台词定位会变粗——建议用原版字幕', 'bad');
+    }
+  } catch(e){ /* 体检失败不阻断导入 */ }
+}
 function _loadSrtFile(file){
-  const r = new FileReader();
-  r.onload = () => {
-    _srt = {name: file.name, text: String(r.result)};
+  const done = (text) => {
+    _srt = {name: file.name, text: text};
     lastSrtSave();   // v1.4.37：记住上次字幕，下次一键复用
     _syncSrtUi();
+    _warnMergedBlocks(text);
     toast('✅ 字幕已导入：' + file.name + '（生成时按台词找画面）', 'ok');
   };
+  if(file.arrayBuffer){
+    file.arrayBuffer().then(buf => {
+      const text = _decodeSubtitleBytes(buf);
+      if(text === null){ toast('字幕读取失败：无法识别的编码', 'bad'); return; }
+      done(text);
+    }).catch(() => toast('字幕读取失败', 'bad'));
+    return;
+  }
+  const r = new FileReader();   // 老浏览器兜底（无 arrayBuffer 时维持旧行为）
+  r.onload = () => done(String(r.result));
   r.onerror = () => toast('字幕读取失败', 'bad');
   r.readAsText(file, 'utf-8');
 }

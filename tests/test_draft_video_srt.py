@@ -151,14 +151,14 @@ class TestCacheVersionBump(unittest.TestCase):
     """缓存版本号 bump 到 24。"""
 
     def test_desktop_js_v24(self):
-        """desktop.js?v=27。"""
+        """desktop.js?v=28。"""
         html = _read_index_html()
-        self.assertIn('desktop.js?v=27', html)
+        self.assertIn('desktop.js?v=28', html)
 
     def test_desktop_css_v24(self):
-        """desktop.css?v=27。"""
+        """desktop.css?v=28。"""
         html = _read_index_html()
-        self.assertIn('desktop.css?v=27', html)
+        self.assertIn('desktop.css?v=28', html)
 
     def test_js_css_versions_equal(self):
         """desktop.js 和 desktop.css 的版本号必须相等。"""
@@ -196,3 +196,41 @@ def test_preset_modal_msg_supports_multiline():
     """提醒文案是多行文本：presetModalMsg 必须支持 pre-line 换行，否则挤成一行。"""
     html = _read_index_html()
     assert 'white-space:pre-line' in html
+
+
+def test_read_text_file_decodes_gbk_srt(tmp_path):
+    """v1.4.49 桌面桥编码自适应：GBK 字幕必须正确解码（Netflix 官方简体实测是 GBK）。
+
+    旧实现固定 utf-8 errors=replace → 官方中文字幕在读取那一步就乱码，
+    信息丢失后端无法恢复，静默退回 ASR 白跑三分钟。
+    """
+    import desktop
+    p = tmp_path / 'gbk.srt'
+    content = '1\n00:00:15,015 --> 00:00:16,099\n-准备好了？\n-好了\n'
+    p.write_bytes(content.encode('gbk'))
+    r = desktop.DesktopApi().read_text_file(str(p))
+    assert r['ok'] is True
+    assert '准备好了' in r['text'], 'GBK 字幕读取乱码：%r' % r['text'][:60]
+
+
+def test_read_text_file_utf8_still_works(tmp_path):
+    import desktop
+    p = tmp_path / 'u8.srt'
+    content = '1\n00:00:15,015 --> 00:00:16,099\n-准备好了？\n'
+    p.write_bytes(content.encode('utf-8'))
+    r = desktop.DesktopApi().read_text_file(str(p))
+    assert r['ok'] is True and '准备好了' in r['text']
+
+
+def test_srt_import_decodes_gbk_and_warns_merged_blocks():
+    """前端导入链：解码器链（utf-8 严格→gbk→兜底）+ 大块合并体检，源码钉。"""
+    js = _read_desktop_js()
+    assert 'function _decodeSubtitleBytes(' in js
+    assert "TextDecoder('utf-8', {fatal: true})" in js, 'utf-8 必须严格解码（坏字节即失败才轮到 GBK）'
+    assert "TextDecoder('gbk')" in js
+    assert 'file.arrayBuffer()' in js, '导入必须走 arrayBuffer + 解码器链'
+    assert 'function _warnMergedBlocks(' in js, '大块合并体检必须存在'
+    assert '_warnMergedBlocks(text)' in js, '导入成功后必须跑体检'
+    # v1.4.47/48 的人名提醒仍在（三入口 + 文案）
+    assert 'function _confirmSrtNames()' in js
+    assert js.count('_confirmSrtNames()') >= 3

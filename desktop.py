@@ -123,14 +123,36 @@ class DesktopApi:
         return {'path': path, 'name': os.path.basename(path)}
 
     def read_text_file(self, path, max_mb=8):
-        """读取本地文本文件（桌面版专属：SRT 导入等）。路径须为绝对路径且存在。"""
+        """读取本地文本文件（桌面版专属：SRT 导入等）。路径须为绝对路径且存在。
+
+        【v1.4.49 编码自适应】字幕站点下载的 srt 大量是 GBK/GB2312/GB18030，
+        旧实现固定 utf-8 errors=replace → 官方中文字幕直接乱码（信息在读的那
+        一步就丢了，后端解析无法恢复 → 静默退回 ASR 白跑三分钟）。解码顺序
+        与 ai_providers.parse_subtitle_file 保持一致：BOM(uft-16) → utf-8 严格
+        （utf-8-sig 兼容带/不带 BOM）→ gb18030（GBK/GB2312 的超集）→ 兜底替换。
+        """
         path = str(path or '')
         if not os.path.isabs(path) or not os.path.isfile(path):
             return {'ok': False, 'error': '文件不存在'}
         if os.path.getsize(path) > max_mb * 1024 * 1024:
-            return {'ok': False, 'error': '文件过大'}
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            return {'ok': True, 'text': f.read()}
+            return {'ok': False, 'error': '文件过大（>' + str(max_mb) + 'MB）'}
+        with open(path, 'rb') as f:
+            raw = f.read()
+        text = None
+        if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+            try:
+                text = raw.decode('utf-16')
+            except Exception:
+                text = None
+        for enc in ('utf-8-sig', 'gb18030'):
+            if text is None:
+                try:
+                    text = raw.decode(enc)
+                except Exception:
+                    text = None
+        if text is None:
+            text = raw.decode('utf-8', errors='replace')
+        return {'ok': True, 'text': text}
 
     def read_file_b64(self, path, max_mb=24):
         """读取本地二进制文件并 base64 编码（桌面版专属：声音克隆上传参考音频）。"""
