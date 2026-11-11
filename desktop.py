@@ -301,7 +301,12 @@ def _run_desktop_window(url):
         return False
     # 【曾犯的错】这里曾写死网页版根地址 '/'——EXE 打开的是网页版而非桌面 UI
     # （主人实测抓到）。必须加载调用方传入的桌面 UI 地址。
-    webview.create_window('一帧成片', url, width=1440, height=900, min_size=(1100, 700))
+    # 【必须挂 js_api】DesktopApi 从 1c2ed6b 引入那天起就只定义了类、从未挂到窗口，
+    # 于是 window.pywebview 有对象但 window.pywebview.api.get_desktop_info 永远不存在：
+    # 状态栏恒显示「● 桥连接中…」，原生选片/打开文件夹/会话令牌全部失效（选 20 分钟片
+    # 会退化成上传 5GB）。这里必须实例化，不能只 import 类。
+    webview.create_window('一帧成片', url, width=1440, height=900,
+                          min_size=(1100, 700), js_api=DesktopApi())
     # 【必须关掉 private_mode，否则 localStorage 不跨重启】pywebview 默认
     # private_mode=True，winforms.init_storage() 只在 `not private_mode or storage_path`
     # 时才用持久目录 %APPDATA%\pywebview，否则 cache_dir = tempfile.TemporaryDirectory().name
