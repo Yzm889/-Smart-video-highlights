@@ -159,3 +159,28 @@ def test_render_narrate_respects_auto_cut(monkeypatch, tmp_path, auto_cut, expec
 
     S._render_narrate('v.mp4', [(0, 5)], ['a'], {}, str(tmp_path), progress={}, auto_cut=auto_cut)
     assert called['cut'] is expect_cut
+
+
+def test_tail_pad_freezes_last_piece(monkeypatch, tmp_path):
+    """v1.4.44 念完安全阀：tail_pad>0 时末段 -vf 带 tpad 克隆帧、-af 带 apad，
+    末段新时长含补尾；no_cut 快捷路被绕开（真剪才有 tpad 的位置）。"""
+    calls = _ff(monkeypatch)
+    monkeypatch.setattr(S, 'probe_audio_len',
+                        lambda p: 32.0 if 'cut.mp4' in str(p) else 30.0)
+    monkeypatch.setattr(video_render, 'probe_audio_len',
+                        lambda p: 32.0 if 'cut.mp4' in str(p) else 30.0)
+    monkeypatch.setattr(video_render, '_has_audio_track', lambda p: True)
+    out, spans, cut = video_render._cut_video_by_spans(
+        'v.mp4', [(0, 10), (10, 20), (20, 30)], str(tmp_path), tail_pad=2.0)
+    # no_cut 被绕开：必须真剪（产生 cut 片段调用）
+    assert len(calls) >= 3, 'tail_pad>0 必须绕开 no_cut 快捷路'
+    last = [c for c in calls if str(c[-1]).endswith('cut002.mp4')]
+    assert last, '末段必须有独立的剪出片段'
+    args = last[0]
+    vf = args[args.index('-vf') + 1]
+    af = args[args.index('-af') + 1] if '-af' in args else ''
+    assert 'tpad=stop_mode=clone:stop_duration=2.00' in vf, vf
+    assert 'apad=pad_dur=2.00' in af, af
+    # 末段新时间轴包含补尾（前两段各 10s，末段 10+2）
+    assert abs(spans[-1][1] - 32.0) < 0.01, spans
+    assert out != 'v.mp4'

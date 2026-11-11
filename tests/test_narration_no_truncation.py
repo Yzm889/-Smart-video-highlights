@@ -128,3 +128,68 @@ def test_display_factor_honours_tail():
     # 超出带外仍按 ±15% 夹紧，不许无限变速
     assert abs(V._display_factor(10.0, 4.0, tail=0.5) - 0.85) < 1e-9
     assert abs(V._display_factor(10.0, 9.9, tail=2.0) - 1.15) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# v1.4.44 念完保证：从「尽量补」到「保证装得下」
+# ---------------------------------------------------------------------------
+
+def test_deficit_right_packs_without_overlap():
+    """片尾装不下 → 从片尾右对齐紧凑回排：零重叠、段段 ≥ 配音、不越片尾。
+
+    旧做法 base=max(cursor-need, limit-need) 把组起点压进前一组 → 剪辑端重叠
+    修正把段压回 → atrim 截尾（真机「最后几句没念出来」元凶）。主人拍板：
+    把片段往前/往后延长吃空隙（不定格、不加速）。
+    """
+    spans = [(0.0, 4.0), (50.0, 54.0), (96.0, 100.0)]
+    got, st = V._fit_spans_to_voice(spans, {0: 6.0, 1: 6.0, 2: 6.0},
+                                    src_dur=100.0, tail=0.5)
+    for i in range(len(got) - 1):
+        assert got[i][1] <= got[i + 1][0] + 1e-6, '紧凑回排不许重叠：%s' % (got,)
+    for i, (a, b) in enumerate(got):
+        assert b - a >= 6.5 - 1e-6, '第 %d 段仍装不下配音' % i
+    assert got[-1][1] <= 100.0 + 1e-6, '回排后不许越过片尾'
+    assert st['overflow'] == 0.0
+    assert st['grew'] == 3
+    # 空隙被吃掉是预期：三组从「分散在 0/50/96」紧凑成首尾相接
+    assert got[0][1] == got[1][0] and got[1][1] == got[2][0]
+
+
+def test_overflow_reported_when_total_exceeds_window():
+    """真·极端（Σ(voice+tail) 连紧凑回排都装不下）：报 overflow，段段仍 ≥ 配音。
+
+    正常内容到不了这里；末段越过片尾的秒数由合成端对最后一个剪出片段
+    tpad 克隆帧补足（不定格于中间、不加速配音，保稿子念完）。
+    """
+    spans = [(0.0, 30.0), (40.0, 70.0), (80.0, 100.0)]
+    got, st = V._fit_spans_to_voice(spans, {0: 40.0, 1: 40.0, 2: 40.0},
+                                    src_dur=100.0, tail=0.5)
+    assert st['overflow'] > 0, '总需求超窗必须如实上报'
+    for i, (a, b) in enumerate(got):
+        assert b - a >= 40.5 - 1e-6, '第 %d 段仍装不下配音' % i
+    for i in range(len(got) - 1):
+        assert got[i][1] <= got[i + 1][0] + 1e-6, '极端路径也不许重叠'
+    assert got[0][0] == 0.0, '从首组原起点紧凑顺排（floor 兜底）'
+    assert got[-1][1] > 100.0, '末段越过片尾 → 交给 tpad 安全阀'
+
+
+def test_fit_runs_even_without_autocut_source_pin():
+    """compose 的时长对账必须无条件执行（autoCut 只控真剪，不控念完）——源码钉。"""
+    with open(os.path.join(ROOT, 'movie_narrator.py'), encoding='utf-8') as f:
+        src = f.read()
+    i_fit = src.index('_fit_spans_to_voice(segs, _vdur')
+    i_gate = src.index("if params.get('autoCut', True):")
+    assert i_fit < i_gate, 'fit 必须在 autoCut 门之外（念完保证无条件）'
+
+
+def test_vdur_pos_uses_original_index_source_pin():
+    """留白索引 bug 回归钉：1:1 分支必须按原句索引取时长，顺序计数器已删。
+
+    旧实现 _k 顺序计数对账 _vdur（键=原句索引）：稿中一旦有留白，之后所有
+    句子错一位 → 留白之后的句子不再被补长（真机「念不完」帮凶之一）。
+    """
+    with open(os.path.join(ROOT, 'movie_narrator.py'), encoding='utf-8') as f:
+        src = f.read()
+    assert ('_vdur_pos = {i: _vdur[i] for i in range(len(segs)) if i in _vdur}' in src), \
+        '1:1 分支必须按原句索引对账'
+    assert 'if _k in _vdur' not in src, '旧的顺序计数器对账必须删掉'

@@ -133,7 +133,7 @@ def _decoded_duration(path, timeout=900):
 
 
 def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None):
-    """把画面段补长到「装得下它那句配音，还留一口气」。
+    """把画面段补长到「装得下它那句配音，还留一口气」——并**保证**装得下。
 
     【为什么必须补】合成端会把每段配音裁在本段内（避免跨段语音重叠，见
     _compose_narration_video 的三元组语义）。于是画面段一旦短于配音，
@@ -147,7 +147,21 @@ def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None)
     每组的缺口补在该组最后一段的尾巴上（视觉上只多放一点画面，不动其它段）。
 
     spans: [(start, end)] 源片坐标；voice_durs: {句序号: 配音秒数}
-    返回 (new_spans, {'grew': 补长了几段, 'added': 一共补了多少秒})
+    返回 (new_spans, {'grew': 补长了几段, 'added': 一共补了多少秒, 'overflow': 秒})
+
+    【v1.4.44 重写：从「尽量补」到「保证装得下」】主人红线：稿子必须念完——
+    每句对应的片段时长 ≥ 配音时长，没有例外。旧实现在片尾放不下时把组整体
+    前移（base=max(cursor-need, limit-need)），必然压进前一组 → 剪辑端重叠
+    修正把段压回 → atrim 截尾，尾句照样被吃（真机「最后几句没念出来」元凶）。
+    新算法两段式：
+      ① 顺序原位摆放 + 组内 k 拉伸（段只增不减、起点 ≥ 前组 end，零重叠）
+        ——正常情况段间有空隙，够用；
+      ② 顺序摆到片尾放不下 → **右对齐紧凑回排**：从 limit 往前每组贴着排、
+        占足第一遍的长度，空隙全部吃掉、绝不重叠——这就是「把片段往前/往后
+        延长」的系统性做法（主人 2026-11-12 拍板，不定格、不加速）；
+      ③ 真·极端（Σneed 连紧凑都装不下，正常内容到不了）：从首组原起点紧凑
+        顺排，末组越过 limit 的秒数记入 overflow，由合成端对最后一个剪出片段
+        tpad 克隆帧补足——保稿念完的安全阀，正常永远触发不了。
     """
     limit = float(src_dur) if src_dur else None
     n = len(spans or [])
@@ -159,6 +173,9 @@ def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None)
     else:
         plan = [(i, [i]) for i in range(n)]
 
+    # —— 第一遍：原位 + 组内拉伸 ——
+    # （旧做法只在组尾补，遇到首尾相接的段就顶死不动，实测仍有 3 句被切。
+    #   组内按比例拉伸：多镜头结构不变，总长恰好等于「配音 + 气口」。）
     out = [[0.0, 0.0] for _ in range(n)]
     cursor, grew, added = 0.0, 0, 0.0
     for g, idxs in plan:
@@ -175,12 +192,8 @@ def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None)
         have = sum(out[j][1] - out[j][0] for j in idxs)
         if have >= need - 1e-6:
             continue
-        # 组内按比例拉伸：多镜头结构不变，总长恰好等于「配音 + 气口」。
-        # （旧做法只在组尾补，遇到首尾相接的段就顶死不动，实测仍有 3 句被切。）
         k = need / have if have > 0 else 1.0
         base = out[idxs[0]][0]
-        if limit and base + need > limit:          # 片尾不够就整体前移
-            base = max(cursor - need, limit - need)
         cur = base
         for j in idxs:
             ln = (out[j][1] - out[j][0]) * k
@@ -189,12 +202,32 @@ def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None)
         grew += 1
         added += need - have
         cursor = cur
-    if limit:
-        for j in range(n):
-            if out[j][1] > limit:
-                shift = out[j][1] - limit
-                out[j] = [max(0.0, out[j][0] - shift), limit]
-    return [(round(a, 3), round(b, 3)) for a, b in out], {'grew': grew, 'added': round(added, 2)}
+
+    # —— 第二遍（v1.4.44）：片尾装不下 → 紧凑回排/顺排，绝不制造重叠 ——
+    overflow = 0.0
+    if limit and plan and out[plan[-1][1][-1]][1] > limit + 1e-6:
+        lens = [sum(out[j][1] - out[j][0] for j in idxs) for _, idxs in plan]
+        floor = float(spans[plan[0][1][0]][0])   # 首组原起点（content_start 语义不破）
+        total = sum(lens)
+        if total <= (limit - floor) + 1e-6:
+            nxt = float(limit)                    # 右对齐：从片尾往前贴着排
+            for (g, idxs), ln in zip(reversed(plan), reversed(lens)):
+                cur = nxt - ln
+                for j in idxs:
+                    seg_ln = out[j][1] - out[j][0]
+                    out[j] = [cur, cur + seg_ln]
+                    cur += seg_ln
+                nxt -= ln
+        else:
+            overflow = total - (limit - floor)    # 真·极端：末组越界交 tpad 安全阀
+            cur = floor                           # 从头紧凑顺排，每组占足自身长度
+            for (g, idxs), ln in zip(plan, lens):
+                for j in idxs:
+                    seg_ln = out[j][1] - out[j][0]
+                    out[j] = [cur, cur + seg_ln]
+                    cur += seg_ln
+    return [(round(a, 3), round(b, 3)) for a, b in out], {
+        'grew': grew, 'added': round(added, 2), 'overflow': round(overflow, 2)}
 
 
 def attach_importance(params, progress, segs):
@@ -459,11 +492,15 @@ def _warn(progress, msg):
 
 
 def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=None,
-                        skip_no_cut=False, voice_tail=0.35):
+                        skip_no_cut=False, voice_tail=0.35, tail_pad=0.0):
     """按保留区间真剪辑：只留 spans 覆盖的画面，顺序拼成新片，并给出新时间轴。
 
     这是「剧情驱动剪辑」名副其实的关键。历史实现里解说链路只做「烧字幕 + 混音」，
     成片时长恒等于原片，用户在预览里取消勾选的段落画面照样留在成片里 —— 等于没剪。
+
+    tail_pad（v1.4.44 念完安全阀）：>0 时最后一个剪出片段用 tpad 克隆末帧延长
+    这么多秒（音频 apad 静音垫底）——稿子总长超过源片可用时长的真·极端情况下
+    保证最后一句念完。正常内容走不到（fit 的紧凑回排已把空隙吃光）。
 
     返回 (cut_path, new_spans, cut_seconds)：
     - new_spans[i] 是 spans[i] 在拼接后新片里的 (start, end)，字幕与配音必须按它对齐
@@ -513,6 +550,10 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
     # skip_no_cut=True（分析阶段已剔除被剪段）时，即使保留段首尾覆盖也执行真剪，
     # 否则「剪辑失效」：被剪段信息被拿走后又按覆盖判定跳过剪辑，成片保留全部画面。
     _no_cut = (not skip_no_cut) and raw and raw[0][0] <= 0.05 and vdur - raw[-1][1] <= 0.05 and covered_gap <= 0.0
+    if tail_pad > 0.01:
+        # 念完安全阀：需要给末段定格补时长时，no_cut 快捷路必须绕开（走真剪，
+        # 末段才有 tpad 的位置），宁可多一次重编码。
+        _no_cut = False
 
     if _no_cut:
         if skip_no_cut:
@@ -550,11 +591,20 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
             # 几段带偏移的片段后，拼出来的容器时长会被虚报——实测 43 段真长
             # 289s 却写成 381s，下游按 381s 排时间轴，配音全被推走。
             _vf = ['setpts=(PTS-STARTPTS)*%.6f' % f]
+            # 【v1.4.44 念完安全阀】只有最后一个片段需要定格补尾（正常 tail_pad=0）
+            _pad = tail_pad if (tail_pad > 0.01 and i == len(raw) - 1) else 0.0
+            if _pad > 0.01:
+                _vf.append('tpad=stop_mode=clone:stop_duration=%.2f' % _pad)
             if _tm_chain:
                 _vf.append(_tm_chain)
             cmd += ['-vf', ','.join(_vf)]
+            _af = []
             if has_audio and abs(f - 1.0) > 0.005:
-                cmd += ['-af', 'atempo=%.6f' % (1.0 / f)]
+                _af.append('atempo=%.6f' % (1.0 / f))
+            if has_audio and _pad > 0.01:
+                _af.append('apad=pad_dur=%.2f' % _pad)
+            if _af:
+                cmd += ['-af', ','.join(_af)]
             cmd += _w.video_encode_args_interim()
             if _tm_chain:
                 cmd += list(BT709_TAGS)
@@ -568,7 +618,8 @@ def _cut_video_by_spans(video_path, spans, run_dir, progress=None, voice_durs=No
             if rc != 0 or not os.path.exists(p):
                 raise RuntimeError('片段 %d 剪切失败: %s' % (i, e.decode('utf-8', 'ignore')[-200:]))
             pieces.append(p)
-            piece_durs.append(seg_len * f if abs(f - 1.0) > 0.005 else seg_len)
+            _pd = seg_len * f if abs(f - 1.0) > 0.005 else seg_len
+            piece_durs.append(_pd + _pad)   # 定格补尾计入新时间轴
 
         out = os.path.join(run_dir, 'cut.mp4')
         concat_txt = os.path.join(cut_dir, 'concat.txt')

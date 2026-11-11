@@ -4843,48 +4843,49 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                        if not (i < len(narr) and is_white_line(narr[i]))]
         if len(tts_results) != _before:
             _log.info('[DIAG] 留白段剔除残留配音 %d 条' % (_before - len(tts_results)))
+    # 【v1.4.44 念完保证】时长对账**无条件执行**（旧：只在 autoCut=True 时做）——
+    # autoCut 只控「是否按新轴真剪画面」，绝不控「稿子念不念得完」。
+    # 主人红线（2026-11-12）：每一句稿子对应的片段时长必须 ≥ 这句配音的实际时长，
+    # 就算画面没对上，稿子也一定要念完。
+    _vdur = {}
+    for _ti, _clip in tts_results:
+        _d = probe_audio_len(_clip) or 0.0
+        if _d > 0:
+            _vdur[_ti] = _d
+    _vdur_pos = None      # 段位置 -> 配音秒数（一一对应时用）
+    _fit_overflow = 0.0
+    _tail = _voice_tail(params)
+    if _vdur:
+        # 高密度分镜下 1 句占多段（实测 43 段 ↔ 37 句）：必须按 narr_map 归组补，
+        # 否则「第 i 段配第 i 句」会错配到别的句子身上，补了也白补。
+        _groups = narr_map if (narr_map and len(narr_map) == len(segs)
+                               and len(narr_map) != len(narr)) else None
+        if _groups:
+            segs, _fit = _fit_spans_to_voice(segs, _vdur, cut_info['src_dur'],
+                                             tail=_tail, groups=_groups)
+            # 分组时逐段时长与配音不一一对应，微变速会算错倍数 → 关掉
+        else:
+            # 段与解说一一对应（含 B-roll / 原声引用 / 留白）：
+            # 【v1.4.44 修索引 bug】_vdur 的键就是 narr 原句索引（_generate_all_tts
+            # 跳过留白/空行但保留原索引），段下标 _pos 与 narr 索引一一对应，直接
+            # 按 _pos 取。旧实现用顺序计数器 _k 对账：稿中一旦有留白，之后所有句子
+            # 错一位——有的拿到别句时长、有的拿不到 → 留白之后的句子不再被补长，
+            # 即使 autoCut=True 也被截（真机「念不完」帮凶之一）。
+            _vdur_pos = {i: _vdur[i] for i in range(len(segs)) if i in _vdur}
+            segs, _fit = _fit_spans_to_voice(segs, _vdur_pos, cut_info['src_dur'],
+                                             tail=_tail)
+        _fit_overflow = float(_fit.get('overflow') or 0.0)
+        if _fit['grew']:
+            _log.info('[DIAG] 画面补长 %d 段 / +%.1fs（让每句念完再切，留 %.2fs 气口）'
+                      % (_fit['grew'], _fit['added'], _tail))
+        if _fit_overflow > 0:
+            _log.info('[DIAG] 稿子念白总长超过源片可用时长 %.1fs：末段画面定格补足（保稿子念完）'
+                      % _fit_overflow)
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 60)
-        # 【2026-11-09】先让画面装得下配音。合成端把每段配音裁在本段内（防跨段重叠），
-        # 于是画面段短于配音时尾音被硬切——用户实测就是「这句话没念完就切下一个镜头」。
-        # 实测那一次：37 段配音合计 235.1s，画面只留 208.8s，被切掉 25.6s。
-        _vdur = {}
-        for _ti, _clip in tts_results:
-            _d = probe_audio_len(_clip) or 0.0
-            if _d > 0:
-                _vdur[_ti] = _d
-        _vdur_pos = None      # 段位置 -> 配音秒数（一一对应时用）
-        if _vdur:
-            _tail = _voice_tail(params)
-            # 高密度分镜下 1 句占多段（实测 43 段 ↔ 37 句）：必须按 narr_map 归组补，
-            # 否则「第 i 段配第 i 句」会错配到别的句子身上，补了也白补。
-            _groups = narr_map if (narr_map and len(narr_map) == len(segs)
-                                   and len(narr_map) != len(narr)) else None
-            if _groups:
-                segs, _fit = _fit_spans_to_voice(segs, _vdur, cut_info['src_dur'],
-                                                 tail=_tail, groups=_groups)
-                # 分组时逐段时长与配音不一一对应，微变速会算错倍数 → 关掉
-            else:
-                # 段与解说一一对应（含 B-roll / 原声引用 / 留白）：
-                # 按位置映射，留白与 B-roll 段没有配音，必须跳过——
-                # 否则第 N 句的时长会套到第 N 段无解说的画面上，后面全部错位。
-                _vdur_pos = {}
-                _k = 0
-                for _pos in range(len(segs)):
-                    _txt = narr[_pos] if _pos < len(narr) else ''
-                    if not str(_txt or '').strip() or is_white_line(_txt):
-                        continue
-                    if _k in _vdur:
-                        _vdur_pos[_pos] = _vdur[_k]
-                    _k += 1
-                segs, _fit = _fit_spans_to_voice(segs, _vdur_pos, cut_info['src_dur'],
-                                                 tail=_tail)
-            if _fit['grew']:
-                _log.info('[DIAG] 画面补长 %d 段 / +%.1fs（让每句念完再切，留 %.2fs 气口）'
-                          % (_fit['grew'], _fit['added'], _tail))
         src_video, segs, cut_sec = _cut_video_by_spans(
             video_path, segs, run_dir, progress,
-            voice_durs=_vdur_pos, voice_tail=_voice_tail(params))
+            voice_durs=_vdur_pos, voice_tail=_tail, tail_pad=_fit_overflow)
         cut_info['cut_sec'] = cut_sec
     # 剪辑后聚合：把同属一个beat的多个seg在剪辑后的时间轴上合并（此时无空白，聚合安全）
     if orig_narr_map and len(orig_narr_map) == orig_segs_count and len(segs) == orig_segs_count:
