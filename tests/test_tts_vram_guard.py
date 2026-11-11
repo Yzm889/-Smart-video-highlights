@@ -120,10 +120,11 @@ def test_speak_returns_worker_reason_via_diag(monkeypatch):
 
 
 def test_free_vram_for_llm_only_when_short(monkeypatch):
-    """解说开工前：够就什么都不做，不够才停配音 worker。"""
+    """解说开工前：够就什么都不做，不够才停配音 worker（v1.4.38：在忙的不杀）。"""
     stopped = []
     monkeypatch.setattr(T2, '_ollama_model_size', lambda m: 0)
-    monkeypatch.setattr(T2, 'release_engines', lambda: stopped.append(1) or ['qwen3tts'])
+    monkeypatch.setattr(T2, 'release_engines',
+                        lambda *a, **k: stopped.append(dict(k)) or ['qwen3tts'])
 
     monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (500, 12288))
     _reset(monkeypatch)
@@ -133,17 +134,84 @@ def test_free_vram_for_llm_only_when_short(monkeypatch):
     monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (6000, 12288))
     _reset(monkeypatch)
     assert T2.free_vram_for_llm('qwen3:8b') == ['qwen3tts']
-    assert stopped == [1]
+    assert stopped == [{'skip_busy': True}], '配音中途的 LLM 调用不许杀正在合成的 worker'
 
 
 def test_free_vram_for_llm_sizes_by_model(monkeypatch):
-    """按 Ollama 里该模型体积估算，别对小模型也一顿猛停。"""
+    """按 Ollama 里该模型体积估算（v1.4.38 按 16K ctx 重标定：size*1.1+800）。
+
+    旧公式 size*1.35+2500 是 32K ctx 时代的标定（qwen3:8b 按它要 9.6GB），
+    16K ctx 实测驻留约 5.5GB——旧公式会把明明装得下的 4.4GB worker 也杀掉。
+    """
     monkeypatch.setattr(T2, '_ollama_model_size', lambda m: 3 * 1024 ** 3)  # 3GB 小模型
-    monkeypatch.setattr(T2, 'release_engines', lambda: ['qwen3tts'])
+    monkeypatch.setattr(T2, 'release_engines', lambda *a, **k: ['qwen3tts'])
     monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (4400, 12288))
     _reset(monkeypatch)
-    # 3GB*1.25+800 ≈ 4640MB，空闲 7888MB 足够 → 不动
+    # 3GB*1.1+800 ≈ 4179MB，空闲 7888MB 足够 → 不动
     assert T2.free_vram_for_llm('qwen3:4b') == []
+
+
+def test_release_engines_skip_busy_leaves_running_worker(monkeypatch):
+    """v1.4.38：skip_busy=True 不打断正在合成的 worker（锁 0.5s 拿不到就跳过）。
+
+    free_vram_for_llm 用这个语义：配音中途的 LLM 调用宁可自己慢一点，
+    打断配音会引发句子失败 → worker 重启链，比慢更贵。
+    """
+    srv = T2._Serve('qwen3tts', ['nope'], need_mb=5200)
+    srv.starting = False
+
+    class _P:
+        def poll(self):
+            return None
+
+    srv.proc = _P()                      # 假装活着的常驻进程
+    monkeypatch.setattr(T2, '_QWEN', srv)
+    monkeypatch.setattr(T2, '_IDX', None)
+
+    srv.lock.acquire()                   # 模拟「正在合成」（ask 全程持锁）
+    try:
+        assert T2.release_engines(skip_busy=True) == []
+        assert srv.proc is not None, '在忙的 worker 不许被杀'
+    finally:
+        srv.lock.release()
+
+    assert T2.release_engines(skip_busy=True) == ['qwen3tts'], '闲下来之后才停'
+    assert srv.proc is None
+
+
+def test_release_engines_default_stops_idle_worker(monkeypatch):
+    """默认（阻塞）语义：atexit/_kill_all 用它，空闲 worker 必须停干净。"""
+    srv = T2._Serve('indextts2', ['nope'], need_mb=6600)
+    srv.starting = False
+
+    class _P:
+        def poll(self):
+            return None
+
+    srv.proc = _P()
+    monkeypatch.setattr(T2, '_QWEN', None)
+    monkeypatch.setattr(T2, '_IDX', srv)
+    assert T2.release_engines() == ['indextts2']
+    assert srv.proc is None
+
+
+def test_ollama_model_size_cached(monkeypatch):
+    """v1.4.38：模型体积 60s 进程内缓存，守卫别每次都打 /api/tags。"""
+    calls = []
+
+    def _http(base=None, path=None, **k):
+        calls.append(path)
+        return b'{"models":[{"name":"qwen3:8b","size":5242880000}]}'
+
+    monkeypatch.setattr(T2, '_http', _http)
+    monkeypatch.setattr(T2, '_MODEL_SIZE_CACHE', {'t': 0.0, 'm': None, 'sz': 0})
+    assert T2._ollama_model_size('qwen3:8b') == 5242880000
+    assert T2._ollama_model_size('qwen3:8b') == 5242880000
+    assert len(calls) == 1, '第二次应命中缓存'
+
+    T2._MODEL_SIZE_CACHE['t'] -= 61.0    # 缓存过期后再查一次
+    assert T2._ollama_model_size('qwen3:8b') == 5242880000
+    assert len(calls) == 2
 
 
 def test_engine_status_exposes_vram_and_ollama(monkeypatch):

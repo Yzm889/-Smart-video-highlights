@@ -81,42 +81,53 @@ def _scan_full_visual(frames, per_seg, params, progress=None):
     caps = {}
     batches = [idxs[i:i + VLM_BATCH_FRAMES] for i in range(0, len(idxs), VLM_BATCH_FRAMES)]
     import re as _re
-    for bi, batch in enumerate(batches):
-        if progress is not None:
+    # 【v1.4.38】批与批之间 keep_alive='30m' 常驻——不带 keep_alive（默认 0）时每批
+    # 都重新从磁盘加载 6GB 权重再卸掉，120 段/8 帧一批就是十几次冷加载（v1.4.34
+    # 真机取证 43 个 Ollama 事件的主要嫌疑）。本函数多跑在写稿/剧情理解之前，
+    # 结束必须把 VLM 请出去，别让 7GB 残留把文本模型挤到 WDDM 换页。
+    try:
+        for bi, batch in enumerate(batches):
+            if progress is not None:
+                try:
+                    progress['phase'] = ('画面全扫 %d/%d 批（看懂每一段，不再只看片头片尾）'
+                                         % (bi + 1, len(batches)))
+                except Exception:
+                    pass
+            sys_ = '你是视频画面描述助手，只描述画面里实际可见的内容。'
+            prompt = ('下面是同一段视频按时间顺序抽取的各镜头画面：第1张对应第1段，第2张对应第2段……依此类推。\n'
+                      '请严格按顺序逐段输出每段画面里实际可见的内容（人物/动作/场景/画面上的文字）。\n'
+                      '每段一行，格式严格为「第k段: 画面内容」，k 从 1 开始递增。\n'
+                      '只描述看到的，不要推测剧情、不要总结、不要遗漏任何一段。')
+            if bi > 0:
+                # 跨批 continuity：告诉模型这只是接在前面的后续镜头，别当成新片子的开头
+                prompt = '下面接的是上一个视频片段的后续镜头（时间上承前一批）。\n' + prompt
             try:
-                progress['phase'] = ('画面全扫 %d/%d 批（看懂每一段，不再只看片头片尾）'
-                                     % (bi + 1, len(batches)))
-            except Exception:
-                pass
-        sys_ = '你是视频画面描述助手，只描述画面里实际可见的内容。'
-        prompt = ('下面是同一段视频按时间顺序抽取的各镜头画面：第1张对应第1段，第2张对应第2段……依此类推。\n'
-                  '请严格按顺序逐段输出每段画面里实际可见的内容（人物/动作/场景/画面上的文字）。\n'
-                  '每段一行，格式严格为「第k段: 画面内容」，k 从 1 开始递增。\n'
-                  '只描述看到的，不要推测剧情、不要总结、不要遗漏任何一段。')
-        if bi > 0:
-            # 跨批 continuity：告诉模型这只是接在前面的后续镜头，别当成新片子的开头
-            prompt = '下面接的是上一个视频片段的后续镜头（时间上承前一批）。\n' + prompt
+                out = vlm_chat_multi([frames[i] for i in batch], prompt, system=sys_,
+                                     timeout=300, keep_alive='30m') or ''
+            except Exception as ex:
+                if bi == 0:
+                    # 第一批就失败 = 视觉模型整体不可用，交给调用方走台词路线
+                    raise
+                _note_progress_warning('画面全扫第%d批失败（%s），已跳过后续批次'
+                                       % (bi + 1, str(ex)[:80]))
+                break
+            for l in out.splitlines():
+                m = _re.match(r'^\s*第(\d+)段[:：]\s*(.+?)\s*$', l.strip())
+                if not m:
+                    continue
+                k = int(m.group(1)) - 1
+                if 0 <= k < len(batch):
+                    caps[batch[k]] = m.group(2)
+            if progress is not None:
+                try:
+                    progress['pct'] = int(30 + 25 * (bi + 1) / max(1, len(batches)))
+                except Exception:
+                    pass
+    finally:
         try:
-            out = vlm_chat_multi([frames[i] for i in batch], prompt, system=sys_, timeout=300) or ''
-        except Exception as ex:
-            if bi == 0:
-                # 第一批就失败 = 视觉模型整体不可用，交给调用方走台词路线
-                raise
-            _note_progress_warning('画面全扫第%d批失败（%s），已跳过后续批次'
-                                   % (bi + 1, str(ex)[:80]))
-            break
-        for l in out.splitlines():
-            m = _re.match(r'^\s*第(\d+)段[:：]\s*(.+?)\s*$', l.strip())
-            if not m:
-                continue
-            k = int(m.group(1)) - 1
-            if 0 <= k < len(batch):
-                caps[batch[k]] = m.group(2)
-        if progress is not None:
-            try:
-                progress['pct'] = int(30 + 25 * (bi + 1) / max(1, len(batches)))
-            except Exception:
-                pass
+            vlm_unload()
+        except Exception:
+            pass
     return caps
 
 
@@ -3280,9 +3291,13 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     #            keep_alive 是这里的命门——之前每次调用 keep_alive=0 会把 6GB 权重卸掉，
     #            下一批重新加载 >80s，而超时只有 30s，于是「几乎每批必失败」。
     #  快速模式：沿用 8 帧/批，但超时从 30s 提到 90s（30s 对 8 帧在 3060 上本就不现实）。
+    # 【v1.4.38】快速模式同样常驻 '30m'：keep_alive=0 意味着**每一批**都重新从磁盘
+    #  加载 6GB 权重再卸掉（v1.4.34 真机取证 43 个 Ollama 事件的主要来源）。清理不靠
+    #  keep_alive——调用方（_narrate_by_plot）的 finally vlm_unload() 兜底，无论正常
+    #  结束、取消还是异常都会把 VLM 请出去，不会占着显存拖累后面的写稿阶段。
     vlm_count = 0
     batch_size = int(_T['batch'])
-    _VLM_KEEP = '30m' if quality else 0
+    _VLM_KEEP = '30m'
     _VLM_TO_MULTI = 300 if quality else 90
     _VLM_TO_SINGLE = 180 if quality else 60
 

@@ -1048,6 +1048,15 @@ def _is_local_ollama(base_url):
 # ctx 一变 Ollama 就要重载，探针和正式调用若不同值会互相踢。VLM 见 _VLM_NUM_CTX。
 _LLM_NUM_CTX = 16384
 
+# 文本模型驻留时长。【v1.4.38 治「Ollama 反复加载模型」（v1.4.34 真机取证：12 分钟
+# 任务 43 个 llama-server/ollama 事件）】不传 keep_alive 时 Ollama 默认只驻留 5 分钟，
+# 写稿各段之间、写稿→对齐之间只要隔得久一点，下一次调用就是一次冷加载（spawn 新的
+# llama-server + conhost 闪窗）。给 30m 常驻后，任务内 LLM 各阶段共享一次加载；阶段
+# 守卫（VLM 前/后、配音前的腾位）仍会用 keep_alive:0 把它请出去——12GB 卡上文本模型
+# 与 VLM/配音 worker 物理上装不下，那是固有行为，不属于这里的治理对象。
+# 同一端点 vlm_chat_multi 带 keep_alive 已长期跑通（见 _VLM_KEEP），Ollama 0.40.15 实证。
+_LLM_KEEP = '30m'
+
 
 def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
     """走 Ollama **原生** /api/chat 端点（仅本机 Ollama）。
@@ -1064,8 +1073,12 @@ def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
     """
     import urllib.request, urllib.error, json as _j, re as _re
     root = _re.sub(r'/v1/?$', '', str(cfg['base_url']).rstrip('/'))
-    # 配音 worker 常驻吃 4.4GB：显存不够时先让它让开，否则 Ollama 会把一半层
+    # 配音 worker 常驻吃 4.4~6.6GB：显存不够时先让它让开，否则 Ollama 会把一半层
     # 丢到 CPU（不报错，但解说慢到不可用）。失败不影响主流程。
+    # 【v1.4.38 修订】v1.4.34 遗留的「每次调用都无条件调」保留调用点，但
+    # free_vram_for_llm 侧两处收紧：① skip_busy——正在合成的 worker 不杀（宁可
+    # 这次 LLM 慢一点，不能打断配音，那会引发 worker 重启链）；② need 公式按
+    # 16K ctx 重标定（旧公式是 32K 时代的，驻留 5.5GB 的模型按 9.6GB 判，过度杀）。
     try:
         import tts2_engines as _T2
         _T2.free_vram_for_llm(cfg.get('model'))
@@ -1073,7 +1086,7 @@ def _ollama_native_chat(cfg, messages, max_tokens, temperature, timeout):
         pass
     url = root + '/api/chat'
     payload = {'model': cfg['model'], 'messages': messages, 'stream': False,
-               'think': False,
+               'think': False, 'keep_alive': _LLM_KEEP,
                'options': {'num_predict': int(max_tokens or 1500),
                            'temperature': temperature,
                            'num_ctx': _LLM_NUM_CTX}}

@@ -548,18 +548,25 @@ def _get_idx():
     return _IDX
 
 
-def release_engines():
+def release_engines(skip_busy=False):
     """停掉常驻 TTS worker，把显存让回给本地大模型（解说生成用）。
 
     12GB 卡上 Qwen3-TTS 常驻 4.4GB + qwen3:8b 要 9.6GB 装不下，
     Ollama 不会报错而是把一半层丢 CPU，解说会慢到不可用 —— 比等 45s 重载更亏。
     加锁是为了不打断正在合成的请求（等它跑完再停）。
+    【v1.4.38】skip_busy=True：正在合成的 worker 不杀——0.5s 内拿不到锁 = 有请求
+    在算，跳过它。free_vram_for_llm 用这个语义：配音中途的 LLM 调用宁可自己慢
+    一点（WDDM 换页），打断配音会引发句子失败→worker 重启链，比慢更贵。
+    atexit（_kill_all）与 VLM 腾位走默认阻塞语义：等在算的句子跑完再停，保证停净。
     """
     stopped = []
     for srv in (_QWEN, _IDX):
         if srv is None:
             continue
-        with srv.lock:
+        got = srv.lock.acquire(timeout=0.5) if skip_busy else srv.lock.acquire()
+        if not got:
+            continue            # skip_busy 且正在合成：不打断
+        try:
             p = srv.proc
             if srv.starting:
                 continue        # 正在拉起，杀了等于自杀（会报「worker 启动失败」）
@@ -575,6 +582,8 @@ def release_engines():
             except Exception:
                 pass
             stopped.append(srv.name)
+        finally:
+            srv.lock.release()
     return stopped
 
 
@@ -651,23 +660,33 @@ def voice_ref(instruct=None):
         return dst
 
 
+_MODEL_SIZE_CACHE = {'t': 0.0, 'm': None, 'sz': 0}
+
+
 def _ollama_model_size(model, base='http://127.0.0.1:11434'):
-    """从 /api/tags 取模型体积（字节）；取不到返回 0。"""
+    """从 /api/tags 取模型体积（字节）；取不到返回 0。
+
+    【v1.4.38】60s 进程内缓存：模型体积不会变，而 free_vram_for_llm 每次守卫都查
+    （探针 60s 一次、写稿逐段调用更密），没必要每次都打一遍 HTTP。
+    """
+    want = str(model or '').strip().lower()
+    now = time.time()
+    if want == _MODEL_SIZE_CACHE['m'] and now - _MODEL_SIZE_CACHE['t'] < 60:
+        return _MODEL_SIZE_CACHE['sz']
+    sz = 0
     try:
         data = json.loads((_http(base, '/api/tags') or b'{}').decode('utf-8') or '{}')
+        for m in (data.get('models') or []):
+            name = str(m.get('name') or m.get('model') or '').lower()
+            if not name:
+                continue
+            if name == want or name.split(':')[0] == want.split(':')[0]:
+                sz = int(m.get('size') or 0)
+                break
     except Exception:
-        return 0
-    want = str(model or '').strip().lower()
-    for m in (data.get('models') or []):
-        name = str(m.get('name') or m.get('model') or '').lower()
-        if not name:
-            continue
-        if name == want or name.split(':')[0] == want.split(':')[0]:
-            try:
-                return int(m.get('size') or 0)
-            except Exception:
-                return 0
-    return 0
+        sz = 0
+    _MODEL_SIZE_CACHE['t'], _MODEL_SIZE_CACHE['m'], _MODEL_SIZE_CACHE['sz'] = now, want, sz
+    return sz
 
 
 _LLM_GUARD = {'t': -99.0}
@@ -676,9 +695,13 @@ _LLM_GUARD = {'t': -99.0}
 def free_vram_for_llm(model=None, min_free_mb=7000):
     """解说开工前调用：显存不够就停掉配音 worker。
 
-    需要多少按 Ollama 里该模型的体积估。磁盘体积只算权重，32K 上下文还要
-    再吃 2GB 多 KV —— 实测 qwen3:8b 磁盘 5.2GB、驻留 9.6GB，按 size*1.35+2500 才准。
+    需要多少按 Ollama 里该模型的体积估。【v1.4.38 重标定】_LLM_NUM_CTX=16384 之后
+    实测 qwen3:8b（磁盘 5.2GB）驻留约 5.5GB——旧公式 size*1.35+2500 是 32K ctx 时代
+    的标定（按它算要 9.6GB），Qwen3-TTS worker 只占 4.4GB、明明装得下也被杀，白白付
+    一次 worker 冷启动。按 16K 实测改 size*1.1+800（5.2GB → 约 6.5GB）。
     模型体积未知时退化成 min_free_mb 阈值。5s 内只查一次，别给逐句调用加负担。
+    【v1.4.38】release_engines(skip_busy=True)：正在合成的 worker 不杀——配音中途
+    的 LLM 调用宁可自己慢一点，打断配音引发的重启链比慢更贵。atexit 兜底仍阻塞全停。
     """
     now = time.time()
     if now - _LLM_GUARD['t'] < 5:
@@ -690,10 +713,10 @@ def free_vram_for_llm(model=None, min_free_mb=7000):
     need = min_free_mb
     sz = _ollama_model_size(model) if model else 0
     if sz:
-        need = int(sz / 1048576 * 1.35) + 2500
+        need = int(sz / 1048576 * 1.1) + 800
     if total - used >= need:
         return []
-    return release_engines()
+    return release_engines(skip_busy=True)
 
 
 def _same_ollama_model(a, b):

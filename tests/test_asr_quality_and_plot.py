@@ -325,19 +325,26 @@ def test_scan_full_visual_covers_every_segment(monkeypatch):
     frames = {i: 'C:/fake/f%02d.jpg' % i for i in range(n)}
     per_seg = [(i * 8.0, (i + 1) * 8.0, '') for i in range(n)]
     seen = []
+    keeps = []
 
-    def _fake_vlm(imgs, prompt, system=None, timeout=240, max_tokens=None):
+    def _fake_vlm(imgs, prompt, system=None, timeout=240, max_tokens=None, keep_alive=0):
         seen.append(list(imgs))
+        keeps.append(keep_alive)
         # 模拟「逐段输出」：返回本次批次每一段的描述
         return '\n'.join('第%d段: 描述%d' % (k + 1, k + 1) for k in range(len(imgs)))
 
+    unloaded = []
     monkeypatch.setattr(MN, 'vlm_chat_multi', _fake_vlm)
+    monkeypatch.setattr(MN, 'vlm_unload', lambda: unloaded.append(1) or True)
     caps = MN._scan_full_visual(frames, per_seg, {'theme': '', 'name': ''})
     assert len(caps) == n, '应覆盖全部 %d 段，实际 %d 段' % (n, len(caps))
     assert all(k in caps for k in range(n)), '不能有段被跳过'
     # 必须分批（一次塞 30 张会挤爆上下文），且每批不超过上限
     assert len(seen) > 1, '应分批调用，不能一次塞全部帧'
     assert all(len(b) <= MN.VLM_BATCH_FRAMES for b in seen), seen
+    # 【v1.4.38】批间必须常驻（否则每批冷加载 6GB 权重），函数退出必须卸载兜底
+    assert all(k == '30m' for k in keeps), keeps
+    assert unloaded, '全扫结束必须把 VLM 请出去，别残留挤爆写稿阶段'
 
 
 # ---------------------------------------------------------------------------
