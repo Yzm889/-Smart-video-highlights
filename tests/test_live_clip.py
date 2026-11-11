@@ -529,3 +529,21 @@ def test_make_candidate_thumbs_writes_ascii_files(monkeypatch, tmp_path):
         assert all(ord(ch) < 128 for ch in os.path.basename(t))
         assert os.path.getsize(t) > 512
         assert os.path.dirname(t) == str(tmp_path), '缩略图必须留在 run_dir 根（临时目录会被删）'
+
+
+def test_live_analysis_cancel_button_wiring():
+    """v1.4.55 回归钉：分析必须可取消（90 分钟片 235s，没有取消按钮像卡死）。
+
+    后端 analyze_highlights 早已接 RUN_PROCS 协作取消；本钉保证前端入口
+    不被误删，且取消走 /api/cancel（与解说链路同一机制）。
+    """
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "static", "desktop", "desktop.js"), encoding="utf-8") as f:
+        js = f.read()
+    with open(os.path.join(root, "static", "desktop", "index.html"), encoding="utf-8") as f:
+        h = f.read()
+    assert 'id="lcCancel"' in h, "进度区必须有取消按钮"
+    assert "_lcPollRunId" in js, "必须记录 runid 供取消用"
+    assert "'/api/cancel'" in js and "runid: _lcPollRunId" in js
+    assert "已取消分析" in js, "取消要轻提示，不报「分析失败」吓人"

@@ -3075,6 +3075,7 @@ _setEntryActive('tbNarrate');
    每段可删、起止秒数可改、可手动圈段；阶段②调 /api/live_clip/export 出片。 */
 let _lcVideo = null;          // {name, path} 本地直连 或 {name, upload_id} 浏览器上传
 let _lcPollTimer = null;
+let _lcPollRunId = null;      // v1.4.55：取消按钮凭它发 /api/cancel
 let _lcFromEditor = false;
 let _lcRunDir = '';           // 阶段①草稿所在任务目录名（阶段②凭它导出）
 let _lcVdur = 0;              // 源片时长（秒），编辑器边界钳制用
@@ -3171,25 +3172,32 @@ $('lcGo').addEventListener('click', async () => {
   $('lcMeta').textContent = '提交中…';
   $('lcResults').style.display = 'none';
   $('lcEditor').style.display = 'none';
+  if($('lcCancel')) $('lcCancel').style.display = '';   // v1.4.55：分析可取消
   updateLiveClip();
   try {
     const r = await fetch('/api/live_clip', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(x => x.json());
     if(!r.ok) throw new Error(r.error || '提交失败');
+    _lcPollRunId = r.runid;
     if(_lcPollTimer) clearInterval(_lcPollTimer);
     _lcPollTimer = setInterval(async () => {
       const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
       $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
       $('lcMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
-        clearInterval(_lcPollTimer); _lcPollTimer = null;
-        $('lcProg').style.display = 'none'; updateLiveClip();
-        toast('分析失败：' + p.error, 'bad');
+        clearInterval(_lcPollTimer); _lcPollTimer = null; _lcPollRunId = null;
+        $('lcProg').style.display = 'none';
+        if($('lcCancel')) $('lcCancel').style.display = 'none';
+        updateLiveClip();
+        // v1.4.55：用户主动取消不算失败，轻提示即可
+        if(/取消/.test(p.error || '')) toast('已取消分析');
+        else toast('分析失败：' + p.error, 'bad');
         return;
       }
       if(p.done && p.draft_saved){
-        clearInterval(_lcPollTimer); _lcPollTimer = null;
+        clearInterval(_lcPollTimer); _lcPollTimer = null; _lcPollRunId = null;
         $('lcProg').style.display = 'none';
+        if($('lcCancel')) $('lcCancel').style.display = 'none';
         _lcRunDir = p.run_dir || '';
         _lcVdur = p.vdur || 0;
         _lcCandidates = p.clips || [];
@@ -3199,9 +3207,26 @@ $('lcGo').addEventListener('click', async () => {
       }
     }, 1500);
   } catch(e){
-    $('lcProg').style.display = 'none'; updateLiveClip();
+    $('lcProg').style.display = 'none';
+    if($('lcCancel')) $('lcCancel').style.display = 'none';
+    updateLiveClip();
     toast('分析失败：' + e.message, 'bad');
   }
+});
+
+/* v1.4.55：取消分析——后端 analyze_highlights 已接 RUN_PROCS 协作取消
+   （ffmpeg/帧分析/ASR 都会在下一个检查点抛 AbortError），这里只管发信号+收尾 */
+$('lcCancel').addEventListener('click', async () => {
+  if(!_lcPollRunId) return;
+  try {
+    await fetch('/api/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({runid: _lcPollRunId})});
+  } catch(e){ /* 尽力取消 */ }
+  clearInterval(_lcPollTimer); _lcPollTimer = null; _lcPollRunId = null;
+  $('lcProg').style.display = 'none';
+  if($('lcCancel')) $('lcCancel').style.display = 'none';
+  updateLiveClip();
+  toast('正在取消分析…（当前步骤收尾后即停）');
 });
 
 /* ── 候选编辑器 ── */
