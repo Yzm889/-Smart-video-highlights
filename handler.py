@@ -1953,6 +1953,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
                        'application/json')
 
+    def _post_live_clip_cover(self):
+        """v1.4.60：换封面——按用户指定时刻从源片重抽一帧，按导出画幅裁切后
+        覆盖该切片的封面文件。时刻是**源片时间轴**（与候选 start/end 同坐标系）。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = json.loads(self.rfile.read(length).decode('utf-8') or '{}') if length else {}
+            try:
+                run_dir = _w._safe_dir(_w.OUTDIR, str(req.get('run_dir') or ''))
+            except ValueError as _ve:
+                raise RuntimeError('非法 run_dir：%s' % _ve)
+            import live_clip as _LC
+            draft = _LC.load_draft(str(run_dir))
+            if not draft:
+                raise RuntimeError('该任务没有切片草稿')
+            cover_base = os.path.basename(str(req.get('cover') or '').replace('\\', '/'))
+            if not (cover_base.startswith('cover') and cover_base.endswith('.jpg')):
+                raise RuntimeError('封面文件名不合法')
+            out_path = os.path.join(str(run_dir), cover_base)
+            if not os.path.isfile(out_path):
+                raise RuntimeError('封面文件不存在')
+            vdur = float(draft.get('vdur') or 0)
+            t = float(req.get('t') or 0)
+            if not (0 <= t < (vdur or 1e9)):
+                raise RuntimeError('封面时刻越界（0 ~ %.0f 秒）' % vdur)
+            vp = str(draft.get('video_src') or '')
+            if not vp or not os.path.isfile(vp):
+                raise RuntimeError('源片不可访问，无法重抽封面')
+            aspect = str(req.get('aspect') or draft.get('aspect_default') or 'blur')
+            _LC.rebuild_cover(vp, t, aspect, out_path)
+            self._send(200, json.dumps({
+                'ok': True, 'cover': os.path.basename(str(run_dir)) + '/' + cover_base,
+            }).encode('utf-8'), 'application/json')
+        except Exception as e:
+            kind, msg = _classify_exception(e)
+            self._send_err(500, kind, msg, stage='重抽封面', detail=str(e))
+
     def _post_live_clip_export(self):
         """直播切片·阶段②：按用户调整后的段落清单导出。"""
         try:
@@ -2299,6 +2335,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/movie_tts': '_post_movie_tts',
         '/api/live_clip': '_post_live_clip',
         '/api/live_clip/export': '_post_live_clip_export',
+        '/api/live_clip_cover': '_post_live_clip_cover',
         '/api/narrate': '_post_narrate',
         '/api/narrate/align': '_post_narrate_align',
         '/api/narrate_movie': '_post_narrate_movie',

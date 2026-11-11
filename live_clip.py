@@ -426,6 +426,48 @@ def _vf_chain(aspect, tm):
     return _base
 
 
+def _crop_cover_image(im, aspect):
+    """封面按输出画幅裁切（make_covers 与换封面端点共用，v1.4.60 抽出）。
+    crop/blur=居中裁 9:16；hd=居中裁 16:9；orig=原样。返回 PIL Image。"""
+    if aspect in ('crop', 'blur'):
+        w, h = im.size
+        cw = min(w, int(h * 9 / 16))
+        if cw % 2:
+            cw -= 1
+        x0 = (w - cw) // 2
+        return im.crop((x0, 0, x0 + cw, h))
+    if aspect == 'hd':
+        w, h = im.size
+        ch = min(h, int(w * 9 / 16))
+        if ch % 2:
+            ch -= 1
+        y0 = (h - ch) // 2
+        return im.crop((0, y0, w, y0 + ch))
+    return im
+
+
+def rebuild_cover(video_path, t, aspect, out_path):
+    """按指定时刻重抽一帧做封面（换封面端点用）。返回 out_path；失败抛异常。"""
+    _w = _host()
+    cand_dir = os.path.join(os.path.dirname(out_path), '_rebuild_cover')
+    os.makedirs(cand_dir, exist_ok=True)
+    try:
+        _w._cover_candidates_sequential(video_path, cand_dir, [float(t)])
+        fp = os.path.join(cand_dir, 'cand_00.jpg')
+        if not os.path.exists(fp) or os.path.getsize(fp) < 1024:
+            raise RuntimeError('抽帧失败（时刻可能越界或画面全黑）')
+        from PIL import Image as _I
+        im = _crop_cover_image(_I.open(fp).convert('RGB'), aspect)
+        im.save(out_path, 'JPEG', quality=88)
+        return out_path
+    finally:
+        try:
+            import shutil as _sh
+            _sh.rmtree(cand_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def make_covers(video_path, clips, run_dir, progress=None, aspect='orig'):
     """每条切片自动挑一张封面：在切片时间窗内采 6 个候选帧（峰值时刻 + 均布 5 点），
     复用产品已有的封面打分器（对比度+细节-过曝过暗）选最佳一帧，存 ASCII 文件名。
@@ -475,23 +517,7 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig'):
             out = os.path.join(run_dir, _cover_name(i + 1, clips[i]['start']))
             try:
                 from PIL import Image as _I
-                im = _I.open(best).convert('RGB')
-                if aspect in ('crop', 'blur'):
-                    # 封面跟随输出画幅：居中裁 9:16，发抖音不用再手动裁
-                    w, h = im.size
-                    cw = min(w, int(h * 9 / 16))
-                    if cw % 2:
-                        cw -= 1
-                    x0 = (w - cw) // 2
-                    im = im.crop((x0, 0, x0 + cw, h))
-                elif aspect == 'hd':
-                    # 封面跟随输出画幅：居中裁 16:9（横屏投稿）
-                    w, h = im.size
-                    ch = min(h, int(w * 9 / 16))
-                    if ch % 2:
-                        ch -= 1
-                    y0 = (h - ch) // 2
-                    im = im.crop((0, y0, w, y0 + ch))
+                im = _crop_cover_image(_I.open(best).convert('RGB'), aspect)
                 im.save(out, 'JPEG', quality=88)
                 covers.append(out)
             except Exception as e:

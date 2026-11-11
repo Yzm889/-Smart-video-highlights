@@ -630,3 +630,34 @@ def test_live_draft_restore_endpoint(tmp_path, monkeypatch):
     h2._send = lambda code, body, ct: cap2.update({"body": json.loads(body.decode("utf-8"))})
     h2._get_live_clip_draft()
     assert cap2["body"]["ok"] is False and "草稿" in cap2["body"]["error"]
+
+
+def test_cover_crop_math_and_rebuild_contract():
+    """v1.4.60 换封面：三种画幅的封面裁切数学 + rebuild_cover 契约。"""
+    from PIL import Image
+    # 9:16（crop/blur）：1920x1080 横源 → 裁宽 607（取偶 606）
+    im = Image.new('RGB', (1920, 1080))
+    c = LC._crop_cover_image(im, 'blur')
+    assert c.size[0] % 2 == 0 and abs(c.size[0] - 1080 * 9 / 16) <= 2, c.size  # ±2：取偶修正
+    assert c.size[1] == 1080
+    # 16:9（hd）：720x1280 竖源 → 裁高 405，垂直居中
+    im2 = Image.new('RGB', (720, 1280))
+    c2 = LC._crop_cover_image(im2, 'hd')
+    assert c2.size == (720, 404), c2.size  # 405 是奇数，取偶成 404（视频域惯例）
+    # orig：原样
+    assert LC._crop_cover_image(im2, 'orig').size == (720, 1280)
+    # rebuild_cover 契约：抽帧失败（宿主帮手抛错）要如实上抛，不静默
+    class _Boom:
+        def _cover_candidates_sequential(self, *a, **k):
+            raise RuntimeError('ffmpeg 失败')
+    LC._host = lambda: _Boom()
+    try:
+        LC.rebuild_cover('v.mp4', 10.0, 'blur', os.path.join(tmpdir(), 'c.jpg'))
+        assert False, '抽帧失败必须上抛'
+    except RuntimeError:
+        pass
+
+
+def tmpdir():
+    import tempfile
+    return tempfile.mkdtemp()

@@ -3492,6 +3492,36 @@ function renderLiveClips(p){
       + '秒（' + Math.round(c.dur) + '秒）'
       + (c.cover ? '<div class="lc-cover-tag">🖼 已生成封面</div>' : '')
       + '<div class="lc-why">' + (c.reasons || []).map(x => '· ' + x).join('<br>') + '</div>';
+    if(c.cover){
+      // v1.4.60 换封面：指定源片时刻重抽一帧（默认段中点），按导出画幅裁切
+      const cRow = document.createElement('div');
+      cRow.className = 'lc-why';
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = '0.5';
+      inp.min = '0';
+      inp.value = Number(c.start + Math.max(1, c.dur) / 2).toFixed(1);
+      inp.title = '封面取自源片的这个时刻（秒）';
+      inp.style.width = '92px';
+      const bC = document.createElement('button');
+      bC.className = 'mini-btn';
+      bC.textContent = '🖼 换封面（此时刻）';
+      bC.addEventListener('click', async () => {
+        try {
+          bC.disabled = true;
+          const rr = await fetch('/api/live_clip_cover', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({run_dir: _lcRunDir, cover: c.cover,
+                                  t: parseFloat(inp.value) || 0, aspect: _lcAspectUsed})}).then(x => x.json());
+          if(!rr.ok) throw new Error(rr.error || '换封面失败');
+          v.poster = '/media/' + rr.cover + '?t=' + Date.now();   // 时间戳防缓存
+          toast('✅ 封面已更换', 'ok');
+        } catch(e){ toast('换封面失败：' + e.message, 'bad'); }
+        finally { bC.disabled = false; }
+      });
+      cRow.append(inp, bC);
+      meta.appendChild(cRow);
+    }
     item.appendChild(v);
     item.appendChild(meta);
     box.appendChild(item);
