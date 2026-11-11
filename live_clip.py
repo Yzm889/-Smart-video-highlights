@@ -394,7 +394,8 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
 
 def _vf_chain(aspect, tm):
     """按输出画幅构造 -vf 滤镜链。aspect：orig=原始 / crop=竖屏9:16居中裁切 /
-    blur=竖屏9:16全景+虚化背景（发抖音推荐：侧边摄像头和弹幕都不丢）。
+    blur=竖屏9:16全景+虚化背景（发抖音推荐：侧边摄像头和弹幕都不丢） /
+    hd=横屏16:9标准化1280x720（发B站/YouTube横屏投稿）。
     tm 为 HDR tonemap 链（可能为空），永远排在最前（先调色再构图形）。
 
     【为什么竖屏默认给 blur 而不是硬裁】直播画面里主播摄像头在角落、弹幕在侧边，
@@ -406,6 +407,12 @@ def _vf_chain(aspect, tm):
         crop = ("crop=w='min(iw\\,ih*9/16)':h=ih:"
                 "x='(iw-min(iw\\,ih*9/16))/2':y=0")
         return _base + ',' + crop + ',scale=720:1280:flags=lanczos'
+    if aspect == 'hd':
+        # 横屏 16:9 标准化 1280x720：任何源画幅都归一到标准横屏（B 站/YouTube
+        # 横屏投稿直接可用）。等比缩进 + 居中 pad（源即 16:9 时无黑边，等效纯缩放）。
+        # 简单线性链（无 [标签]），走 -vf 即可，与 crop 同款。
+        return (_base + ',scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos,'
+                'pad=1280:720:(ow-iw)/2:(oh-ih)/2')
     if aspect == 'blur':
         # 背景：放大裁满 9:16 再高斯虚化；前景：**完整画面等比缩进画布**居中叠加
         # （decrease 而非 increase——increase 会把 16:9 前景放到 2276x1280 直接溢出
@@ -477,6 +484,14 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig'):
                         cw -= 1
                     x0 = (w - cw) // 2
                     im = im.crop((x0, 0, x0 + cw, h))
+                elif aspect == 'hd':
+                    # 封面跟随输出画幅：居中裁 16:9（横屏投稿）
+                    w, h = im.size
+                    ch = min(h, int(w * 9 / 16))
+                    if ch % 2:
+                        ch -= 1
+                    y0 = (h - ch) // 2
+                    im = im.crop((0, y0, w, y0 + ch))
                 im.save(out, 'JPEG', quality=88)
                 covers.append(out)
             except Exception as e:

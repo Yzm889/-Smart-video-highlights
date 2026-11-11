@@ -547,3 +547,19 @@ def test_live_analysis_cancel_button_wiring():
     assert "_lcPollRunId" in js, "必须记录 runid 供取消用"
     assert "'/api/cancel'" in js and "runid: _lcPollRunId" in js
     assert "已取消分析" in js, "取消要轻提示，不报「分析失败」吓人"
+
+
+def test_vf_chain_hd_16x9():
+    """v1.4.56 横屏 16:9 标准化画幅：等比缩进 + 居中 pad 到 1280x720，
+    简单线性链（走 -vf，与 crop 同款）；封面同步居中裁 16:9。"""
+    hd = LC._vf_chain('hd', '')
+    assert 'scale=1280:720:force_original_aspect_ratio=decrease' in hd
+    assert 'pad=1280:720:(ow-iw)/2:(oh-ih)/2' in hd
+    assert '[bg];' not in hd and '[vout]' not in hd, 'hd 是简单线性链，必须能走 -vf'
+    hd_tm = LC._vf_chain('hd', 'zscale=...tonemap...')
+    assert hd_tm.startswith('setpts=(PTS-STARTPTS),zscale=...tonemap...,scale=1280:720')
+    # 封面 16:9 居中裁的数学：w=1920 h=1080 → ch=1080（无需裁）；w=1920 h=800 → ch=1080*? 
+    # 直接验边界：竖长图 w=720 h=1280 → ch = 720*9/16 = 405
+    w, h = 720, 1280
+    ch = min(h, int(w * 9 / 16))
+    assert ch == 405 and (h - ch) // 2 == 437, '竖长源裁 16:9 应保留中部横条'

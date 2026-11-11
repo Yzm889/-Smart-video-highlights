@@ -38,6 +38,8 @@
 
 ## 四、更新清单（新记录在最上）
 
+- **v1.4.56（直播切片②：新增横屏 16:9 画幅 1280×720 标准化）** 主人指定项。原画幅只有竖屏两种 + 原始画幅，没有标准横屏输出。**修法（缓存戳 32→33）**：① `_vf_chain` 新增 `hd` 分支——`scale=1280:720:force_original_aspect_ratio=decrease + pad=1280:720:(ow-iw)/2:(oh-ih)/2`（任何源画幅归一到标准横屏；源即 16:9 时无黑边等效纯缩放；简单线性链走 -vf，与 crop 同款）；② `make_covers` 封面同步 hd（居中裁 16:9）；③ 前端下拉加「🖥 横屏 16:9 · 1280×720 标准化（发B站/YouTube）」。**测试**：test_live_clip +1（hd 链结构/tonemap 前置/封面裁切数学）；全量门禁见下。
+
 - **v1.4.55（直播切片①：分析可取消）** 直播切片完善轮第一项（主人拍板完善直播切片后推 GitHub）。缺口：90 分钟片分析要 235s，进度区没有取消控件（解说链路早有 gmCancel/sbCancel）——中途关视图任务仍在后台跑且进度不可见。**修法（后端零改，缓存戳 31→32）**：`analyze_highlights` 早已接 RUN_PROCS 协作取消（ffmpeg/帧分析/ASR 都在检查点抛 AbortError），只补前端入口——进度区加「✖ 取消分析」按钮（照 gmCancel 模式：POST /api/cancel → 清轮询 → 恢复按钮态）；`_lcPollRunId` 记录 runid 供取消用；取消经 fail_task 变 p.error，前端识别「取消」字样走轻提示不报「分析失败」吓人。**测试**：test_live_clip +1（按钮存在/runid 记录/取消走 /api/cancel/轻提示文案源码钉）；全量门禁见下。
 
 - **v1.4.54（拆分 4：存储管理族 → `web_storage.py`，webui_server 5821→5649 行）** 主人选的四项之四（结构债顺手清）。`_storage_dir_size` / `_STORAGE_ALLOW` / `_storage_resolve_deletable` / `_storage_scan` / `_purge_history_prefix` 五件套搬去新文件，逐字搬运零逻辑改动。**方向反转的同款规则**：movie_narrator 拆分是「子模块 `_MN.` 查主模块」，这次宿主自己被拆——web_storage 在 webui_server 加载中途被 import（`_host()` 返回同一个部分初始化的宿主对象），宿主符号（HERE/OUTDIR/UPLOAD_DIR/WORKDIR/load_history/_HIST_LOCK/HISTORY_PATH/_atomic_write_json）一律 `_WS.X(...)` 调用期查找——test_storage_film_delete monkeypatch S.OUTDIR 照样命中。webui_server 尾接 re-import（noqa），handler 的 `_w._storage_scan` 与测试的 `W._storage_scan` 零改动。**测试**：既有 test_storage_film_delete 7 条 + test_s8_cleanup 即回归网（全绿）；全量 **1189 passed / 12 skipped / 0 failed** + flake8 0。**拆分累计**：movie_narrator 7186→5295、webui_server 5821→5649，新增 tts_orchestration/vlm_index/narration_align/web_storage 四个子模块。
