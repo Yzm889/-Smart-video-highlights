@@ -992,6 +992,26 @@ $('sbCancel').addEventListener('click', async () => {
 });
 
 /* ── 加载调整数据 ── */
+/* 【v1.4.46 成片时间轴】_composed = compose 落盘的成片方案（/api/tts_state 的
+   composed 节）。有它：预览直接播成片 final.mp4、时间轴按成片累计坐标、段画面
+   范围用 plan 的 src_start/src_end（真剪实际范围）。没有：回落源片坐标（旧任务
+   兼容，行为同 v1.4.45 之前）。 */
+let _composed = null;
+function _outMode(){ return !!(_composed && _composed.segments && _composed.segments.length); }
+function _tlTotal(){ return _outMode() ? Math.max(1, _composed.total || 0) : Math.max(10, _vdur || 0); }
+/* 拖拽/检查器改了段长后重排成片坐标：累计各段 (video_end-video_start)。
+   这是「下一次合成的近似预览」（合成端还有 ±15% 微变速与念完钳制，最终以成片为准） */
+function _relayout(){
+  if(!_outMode()) return;
+  let cur = 0;
+  _items.forEach(it => {
+    const len = Math.max(0.1, (it.video_end || 0) - (it.video_start || 0));
+    it.out_start = Math.round(cur * 100) / 100;
+    it.out_end = Math.round((cur + len) * 100) / 100;
+    cur += len;
+  });
+  _composed.total = Math.round(cur * 100) / 100;
+}
 async function loadAdjustItems(runDir){
   _runDir = runDir;   // 恢复项目/最近任务进来时也要有 _runDir（否则合成守卫拦截）
   const r = await fetch('/api/tts_state?run_dir=' + encodeURIComponent(runDir));
@@ -1005,6 +1025,22 @@ async function loadAdjustItems(runDir){
   }));
   _vdur = st.video_duration || 0;
   if(st.video_path) _videoFile = runDir.replace(/\\/g, '/') + '/' + st.video_path;
+  _composed = (st.composed && st.composed.segments && st.composed.segments.length) ? st.composed : null;
+  if(_composed){
+    const byIdx = {};
+    _composed.segments.forEach(sg => { byIdx[sg.index] = sg; });
+    _items.forEach(it => {
+      const sg = byIdx[it.index];
+      if(!sg) return;
+      it.video_start = sg.src_start;      // 真剪实际范围（合成端提交的就是它）
+      it.video_end = sg.src_end;
+      it.out_start = sg.out_start;        // 成片坐标（预览/时间轴用）
+      it.out_end = sg.out_end;
+      if(!it.duration) it.duration = sg.duration || 0;
+    });
+  } else {
+    _items.forEach(it => { delete it.out_start; delete it.out_end; });
+  }
   _sel = -1;
   renderCaps(); ensureNarrElements(); renderTimeline(); setupPreview();
   _proxyFile = ''; _stopProxyPoll();
@@ -1027,6 +1063,7 @@ function _applyProxyFile(f){
 }
 function ensureProxy(){
   if(!_runDir) return;
+  if(_outMode()) return;   // 成片模式：预览已直读 final.mp4，无需 720p 代理
   const ask = () => fetch('/api/preview_proxy?run_dir=' + encodeURIComponent(_runDir)
     + '&name=' + encodeURIComponent((_videoFile || '').split('/').pop()))
     .then(r => r.json()).catch(() => null);
@@ -1060,7 +1097,9 @@ function renderCaps(){
     return;
   }
   list.innerHTML = _items.map((it, i) => {
-    const vs = it.video_start || 0;
+    // 成片模式：解说段时间显示用成片坐标；引用段显示源片区间（原声在源片的位置）
+    const vs = (it.quote || !_outMode() || it.out_start === undefined)
+      ? (it.video_start || 0) : it.out_start;
     const sel = i === _sel ? ' sel' : '';
     const skip = it._skip ? ' skip' : '';
     if(it.quote){
@@ -1125,7 +1164,8 @@ function selectSeg(i){
     r.classList.toggle('sel', k === i));
   document.querySelectorAll('.tl-block').forEach((b, k) =>
     b.classList.toggle('sel', k === i));
-  seekTo(it.video_start || 0);
+  // 成片模式按成片坐标定位预览；源片模式按源片坐标
+  seekTo(_outMode() && it.out_start !== undefined ? it.out_start : (it.video_start || 0));
   renderInspector(i);
   // 右列滚动到选中行
   const row = document.querySelector('.cap-row[data-i="' + i + '"]');
@@ -1158,18 +1198,43 @@ function renderInspector(i){
       + '<input type="range" id="inOv" min="0" max="100" step="5" value="' + ov + '">'
       + '<span class="rv" id="inOvV">' + ov + '%</span></div></div>'
       + '<div class="ins-sep"></div>'
-      + '<div class="ins-row"><label>画面范围（秒）</label><div class="ins-pair">'
+      + '<div class="ins-row"><label>画面范围（秒，源片坐标）</label><div class="ins-pair">'
       + '<input type="number" id="inVs" value="' + (+it.video_start).toFixed(1) + '" step="0.5">'
       + '<input type="number" id="inVe" value="' + (+(it.video_end||0)).toFixed(1) + '" step="0.5"></div></div>'
+      + '<div class="ins-row"><label>段长 / 配音（不足会红，合成端自动钳回）</label>'
+      + '<span class="rv" id="inLenNote"></span></div>'
       + '<button class="ins-quote-btn" id="inQuoteToggle">🎬 设为原声引用（保留原声，不配解说）</button>';
   }
   const bind = (id, fn) => { const el = $(id); if(el) el.addEventListener('input', () => fn(parseFloat(el.value))); };
+  const _lenNote = () => {
+    const el = $('inLenNote');
+    if(!el) return;
+    const len = Math.max(0, (it.video_end || 0) - (it.video_start || 0));
+    const need = (it.duration || 0) + 0.3;
+    el.textContent = len.toFixed(1) + 's / 配音 ' + (it.duration || 0).toFixed(1) + 's';
+    el.style.color = (!it.quote && len + 0.01 < need) ? 'var(--bad, #f48771)' : 'var(--ok, #4ec9b0)';
+  };
   bind('inNv', v => { it.narr_volume = v; const s = $('inNvV'); if(s) s.textContent = v + '%';
     const el = document.getElementById('narr-' + i); if(el){ try { el.volume = Math.max(0, Math.min(1, v/100)); } catch(e){} } });
   bind('inOv', v => { it.orig_volume = v; const s = $('inOvV'); if(s) s.textContent = v + '%'; });
-  bind('inVs', v => { it.video_start = v; renderTimeline(); });
-  bind('inVe', v => { it.video_end = v; renderTimeline(); });
+  bind('inVs', v => {
+    // 起点右移不得把段压到配音以下（主人红线：段长 ≥ 配音）
+    const minLen = Math.max(0.5, (it.duration || 0) + 0.3);
+    it.video_start = Math.max(0, v);
+    if((it.video_end || 0) - it.video_start < minLen){
+      it.video_end = Math.round((it.video_start + minLen) * 10) / 10;
+      const el = $('inVe'); if(el) el.value = (+it.video_end).toFixed(1);
+    }
+    _relayout(); renderTimeline(); _lenNote();
+  });
+  bind('inVe', v => {
+    const minLen = Math.max(0.5, (it.duration || 0) + 0.3);
+    it.video_end = Math.max(v, it.video_start + minLen);
+    const el = $('inVe'); if(el) el.value = (+it.video_end).toFixed(1);
+    _relayout(); renderTimeline(); _lenNote();
+  });
   bind('inText', v => { it.text = v; renderCaps(); });
+  _lenNote();
   const qt = $('inQuoteToggle');
   if(qt) qt.addEventListener('click', () => {
     _pushUndo();
@@ -1183,7 +1248,7 @@ const TL_COLORS = ['#569cd6','#c586c0','#ce9178','#dcdcaa','#4ec9b0','#9cdcfe','
 let _pxPerSec = 12;   // 缩放：4~80
 function renderTimeline(){
   const inner = $('tlInner');
-  const total = Math.max(10, Math.ceil(_vdur));
+  const total = Math.max(10, Math.ceil(_tlTotal()));
   inner.style.width = Math.max(600, total * _pxPerSec) + 'px';
   const zv = $('tlZoomVal');
   if(zv) zv.textContent = Math.round(_pxPerSec) + 'px/s';
@@ -1193,13 +1258,27 @@ function renderTimeline(){
     ruler += '<span style="left:' + (t / total * 100) + '%">' + _fmt(t) + '</span>';
   }
   $('tlRuler').innerHTML = ruler;
-  // PR 式：色块按视频绝对时间定位（累计排布会让裁剪/拖动没有物理意义）
+  // 【v1.4.46 成片模式】色块按成片累计坐标排布（每段一块，段长=下一次合成的近似
+  // 预览，拖拽后 _relayout 重排）；无 composed 时回落源片绝对时间（旧任务兼容）。
   let html = '';
   _items.forEach((it, i) => {
-    const vs = Math.max(0, it.video_start || 0);
-    const vd = Math.max(0.1, (it.video_end || 0) - vs);
-    const left = vs / total * 100, w = Math.min(vd, total - vs) / total * 100;
-    const cls = (it.quote ? ' quote' : '') + (it._skip ? ' skip' : '') + (i === _sel ? ' sel' : '');
+    let left, w;
+    if(_outMode()){
+      const o0 = (it.out_start !== undefined) ? it.out_start : (it.video_start || 0);
+      const od = Math.max(0.1, (it.out_end !== undefined ? it.out_end : o0 + 0.1) - o0);
+      left = o0 / total * 100;
+      w = Math.min(od, Math.max(0.1, total - o0)) / total * 100;
+    } else {
+      const vs = Math.max(0, it.video_start || 0);
+      const vd = Math.max(0.1, (it.video_end || 0) - vs);
+      left = vs / total * 100;
+      w = Math.min(vd, total - vs) / total * 100;
+    }
+    // 主人红线（v1.4.44）：段长必须 ≥ 配音时长——短了红框警示（合成端也会钳回）
+    const short = (!it.quote && !it._skip
+      && ((it.video_end || 0) - (it.video_start || 0)) < ((it.duration || 0) + 0.3 - 0.01));
+    const cls = (it.quote ? ' quote' : '') + (it._skip ? ' skip' : '')
+      + (short ? ' short' : '') + (i === _sel ? ' sel' : '');
     const tip = _esc(_clean(it.text).slice(0, 60)) || (it.quote ? '原声引用' : '');
     html += '<div class="tl-block' + cls + '" data-i="' + i + '" title="' + tip + '" style="left:' + left + '%;width:'
       + w + '%;background:' + (it.quote ? '#10b981' : TL_COLORS[i % TL_COLORS.length]) + '">'
@@ -1264,28 +1343,39 @@ function renderTimeline(){
       _redoStack = [];
     }
     const dt = (e.clientX - drag.x0) / _pxPerSec;
-    const total = Math.max(10, _vdur);
+    const total = _tlTotal();
+    const srcBound = Math.max(10, _vdur || 0);   // 源片坐标钳制界（拖拽改的是 src 范围）
+    // 主人红线：段长下限 = 配音时长 + 0.3s 气口（低于即被钳回，成片端同样钳）
+    const minLen = Math.max(0.5, (it.duration || 0) + 0.3);
     const b = track.querySelector('.tl-block[data-i="' + drag.i + '"]');
     if(drag.mode === 'L'){
-      const ns = Math.round(snap(Math.min(drag.end - 0.5, Math.max(0, drag.start + dt)), drag.snap) * 10) / 10;
-      it.video_start = Math.min(ns, it.video_end - 0.5);
+      const ns = Math.round(snap(Math.min(drag.end - minLen, Math.max(0, drag.start + dt)), drag.snap) * 10) / 10;
+      it.video_start = Math.min(ns, it.video_end - minLen);
     } else if(drag.mode === 'R'){
-      const ne = Math.round(snap(Math.max(drag.start + 0.5, Math.min(total, drag.end + dt)), drag.snap) * 10) / 10;
-      it.video_end = Math.max(ne, it.video_start + 0.5);
+      const ne = Math.round(snap(Math.max(drag.start + minLen, Math.min(srcBound, drag.end + dt)), drag.snap) * 10) / 10;
+      it.video_end = Math.max(ne, it.video_start + minLen);
     } else {
       const vd = drag.end - drag.start;
-      const ns = Math.round(Math.max(0, Math.min(snap(drag.start + dt, drag.snap), total - vd)) * 10) / 10;
+      const ns = Math.round(Math.max(0, Math.min(snap(drag.start + dt, drag.snap), srcBound - vd)) * 10) / 10;
       it.video_start = ns;
       it.video_end = Math.round((ns + vd) * 10) / 10;
     }
     const vs = it.video_start, vd = Math.max(0.1, it.video_end - vs);
-    b.style.left = (vs / total * 100) + '%';
-    b.style.width = (Math.min(vd, total - vs) / total * 100) + '%';
+    if(_outMode()){
+      _relayout();
+      const o0 = it.out_start || 0, od = Math.max(0.1, (it.out_end || 0) - o0);
+      b.style.left = (o0 / total * 100) + '%';
+      b.style.width = (Math.min(od, Math.max(0.1, total - o0)) / total * 100) + '%';
+    } else {
+      b.style.left = (vs / total * 100) + '%';
+      b.style.width = (Math.min(vd, total - vs) / total * 100) + '%';
+    }
   });
   window.addEventListener('mouseup', () => {
     if(!drag) return;
     const it = _items[drag.i];
     if(drag.moved && it){
+      _relayout();
       renderTimeline();
       if(_sel === drag.i) renderInspector(_sel);
       ensureNarrElements();
@@ -1367,22 +1457,37 @@ async function splitSegAtPlayhead(i){
   if(!it) return;
   if(it.quote){ toast('原声引用段没有配音，直接拖拽调范围即可', 'bad'); return; }
   if(!it.audio){ toast('该段没有配音文件，无法分割', 'bad'); return; }
-  const vs = it.video_start || 0, ve = it.video_end || 0;
-  if(ve - vs < 1.6){ toast('这段画面太短（<1.6s），不值得分割', 'bad'); return; }
   const v = $('pvVideo');
-  const t = (v && isFinite(v.currentTime)) ? v.currentTime : (vs + ve) / 2;
-  if(!(t > vs + 0.4 && t < ve - 0.4)){
-    toast('先把播放头停在段内要分割的位置（离两端至少 0.4s）', 'bad');
-    return;
+  // 【v1.4.46 成片模式】播放头是成片时间：换算回源片切点（画面/配音按同一比例分割）
+  let vs, ve, tSrc, tCut;
+  if(_outMode()){
+    vs = (it.out_start !== undefined) ? it.out_start : (it.video_start || 0);
+    ve = (it.out_end !== undefined) ? it.out_end : vs + 0.1;
+    tCut = (v && isFinite(v.currentTime)) ? v.currentTime : (vs + ve) / 2;
+    if(!(tCut > vs + 0.4 && tCut < ve - 0.4)){
+      toast('先把播放头停在这段内要分割的位置（离两端至少 0.4s）', 'bad');
+      return;
+    }
+    const oLen = Math.max(0.1, ve - vs), sLen = Math.max(0.1, (it.video_end || 0) - (it.video_start || 0));
+    tSrc = Math.round(((it.video_start || 0) + (tCut - vs) / oLen * sLen) * 100) / 100;
+  } else {
+    vs = it.video_start || 0; ve = it.video_end || 0;
+    tSrc = tCut = (v && isFinite(v.currentTime)) ? v.currentTime : (vs + ve) / 2;
+    if(!(tCut > vs + 0.4 && tCut < ve - 0.4)){
+      toast('先把播放头停在段内要分割的位置（离两端至少 0.4s）', 'bad');
+      return;
+    }
   }
+  if(ve - vs < 1.6){ toast('这段画面太短（<1.6s），不值得分割', 'bad'); return; }
+  const veSrc = it.video_end || 0;   // 分割前该段源片终点（拆给新段）
   toast('正在切割配音…');
   try {
     const r = await fetch('/api/audio_split', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({run_dir: _runDir, name: it.audio, frac: (t - vs) / (ve - vs)})});
+      body: JSON.stringify({run_dir: _runDir, name: it.audio, frac: (tCut - vs) / (ve - vs)})});
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '切割失败');
     const txt = (it.text || '').trim();
-    let cut = Math.round(txt.length * ((t - vs) / (ve - vs)));
+    let cut = Math.round(txt.length * ((tCut - vs) / (ve - vs)));
     const WIN = Math.max(2, Math.floor(txt.length * 0.2));
     let best = -1;
     for(let k = Math.max(1, cut - WIN); k <= Math.min(txt.length - 1, cut + WIN); k++){
@@ -1393,7 +1498,7 @@ async function splitSegAtPlayhead(i){
     if(best >= 0) cut = best + 1;
     const t1 = txt.slice(0, cut).trim(), t2 = txt.slice(cut).trim();
     _pushUndo();
-    it.video_end = t;
+    it.video_end = tSrc;
     it.audio = out.a1;
     it.duration = out.d1;
     if(t1){ it.text = t1; it.audio_text = t1; }
@@ -1401,10 +1506,11 @@ async function splitSegAtPlayhead(i){
     let mx = -1;
     _items.forEach(x => { const n = parseInt(x && x.index); if(!isNaN(n) && n > mx) mx = n; });
     _items.splice(i + 1, 0, {index: mx + 1, text: t2, audio_text: t2, audio: out.a2, duration: out.d2,
-      video_start: t, video_end: ve, audio_offset: 0,
+      video_start: tSrc, video_end: veSrc, audio_offset: 0,
       orig_volume: it.orig_volume, narr_volume: it.narr_volume,
       fade_in: 0, fade_out: 0, isBroll: false, quote: false});
     _sel = i + 1;
+    _relayout();
     renderCaps(); ensureNarrElements(); renderTimeline(); selectSeg(_sel);
     toast('✅ 已分割：一段拆两段（画面/配音/文字各自独立）');
   } catch(e){ toast('分割失败：' + e.message, 'bad'); }
@@ -1454,7 +1560,7 @@ function _paintWave(cv, peaks){
   const seekAt = e => {
     const rect = sc.getBoundingClientRect();
     const x = e.clientX - rect.left + sc.scrollLeft;
-    const total = Math.max(10, _vdur || 0);
+    const total = _tlTotal() || 0;
     const t = Math.max(0, Math.min(total, x / _pxPerSec));
     const v = $('pvVideo');
     if(v && v.duration) v.currentTime = Math.min(t, Math.max(0, v.duration - 0.05));
@@ -1484,7 +1590,7 @@ function updatePlayhead(){
   const v = $('pvVideo');
   const ph = $('tlPlayhead');
   if(!v || !ph || !v.duration) return;
-  const total = Math.max(10, _vdur || v.duration);
+  const total = _tlTotal() || v.duration;
   ph.style.left = Math.min(100, (v.currentTime / total) * 100) + '%';
   $('stTime').textContent = _fmt(v.currentTime) + '.' + Math.floor((v.currentTime % 1) * 10);
 }
@@ -1524,6 +1630,23 @@ function previewTick(){
   const v = $('pvVideo');
   if(!v || v.paused) return;
   const t = v.currentTime || 0;
+  // 【v1.4.46 成片模式】final.mp4 已混好音、烧好字幕——预览只做播放头与段指示，
+  // 不再叠字幕/放配音（那是源片坐标预览的机制，成片里都烧进去了）。
+  if(_outMode()){
+    let seg = -1;
+    for(let i = 0; i < _items.length; i++){
+      const it = _items[i];
+      if(it._skip) continue;
+      const o0 = (it.out_start !== undefined) ? it.out_start : (it.video_start || 0);
+      const o1 = (it.out_end !== undefined) ? it.out_end : o0 + 0.1;
+      if(o1 > o0 && t >= o0 && t < o1){ seg = i; break; }
+    }
+    _curSeg = seg;
+    const sb = $('stSeg');
+    if(sb && seg >= 0) sb.textContent = '段 ' + (seg + 1) + '/' + _items.length;
+    updatePlayhead();
+    return;
+  }
   let seg = -1;
   for(let i = 0; i < _items.length; i++){
     const it = _items[i];
@@ -1559,8 +1682,16 @@ function previewTick(){
 }
 function setupPreview(){
   const v = $('pvVideo');
-  if(!v || !(_runDir && _videoFile)) return;
-  const want = '/media/' + _videoFile;
+  if(!v) return;
+  // 【v1.4.46 成片模式】预览直读成片 final.mp4（混音+烧字幕都在里面）；
+  // 无 composed 时回落源片/proxy（旧任务兼容）。
+  let want = null;
+  if(_outMode() && _composed.final){
+    want = '/media/' + _runDir.replace(/\\/g, '/') + '/' + _composed.final;
+  } else if(_runDir && _videoFile){
+    want = '/media/' + _videoFile;
+  }
+  if(!want) return;
   if(v.dataset.src !== want){
     v.src = want;
     v.dataset.src = want;
@@ -1635,14 +1766,26 @@ function addCaptionAtPlayhead(){
   const t = v ? (v.currentTime || 0) : 0;
   let pos = _items.length;
   for(let i = 0; i < _items.length; i++){
-    if((_items[i].video_start || 0) > t){ pos = i; break; }
+    const bound = _outMode()
+      ? (_items[i].out_start !== undefined ? _items[i].out_start : (_items[i].video_start || 0))
+      : (_items[i].video_start || 0);
+    if(bound > t){ pos = i; break; }
+  }
+  // 成片模式：新段源片窗口取「前一段源片终点」顺延（成片坐标由 _relayout 重排）
+  let ns = Math.round(t * 10) / 10, ne = Math.round((t + 5) * 10) / 10;
+  if(_outMode()){
+    const prev = _items[pos - 1];
+    ns = prev ? (prev.video_end || 0) : 0;
+    ne = Math.min(Math.max(10, _vdur || 0), ns + 5);
+    if(ne - ns < 0.5){ ns = Math.max(0, ne - 5); }
   }
   let maxIdx = 0;
   _items.forEach(x => { if((x.index || 0) > maxIdx) maxIdx = x.index; });
   _pushUndo();
   _items.splice(pos, 0, {index: maxIdx + 1, text: '', audio: '', audio_text: '', duration: 0,
-    video_start: Math.round(t * 10) / 10, video_end: Math.round((t + 5) * 10) / 10,
+    video_start: ns, video_end: ne,
     narr_volume: null, isBroll: false, quote: false});
+  _relayout();
   renderCaps(); ensureNarrElements(); renderTimeline();
   selectSeg(pos);
   const ta = document.querySelector('[data-edit="' + pos + '"]');
@@ -2721,6 +2864,9 @@ function pollCompose(runid){
       if(p.done && p.file){
         clearInterval(_pollTimer);
         setStatus('✅ 成片已生成', 'ok');
+        // 【v1.4.46】合成后刷新调整数据：新的 composed_plan（成片坐标）与预览源，
+        // 用户点「返回编辑」时看到的就是新成片的时间轴。
+        try { await loadAdjustItems(_runDir); } catch(e){ /* 尽力刷新 */ }
         openExport(p.file);
       }
     } catch(e){ /* 抖动 */ }

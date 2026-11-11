@@ -151,14 +151,14 @@ class TestCacheVersionBump(unittest.TestCase):
     """缓存版本号 bump 到 24。"""
 
     def test_desktop_js_v24(self):
-        """desktop.js?v=24。"""
+        """desktop.js?v=25。"""
         html = _read_index_html()
-        self.assertIn('desktop.js?v=24', html)
+        self.assertIn('desktop.js?v=25', html)
 
     def test_desktop_css_v24(self):
-        """desktop.css?v=24。"""
+        """desktop.css?v=25。"""
         html = _read_index_html()
-        self.assertIn('desktop.css?v=24', html)
+        self.assertIn('desktop.css?v=25', html)
 
     def test_js_css_versions_equal(self):
         """desktop.js 和 desktop.css 的版本号必须相等。"""

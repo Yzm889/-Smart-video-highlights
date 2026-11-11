@@ -22,6 +22,8 @@ DYNAMIC_IDS = {
     'inNvV',          # 检查器里动态生成的音量数值 span
     'inOvV',          # 同上
     'inQuoteToggle',  # 检查器里动态生成的「恢复为解说段」按钮
+    'inVe',           # 检查器里动态生成的画面终点输入框（v1.4.46 起有 $('inVe') 引用，带 if(el) 守卫）
+    'inLenNote',      # v1.4.46：检查器里动态生成的「段长/配音」对照 span（带 if(el) 守卫）
     'musicAudio',     # 曲库试听 audio，代码用 $('musicAudio') && ...pause() 短路保护
     'narr-',          # 前缀拼接的动态 id（$('narr-' + i)）
     'npReuseVideo',   # v1.4.37：_renderLastMedia 动态生成的「上次视频」复用按钮

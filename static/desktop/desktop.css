@@ -224,6 +224,9 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
   font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;right:5px}
 .tl-block.quote{background:#10b981 !important}
 .tl-block.skip{opacity:.3}
+/* v1.4.46 段长不足配音（< duration+0.3s）：红框警示，合成端会自动钳回下限 */
+.tl-block.short{outline:2px solid #f48771;animation:tlShort 1.2s ease-in-out infinite alternate}
+@keyframes tlShort{from{outline-color:#f48771}to{outline-color:#e23b3b}}
 /* 裁剪手柄：左右缘 7px 热区 */
 .tl-h{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:3}
 .tl-h.hL{left:0}.tl-h.hR{right:0}

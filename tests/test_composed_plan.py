@@ -114,3 +114,17 @@ def test_handler_tts_state_without_plan_has_no_composed_key(tmp_path, monkeypatc
 
     assert captured['body']['ok'] is True
     assert 'composed' not in captured['body'], '旧任务没有 plan 就不带 composed 键（前端回落演算）'
+
+
+def test_desktop_adjust_page_consumes_composed():
+    """桌面版调整页必须消费 composed 节：成片坐标时间轴 + final 直读 + 段短警示。"""
+    js = open(os.path.join(ROOT, 'static', 'desktop', 'desktop.js'), encoding='utf-8').read()
+    assert 'let _composed = null;' in js
+    assert 'function _outMode()' in js and 'function _tlTotal()' in js and 'function _relayout()' in js
+    assert '_composed.final' in js, '成片模式预览必须直读 final.mp4'
+    assert 'it.out_start' in js, '时间轴/预览必须用成片坐标'
+    assert 'if(_outMode()) return;' in js, '成片模式跳过 720p 代理'
+    # 下限钳制（主人红线：段长 ≥ 配音 + 0.3 气口）：拖拽、检查器起点、检查器终点三处
+    assert js.count('(it.duration || 0) + 0.3') >= 3, '三处下限钳制缺一不可'
+    css = open(os.path.join(ROOT, 'static', 'desktop', 'desktop.css'), encoding='utf-8').read()
+    assert '.tl-block.short' in css, '段长不足配音必须有红色警示样式'
