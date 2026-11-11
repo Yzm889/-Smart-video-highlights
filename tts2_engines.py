@@ -350,25 +350,35 @@ class _Serve:
         return ' | '.join(keep[-3:])[-limit:]
 
     def _start(self):
-        self.starting = True
-        try:
-            for attempt in (1, 2):
-                t0 = time.time()
-                if self._start_inner():
-                    return True
-                # 秒退（<6s）多半是上一次强杀留下的 CUDA 上下文/DLL 撞车，
-                # 换个新进程往往就好了；显存类失败重试没意义，直接报。
-                if attempt == 1 and time.time() - t0 < 6 \
-                        and '显存' not in (self.error or ''):
-                    time.sleep(1.0)
-                    self._drain()
-                    continue
+        # 【v1.4.39 worker 启动互斥】两引擎的启动全局串行：停兄弟→起自己必须是
+        # 原子的，串行才能保证「至多一个常驻 worker」不被并发启动打穿。
+        with _START_LOCK:
+            self.starting = True
+            try:
+                for attempt in (1, 2):
+                    t0 = time.time()
+                    if self._start_inner():
+                        return True
+                    # 秒退（<6s）多半是上一次强杀留下的 CUDA 上下文/DLL 撞车，
+                    # 换个新进程往往就好了；显存类失败重试没意义，直接报。
+                    if attempt == 1 and time.time() - t0 < 6 \
+                            and '显存' not in (self.error or ''):
+                        time.sleep(1.0)
+                        self._drain()
+                        continue
+                    return False
                 return False
-            return False
-        finally:
-            self.starting = False
+            finally:
+                self.starting = False
 
     def _start_inner(self):
+        # 【v1.4.39 单常驻不变量】启动前先让兄弟引擎的**空闲** worker 让位：
+        # qwen3tts 5.2GB + indextts2 6.6GB 擦边共存会被 WDDM 换页拖垮。降级链
+        # （indextts2 失败 → qwen3tts）里兄弟刚报过错、多半本来就闲着；兄弟在忙
+        # （多任务/试听并发）就让路不杀——杀在忙的等于打断别人的句子，那 0.5s
+        # 等不到就先共存、由 release_vram 按显存余量把关。
+        # 注意兄弟停掉后必须现探显存：release_vram 内部用 gpu_vram(0)（无缓存）。
+        _stop_idle_engine(_IDX if self.name == 'qwen3tts' else _QWEN)
         # 先确认显存：12GB 卡上 Ollama 的 qwen3:8b 能吃掉 9.6GB，
         # 模型照样能加载，但会被驱动换页到内存，推理永远算不完。
         ok_vram, note = release_vram(want=self.need_mb)
@@ -516,6 +526,17 @@ class _Serve:
 _QWEN = None
 _IDX = None
 
+# 【v1.4.39 worker 启动互斥】两引擎共用的启动串行锁。
+# ① 12GB 卡装不下两个常驻 worker（qwen3tts 5.2GB + indextts2 6.6GB = 11.8GB 擦边
+#    → WDDM 静默换页 → 两个引擎一起慢到不可用）。启动前必须先让兄弟引擎的空闲
+#    worker 让位，而「先停它再起我」必须串行才成立——否则两个线程同时判对方
+#    空闲、同时起进程，又并存了。
+# ② 顺带堵 _get_qwen/_get_idx 懒初始化竞态（两线程同时看到 None 会各造一个
+#    _Serve，其中一个的 worker 进程变成没人管的孤儿）。
+# 锁序约定：ask() 持 self.lock → _START_LOCK → 兄弟 srv.lock（0.5s 有界等待，
+# 见 _stop_idle_engine）。单侧有界，不成环。
+_START_LOCK = threading.Lock()
+
 # 常驻 worker 是独立进程，主程序退出不会自动带走它（Windows 无 job 对象）：
 # 不注册退出钩子的话，关掉 FrameCut 后那 4.3GB 显存会一直挂着。
 def _kill_all():
@@ -531,20 +552,24 @@ atexit.register(_kill_all)
 def _get_qwen():
     global _QWEN
     if _QWEN is None:
-        # -u 关掉 stdout 块缓冲；ready_timeout 按引擎实际冷启动给
-        _QWEN = _Serve('qwen3tts',
-                       [QWEN_PY, '-u', QWEN_WORKER, 'serve', QWEN_MODEL],
-                       ready_timeout=150, need_mb=VRAM_NEED['qwen3tts'])
+        with _START_LOCK:                 # 懒初始化也要串行（v1.4.39）
+            if _QWEN is None:             # 双检：等锁期间可能已被别的线程建好
+                # -u 关掉 stdout 块缓冲；ready_timeout 按引擎实际冷启动给
+                _QWEN = _Serve('qwen3tts',
+                               [QWEN_PY, '-u', QWEN_WORKER, 'serve', QWEN_MODEL],
+                               ready_timeout=150, need_mb=VRAM_NEED['qwen3tts'])
     return _QWEN
 
 
 def _get_idx():
     global _IDX
     if _IDX is None:
-        # IndexTTS2 首次要换入 5.5GB 权重，实测约 202s，给足 360s
-        _IDX = _Serve('indextts2',
-                      [IDX_PY, '-u', IDX_WORKER, 'serve', IDX_REPO, IDX_CKPT],
-                      ready_timeout=360, need_mb=VRAM_NEED['indextts2'])
+        with _START_LOCK:
+            if _IDX is None:
+                # IndexTTS2 首次要换入 5.5GB 权重，实测约 202s，给足 360s
+                _IDX = _Serve('indextts2',
+                              [IDX_PY, '-u', IDX_WORKER, 'serve', IDX_REPO, IDX_CKPT],
+                              ready_timeout=360, need_mb=VRAM_NEED['indextts2'])
     return _IDX
 
 
@@ -607,6 +632,40 @@ def _stop_engine(srv):
         except Exception:
             pass
         return True
+
+
+def _stop_idle_engine(srv, wait=0.5):
+    """只停**空闲**的常驻 worker；wait 秒内拿不到锁（正在合成）就不动它。
+
+    【v1.4.39 worker 启动互斥的配套】启动新 worker 前让兄弟引擎让位。用
+    acquire(timeout=wait) 而不是阻塞等：在忙的 worker 正在给别的请求算句子，
+    杀它 = 打断别人；阻塞等它 = 最长 240s，启动链会被拖死。0.5s 有界等待同时
+    打破 ABBA 环——ask 持 self.lock → _START_LOCK → 这里等兄弟的 lock，锁序
+    单侧有界就不成环（阻塞等会让「兄弟 ask 在启动、我在停兄弟」互锁）。
+    返回是否真的停了。
+    """
+    if srv is None:
+        return False
+    if not srv.lock.acquire(timeout=wait):
+        return False            # 正在合成：让路，不打断
+    try:
+        if srv.starting:
+            return False        # 正在拉起，杀了等于自杀
+        p = srv.proc
+        srv.proc = None
+        if p is None or p.poll() is not None:
+            return False
+        try:
+            p.stdin.close()
+        except Exception:
+            pass
+        try:
+            p.kill()
+        except Exception:
+            pass
+        return True
+    finally:
+        srv.lock.release()
 
 
 # 造音色样本用的固定台词：只用于「定人」，不进成片，所以内容无意义、只求咬字完整。
