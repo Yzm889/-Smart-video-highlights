@@ -577,3 +577,18 @@ def test_live_editor_params_memory_and_preview_ratio():
     assert "lcSaveParams();   // v1.4.57" in js, "提交分析时必须记忆"
     assert "_lcAspectUsed" in js and "'9 / 16' : '16 / 9'" in js, \
         "预览框比例必须按实际输出画幅切换（旧实现写死 16/9，竖屏大黑边）"
+
+
+def test_live_candidate_preview_wiring():
+    """v1.4.58 回归钉：候选试看——dispatch 回填源片名 + 前端 ▶ 按钮播到段尾自动停。"""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "workflows.py"), encoding="utf-8") as f:
+        wf = f.read()
+    assert "prog['video_file']" in wf, "dispatch_live_clip 必须回填源片文件名"
+    assert "os.path.abspath(run_dir)" in wf, "直读形态（文件在项目外）必须留空不试看"
+    with open(os.path.join(root, "static", "desktop", "desktop.js"), encoding="utf-8") as f:
+        js = f.read()
+    assert "function lcPreviewSeg(" in js
+    assert "_lcPrevStop" in js and "currentTime >= _lcPrevStop" in js, "必须播到段尾自动停"
+    assert "'▶ 试看'" in js and "row.append(n, lS, lE, dur, bPrev, bDel, why);" in js

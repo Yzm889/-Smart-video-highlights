@@ -3105,6 +3105,37 @@ function lcRestoreParams(){
 let _lcRunDir = '';           // 阶段①草稿所在任务目录名（阶段②凭它导出）
 let _lcVdur = 0;              // 源片时长（秒），编辑器边界钳制用
 let _lcCandidates = [];       // 阶段①候选段（[{start,end,dur,score,peak_t,reasons}]）
+let _lcVideoFile = '';        // v1.4.58：run_dir 内源片文件名（候选试看用；空=直读形态不可试看）
+let _lcPreviewV = null;       // v1.4.58：试看用的悬浮 video（惰性创建）
+let _lcPrevStop = null;       // v1.4.58：试看到这个时刻自动暂停
+
+/* v1.4.58 候选试看：从段起点播到段终点自动暂停——导出前先看内容，别盲改数字 */
+function lcPreviewSeg(seg){
+  if(!_lcRunDir || !_lcVideoFile){ toast('该任务没有可预览的源片（本机路径直读形态不支持试看）', 'bad'); return; }
+  if(!_lcPreviewV){
+    _lcPreviewV = document.createElement('video');
+    _lcPreviewV.style.cssText = 'position:fixed;right:16px;bottom:16px;width:min(420px,42vw);'
+      + 'z-index:500;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.45);background:#000';
+    _lcPreviewV.controls = true;
+    document.body.appendChild(_lcPreviewV);
+    _lcPreviewV.addEventListener('timeupdate', () => {
+      if(_lcPrevStop !== null && _lcPreviewV.currentTime >= _lcPrevStop){
+        _lcPreviewV.pause();
+        _lcPrevStop = null;
+      }
+    });
+  }
+  const src = '/media/' + _lcRunDir.replace(/\\/g, '/') + '/' + _lcVideoFile;
+  if(_lcPreviewV.dataset.src !== src){
+    _lcPreviewV.dataset.src = src;
+    _lcPreviewV.src = src;
+    _lcPreviewV.load();
+  }
+  _lcPrevStop = Math.max(seg.start + 0.2, seg.end - 0.05);
+  try { _lcPreviewV.currentTime = Math.max(0, seg.start + 0.05); } catch(e){}
+  const pp = _lcPreviewV.play();
+  if(pp && pp.catch) pp.catch(e => toast('试看失败：' + e.message, 'bad'));
+}
 
 function showLiveClip(on){
   const lc = $('liveClip'), np = $('newProj'), ed = $('editor');
@@ -3228,6 +3259,7 @@ $('lcGo').addEventListener('click', async () => {
         _lcRunDir = p.run_dir || '';
         _lcVdur = p.vdur || 0;
         _lcCandidates = p.clips || [];
+        _lcVideoFile = p.video_file || '';   // v1.4.58：候选试看用的源片名
         updateLiveClip();
         renderLcEditor();
         toast('✅ 候选高光已出：' + _lcCandidates.length + ' 条，可调整后导出', 'ok');
@@ -3339,6 +3371,10 @@ function _lcRow(c, i){
     if(k >= 0) _lcCandidates.splice(k, 1);
     renderLcEditor();
   });
+  const bPrev = document.createElement('button');   // v1.4.58 候选试看
+  bPrev.className = 'mini-btn';
+  bPrev.textContent = '▶ 试看';
+  bPrev.addEventListener('click', () => lcPreviewSeg(c));
   if (c.thumb) {
     const img = document.createElement('img');
     img.className = 'lc-thumb';
@@ -3346,7 +3382,7 @@ function _lcRow(c, i){
     img.alt = '峰值画面';
     row.appendChild(img);
   }
-  row.append(n, lS, lE, dur, bDel, why);
+  row.append(n, lS, lE, dur, bPrev, bDel, why);
   refreshDur();
   return row;
 }

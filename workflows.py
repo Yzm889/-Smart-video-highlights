@@ -772,6 +772,12 @@ def dispatch_live_clip(req, prog):
         thumbs = LC.make_candidate_thumbs(vp, meta.get('clips') or [], run_dir,
                                           progress=prog)
         base = os.path.basename(run_dir)
+        # 【v1.4.58 候选试看】源片文件名（相对 run_dir）随候选下发——前端用它拼
+        # /media 地址试看候选段。只有「源片在 run_dir 里」的形态（选文件/上传/
+        # 素材库，_resolve_upload_video 都会拷贝）可试看；手输 src_path 直读的
+        # 文件在项目目录外，/media 出不去（安全边界），video_file 留空=前端隐藏试看。
+        prog['video_file'] = (os.path.basename(vp)
+                              if os.path.dirname(os.path.abspath(vp)) == os.path.abspath(run_dir) else '')
         cand_prog = []
         for c, t in zip(meta.get('clips') or [], thumbs):
             d = dict(c)
