@@ -592,3 +592,41 @@ def test_live_candidate_preview_wiring():
     assert "function lcPreviewSeg(" in js
     assert "_lcPrevStop" in js and "currentTime >= _lcPrevStop" in js, "必须播到段尾自动停"
     assert "'▶ 试看'" in js and "row.append(n, lS, lE, dur, bPrev, bDel, why);" in js
+
+
+def test_live_draft_restore_endpoint(tmp_path, monkeypatch):
+    """v1.4.59 草稿恢复：/api/live_clip_draft 读草稿 → 历史记录可重进候选编辑器。"""
+    import json
+    import sys
+    import webui_server as S
+    import handler as H
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    run = tmp_path / "live-r1"
+    run.mkdir()
+    (run / "live_clip_draft.json").write_text(json.dumps({
+        "video_src": str(run / "src.mp4"), "vdur": 600.0,
+        "aspect_default": "blur",
+        "clips": [{"start": 10.0, "end": 60.0, "dur": 50.0, "score": "", "reasons": ["手动指定"], "peak_t": 30.0}],
+    }, ensure_ascii=False), encoding="utf-8")
+    (run / "src.mp4").write_bytes(b"x")
+    monkeypatch.setattr(S, "OUTDIR", str(tmp_path))
+    captured = {}
+    h = object.__new__(H.Handler)
+    h.path = "/api/live_clip_draft?run_dir=live-r1"
+    h._send = lambda code, body, ct: captured.update(
+        {"code": code, "body": json.loads(body.decode("utf-8"))})
+    h._get_live_clip_draft()
+    body = captured["body"]
+    assert body["ok"] is True
+    assert body["clips"][0]["start"] == 10.0 and body["vdur"] == 600.0
+    assert body["video_file"] == "src.mp4", "源片在 run_dir 里 → 可试看"
+    # 缺草稿的目录 → 如实报「没有切片草稿」
+    (tmp_path / "live-r2").mkdir()
+    h2 = object.__new__(H.Handler)
+    h2.path = "/api/live_clip_draft?run_dir=live-r2"
+    cap2 = {}
+    h2._send = lambda code, body, ct: cap2.update({"body": json.loads(body.decode("utf-8"))})
+    h2._get_live_clip_draft()
+    assert cap2["body"]["ok"] is False and "草稿" in cap2["body"]["error"]

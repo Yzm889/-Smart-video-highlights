@@ -491,6 +491,41 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
 
+    def _get_live_clip_draft(self):
+        """v1.4.59：读直播切片阶段①草稿（候选/时长/默认画幅/源片名），
+        历史列表「↻ 恢复候选」凭它重新进候选编辑器续调。"""
+        try:
+            qs = _w.parse_qs(_w.urlparse(self.path).query)
+            run_dir_name = (qs.get('run_dir') or [''])[0]
+            if not run_dir_name:
+                self._send(200, json.dumps({'ok': False, 'error': '缺少run_dir'}).encode('utf-8'), 'application/json')
+                return
+            try:
+                run_dir = _w._safe_dir(_w.OUTDIR, run_dir_name)
+            except ValueError as _ve:
+                self._send(200, json.dumps({'ok': False, 'error': '非法 run_dir：%s' % _ve}).encode('utf-8'), 'application/json')
+                return
+            import live_clip as _LC
+            draft = _LC.load_draft(str(run_dir))
+            if not draft or not draft.get('clips'):
+                self._send(200, json.dumps({'ok': False, 'error': '该任务没有切片草稿（阶段①未完成或已被清理）'}).encode('utf-8'), 'application/json')
+                return
+            # 源片在 run_dir 里才能走 /media 试看（与 dispatch_live_clip 回填同一规则）
+            video_file = ''
+            vs = str(draft.get('video_src') or '')
+            if vs and os.path.dirname(os.path.abspath(vs)) == os.path.abspath(str(run_dir)):
+                video_file = os.path.basename(vs)
+            self._send(200, json.dumps({
+                'ok': True, 'run_dir': run_dir_name,
+                'clips': draft.get('clips') or [],
+                'vdur': draft.get('vdur') or 0,
+                'aspect_default': draft.get('aspect_default') or 'blur',
+                'video_file': video_file,
+            }).encode('utf-8'), 'application/json')
+        except Exception as e:
+            kind, msg = _classify_exception(e)
+            self._send_err(500, kind, msg, stage='读取直播切片草稿', detail=str(e))
+
     def _get_tts_state(self):
         try:
             qs = _w.parse_qs(_w.urlparse(self.path).query)
@@ -2202,6 +2237,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/bili/status': '_get_bili_status',
         '/api/hardware': '_get_hardware',
         '/api/history': '_get_history',
+        '/api/live_clip_draft': '_get_live_clip_draft',
         '/api/local/status': '_get_local_status',
         '/api/local/test': '_get_local_test',
         '/api/logs/tail': '_get_logs_tail',

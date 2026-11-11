@@ -2677,14 +2677,20 @@ function openHistory(){
       const cap = Array.isArray(h.captions) ? h.captions.join(' ') : (h.captions || '');
       const title = String(cap).trim().slice(0, 42) || name;
       const miss = h.missing ? ' <span class="env-badge bad">文件丢失</span>' : '';
+      // v1.4.59：直播切片记录换入口——「编辑」走的是解说编辑器必报错，
+      // 换成「↻ 恢复候选」重进切片候选编辑器续调。
+      const isLive = h.kind === 'live_clip';
       return '<div class="hist-row">'
         + (h.cover ? '<img class="hist-cover" src="/media/' + _esc(h.cover) + '" alt="">'
-                   : '<div class="hist-cover ph">🎬</div>')
-        + '<div class="rc-name">' + _esc(title) + miss
+                   : '<div class="hist-cover ph">' + (isLive ? '✂' : '🎬') + '</div>')
+        + '<div class="rc-name">' + _esc(title)
+        + (isLive ? ' <span class="env-badge ok">✂ 直播切片</span>' : '') + miss
         + '<small>' + _esc(h.time || '') + (h.duration ? ' · ' + h.duration + 's' : '') + '</small></div>'
         + '<div class="hist-acts">'
         + (h.missing ? '' : '<button class="mini-btn" data-play="' + i + '">▶ 播放</button>'
-                        + '<button class="mini-btn" data-edit="' + i + '" title="回编辑器改词重配">✏️ 编辑</button>'
+                        + (isLive
+                          ? '<button class="mini-btn" data-lc="' + i + '" title="恢复候选高光，重新调整后导出">↻ 恢复候选</button>'
+                          : '<button class="mini-btn" data-edit="' + i + '" title="回编辑器改词重配">✏️ 编辑</button>')
                         + '<button class="mini-btn" data-folder="' + i + '" title="打开所在文件夹"><svg class="ic"><use href="#i-folder"/></svg></button>')
         + '<button class="mini-btn" data-del="' + i + '" title="删除这条记录"><svg class="ic"><use href="#i-trash"/></svg></button></div></div>';
     }).join('');
@@ -2702,6 +2708,26 @@ function openHistory(){
         await loadAdjustItems(runDir);
         openEditor();
       } catch(e){ toast('该任务不支持编辑器打开：' + e.message, 'bad'); }
+    }));
+    // v1.4.59：直播切片记录「↻ 恢复候选」——读阶段①草稿重进候选编辑器续调
+    $('histList').querySelectorAll('[data-lc]').forEach(b => b.addEventListener('click', async () => {
+      const h = _histItems[+b.dataset.lc];
+      const runDir = (h.file || '').split('/')[0];
+      $('histMask').style.display = 'none';
+      try {
+        toast('恢复候选…');
+        const r = await fetch('/api/live_clip_draft?run_dir=' + encodeURIComponent(runDir)).then(x => x.json());
+        if(!r.ok) throw new Error(r.error || '草稿不存在');
+        _lcRunDir = runDir;
+        _lcVdur = r.vdur || 0;
+        _lcCandidates = r.clips || [];
+        _lcVideoFile = r.video_file || '';
+        const sel = $('lcAspect');
+        if(sel && r.aspect_default) sel.value = r.aspect_default;
+        showLiveClip(true);
+        renderLcEditor();
+        toast('✅ 已恢复候选：' + _lcCandidates.length + ' 条（可调整后重新导出）', 'ok');
+      } catch(e){ toast('恢复候选失败：' + e.message, 'bad'); }
     }));
     $('histList').querySelectorAll('[data-folder]').forEach(b => b.addEventListener('click', () => {
       const h = _histItems[+b.dataset.folder];
