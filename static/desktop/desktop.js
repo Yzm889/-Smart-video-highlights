@@ -1904,6 +1904,9 @@ function _confirmSrtNames(){
     + '叫法（稿子短，改起来安全），再回来导入。',
     '已对齐，继续导入');
 }
+let _srt = null;   // {name, text}【v1.4.50 补回：v1.4.49 重构时误删——严格模式下
+                   // 给未声明变量赋值直接抛 ReferenceError，导入链全炸
+                   // （「字幕导入失败：_srt is not defined」主人实测）】
 /* 【v1.4.49 编码自适应】字幕站点下载的 srt 大量是 GBK/GB2312（Netflix 官方
    简体实测就是 GBK），旧实现 FileReader 固定 utf-8 → 官方中文字幕直接乱码。
    改为 arrayBuffer + 解码器链：BOM(uft-16) → utf-8 严格（fatal，坏字节即失败）

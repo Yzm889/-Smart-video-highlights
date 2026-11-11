@@ -151,14 +151,14 @@ class TestCacheVersionBump(unittest.TestCase):
     """缓存版本号 bump 到 24。"""
 
     def test_desktop_js_v24(self):
-        """desktop.js?v=28。"""
+        """desktop.js?v=29。"""
         html = _read_index_html()
-        self.assertIn('desktop.js?v=28', html)
+        self.assertIn('desktop.js?v=29', html)
 
     def test_desktop_css_v24(self):
-        """desktop.css?v=28。"""
+        """desktop.css?v=29。"""
         html = _read_index_html()
-        self.assertIn('desktop.css?v=28', html)
+        self.assertIn('desktop.css?v=29', html)
 
     def test_js_css_versions_equal(self):
         """desktop.js 和 desktop.css 的版本号必须相等。"""
@@ -234,3 +234,90 @@ def test_srt_import_decodes_gbk_and_warns_merged_blocks():
     # v1.4.47/48 的人名提醒仍在（三入口 + 文案）
     assert 'function _confirmSrtNames()' in js
     assert js.count('_confirmSrtNames()') >= 3
+
+
+_SRT_EXEC_HARNESS = r'''
+const fs = require("fs");
+const raw = fs.readFileSync(process.env.FC_JS, "utf8");
+const lines = raw.split("\n");
+function blockOf(prefix){
+  const start = lines.findIndex(l => l.startsWith(prefix));
+  if(start < 0) throw new Error("not found: " + prefix);
+  let depth = 0, started = false;
+  for(let i = start; i < lines.length; i++){
+    for(const ch of lines[i]){
+      if(ch === "{"){ depth++; started = true; } else if(ch === "}"){ depth--; }
+    }
+    if(started && depth === 0) return lines.slice(start, i + 1).join("\n");
+  }
+  throw new Error("no end: " + prefix);
+}
+function lineOf(prefix){
+  const l = lines.find(l => l.startsWith(prefix));
+  if(!l) throw new Error("no decl: " + prefix);
+  return l;
+}
+/* 变量声明行必须原样保留：v1.4.49 曾把 let _srt 误删——严格模式下赋值直接抛
+   ReferenceError（「字幕导入失败：_srt is not defined」主人实测）。这类 bug
+   node --check 查不出（语法合法），只有真执行才炸，所以本夹具真跑导入链。 */
+const src = [
+  lineOf("const LAST_SRT_KEY"),
+  lineOf("let _srt"),
+  blockOf("function lastSrtSave"),
+  blockOf("function lastSrtRead"),
+  blockOf("function _decodeSubtitleBytes"),
+  blockOf("function _warnMergedBlocks"),
+  blockOf("function _syncSrtUi"),
+  blockOf("function _loadSrtFile"),
+].join("\n");
+const els = {};
+function $(id){ return (els[id] = els[id] || { textContent: "", innerHTML: "", style: {} }); }
+function setBtnIcon(){ els.__setBtnIcon = true; }
+function _esc(s){ return String(s == null ? "" : s); }
+function _clean(s){ return String(s || ""); }
+function toast(){ els.__toast = true; }
+const store = {};
+const localStorage = {
+  getItem: k => (k in store ? store[k] : null),
+  setItem: (k, v) => { store[k] = String(v); },
+};
+const api = new Function("$", "setBtnIcon", "toast", "_esc", "_clean", "localStorage",
+  "TextEncoder", "TextDecoder", src +
+  "\nreturn { load: _loadSrtFile, read: lastSrtRead, ls: () => localStorage.getItem(LAST_SRT_KEY) };")(
+  $, setBtnIcon, toast, _esc, _clean, localStorage, TextEncoder, TextDecoder);
+const NL = String.fromCharCode(10);
+const u8 = new TextEncoder().encode("1" + NL + "00:00:15,015 --> 00:00:16,099" + NL + "-准备好了？" + NL);
+const fake = { name: "t.srt", arrayBuffer: () => Promise.resolve(u8.buffer) };
+let thrown = null;
+try { api.load(fake); } catch (e) { thrown = String(e && e.message || e); }
+setTimeout(() => {
+  const out = { thrown: thrown };
+  let saved = null;
+  try { saved = api.ls(); } catch (e) { out.lsErr = String(e && e.message || e); }
+  out.lsHas = !!saved;
+  try { out.lsName = saved ? (JSON.parse(saved).name || null) : null; } catch (e) { out.lsName = "parse"; }
+  try { out.readName = (api.read() || {}).name || null; } catch (e) { out.readName = "err"; }
+  console.log(JSON.stringify(out));
+}, 400);
+'''
+
+
+def test_srt_import_flow_actually_runs():
+    """v1.4.50 回归钉：导入链必须**真实执行**跑通（不是源码钉）。
+
+    v1.4.49 重构时误删了 `let _srt = null;` 声明——严格模式下赋值抛
+    ReferenceError，按钮导入全炸成「字幕导入失败：_srt is not defined」，
+    而 node --check / 源码钉全部查不出。本测试在 node 里真跑导入链。
+    """
+    import json
+    import subprocess
+    env = dict(os.environ)
+    env["FC_JS"] = os.path.join(_ROOT, "static", "desktop", "desktop.js")
+    p = subprocess.run(["node", "-"], input=_SRT_EXEC_HARNESS, capture_output=True,
+                       text=True, encoding="utf-8", env=env, timeout=60, cwd=str(_ROOT))
+    assert p.returncode == 0, "harness 失败 rc=%s err=%s" % (p.returncode, (p.stderr or "")[-800:])
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert not out.get("thrown"), "导入链抛错：%r" % out.get("thrown")
+    assert not out.get("harnessErr"), "harness 错误：%r" % out.get("harnessErr")
+    assert out.get("lsHas"), "localStorage 未写入（导入链没跑完）"
+    assert out.get("lsName") == "t.srt" and out.get("readName") == "t.srt", out
