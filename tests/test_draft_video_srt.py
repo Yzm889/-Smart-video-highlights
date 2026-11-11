@@ -151,14 +151,14 @@ class TestCacheVersionBump(unittest.TestCase):
     """缓存版本号 bump 到 24。"""
 
     def test_desktop_js_v24(self):
-        """desktop.js?v=25。"""
+        """desktop.js?v=26。"""
         html = _read_index_html()
-        self.assertIn('desktop.js?v=25', html)
+        self.assertIn('desktop.js?v=26', html)
 
     def test_desktop_css_v24(self):
-        """desktop.css?v=25。"""
+        """desktop.css?v=26。"""
         html = _read_index_html()
-        self.assertIn('desktop.css?v=25', html)
+        self.assertIn('desktop.css?v=26', html)
 
     def test_js_css_versions_equal(self):
         """desktop.js 和 desktop.css 的版本号必须相等。"""
@@ -173,3 +173,26 @@ class TestCacheVersionBump(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_srt_import_shows_name_alignment_reminder():
+    """v1.4.47 主人拍板：字幕导入前必须弹「人名译名对齐」提醒（三个入口全覆盖）。
+
+    主人实测：解说稿写「柯蒂斯」、字幕写「科特」——同一角色译名不一致，
+    语义匹配抓不住，画面配到别人的对话上。导入前提醒用户先用 AI 统一译名。
+    """
+    js = _read_desktop_js()
+    assert 'function _confirmSrtNames()' in js, '提醒守卫函数必须存在'
+    assert '同一套译名' in js and '柯蒂斯' in js and '科特' in js, '提醒文案要点名译名不一致问题'
+    # 入口①：按钮/工具条导入（原生对话框与浏览器兜底共用 importSrt）
+    assert 'await _confirmSrtNames()' in js
+    # 入口②：拖拽 .srt/.ass/.ssa/.vtt
+    assert '_confirmSrtNames().then(ok => { if(ok) _loadSrtFile(f); })' in js
+    # 入口③：复用上次字幕（npReuseSrt）
+    assert js.count('_confirmSrtNames()') >= 3, '三个导入入口都要过提醒'
+
+
+def test_preset_modal_msg_supports_multiline():
+    """提醒文案是多行文本：presetModalMsg 必须支持 pre-line 换行，否则挤成一行。"""
+    html = _read_index_html()
+    assert 'white-space:pre-line' in html

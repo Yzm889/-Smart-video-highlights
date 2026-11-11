@@ -481,9 +481,12 @@ function _renderLastMedia(){
   if(ls){
     const b = $('npReuseSrt');
     if(b) b.addEventListener('click', () => {
-      _srt = {name: ls.name, text: ls.text};
-      _syncSrtUi();
-      toast('✅ 已复用上次字幕：' + ls.name, 'ok');
+      _confirmSrtNames().then(ok => {   // v1.4.47：复用也是导入，同样提醒
+        if(!ok) return;
+        _srt = {name: ls.name, text: ls.text};
+        _syncSrtUi();
+        toast('✅ 已复用上次字幕：' + ls.name, 'ok');
+      });
     });
   }
 }
@@ -1882,6 +1885,20 @@ $('tbGenerate').addEventListener('click', () => {
 });
 
 /* ── SRT 导入（桌面：原生对话框 + 本地直读） ── */
+/* 【v1.4.47 人名译名提醒（主人 2026-11-12 拍板）】解说稿与字幕的人名必须是
+   同一套译名：稿子写「柯蒂斯」、字幕写「科特」，同一个角色对不上号，语义匹配
+   抓不住 → 画面配到别人的对话上（主人实测：稿子讲柯蒂斯与弗兰克对话，画面
+   还是弗兰克和唐尼）。字幕导入的三个入口统一在导入前弹窗提醒，建议用户先用
+   AI 把两边人名统一再导入。文案内联在函数里（拖拽夹具按块抽取，别拆出去）。 */
+function _confirmSrtNames(){
+  return uiConfirm('导入前提醒：人名译名要对齐',
+    '解说稿和字幕里的人名必须是同一套译名。\n'
+    + '例如稿子写「柯蒂斯」、字幕写「科特」——同一个角色对不上号，\n'
+    + '生成时画面就会配到别的对话上（画面配错的常见原因）。\n\n'
+    + '建议：导入前把解说稿和字幕一起交给任意 AI，让它把两边的人名\n'
+    + '统一成同一套译名（顺手校对其他译名差异），再回来导入。',
+    '已对齐，继续导入');
+}
 let _srt = null;   // {name, text}
 function _loadSrtFile(file){
   const r = new FileReader();
@@ -1900,6 +1917,7 @@ function _syncSrtUi(){
   if(lbl) lbl.innerHTML = '✅ 已导入 <b>' + _esc((_srt && _srt.name) || '') + '</b> ——生成时按台词找画面（点此可换）';
 }
 async function importSrt(){
+  if(!(await _confirmSrtNames())) return;   // v1.4.47：导入前人名译名提醒
   if(await _ensureBridge()){
     toast('正在打开文件选择框…（如未出现，请看任务栏）');
     window.pywebview.api.pick_srt().then(r => {
@@ -1965,7 +1983,7 @@ document.addEventListener('drop', e => {
   const ext = (f.name.split('.').pop() || '').toLowerCase();
   if(['srt', 'ass', 'ssa', 'vtt'].indexOf(ext) >= 0){
     if($('newProj').style.display === 'none'){ toast('先点「新建项目」回到引导页再导入字幕', 'bad'); return; }
-    _loadSrtFile(f);
+    _confirmSrtNames().then(ok => { if(ok) _loadSrtFile(f); });   // v1.4.47：人名译名提醒
     return;
   }
   if(_SCRIPT_EXT.indexOf(ext) >= 0){ _loadScriptIntoPlot(f); return; }

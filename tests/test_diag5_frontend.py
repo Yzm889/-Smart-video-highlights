@@ -235,7 +235,8 @@ class FileReader {
 const doc = { _h: {}, addEventListener(t, fn){ (this._h[t] = this._h[t] || []).push(fn); } };
 const document = doc;
 
-const src = constLine + '\n' + blockOf('function _loadScriptIntoPlot(') + '\n' + dropBlock
+const src = constLine + '\n' + blockOf('function _confirmSrtNames(') + '\n'
+  + blockOf('function _loadScriptIntoPlot(') + '\n' + dropBlock
   + '\nreturn { fire: (name, content) => { READ = content;'
   + "  const f = { name: name };"
   + "  const ev = { preventDefault(){}, dataTransfer: { files: [f] } };"
