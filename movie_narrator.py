@@ -5063,6 +5063,9 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             # 引用台词让位段：第二步合成据此换画面/换字幕/原声 1.0
             'quote_slots': (progress or {}).get('quote_slots') or {},
             'movie_name': movie_name,
+            # 【v1.4.52 配音失败可见化】首轮失败段（idx/engine/error）随状态落盘，
+            # 调整页据此给失败段打 ⚠ 标记——配音失败不再只活在日志里。
+            'tts_failures': (progress or {}).get('tts_failures') or [],
             'asr': asr if asr else [],
             # 剪辑方案随状态保存：第二步合成时据此决定「是否真剪」，
             # 避免被剪段信息丢失后按覆盖判定跳过剪辑（剪辑失效根因）。

@@ -1004,7 +1004,15 @@ function pollTTS(runid){
       const r = await fetch('/api/progress?run=' + runid);
       const p = await r.json();
       $('gmFill').style.width = Math.min(100, p.pct || 0) + '%';
-      $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
+      // 【v1.4.52 配音失败可见化】首轮失败段实时可见（tts_failures 已随 progress 下发）
+      if(p.tts_failures && p.tts_failures.length){
+        const badIdx = {};
+        p.tts_failures.forEach(f2 => { badIdx[f2.idx] = 1; });
+        $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%'
+          + ' · ⚠ 首轮失败 ' + Object.keys(badIdx).length + ' 段（重试中，最终结果见调整页标记）';
+      } else {
+        $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
+      }
       if(p.error){
         clearInterval(_pollTimer);
         $('genMask').style.display = 'none';
@@ -1019,7 +1027,10 @@ function pollTTS(runid){
         $('genMask').style.display = 'none';
         await loadAdjustItems(_runDir);
         openEditor();
-        toast('✅ 已生成 ' + p.tts_list.length + ' 段配音与画面方案');
+        // 【v1.4.52】完成提示带上失败汇总（宁可不静默：哪几段曾经失败，调整页有 ⚠ 标记）
+        const nf = (p.tts_failures || []).length;
+        toast('✅ 已生成 ' + p.tts_list.length + ' 段配音与画面方案'
+          + (nf ? '（⚠ ' + nf + ' 条失败记录，详情见调整页 ⚠ 标记）' : ''));
       }
     } catch(e){ /* 抖动忽略 */ }
   }, 1200);
@@ -1084,6 +1095,11 @@ async function loadAdjustItems(runDir){
   _vdur = st.video_duration || 0;
   if(st.video_path) _videoFile = runDir.replace(/\\/g, '/') + '/' + st.video_path;
   _composed = (st.composed && st.composed.segments && st.composed.segments.length) ? st.composed : null;
+  // 【v1.4.52 配音失败可见化】首轮失败段（idx→error）标记到条目上，列表打 ⚠
+  const _failMap = {};
+  (st.tts_failures || []).forEach(f2 => {
+    if(f2 && f2.idx !== undefined && !_failMap[f2.idx]) _failMap[f2.idx] = f2;
+  });
   if(_composed){
     const byIdx = {};
     _composed.segments.forEach(sg => { byIdx[sg.index] = sg; });
@@ -1099,6 +1115,10 @@ async function loadAdjustItems(runDir){
   } else {
     _items.forEach(it => { delete it.out_start; delete it.out_end; });
   }
+  _items.forEach(it => {
+    const f2 = _failMap[it.index];
+    it._ttsFail = f2 ? (f2.error || '配音失败') : '';
+  });
   _sel = -1;
   renderCaps(); ensureNarrElements(); renderTimeline(); setupPreview();
   _proxyFile = ''; _stopProxyPoll();
@@ -1167,7 +1187,10 @@ function renderCaps(){
         + '<button class="cap-del" data-del="' + i + '">✕</button></div></div>';
     }
     return '<div class="cap-row' + sel + skip + '" data-i="' + i + '"><div class="row-top">'
-      + '<span class="cap-time">' + _fmt(vs) + '</span>'
+      + '<span class="cap-time"' + (it._ttsFail
+          ? ' style="color:var(--bad,#f48771)" title="⚠ 配音曾失败：' + _esc(it._ttsFail) + '（重试结果以成片为准）"'
+          : '')
+      + '>' + (it._ttsFail ? '⚠ ' : '') + _fmt(vs) + '</span>'
       + '<textarea rows="2" data-edit="' + i + '">' + _esc(_clean(it.text)) + '</textarea>'
       + '<button class="cap-del" data-del="' + i + '" title="删除此段">✕</button></div></div>';
   }).join('');

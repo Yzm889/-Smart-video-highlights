@@ -128,3 +128,27 @@ def test_desktop_adjust_page_consumes_composed():
     assert js.count('(it.duration || 0) + 0.3') >= 3, '三处下限钳制缺一不可'
     css = open(os.path.join(ROOT, 'static', 'desktop', 'desktop.css'), encoding='utf-8').read()
     assert '.tl-block.short' in css, '段长不足配音必须有红色警示样式'
+
+
+def test_tts_failures_visible_end_to_end(tmp_path, monkeypatch):
+    """v1.4.52 配音失败可见化：失败段随 tts_state 落盘 + /api/tts_state 下发。"""
+    run, mn = _mk_run(tmp_path, name="runfail")
+    # tts_state 里手工塞 tts_failures（模拟 _generate_all_tts 写入 progress 后的状态）
+    sp = run / "tts_state.json"
+    state = json.load(open(sp, encoding="utf-8"))
+    state["tts_failures"] = [{"idx": 1, "engine": "none", "error": "all_engines_failed"}]
+    sp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(S, "OUTDIR", str(tmp_path))
+    monkeypatch.setattr(S, "probe_audio_len", lambda p: 3.0)
+    captured = {}
+    h = object.__new__(S.Handler)
+    h.path = "/api/tts_state?run_dir=runfail"
+    h._send = lambda code, body, ct: captured.update(
+        {"code": code, "body": json.loads(body.decode("utf-8"))})
+    h._get_tts_state()
+    body = captured["body"]
+    assert body["tts_failures"] == [{"idx": 1, "engine": "none", "error": "all_engines_failed"}]
+    # 前端消费钉：进度条实时计数 + 完成提示 + 列表 ⚠ 标记
+    js = open(os.path.join(ROOT, "static", "desktop", "desktop.js"), encoding="utf-8").read()
+    assert "首轮失败" in js and "p.tts_failures" in js
+    assert "_ttsFail" in js and "配音曾失败" in js

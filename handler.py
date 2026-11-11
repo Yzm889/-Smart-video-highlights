@@ -545,7 +545,8 @@ class Handler(BaseHTTPRequestHandler):
                     'video_end': span['end']
                 })
             resp = {'ok': True, 'run_dir': run_dir_name, 'tts_list': tts_list,
-                    'video_duration': video_dur, 'video_path': os.path.basename(state['video_path'])}
+                    'video_duration': video_dur, 'video_path': os.path.basename(state['video_path']),
+                    'tts_failures': state.get('tts_failures') or []}
             # 【v1.4.45】成片时间轴：compose 落盘的 composed_plan.json（每段在成片上的
             # out_start/out_end + 源片 src_start/src_end + 配音时长）。没有就缺省——
             # 前端回落源片坐标演算（兼容旧任务）。
