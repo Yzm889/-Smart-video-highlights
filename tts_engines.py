@@ -141,6 +141,7 @@ def edge_tts_dead_reason():
     return ''
 
 _EDGE_INSTALLED_CACHE = {'val': None, 'ts': 0}
+_EDGE_INSTALLED_TTL = 300.0   # 秒；见 _edge_tts_installed 里的 T0' 探针说明
 # 探测锁：并发 worker 在缓存失效时会各自起 25s 子进程 / TLS 握手，
 # 用一把锁 + 双重检查，保证同一时刻只有一个线程在探测，其余等待复用结果。
 _EDGE_PROBE_LOCK = threading.Lock()
@@ -148,11 +149,14 @@ _EDGE_PROBE_LOCK = threading.Lock()
 def _edge_tts_installed():
     """edge-tts 是否已安装（模块或命令行）；结果缓存 30 秒避免重复 find_spec/subprocess。"""
     now = time.time()
-    if _EDGE_INSTALLED_CACHE['val'] is not None and (now - _EDGE_INSTALLED_CACHE['ts']) < 30:
+    # TTL 30s→300s：T0' 探针实测 edge-tts --version 每约 45s 被重探一次，
+    # 12 分钟拉起 14 个 conhost.exe（主人肉眼可见的闪窗之一）。安装状态在一次
+    # 出片内几乎不会变，缓存拉长不改变任何判定语义，只砍掉重复子进程。
+    if _EDGE_INSTALLED_CACHE['val'] is not None and (now - _EDGE_INSTALLED_CACHE['ts']) < _EDGE_INSTALLED_TTL:
         return _EDGE_INSTALLED_CACHE['val']
     with _EDGE_PROBE_LOCK:
         # 双重检查：拿到锁时别的线程可能已探测完
-        if _EDGE_INSTALLED_CACHE['val'] is not None and (time.time() - _EDGE_INSTALLED_CACHE['ts']) < 30:
+        if _EDGE_INSTALLED_CACHE['val'] is not None and (time.time() - _EDGE_INSTALLED_CACHE['ts']) < _EDGE_INSTALLED_TTL:
             return _EDGE_INSTALLED_CACHE['val']
         result = False
         try:

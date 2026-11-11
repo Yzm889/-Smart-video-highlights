@@ -19,6 +19,22 @@ _TLS = threading.local()   # 每个任务线程绑定自己的 runid，供 ffmpe
 # 项目里 webui_server.py:753 与 tts2_engines.py:96 早已这么写，只是没覆盖 ffmpeg 主路径。
 _NO_WIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
+
+def _hidden_startupinfo():
+    """CREATE_NO_WINDOW 的双保险：显式要求控制台宿主窗口隐藏。
+
+    2026-11-11 T0' 探针（系统解释器，baseline 264 进程）实测：即使所有调用都
+    带了 creationflags=_NO_WIN，ffmpeg / nvidia-smi 启动时 Windows 仍会创建
+    conhost.exe 宿主进程（12 分钟抓到 92 个 console 事件，其中 ffmpeg 父链 9 个）。
+    STARTF_USESHOWWINDOW + SW_HIDE 让这个宿主窗口不显示，非 Windows 返回 None。
+    """
+    if os.name != 'nt':
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return si
+
 class AbortError(Exception):
 
     """任务被用户取消时抛出。"""
@@ -86,7 +102,8 @@ def ffmpeg_run(args, input_data=None, on_progress=None, timeout=FFMPEG_MAX_SECON
 
     proc = subprocess.Popen([exe] + args, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            creationflags=_NO_WIN)
+                            creationflags=_NO_WIN,
+                            startupinfo=_hidden_startupinfo())
 
     if runid:
 

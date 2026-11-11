@@ -4407,6 +4407,31 @@ def _imp_rank(imp):
     return _IMP_ORDER.get(str(imp or 'advance'), 2)
 
 
+def _should_force_real_cut(cut_plan):
+    """合成阶段是否必须真剪（禁止 no_cut 优化返回原片）。
+
+    2026-11-11 主人实报「成品没有剪辑，只是在该配音的地方配了音」：
+    目标 600s、稿子只对齐出 206s 画面 → _decide_keep_beats 把 42 段全保留
+    （预算够不到）→ cut_plan.removed=0 → 旧的 skip_no_cut=bool(removed)
+    传 False → _cut_video_by_spans 走 no_cut 优化直接返回原片。
+    判据不能只看「有没有剪掉的段」：保留覆盖率明显低于全片时，segs 本来就
+    只是原片的一小部分，同样必须真剪，否则全片时间轴会被原样保留。
+    """
+    cp = cut_plan or {}
+    try:
+        if int(cp.get('removed') or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        cov = cp.get('coverage')
+        if cov is not None and float(cov) < 80.0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
 def _decide_keep_beats(beat_imp, beat_dur, target_sec, vdur):
     """【剧情驱动·留/剪决策】给定每节拍重要度与时长，按目标时长决定保留哪些节拍。
 
@@ -7010,13 +7035,15 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             if _fit['grew']:
                 _log.info('[DIAG] 画面补长 %d 段 / +%.1fs（让每句念完再切，留 %.2fs 气口）'
                           % (_fit['grew'], _fit['added'], _tail))
-        # 第一步已剔除被剪段（cut_plan.removed>0）→ 强制真剪，杜绝「没剪」静默发生
+        # 强制真剪：有被剪段，或保留覆盖率明显低于全片（segs 只是原片一小部分）。
+        # 旧判据只看 removed>0，本次 removed=0 就走 no_cut 返回原片 → 主人看到
+        # 「整片还在、只在配音位置有声音」。详见 _should_force_real_cut。
         _cp3 = (progress or {}).get('cut_plan') or {}
         src_video, segs, cut_sec = _cut_video_by_spans(
             video_path, segs, run_dir, progress,
             voice_durs=_vdur,
             voice_tail=_voice_tail(params),
-            skip_no_cut=bool(int(_cp3.get('removed') or 0)))
+            skip_no_cut=_should_force_real_cut(_cp3))
         cut_info['cut_sec'] = cut_sec
         cut_info['segs'] = len(segs)
     cut_info['out_dur'] = round(probe_audio_len(src_video) or cut_info['src_dur'], 2)
