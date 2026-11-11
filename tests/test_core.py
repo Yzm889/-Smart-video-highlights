@@ -1619,26 +1619,30 @@ def test_parse_time_str():
 # 存储管理：扫描分组 + 删除路径白名单（防穿越）
 # ---------------------------------------------------------------------------
 def test_storage_scan_structure():
-    """_storage_scan 返回分组结构，成片不可删、run 残留可删。"""
+    """_storage_scan 返回分组结构：成片(review 可删)、run 残留(safe 可删)。
+    v1.4.36 起成片目录可逐条删除（用户需求：删以前跑完的视频缓存与记录）。"""
     import webui_server as S
     d = S._storage_scan()
     assert d['ok'] is True
     keys = {g['key'] for g in d['groups']}
     assert 'outputs' in keys and 'run_residual' in keys
     by = {g['key']: g for g in d['groups']}
-    assert by['outputs']['deletable'] is False
+    assert by['outputs']['deletable'] is True
+    assert by['outputs']['tier'] == 'review'
     assert by['run_residual']['deletable'] is True
     assert d['total_bytes'] >= 0 and d['reclaimable_bytes'] >= 0
 
 
 def test_storage_resolve_deletable_allowlist():
-    """删除路径白名单：允许项返回项目内绝对路径；穿越/越权/成片一律拒绝。"""
+    """删除路径白名单：允许项返回项目内绝对路径；穿越/越权一律拒绝。
+    v1.4.36 起 webui_output 下单段目录（含成片）全部放行——用户要能删跑完的视频缓存。"""
     import webui_server as S, os
     p = S._storage_resolve_deletable('webui_output/run-1-20260829-130846')
     assert p and os.path.isabs(p) and '..' not in p.replace('\\', '/')
     assert S._storage_resolve_deletable('webui_workspace/uploads/up-123-abc') is not None
     assert S._storage_resolve_deletable('../webui_server.py') is None
-    assert S._storage_resolve_deletable('webui_output/20260827-103807') is None  # 成片不在白名单
+    # v1.4.36：成片目录（无 run- 前缀的日期目录）也放行——这是本需求的核心。
+    assert S._storage_resolve_deletable('webui_output/20260827-103807') is not None
     assert S._storage_resolve_deletable('webui_workspace/../../etc/passwd') is None
     assert S._storage_resolve_deletable('') is None
 

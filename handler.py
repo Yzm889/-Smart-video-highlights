@@ -2138,14 +2138,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get('Content-Length', 0))
             data = self._read_json(length, max_len=64 * 1024) or {}
-            full = _w._storage_resolve_deletable(data.get('path') or '')
+            rel = (data.get('path') or '').replace('\\', '/')
+            full = _w._storage_resolve_deletable(rel)
             if not full:
                 raise RuntimeError('该路径不在可清理范围内，或尝试越权删除（已拒绝）')
+            # v1.4.36：删成片目录时同步清理 history 中指向该目录的记录，
+            # 避免留下「⚠️ 成片文件已丢失」的悬挂条目。
+            purged = 0
+            if rel.startswith('webui_output/') and os.path.isdir(full):
+                prefix = rel[len('webui_output/'):].rstrip('/')
+                if prefix:
+                    purged = _w._purge_history_prefix(prefix)
             if os.path.isdir(full):
                 shutil.rmtree(full)
             else:
                 os.remove(full)
-            self._send(200, json.dumps(_w._storage_scan()).encode('utf-8'), 'application/json')
+            self._send(200, json.dumps({'ok': True, 'purged': purged, 'scan': _w._storage_scan()}).encode('utf-8'), 'application/json')
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
 

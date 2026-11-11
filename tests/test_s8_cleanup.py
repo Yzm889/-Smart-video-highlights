@@ -10,6 +10,7 @@
   6. 存储面板白名单放行 webui_output/_warmup_<fp>，非法名拒绝
 """
 import os
+import json
 import time
 import webui_server as S  # noqa: F401  先建立 webui 入口，再导入 workflows（避免循环依赖）
 _S_ENTRY = S  # 显式引用：仅依赖 import webui_server 的副作用保证模块加载顺序
@@ -101,14 +102,24 @@ class TestSweepWarmup:
 
 
 class TestStoragePanel:
-    def test_scan_classifies_warmup_as_residual(self, tmp_path):
-        """_warmup_* 归入 run_residual（safe 可删），不再混入 outputs（keep）。"""
+    def test_scan_classifies_by_history_reference(self, tmp_path):
+        """v1.4.36：按 history 引用区分成片与残留——有记录的目录归 outputs（review 可删），
+        无记录的（孤儿/失败/_warmup_*）归 run_residual（safe 可删）。
+        旧逻辑按 run- 前缀分，会把带 final.mp4 的成片目录误归残留（一键清理删成片）。"""
         os.makedirs(S.OUTDIR, exist_ok=True)
         os.makedirs(os.path.join(S.OUTDIR, '_warmup_' + _FP), exist_ok=True)
         os.makedirs(os.path.join(S.OUTDIR, 'run-abc'), exist_ok=True)
+        # 日期目录：写一条 history 记录引用它 → 归 outputs；run-abc 无记录 → 归残留
         os.makedirs(os.path.join(S.OUTDIR, '20260923-120000'), exist_ok=True)
         with open(os.path.join(S.OUTDIR, '_warmup_' + _FP, 'x.txt'), 'w') as f:
             f.write('data')
+        hist = []
+        if os.path.exists(S.HISTORY_PATH):
+            with open(S.HISTORY_PATH, encoding='utf-8') as f:
+                hist = json.load(f)
+        hist.append({'file': '20260923-120000/final.mp4'})
+        with open(S.HISTORY_PATH, 'w', encoding='utf-8') as f:
+            json.dump(hist, f, ensure_ascii=False)
         sc = S._storage_scan()
         by_key = {g['key']: g for g in sc['groups']}
         residual_names = [i['name'] for i in by_key['run_residual']['items']]
@@ -117,10 +128,15 @@ class TestStoragePanel:
         assert '_warmup_' + _FP not in output_names
         assert 'run-abc' in residual_names
         assert '20260923-120000' in output_names
+        assert by_key['outputs']['tier'] == 'review' and by_key['outputs']['deletable'] is True
+        assert by_key['run_residual']['tier'] == 'safe'
 
-    def test_storage_allow_matches_warmup(self, tmp_path):
-        """存储面板白名单放行 webui_output/_warmup_<32hex>，非法形态拒绝。"""
+    def test_storage_allow_matches_single_segment(self, tmp_path):
+        """v1.4.36：白名单放宽为 webui_output 下单段目录名（成片/_warmup_* 都能删），
+        穿越/多级路径/绝对路径仍拒绝。"""
         ok = S._storage_resolve_deletable('webui_output/_warmup_' + _FP)
         assert ok and ok.lower().endswith('_warmup_' + _FP)
-        assert S._storage_resolve_deletable('webui_output/_warmup_abc') is None
+        # 单段名即放行（不再校验 32hex 形态）：_warmup_abc、日期成片目录都合法
+        assert S._storage_resolve_deletable('webui_output/_warmup_abc') is not None
+        assert S._storage_resolve_deletable('webui_output/20260923-120000') is not None
         assert S._storage_resolve_deletable('webui_output/_warmup_' + _FP + '/../run-x') is None

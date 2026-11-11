@@ -2735,9 +2735,11 @@ def _storage_dir_size(p):
 
 
 # 可被存储面板安全删除的路径白名单（相对项目根，正则匹配；禁止任何穿越/越界子路径）
+# v1.4.36：webui_output 下放行所有「单段目录名」——run-* / live-* / _warmup_* 等任务产物目录。
+#   目录名由 _safe_dir 约束生成（拒绝绝对路径/盘符/..），且 _storage_resolve_deletable 前置
+#   检查已拒绝 '..' 段与越界 commonpath，因此单段通配不存在穿越风险。
 _STORAGE_ALLOW = [
-    r'^webui_output/run-[^/]+$',
-    r'^webui_output/_warmup_[0-9a-f]{32}$',
+    r'^webui_output/[^/]+$',
     r'^webui_workspace/uploads/up-[0-9A-Za-z-]+$',
     r'^webui_workspace/asr_[0-9]+\.wav$',
     r'^webui_workspace/music_[0-9]+\.(mp3|wav)$',
@@ -2777,23 +2779,41 @@ def _storage_scan():
     out_names = sorted(os.listdir(OUTDIR)) if os.path.isdir(OUTDIR) else []
     out_items, out_total = [], 0
     run_items, run_total = [], 0
+    # v1.4.36：按 history 引用区分「成片目录」与「任务残留」。
+    # 背景：run_dir 命名是 run-N-时间戳，history 的 file 就是 'run-N-时间戳/final.mp4'；
+    # 旧逻辑按前缀分（run-*/_warmup_* → 残留）有两个反向缺陷：
+    #   ① 带 final.mp4 的成片目录被归「残留」（safe）→ 一键清理会把成片删掉，
+    #      历史页留一堆「⚠️ 文件已丢失」；
+    #   ② live-* 成片目录（无 run- 前缀）被归 outputs（keep）→ 用户想删删不掉。
+    # history 引用是唯一事实来源：有记录=成片（review 可删，删时二次确认+同步清记录）；
+    # 无记录=孤儿/失败残留（safe 一键清理回收）。
+    ref_dirs = set()
+    try:
+        for it in load_history(500):
+            f = (it.get('file') or '').replace('\\', '/')
+            if '/' in f:
+                ref_dirs.add(f.split('/')[0])
+    except Exception:
+        pass
     for name in out_names:
         p = os.path.join(OUTDIR, name)
         if not os.path.isdir(p):
             continue
         s = _storage_dir_size(p)
         mtime = int(os.path.getmtime(p))
-        if name.startswith(('run-', '_warmup_')):
-            run_total += s
-            run_items.append({'name': name, 'rel': 'webui_output/' + name,
-                              'size': s, 'mtime': mtime})
-        else:
+        item = {'name': name, 'rel': 'webui_output/' + name, 'size': s, 'mtime': mtime}
+        if name in ref_dirs:
             out_total += s
-            out_items.append({'name': name, 'rel': 'webui_output/' + name,
-                              'size': s, 'mtime': mtime})
-    groups.append({'key': 'outputs', 'label': '成片（webui_output 下日期目录）',
-                   'tier': 'keep', 'deletable': False, 'total': out_total, 'items': out_items})
-    groups.append({'key': 'run_residual', 'label': '任务残留（run-* / _warmup_* 临时产物）',
+            out_items.append(item)
+        else:
+            run_total += s
+            run_items.append(item)
+    # v1.4.36：成片目录从 keep/不可删 改为 review/可删。
+    # 档位语义见函数 docstring：keep=保留不可删 / safe=临时可回收 / review=删除需重新下载。
+    # 成片是计算产物（原始视频用户本地还有），删除不可恢复，用 review 语义最贴切。
+    groups.append({'key': 'outputs', 'label': '成片（webui_output 下有历史记录的目录，删除不可恢复）',
+                   'tier': 'review', 'deletable': True, 'total': out_total, 'items': out_items})
+    groups.append({'key': 'run_residual', 'label': '任务残留（无历史引用的孤儿/失败目录与 _warmup_*）',
                    'tier': 'safe', 'deletable': True, 'total': run_total, 'items': run_items})
 
     up_items, up_total = [], 0
@@ -2846,7 +2866,9 @@ def _storage_scan():
         groups.append({'key': 'git', 'label': '.git 版本历史（不建议删）',
                        'tier': 'keep', 'deletable': False, 'total': gsize, 'items': []})
 
-    reclaimable = sum(g['total'] for g in groups if g['tier'] in ('safe', 'review') and g['deletable'])
+    # v1.4.36：reclaimable 只统计「一键清理」实际会删的 safe 组。
+    # 成片改为 review 档后若仍计入，summary 的「可回收」数字会虚高（一键清理不删成片）。
+    reclaimable = sum(g['total'] for g in groups if g['tier'] == 'safe' and g['deletable'])
     total_all = sum(g['total'] for g in groups)
     try:
         free = shutil.disk_usage(HERE).free
@@ -3659,6 +3681,28 @@ def delete_history(file):
         return True
     except Exception:
         return False
+
+
+def _purge_history_prefix(prefix):
+    """删除 history 中 file 以 prefix/ 开头的记录，返回清除条数。
+
+    v1.4.36：存储面板允许删除成片目录后，history 里指向该目录的记录会变成
+    「⚠️ 成片文件已丢失」的悬挂条目。删目录时同步清掉对应记录，保证
+    「删缓存 = 删记录」，不留用户还得再去历史页手工删的尾巴。"""
+    try:
+        prefix = (prefix or '').replace('\\', '/').rstrip('/')
+        if not prefix:
+            return 0
+        with _HIST_LOCK:
+            items = load_history(500)
+            kept = [it for it in items
+                    if not (it.get('file') or '').replace('\\', '/').startswith(prefix + '/')]
+            removed = len(items) - len(kept)
+            if removed:
+                _atomic_write_json(HISTORY_PATH, kept)
+        return removed
+    except Exception:
+        return 0
 
 
 def _active_run_dirs():

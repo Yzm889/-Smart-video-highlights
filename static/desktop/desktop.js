@@ -2344,6 +2344,17 @@ function openHistory(){
   }).catch(e => { $('histList').innerHTML = '<div class="ins-empty">加载失败：' + _esc(e.message) + '</div>'; });
 }
 $('histClose').addEventListener('click', () => $('histMask').style.display = 'none');
+$('histClear').addEventListener('click', async () => {
+  if(!_histItems.length){ toast('没有可清空的记录', 'bad'); return; }
+  // v1.4.36：清空全部历史记录 + 删除磁盘上所有成片（正在生成的任务目录会保留，后端 _active_run_dirs 兜底）。
+  if(!await uiConfirm('清空全部生成记录？', '将删除全部 ' + _histItems.length + ' 条记录，并删除磁盘上对应的成片文件。正在生成中的任务目录会保留。此操作不可恢复。', '清空')) return;
+  try {
+    const r = await fetch('/api/history/clear', {method: 'POST'}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '清空失败');
+    toast('✅ 已清空 ' + _histItems.length + ' 条记录及对应成片', 'ok');
+    openHistory();
+  } catch(e){ toast('清空失败：' + e.message, 'bad'); }
+});
 
 /* ── 声音克隆（本地 CosyVoice，参考音频不出机器） ── */
 let _cloneFile = null;
@@ -2509,10 +2520,18 @@ function loadStorage(){
     });
     $('storeList').innerHTML = rows.join('') || '<div class="ins-empty">很干净，没有占用</div>';
     $('storeList').querySelectorAll('[data-del-rel]').forEach(b => b.addEventListener('click', async () => {
+      const rel = b.dataset.delRel;
+      const name = (rel || '').split('/').pop();
+      // v1.4.36：成片目录删除会同步清理历史记录（后端 _purge_history_prefix），确认文案必须明示。
+      const isFilm = /^webui_output\/[^/]+$/.test(rel || '');
+      const extra = isFilm ? '该目录的成片及对应历史记录将被一并删除。' : '';
+      if(!await uiConfirm('删除该项？', '目标：' + (name || rel) + (extra ? '\n' + extra : '') + '\n此操作不可恢复。', '删除')) return;
       b.disabled = true;
       try {
-        await fetch('/api/storage/delete', {method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({path: b.dataset.delRel})});
+        const r = await fetch('/api/storage/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({path: rel})}).then(x => x.json());
+        if(!r.ok) throw new Error(r.error || '删除失败');
+        if(isFilm && r.purged) toast('✅ 成片已删除，同步清理 ' + r.purged + ' 条历史记录', 'ok');
         loadStorage();
       } catch(e){ toast('删除失败：' + e.message, 'bad'); b.disabled = false; }
     }));

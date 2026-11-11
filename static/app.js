@@ -2556,10 +2556,13 @@ function loadStorage(){
     if (!d.ok){ if (sum) sum.textContent = '扫描失败：' + (d.error || ''); return; }
     const tierBadge = { keep: '🔒 保留', safe: '🟢 可清理', review: '🟡 删除需重下' };
     const tierCls = { keep: 'st-keep', safe: 'st-safe', review: 'st-review' };
+    // v1.4.36：成片组用 review 档但文案定制——「删除需重下」对计算产物不贴切，
+    // 成片删掉就是不可恢复（原始视频用户本地还有）。
+    const badgeFor = (g) => g.key === 'outputs' ? '🟡 可删·不可恢复' : (tierBadge[g.tier] || g.tier);
     let html = `<div class="st-summary">项目占用 <b>${fmtBytes(d.total_bytes)}</b> · 可回收 <b style="color:#1a7f37">${fmtBytes(d.reclaimable_bytes)}</b> · 磁盘剩余 <b>${fmtBytes(d.free_bytes)}</b></div>`;
     (d.groups || []).forEach(g => {
       if (g.total === 0 && g.items.length === 0) return;
-      html += `<div class="st-group"><div class="st-group-head"><span class="st-badge ${tierCls[g.tier] || ''}">${tierBadge[g.tier] || escapeHtml(g.tier)}</span><b>${escapeHtml(g.label)}</b><span class="st-size">${fmtBytes(g.total)}</span></div>`;
+      html += `<div class="st-group"><div class="st-group-head"><span class="st-badge ${tierCls[g.tier] || ''}">${escapeHtml(badgeFor(g))}</span><b>${escapeHtml(g.label)}</b><span class="st-size">${fmtBytes(g.total)}</span></div>`;
       if (g.items && g.items.length){
         html += '<div class="st-items">';
         g.items.forEach(it => {
@@ -2587,19 +2590,25 @@ function loadStorage(){
 function deleteStorageItem(rel, size){
   rel = String(rel == null ? '' : rel);
   const name = rel.split('/').pop();
-  if (!confirm(`确认删除「${name}」（${fmtBytes(size)}）？\n该操作不可恢复。`)) return;
+  // v1.4.36：成片目录删除会同步清理历史记录（后端 _purge_history_prefix），
+  // 确认文案必须明示，避免用户以为只删了磁盘文件。
+  const isFilm = /^webui_output\/[^/]+$/.test(rel);
+  const extra = isFilm ? '\n该目录的成片及对应历史记录将被一并删除。' : '';
+  if (!confirm(`确认删除「${name}」（${fmtBytes(size)}）？${extra}\n该操作不可恢复。`)) return;
   fetch('/api/storage/delete', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: rel })
   }).then(r => r.json()).then(d => {
-    if (d.ok) loadStorage();
-    else toast('删除失败：' + (d.error || '未分类错误'), 'error');
+    if (d.ok){
+      loadStorage();
+      if (isFilm && d.purged) toast(`成片已删除，同步清理 ${d.purged} 条历史记录`, 'success', 5000);
+    } else toast('删除失败：' + (d.error || '未分类错误'), 'error');
   }).catch(e => toast('删除失败：'+e.message, 'error'));
 }
 
 function cleanStorageAll(){
   const amount = Number(($('storageCleanAll') || {}).dataset ? ($('storageCleanAll').dataset.amount || 0) : 0);
-  if (!confirm(`将删除全部「🟢 可清理」类临时文件（run-* 残留、上传会话、ASR/音乐临时、分析缓存），释放约 ${fmtBytes(amount)}。\n⚠️ 模型权重(🟡)与成片(🔒)不会被删。此操作不可恢复，确认？`)) return;
+  if (!confirm(`将删除全部「🟢 可清理」类临时文件（run-* 残留、上传会话、ASR/音乐临时、分析缓存），释放约 ${fmtBytes(amount)}。\n⚠️ 成片(🟡 可删·不可恢复)与模型权重不会被一键清理，成片请在上方逐条删除。此操作不可恢复，确认？`)) return;
   fetch('/api/storage').then(r => r.json()).then(d => {
     const safe = (d.groups || []).filter(g => g.deletable && g.tier === 'safe');
     const rels = [];
