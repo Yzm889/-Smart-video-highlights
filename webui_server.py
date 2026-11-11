@@ -3119,11 +3119,17 @@ def _build_preview_proxy(src, dst):
 
 
 def _ensure_preview_proxy(run_dir, name=None, wait=False):
-    """确保 run_dir 有 720p 预览副本（没有就后台生成）。返回 dict：
+    """确保 run_dir 有可预览的视频。返回 dict：
 
-    {ok, mode: 'proxy'|'original', ready: bool, file: 'proxy.mp4'|'', error: str}
+    {ok, mode: 'composed'|'proxy'|'original', ready: bool, file: 'final.mp4'|'proxy.mp4'|'', error: str}
+    - mode=composed：final.mp4（成片，含剪辑+配音+字幕）已存在，直接预览成片
+    - mode=proxy：720p 预览副本（源片转码）
     - mode=original：源片本身 ≤720p（或无视频流/找不到源片），预览直接用原片
     - wait=True：同步等构建完（单测用）；默认后台线程、立即返回 ready=False
+
+    v1.4.35 改：优先返回 final.mp4（成片），让用户在预览区看到的是成片效果
+    （含剪辑+配音+字幕），而非源片 720p 副本。预览是导出前用户唯一能手动
+    调整的环节，之前只展示源片等于盲调。
     """
     res = {'ok': True, 'mode': 'original', 'ready': True, 'file': '', 'error': ''}
     try:
@@ -3135,6 +3141,11 @@ def _ensure_preview_proxy(run_dir, name=None, wait=False):
     if not rd or not os.path.isdir(rd):
         res['ok'] = False
         res['error'] = 'run_dir 不存在'
+        return res
+    # v1.4.35：final.mp4（成片）存在且有效 → 直接预览成片
+    final_path = os.path.join(rd, 'final.mp4')
+    if os.path.isfile(final_path) and os.path.getsize(final_path) >= 1024:
+        res.update({'mode': 'composed', 'file': 'final.mp4'})
         return res
     src = ''
     if name:

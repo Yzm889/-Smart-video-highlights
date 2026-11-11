@@ -583,7 +583,12 @@ def _merge_user_script(params, script):
 
 
 def dispatch_movie_tts(req, prog):
-    """Phase 1：生成解说稿+所有配音，暂停等用户确认。"""
+    """Phase 1：生成解说稿+所有配音，自动合成预览成片，暂停等用户确认。
+
+    v1.4.35 改：TTS 完成后自动调用 compose_movie_from_tts 生成 final.mp4，
+    让预览区展示的是成片（含剪辑+配音+字幕），而非源片 720p 副本。
+    之前预览只展示源片，用户在导出前唯一能手动调整的环节看不到剪辑效果，等于盲调。
+    """
     try:
         run_dir = prog.get('run_dir') or os.path.join(_w.OUTDIR, time.strftime('%Y%m%d-%H%M%S'))
         os.makedirs(run_dir, exist_ok=True)
@@ -597,6 +602,20 @@ def dispatch_movie_tts(req, prog):
                                      music_path=_w._resolve_music(req.get('music')),
                                      tts_only=True)
         prog['diag'] = diag
+        # 自动合成预览成片：让用户在调整前看到成片效果（含剪辑+配音+字幕）
+        music_path = _w._resolve_music(req.get('music'))
+        if os.path.exists(os.path.join(run_dir, 'tts_state.json')):
+            try:
+                prog['phase'] = '配音已生成，正在合成预览成片…'
+                final_path = _w.compose_movie_from_tts(run_dir, prog,
+                                                      music_path=music_path)
+                if final_path and os.path.exists(final_path) and os.path.getsize(final_path) >= 1024:
+                    prog['file'] = os.path.relpath(final_path, _w.OUTDIR).replace('\\', '/')
+                    prog['phase'] = '配音已生成（%d段），成片预览已就绪，请确认后导出' % len(diag.get('voice_clips', []))
+                else:
+                    prog['phase'] = '配音已生成，预览合成失败（点合成重试）'
+            except Exception as e:
+                prog['phase'] = '配音已生成，预览合成失败（点合成重试）：%s' % str(e)[:80]
         _w._record_history(req, prog, 'movie_tts')
     except Exception as e:
         _w.fail_task(prog, e)
@@ -632,9 +651,18 @@ def dispatch_movie_compose(req, prog):
         adjusted = req.get('items')
         skip = req.get('skip') or []
         user_params = req.get('params') or {}
-        final = _w.compose_movie_from_tts(run_dir, prog, music_path=music_path,
-                                       adjusted_items=adjusted, skip=skip,
-                                       user_params=user_params)
+        # v1.4.35：用户未调整（无 items/skip）且 final.mp4 已存在 → 直接复用，不重跑合成。
+        # TTS 阶段已自动合成预览成片，此时重跑是纯浪费（几分钟的 ffmpeg）。
+        final_path_existing = os.path.join(run_dir, 'final.mp4')
+        if (not adjusted and not skip
+                and os.path.exists(final_path_existing)
+                and os.path.getsize(final_path_existing) >= 1024):
+            final = final_path_existing
+            _log.info('[DIAG] 合成复用：final.mp4 已存在且用户未调整，跳过重合成')
+        else:
+            final = _w.compose_movie_from_tts(run_dir, prog, music_path=music_path,
+                                           adjusted_items=adjusted, skip=skip,
+                                           user_params=user_params)
         # 【不静默】合成完成≠视频存在：校验成片文件，失败要明确报错而不是显示「✅ 完成」。
         if not final or not os.path.exists(final) or os.path.getsize(final) < 1024:
             raise RuntimeError('成片生成失败：合成阶段未产出有效视频文件，请查看后端日志（可能 ffmpeg 或配音引擎失败）')
