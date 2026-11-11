@@ -4071,6 +4071,57 @@ def align_script_to_segments(events, segs, asr):
     return [(segs[i][0], desc) for i, desc in assigned]
 
 
+def _unify_names_with_dialog(texts, asr, movie_name=''):
+    """译名自动归一（v1.4.53）：把解说稿里的人名对齐到台词字幕的叫法。
+
+    【为什么需要】解说稿的译名来自剧情检索/用户稿子（柯蒂斯），台词字幕来自
+    另一套翻译（科特）——同一个角色对不上号，语义匹配抓不住，画面配到别人的
+    对话上（主人实测：稿子讲柯蒂斯与弗兰克对话，画面还是弗兰克和唐尼）。
+    做法：两边文本各取一段交给本地 LLM，只做一件事——找出「同一个人、两套
+    译名」的映射，然后整稿替换。拿不到映射或任何异常都原样返回（绝不阻断
+    出片）。NARRATE_NAME_UNIFY=0 可关闭。返回 (new_texts, mapping)。
+    """
+    if os.environ.get('NARRATE_NAME_UNIFY', '') == '0':
+        return texts, {}
+    if not texts or not asr or len(asr) < 2:
+        return texts, {}
+    try:
+        _narr = '\n'.join(str(t or '') for t in texts)[:4000]
+        _dlg = '\n'.join(str(a.get('text') or '') for a in asr)[:3000]
+        if len(_dlg.strip()) < 20:
+            return texts, {}
+        prompt = (
+            '同一部影片的两种文本。任务：找出两边「同一个人/地点，但译名写法不同」的对应。\n'
+            '只收录有把握的对应（如「柯蒂斯」与「科特」是同一人的不同译名）；\n'
+            '两边写法一致的、没有把握的，都不要收。输出 JSON：'
+            '{"mapping": {"甲文本写法": "乙文本写法"}}，没有就输出 {"mapping": {}}。\n\n'
+            '【甲：解说稿】\n' + _narr + '\n\n【乙：台词字幕】\n' + _dlg)
+        r = local_llm_chat(prompt, system='你是译名校对助手，只输出 JSON。', timeout=90)
+        obj = _extract_json_obj(r or '') or {}
+        mapping = obj.get('mapping') or {}
+        if not isinstance(mapping, dict):
+            return texts, {}
+        mapping = {str(k).strip(): str(v).strip() for k, v in mapping.items()
+                   if str(k).strip() and str(v).strip() and str(k).strip() != str(v).strip()}
+        if not mapping:
+            return texts, {}
+        new_texts = list(texts)
+        n_hit = 0
+        for i, t in enumerate(new_texts):
+            t2 = str(t or '')
+            for a, b in mapping.items():
+                if a in t2:
+                    t2 = t2.replace(a, b)
+                    n_hit += 1
+            new_texts[i] = t2
+        _log.info('[DIAG] 译名归一: %s（替换 %d 处）'
+                  % ('、'.join('%s→%s' % kv for kv in mapping.items()), n_hit))
+        return new_texts, mapping
+    except Exception as e:
+        _log.info('[DIAG] 译名归一跳过（不阻断出片）: %s' % e)
+        return texts, {}
+
+
 def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_name='', events=None):
     """🎭 剧情驱动核心（解说驱动剪辑）：
         完整解说稿 → 按每句字数分配画面 → 返回「解说词与画面一一对应」的区间。
@@ -4322,6 +4373,14 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         texts = _enhance_tts_markup(texts)
     n_marked = sum(1 for t in texts if has_tts_markup(t))
     _log.info(f'[DIAG] TTS标记: {n_marked}/{len(texts)}节含标记')
+
+    # 【v1.4.53 译名自动归一】必须在句类标注/对齐之前：对齐、引用让位、TTS
+    # 用的都是这份 texts——人名对齐到台词字幕的叫法，画面才配得上、引用才
+    # 找得中（主人实测柯蒂斯≠科特导致画面配错）。
+    try:
+        texts, _name_map = _unify_names_with_dialog(texts, asr, movie_name=movie_name)
+    except Exception:
+        pass
 
     if _aborted():
         raise AbortError('用户取消了任务')
