@@ -418,6 +418,75 @@ const DRAFT_KEY = 'framecut_desktop_draft_v1';
 const DRAFT_TEXT_IDS = ['npPlot', 'npName'];
 const DRAFT_CHECKS = ['npScript'];
 const DRAFT_DEBOUNCE_MS = 400;
+
+/* v1.4.37：视频/字幕持久化——主人同一影片反复重做 5+ 次，每次开窗口都要
+   重新选视频、重新导入字幕。现在 localStorage 记住上次的，新建项目页一键复用。
+   只存桌面版本地路径（isLocalPath=true）；浏览器上传的 upload_id 会过期，不存。 */
+const LAST_VIDEO_KEY = 'framecut_desktop_last_video_v1';
+const LAST_SRT_KEY = 'framecut_desktop_last_srt_v1';
+
+function lastVideoSave(){
+  try {
+    if(_video && _video.isLocalPath){
+      localStorage.setItem(LAST_VIDEO_KEY, JSON.stringify({name: _video.name, path: _video.path}));
+    }
+  } catch(e){}
+}
+function lastVideoRead(){
+  try { return JSON.parse(localStorage.getItem(LAST_VIDEO_KEY) || 'null') || null; }
+  catch(e){ return null; }
+}
+function lastVideoClear(){
+  try { localStorage.removeItem(LAST_VIDEO_KEY); } catch(e){}
+}
+
+function lastSrtSave(){
+  try {
+    if(_srt && _srt.name && _srt.text){
+      localStorage.setItem(LAST_SRT_KEY, JSON.stringify({name: _srt.name, text: _srt.text}));
+    }
+  } catch(e){}
+}
+function lastSrtRead(){
+  try { return JSON.parse(localStorage.getItem(LAST_SRT_KEY) || 'null') || null; }
+  catch(e){ return null; }
+}
+function lastSrtClear(){
+  try { localStorage.removeItem(LAST_SRT_KEY); } catch(e){}
+}
+
+/* 新建项目页渲染复用按钮（有历史记录时才显示） */
+function _renderLastMedia(){
+  const lv = lastVideoRead();
+  const ls = lastSrtRead();
+  const slot = $('npLastMedia');
+  if(!slot) return;
+  let html = '';
+  if(lv){
+    html += '<button class="mini-btn" id="npReuseVideo" title="复用上次的视频">'
+          + '<svg class="ic"><use href="#i-folder"/></svg>📹 上次视频：' + _esc(lv.name) + '</button>';
+  }
+  if(ls){
+    html += '<button class="mini-btn" id="npReuseSrt" title="复用上次的字幕">'
+          + '<svg class="ic"><use href="#i-subtitle"/></svg>📝 上次字幕：' + _esc(ls.name) + '</button>';
+  }
+  slot.innerHTML = html;
+  if(lv){
+    const b = $('npReuseVideo');
+    if(b) b.addEventListener('click', () => {
+      acceptVideo(lv.name, lv.path);
+      toast('✅ 已复用上次视频：' + lv.name, 'ok');
+    });
+  }
+  if(ls){
+    const b = $('npReuseSrt');
+    if(b) b.addEventListener('click', () => {
+      _srt = {name: ls.name, text: ls.text};
+      _syncSrtUi();
+      toast('✅ 已复用上次字幕：' + ls.name, 'ok');
+    });
+  }
+}
 function draftRead(){
   try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null') || null; }
   catch(e){ return null; }
@@ -492,6 +561,7 @@ DRAFT_CHECKS.forEach(id => {
    注意：状态栏文字统一在文件末尾的「启动」段落地（这里若也 setStatus，
    会被末尾那句 setStatus('就绪') 立刻盖掉）。 */
 const _draftRestored = draftRestore();
+_renderLastMedia();   // v1.4.37：有上次视频/字幕时显示一键复用按钮
 
 $('npPick').addEventListener('click', async () => {
   if(await _ensureBridge()){
@@ -593,6 +663,7 @@ async function _chunkUpload(file, onProg){
 
 function acceptVideo(name, path){
   _video = {name, path, isLocalPath: true};
+  lastVideoSave();   // v1.4.37：记住上次视频，下次一键复用
   $('npPick').classList.add('has');
   $('npPickLabel').textContent = '✅ ' + name;
   $('projName').textContent = name.replace(/\.[^.]+$/, '');
@@ -1637,6 +1708,7 @@ function newProjectReset(){
   _narrEls = {};
   document.querySelectorAll('audio[id^="narr-"]').forEach(a => a.remove());
   _video = null;
+  _srt = null;
   $('projName').textContent = '未打开项目';
   $('tbGenerate').disabled = false;
   $('tbCompose').disabled = true;
@@ -1645,6 +1717,9 @@ function newProjectReset(){
   $('npGo').disabled = false;
   $('npPickLabel').textContent = '从电脑选择视频';
   $('npPick').classList.remove('has');
+  $('npSrtLabel').textContent = '导入字幕（SRT / ASS / VTT）——靠台词找画面，成片质量的命脉';
+  setBtnIcon('tbSrt', 'i-subtitle', '字幕');
+  _renderLastMedia();   // v1.4.37：新建项目后刷新复用按钮（视频/字幕保留，跨项目复用）
   const ep = $('exportPanel'); if(ep) ep.style.display = 'none';
   const vs = $('videoShell'); if(vs) vs.style.display = '';
   const pn = $('npName'); if(pn) pn.value = '';   // 片名与剧情稿一起清，否则「查剧情」还留着旧片名
@@ -1669,6 +1744,7 @@ function _loadSrtFile(file){
   const r = new FileReader();
   r.onload = () => {
     _srt = {name: file.name, text: String(r.result)};
+    lastSrtSave();   // v1.4.37：记住上次字幕，下次一键复用
     _syncSrtUi();
     toast('✅ 字幕已导入：' + file.name + '（生成时按台词找画面）', 'ok');
   };
@@ -1689,6 +1765,7 @@ async function importSrt(){
       return window.pywebview.api.read_text_file(r.path).then(t => {
         if(!t.ok) throw new Error(t.error || '读取失败');
         _srt = {name: name, text: t.text};
+        lastSrtSave();   // v1.4.37：记住上次字幕
         _syncSrtUi();
         toast('✅ 字幕已导入：' + name + '（生成时按台词找画面）', 'ok');
       });

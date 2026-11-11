@@ -249,8 +249,10 @@ function build(){
     const document = { querySelectorAll: () => [] };
     let _draftTimer = null;
     let _items = [], _sel = -1, _curSeg = -1, _runDir = '', _videoFile = '', _vdur = 0;
-    let _narrEls = {}, _video = null;
+    let _narrEls = {}, _video = null, _srt = null;
     function _pushUndo(){}
+    function _renderLastMedia(){}
+    function setBtnIcon(){}
     function showEditor(on){ __calls.showEditor.push(on); }
     function switchView(v){ __calls.switchView.push(v); }
     function setStatus(s, kind){ __calls.setStatus.push(s); }

@@ -24,6 +24,8 @@ DYNAMIC_IDS = {
     'inQuoteToggle',  # 检查器里动态生成的「恢复为解说段」按钮
     'musicAudio',     # 曲库试听 audio，代码用 $('musicAudio') && ...pause() 短路保护
     'narr-',          # 前缀拼接的动态 id（$('narr-' + i)）
+    'npReuseVideo',   # v1.4.37：_renderLastMedia 动态生成的「上次视频」复用按钮
+    'npReuseSrt',     # v1.4.37：_renderLastMedia 动态生成的「上次字幕」复用按钮
 }
 
 
