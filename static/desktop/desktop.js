@@ -3076,7 +3076,32 @@ _setEntryActive('tbNarrate');
 let _lcVideo = null;          // {name, path} 本地直连 或 {name, upload_id} 浏览器上传
 let _lcPollTimer = null;
 let _lcPollRunId = null;      // v1.4.55：取消按钮凭它发 /api/cancel
+let _lcAspectUsed = 'blur';   // v1.4.57：导出实际用的画幅（结果预览框比例跟着切）
 let _lcFromEditor = false;
+
+/* v1.4.57：切片参数记忆（与解说链路参数记忆对齐）——lcN/lcMin/lcMax/lcAsr/
+   lcAspect/lcLang 每次从 DOM 现读，重开窗口全归默认又要重调一遍。 */
+const LC_KEY = 'framecut_desktop_lc_v1';
+function lcSaveParams(){
+  try {
+    localStorage.setItem(LC_KEY, JSON.stringify({
+      n: $('lcN').value, min: $('lcMin').value, max: $('lcMax').value,
+      asr: $('lcAsr').checked,
+      aspect: $('lcAspect') ? $('lcAspect').value : 'blur',
+      lang: $('lcLang') ? $('lcLang').value : 'auto',
+    }));
+  } catch(e){}
+}
+function lcRestoreParams(){
+  try {
+    const v = JSON.parse(localStorage.getItem(LC_KEY) || 'null');
+    if(!v) return;
+    const set = (id, val) => { const el = $(id); if(el && val !== undefined && val !== null) el.value = val; };
+    set('lcN', v.n); set('lcMin', v.min); set('lcMax', v.max);
+    set('lcAspect', v.aspect); set('lcLang', v.lang);
+    if($('lcAsr') && v.asr !== undefined) $('lcAsr').checked = !!v.asr;
+  } catch(e){}
+}
 let _lcRunDir = '';           // 阶段①草稿所在任务目录名（阶段②凭它导出）
 let _lcVdur = 0;              // 源片时长（秒），编辑器边界钳制用
 let _lcCandidates = [];       // 阶段①候选段（[{start,end,dur,score,peak_t,reasons}]）
@@ -3088,6 +3113,7 @@ function showLiveClip(on){
   if(on){
     if(np) np.style.display = 'none';
     if(ed) ed.style.display = 'none';
+    lcRestoreParams();   // v1.4.57：回填上次的切片参数
   } else {
     if(_lcFromEditor && ed){ ed.style.display = 'flex'; }
     else if(np) np.style.display = 'flex';
@@ -3151,6 +3177,7 @@ $('lcPick').addEventListener('click', async () => {
 
 /* 阶段①：分析（不出片，落草稿） */
 $('lcGo').addEventListener('click', async () => {
+  lcSaveParams();   // v1.4.57：参数随提交记忆
   const vo = _lcVideoObj();
   const body = {
     n_clips: parseInt($('lcN').value, 10) || 5,
@@ -3342,6 +3369,7 @@ async function lcExport(){
   if(!_lcRunDir){ toast('草稿丢失，请重新分析', 'bad'); return; }
   const body = {run_dir: _lcRunDir, segments: segs,
                 aspect: $('lcAspect') ? $('lcAspect').value : 'blur'};
+  _lcAspectUsed = body.aspect;   // v1.4.57：结果预览框比例跟着实际画幅切
   $('lcProg').style.display = 'block';
   $('lcFill').style.width = '0%';
   $('lcMeta').textContent = '导出中…';
@@ -3392,6 +3420,8 @@ function renderLiveClips(p){
     v.className = 'lc-video';
     v.controls = true;
     v.preload = 'metadata';
+    // v1.4.57：预览框比例跟着实际输出画幅（旧实现写死 16/9，竖屏预览大黑边）
+    v.style.aspectRatio = (_lcAspectUsed === 'blur' || _lcAspectUsed === 'crop') ? '9 / 16' : '16 / 9';
     v.src = '/media/' + c.rel;                       // rel 是 ASCII 路径（/media/ 不做 URL 解码）
     if (c.cover) v.poster = '/media/' + c.cover;     // 自动封面：高光峰值附近挑的最佳帧
     const meta = document.createElement('div');

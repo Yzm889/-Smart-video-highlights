@@ -38,6 +38,8 @@
 
 ## 四、更新清单（新记录在最上）
 
+- **v1.4.57（直播切片③：参数记忆 + 结果预览框比例跟画幅）** 直播切片完善轮第三项。**修法（缓存戳 33→34）**：① `framecut_desktop_lc_v1` 持久化切片参数（出几条/单条最短最长/用台词/画幅/语言），进 live 页回填、提交分析时记忆（照解说链路 advLoad 模式）；② 结果预览框 `.lc-video` 写死 16:9 而默认输出 9:16（大黑边）——`_lcAspectUsed` 记录导出实际画幅，预览框 aspect-ratio 动态切（blur/crop=9/16、hd/orig=16/9）。**测试**：test_live_clip +1；全量门禁见下。
+
 - **v1.4.56（直播切片②：新增横屏 16:9 画幅 1280×720 标准化）** 主人指定项。原画幅只有竖屏两种 + 原始画幅，没有标准横屏输出。**修法（缓存戳 32→33）**：① `_vf_chain` 新增 `hd` 分支——`scale=1280:720:force_original_aspect_ratio=decrease + pad=1280:720:(ow-iw)/2:(oh-ih)/2`（任何源画幅归一到标准横屏；源即 16:9 时无黑边等效纯缩放；简单线性链走 -vf，与 crop 同款）；② `make_covers` 封面同步 hd（居中裁 16:9）；③ 前端下拉加「🖥 横屏 16:9 · 1280×720 标准化（发B站/YouTube）」。**测试**：test_live_clip +1（hd 链结构/tonemap 前置/封面裁切数学）；全量门禁见下。
 
 - **v1.4.55（直播切片①：分析可取消）** 直播切片完善轮第一项（主人拍板完善直播切片后推 GitHub）。缺口：90 分钟片分析要 235s，进度区没有取消控件（解说链路早有 gmCancel/sbCancel）——中途关视图任务仍在后台跑且进度不可见。**修法（后端零改，缓存戳 31→32）**：`analyze_highlights` 早已接 RUN_PROCS 协作取消（ffmpeg/帧分析/ASR 都在检查点抛 AbortError），只补前端入口——进度区加「✖ 取消分析」按钮（照 gmCancel 模式：POST /api/cancel → 清轮询 → 恢复按钮态）；`_lcPollRunId` 记录 runid 供取消用；取消经 fail_task 变 p.error，前端识别「取消」字样走轻提示不报「分析失败」吓人。**测试**：test_live_clip +1（按钮存在/runid 记录/取消走 /api/cancel/轻提示文案源码钉）；全量门禁见下。

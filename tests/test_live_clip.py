@@ -563,3 +563,17 @@ def test_vf_chain_hd_16x9():
     w, h = 720, 1280
     ch = min(h, int(w * 9 / 16))
     assert ch == 405 and (h - ch) // 2 == 437, '竖长源裁 16:9 应保留中部横条'
+
+
+def test_live_editor_params_memory_and_preview_ratio():
+    """v1.4.57 编辑器小修包：切片参数记忆 + 结果预览框比例跟画幅。"""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "static", "desktop", "desktop.js"), encoding="utf-8") as f:
+        js = f.read()
+    assert "framecut_desktop_lc_v1" in js, "参数记忆的 localStorage 键"
+    assert "function lcSaveParams()" in js and "function lcRestoreParams()" in js
+    assert "lcRestoreParams();   // v1.4.57" in js, "进入 live 页必须回填"
+    assert "lcSaveParams();   // v1.4.57" in js, "提交分析时必须记忆"
+    assert "_lcAspectUsed" in js and "'9 / 16' : '16 / 9'" in js, \
+        "预览框比例必须按实际输出画幅切换（旧实现写死 16/9，竖屏大黑边）"
