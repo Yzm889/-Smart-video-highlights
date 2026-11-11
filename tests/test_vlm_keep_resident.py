@@ -19,7 +19,7 @@ if ROOT not in sys.path:
 import webui_server  # noqa: F401,E402  必须先导入宿主，规避 video_render<->webui_server 循环导入
 import movie_narrator as M  # noqa: E402
 
-SRC = os.path.join(ROOT, 'movie_narrator.py')
+SRC = os.path.join(ROOT, 'vlm_index.py')   # v1.4.41：画面索引族已拆至 vlm_index.py
 
 
 def test_vlm_sample_timeline_keeps_resident_for_all_tiers():
