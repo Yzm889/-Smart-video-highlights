@@ -25,7 +25,7 @@ import wave as _wave
 import numpy as np
 
 from ffmpeg_utils import ffmpeg_run
-from ai_providers import asr_segments
+from ai_providers import asr_segments, local_llm_chat
 
 _log = logging.getLogger('framecut.live')
 
@@ -606,7 +606,8 @@ def rebuild_cover(video_path, t, aspect, out_path, focus=0.5):
             pass
 
 
-def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=0.5):
+def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=0.5,
+                titles=None):
     """每条切片自动挑一张封面：在切片时间窗内采 6 个候选帧（峰值时刻 + 均布 5 点），
     复用产品已有的封面打分器（对比度+细节-过曝过暗）选最佳一帧，存 ASCII 文件名。
     aspect 为竖屏（crop/blur）时封面同步居中裁成 9:16——直发抖音用得上。
@@ -652,7 +653,8 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=
             if not best:
                 covers.append('')
                 continue
-            out = os.path.join(run_dir, _cover_name(i + 1, clips[i]['start']))
+            out = os.path.join(run_dir, _cover_name(i + 1, clips[i]['start'],
+                                                    (titles[i] if titles else None)))
             try:
                 from PIL import Image as _I
                 im = _crop_cover_image(_I.open(best).convert('RGB'), aspect, focus)
@@ -670,22 +672,60 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=
     return covers
 
 
-def _cover_name(i, start):
+def _sanitize_title(t):
+    """把模型吐出的标题洗成可安全进文件名/URL 的短串：去掉 Windows/URL 非法字符、
+    包裹引号、首尾空白与多余点，限长 20 字（模型侧已限 15 字，这里是兜底）。"""
+    if not t:
+        return ''
+    bad = set('\\/:*?"<>|\r\n\t')
+    t = ''.join(ch for ch in t if ch not in bad).strip().strip('.')
+    t = t.strip('\'"「」“”‘’（）()【】')
+    return t[:20]
+
+
+def summarize_segment(lines, timeout=60):
+    """v1.4.63：直播切片导出时为每段生成极简中文标题（概括这段说了什么），用于把
+    文件名命名成「clipNN_时长_标题.mp4」。复用本地 Ollama qwen3:8b（local_llm_chat，
+    关思考、有熔断），完全离线免 Key。
+
+    失败/无台词/模型不可用 → 返回 None，调用方回退到时间戳文件名，**绝不阻断导出**。"""
+    txt = ' '.join((str(x.get('text') or '').strip() for x in (lines or []))).strip()
+    if not txt:
+        return None
+    txt = txt[:400]
+    sys_p = ('你是短视频切片助手。下面是一段游戏直播切片里主播说过的台词（含口语、'
+             '游戏术语、弹幕梗）。请用一句极简中文概括这段内容作为视频标题：'
+             '只输出标题本身，不超过15个汉字，不要引号、不要序号、不要任何解释。')
+    usr = '台词：' + txt
+    try:
+        out = local_llm_chat(usr, system=sys_p, timeout=timeout, max_tokens=64)
+        title = _sanitize_title(out)
+        return title or None
+    except Exception as e:
+        _log.info('[LIVE] 片段总结失败（回退时间戳命名）: %s', e)
+        return None
+
+
+def _cover_name(i, start, title=None):
+    """v1.4.63 起可附带中文标题；默认仍是 ASCII 前缀（/media 路由 + 跨编码安全）。"""
     h = int(start // 3600)
     m = int(start % 3600 // 60)
     s = int(start % 60)
-    return 'cover%02d_%02dh%02dm%02ds.jpg' % (i, h, m, s)
+    base = 'cover%02d_%02dh%02dm%02ds' % (i, h, m, s)
+    return ('%s_%s.jpg' % (base, title)) if title else (base + '.jpg')
 
 
-def _clip_name(i, start):
-    """ASCII 文件名（/media/ 路由 + 跨编码安全），中文说明留给报告文本。"""
+def _clip_name(i, start, title=None):
+    """v1.4.63 起可附带中文标题；默认仍是 ASCII 前缀（/media 路由 + 跨编码安全）。"""
     h = int(start // 3600)
     m = int(start % 3600 // 60)
     s = int(start % 60)
-    return 'clip%02d_%02dh%02dm%02ds.mp4' % (i, h, m, s)
+    base = 'clip%02d_%02dh%02dm%02ds' % (i, h, m, s)
+    return ('%s_%s.mp4' % (base, title)) if title else (base + '.mp4')
 
 
-def export_clips(video_path, clips, run_dir, progress=None, aspect='orig', focus=None):
+def export_clips(video_path, clips, run_dir, progress=None, aspect='orig', focus=None,
+                titles=None):
     """把高光段剪成独立 mp4（重编码，-ss 前置秒级 seek + 帧精确重编码）。
 
     aspect：orig / crop / blur（见 _vf_chain）；focus：crop 的水平焦点 0~1。
@@ -709,7 +749,8 @@ def export_clips(video_path, clips, run_dir, progress=None, aspect='orig', focus
     for i, c in enumerate(clips):
         up('导出切片 %d/%d' % (i + 1, len(clips)),
            70 + int(25 * i / max(1, len(clips))))
-        out = os.path.join(run_dir, _clip_name(i + 1, c['start']))
+        out = os.path.join(run_dir, _clip_name(i + 1, c['start'],
+                                                (titles[i] if titles else None)))
         cmd = ['-y', '-ss', '%.3f' % c['start'], '-i', video_path,
                '-t', '%.3f' % (c['end'] - c['start'])]
         if vf.startswith('[0:v]'):

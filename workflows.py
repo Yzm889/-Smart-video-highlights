@@ -830,6 +830,17 @@ def dispatch_live_clip_export(req, prog):
             s['score'] = inh['score']
             s['reasons'] = inh['reasons']
             s['peak_t'] = (s['start'] + s['end']) / 2
+        # v1.4.63：为每段生成中文标题（按重叠匹配草稿里的台词行），用于把导出文件名
+        # 命名成「clipNN_时长_标题.mp4」。模型不可用/失败 → 标题为 None，文件名回退时间戳。
+        _draft_clips = draft.get('clips') or []
+        _titles = []
+        for s in segs:
+            _best, _best_ol = None, 0.0
+            for d in _draft_clips:
+                _ol = min(s['end'], float(d.get('end') or 0)) - max(s['start'], float(d.get('start') or 0))
+                if _ol > _best_ol:
+                    _best, _best_ol = d, _ol
+            _titles.append(LC.summarize_segment((_best or {}).get('lines') or []))
         prog['phase'] = '准备导出'
         prog['pct'] = 5
         _aspect = str(req.get('aspect') or draft.get('aspect_default') or 'blur').strip().lower()
@@ -839,9 +850,9 @@ def dispatch_live_clip_export(req, prog):
         # 视频链与封面共用同一个值，换封面也不会跟成片错位。
         _focus = LC._clamp_focus(req.get('focus'))
         files = LC.export_clips(vp, segs, run_dir, progress=prog, aspect=_aspect,
-                                focus=_focus)
+                                focus=_focus, titles=_titles)
         covers = LC.make_covers(vp, segs, run_dir, progress=prog, aspect=_aspect,
-                                focus=_focus)
+                                focus=_focus, titles=_titles)
         meta = {'video': vp, 'vdur': vdur, 'window': draft.get('window'),
                 'asr_used': draft.get('asr_used')}
         jp_rel, txt_rel = LC.write_report(meta, segs, files, run_dir,

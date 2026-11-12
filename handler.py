@@ -378,7 +378,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_media_files(self):
         path = _w.urlparse(self.path).path
-        name = path[len('/media/'):].split('?')[0]
+        # v1.4.63：解码百分号编码，支持中文文件名（与 /material_lib 路由同款、仍在
+        # _safe_join 防穿越内）；ASCII 文件名解码后不变，无回归。
+        name = _w.unquote(path[len('/media/'):].split('?')[0])
         # 只服务 OUTDIR（成片/中间产物）。
         # 【安全修复】旧实现会回退到项目根 HERE —— /media/ai_config.json 可无鉴权
         # 读出明文 API Key，/media/webui_server.py 与 /media/.git/config 同样可读。
