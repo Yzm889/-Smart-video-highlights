@@ -1,0 +1,18 @@
+# 构建依赖锁定（release-windows 专用）：本组版本 = 2026-11-13 CI 实测可用组合
+# （Release v1.4.75 的 EXE 由这组版本构建，真机启动验证通过）。
+# 升级任何一行前必须：改版本 → 重新打 tag → 真机验证窗口能开（pythonnet 的
+# netfx 加载对版本/环境敏感，v1.4.75-b 有踩坑记录，见 AI_CHANGELOG）。
+# CI 的 pytest 回归（ci.yml）不受本文件影响，仍走 requirements.txt + requirements-dev.txt。
+numpy==2.5.4
+Pillow==13.0.0
+psutil==7.2.2
+soundfile==0.14.0
+imageio-ffmpeg==0.8.1
+faster-whisper==1.2.1
+ctranslate2==4.9.0
+sherpa-onnx==2.0.1
+tokenizers==0.23.3
+huggingface-hub==2.4.0
+requests==2.34.2
+pywebview==6.2.1
+pyinstaller==6.22.3

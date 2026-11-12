@@ -20,13 +20,9 @@ jobs:
           python-version: '3.11'   # 桌面窗口（pywebview/CLR）在 3.11 支持最稳
 
       # 只装主程序运行所需（不装 torch：CosyVoice/ChatTTS 走各自 venv 子进程）
-      - name: 安装依赖
+      - name: 安装依赖（版本锁定，见 requirements-build.txt）
         run: |
-          pip install --no-cache-dir `
-            numpy Pillow psutil soundfile imageio-ffmpeg `
-            faster-whisper ctranslate2 sherpa-onnx `
-            tokenizers huggingface-hub requests `
-            pywebview pyinstaller
+          pip install --no-cache-dir -r requirements-build.txt
 
       - name: 打包 EXE
         run: pyinstaller FrameCut.spec --noconfirm
