@@ -309,6 +309,8 @@ class _Serve:
         self.error = ''
         self.note = ''          # 「已腾出显存」之类的软提示，成功后也带给前端
         self.starting = False   # 正在拉起进程：此时不许被「让显存」误杀
+        # v1.4.77 健康化：进程活着 ≠ 健康，上次合成的真实结果给前端/排障用
+        self.last_result = None   # {'ok': bool, 'code': str, 'error': str, 'ts': float}
 
     def _reader(self, proc):
         try:
@@ -483,51 +485,95 @@ class _Serve:
         except Exception:
             pass
 
-    def ask(self, req, timeout=240):
-        with self.lock:
-            if self.proc is None or self.proc.poll() is not None:
-                if not self._start():
-                    return False, self.error or 'worker 不可用'
-            p = self.proc
+    def _ask_once(self, req, timeout):
+        """ask 的单次尝试。返回 (ok, err, code)——code 是失败分类（v1.4.77）：
+
+        timeout=合成超时 / crash=进程退出或管道断 / vram=启动显存不足 /
+        asset=worker 资产缺失（venv/权重没装好）/ engine=引擎返回失败 / ''=成功。
+        """
+        if self.proc is None or self.proc.poll() is not None:
+            if not self._start():
+                # 起不来：显存不足归 vram；其余多半是 venv/权重缺失，重启救不了
+                code = 'vram' if '显存' in (self.error or '') else 'asset'
+                return False, self.error or 'worker 不可用', code
+        p = self.proc
+        try:
+            # 一律 ASCII 转义：不管子进程 stdin 是 UTF-8 还是 GBK，
+            # \uXXXX 都能被 json.loads 还原成原字符，绝不出现乱码
+            p.stdin.write(json.dumps(req) + '\n')
+            p.stdin.flush()
+        except Exception as e:
+            self._reap(p)
+            self.proc = None
+            # 管道写不进去 = 进程已经死了，和「进程退出」同一类，可重启自愈
+            return False, str(e)[:300], 'crash'
+        deadline = time.time() + timeout
+        eos = False
+        while time.time() < deadline:
             try:
-                # 一律 ASCII 转义：不管子进程 stdin 是 UTF-8 还是 GBK，
-                # \uXXXX 都能被 json.loads 还原成原字符，绝不出现乱码
-                p.stdin.write(json.dumps(req) + '\n')
-                p.stdin.flush()
-            except Exception as e:
-                self._reap(p)
-                self.proc = None
-                return False, str(e)[:300]
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                try:
-                    msg = self.q.get(timeout=5)
-                except Exception:
-                    if p.poll() is not None:
-                        break
-                    continue
-                if msg.get('_eos'):
-                    self._reap(p)
-                    self.proc = None
+                msg = self.q.get(timeout=5)
+            except Exception:
+                if p.poll() is not None:
                     break
-                if 'ok' in msg:
-                    if msg.get('ok'):
-                        return True, ''
-                    return False, str(msg.get('error') or '引擎返回失败')[:300]
-            # 循环出来的两种结局必须分开说：worker 死了 ≠ 算得慢。
-            # 旧实现统一报「合成超时」，worker 早就崩了还让人等满 240s，
-            # 排障时被引向「显存被抢占」这个错误方向（2026-11-11 主人实测踩中）。
-            if p.poll() is not None:
-                detail = '退出码 %s' % p.poll()
-                tail = self._log_tail()
-                if tail:
-                    detail += '｜' + tail
+                continue
+            if msg.get('_eos'):
                 self._reap(p)
                 self.proc = None
-                return False, ('配音进程已退出（%s）。通常是显存不足被系统换页拖死'
-                               '或模型崩溃——日志尾巴里是它最后的话' % detail)
-            return False, ('合成超时（%d 秒）：模型已加载但没算完，'
-                           '通常是显存被别的程序抢占' % timeout)
+                eos = True
+                break
+            if 'ok' in msg:
+                if msg.get('ok'):
+                    return True, '', ''
+                return False, str(msg.get('error') or '引擎返回失败')[:300], 'engine'
+        # 循环出来的两种结局必须分开说：worker 死了 ≠ 算得慢。
+        # 旧实现统一报「合成超时」，worker 早就崩了还让人等满 240s，
+        # 排障时被引向「显存被抢占」这个错误方向（2026-11-11 主人实测踩中）。
+        # 【先分类后回收】kill 会让 poll() 立即有值，先 _reap 再判就把超时全判成崩溃。
+        if eos or p.poll() is not None:
+            detail = '退出码 %s' % p.poll()
+            tail = self._log_tail()
+            if tail:
+                detail += '｜' + tail
+            self._reap(p)
+            self.proc = None
+            return False, ('配音进程已退出（%s）。通常是显存不足被系统换页拖死'
+                           '或模型崩溃——日志尾巴里是它最后的话' % detail), 'crash'
+        # 超时：进程还活着但算不动（多半被换页拖死）。不在这里杀——交给自己
+        # 的重试自愈（ask 会先杀旧进程再重启，避免两个 worker 同抢显存）。
+        return False, ('合成超时（%d 秒）：模型已加载但没算完，'
+                       '通常是显存被别的程序抢占' % timeout), 'timeout'
+
+    def ask(self, req, timeout=240):
+        """合成一句话，失败分类 + 偶发失败自愈。
+
+        timeout / crash 这两类（进程被换页拖死、CUDA 上下文抖动崩溃）重启
+        worker 就能救回来——本句原样重试一次，不劳编排层整轮重来；重试也
+        失败才把失败连同分类码交出去。vram/asset 重启没意义，直接失败。
+        """
+        with self.lock:
+            ok, err, code = self._ask_once(req, timeout)
+            if not ok and code in ('timeout', 'crash'):
+                # 先杀掉可能还活着的旧进程（否则 _start 会同时养两个 GPU
+                # worker 同抢显存），清掉残留队列，再重启重试本句
+                try:
+                    if self.proc and self.proc.poll() is None:
+                        self.proc.kill()
+                except Exception:
+                    pass
+                self.proc = None
+                self._drain()
+                if self._start():
+                    ok, err, code = self._ask_once(req, timeout)
+                    if ok:
+                        self.note = ((self.note + '；') if self.note else '') \
+                            + '上一次合成超时/崩溃，已自动重启引擎并重试成功'
+            try:
+                self.last_result = {'ok': bool(ok), 'code': code if not ok else '',
+                                    'error': '' if ok else (err or '')[:200],
+                                    'ts': time.time()}
+            except Exception:
+                pass
+        return ok, err, code
 
 
 _QWEN = None
@@ -854,12 +900,13 @@ def free_vram_for_vlm(vlm_model=None, need_mb=None, wait_sec=10):
     return freed
 
 
-def _fill(diag, srv, engine, err):
+def _fill(diag, srv, engine, err, code=''):
     if diag is None:
         return
     diag['engine'] = engine
     diag['reason'] = (err or '').strip()
     diag['note'] = getattr(srv, 'note', '') or ''
+    diag['code'] = code      # v1.4.77 失败分类，一路带给 tts_failures/前端
     used, total = gpu_vram()
     diag['vram'] = {'used': used, 'total': total}
 
@@ -873,16 +920,16 @@ def qwen3tts_speak(text, out_path, instruct=None, diag=None):
     if not (text or '').strip() or not qwen3tts_ready():
         if diag is not None:
             diag.update({'engine': 'qwen3tts', 'reason': '引擎资产不完整',
-                         'note': '', 'vram': {}})
+                         'note': '', 'vram': {}, 'code': 'asset'})
         return False
     srv = _get_qwen()
-    ok, err = srv.ask({
+    ok, err, code = srv.ask({
         'text': text,
         'instruct': (instruct or '').strip() or DEFAULT_INSTRUCT,
         'out': out_path,
         'language': 'Chinese',
     })
-    _fill(diag, srv, 'qwen3tts', err)
+    _fill(diag, srv, 'qwen3tts', err, code=code)
     return ok and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000
 
 
@@ -921,7 +968,7 @@ def indextts2_speak(text, out_path, emo_vector=None, emo_text=None,
     if not (text or '').strip() or not indextts2_ready():
         if diag is not None:
             diag.update({'engine': 'indextts2', 'reason': '引擎资产不完整',
-                         'note': '', 'vram': {}})
+                         'note': '', 'vram': {}, 'code': 'asset'})
         return False
     req = {'text': text, 'out': out_path}
     if emo_vector:
@@ -936,17 +983,26 @@ def indextts2_speak(text, out_path, emo_vector=None, emo_text=None,
     if spk:
         req['spk'] = spk
     srv = _get_idx()
-    ok, err = srv.ask(req)
-    _fill(diag, srv, 'indextts2', err)
+    ok, err, code = srv.ask(req)
+    _fill(diag, srv, 'indextts2', err, code=code)
     return ok and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000
 
 
 def engine_status():
-    """给前端/日志看的就绪摘要。"""
+    """给前端/日志看的就绪摘要。last_result 是各 worker 上次合成的真实结果
+    （进程活着 ≠ 健康：v1.4.77 起跟健康度一起暴露，排障不再全靠猜）。"""
     used, total = gpu_vram()
+
+    def _last(srv):
+        try:
+            return dict(srv.last_result) if srv and srv.last_result else None
+        except Exception:
+            return None
     return {'dir': TTS2_DIR,
             'qwen3tts': qwen3tts_ready(),
             'indextts2': indextts2_ready(),
             'vram': {'used': used, 'total': total,
                      'free': max(0, total - used) if total else 0},
-            'ollama': ollama_loaded()}
+            'ollama': ollama_loaded(),
+            'last_result': {'qwen3tts': _last(_QWEN),
+                            'indextts2': _last(_IDX)}}

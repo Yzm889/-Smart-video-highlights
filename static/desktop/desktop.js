@@ -1285,6 +1285,18 @@ function _relayout(){
   });
   _composed.total = Math.round(cur * 100) / 100;
 }
+/* ── v1.4.77 失败分类码 → 动作建议：光知道「失败了」没用，得告诉用户下一步干嘛 ── */
+const TTS_FAIL_HINTS = {
+  vram: '（显存不足：关掉占显卡的程序后重试该段）',
+  asset: '（模型文件缺失：到「设置 → 模型中心」检查配音模型）',
+  crash: '（引擎崩溃：到设置页点「重试引擎」后重配该段）',
+  timeout: '（合成超时：显卡可能被别的程序拖慢，重试该段；反复出现请关占卡程序）',
+  engine: '（引擎报错：重试该段；反复失败请查看 tts2 日志）'
+};
+function _ttsFailHint(code){
+  return TTS_FAIL_HINTS[code] || '';
+}
+
 async function loadAdjustItems(runDir){
   _runDir = runDir;   // 恢复项目/最近任务进来时也要有 _runDir（否则合成守卫拦截）
   const r = await fetch('/api/tts_state?run_dir=' + encodeURIComponent(runDir));
@@ -1303,8 +1315,7 @@ async function loadAdjustItems(runDir){
   const _failMap = {};
   (st.tts_failures || []).forEach(f2 => {
     if(f2 && f2.idx !== undefined && !_failMap[f2.idx]) _failMap[f2.idx] = f2;
-  });
-  if(_composed){
+  });  if(_composed){
     const byIdx = {};
     _composed.segments.forEach(sg => { byIdx[sg.index] = sg; });
     _items.forEach(it => {
@@ -1321,7 +1332,7 @@ async function loadAdjustItems(runDir){
   }
   _items.forEach(it => {
     const f2 = _failMap[it.index];
-    it._ttsFail = f2 ? (f2.error || '配音失败') : '';
+    it._ttsFail = f2 ? ((f2.error || '配音失败') + _ttsFailHint(f2.code)) : '';
   });
   _sel = -1;
   renderCaps(); ensureNarrElements(); renderTimeline(); setupPreview();

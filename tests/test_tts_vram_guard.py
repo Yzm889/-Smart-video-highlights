@@ -107,7 +107,7 @@ def test_speak_returns_worker_reason_via_diag(monkeypatch):
     class _S:
         note = ''
         def ask(self, req, timeout=240):
-            return False, 'CUDA out of memory'
+            return False, 'CUDA out of memory', 'vram'
     monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: True)
     monkeypatch.setattr(T2, '_get_qwen', lambda: _S())
     monkeypatch.setattr(T2, 'gpu_vram', lambda *a, **k: (11000, 12288))
@@ -117,6 +117,7 @@ def test_speak_returns_worker_reason_via_diag(monkeypatch):
     assert ok is False
     assert diag['reason'] == 'CUDA out of memory'
     assert diag['vram'] == {'used': 11000, 'total': 12288}
+    assert diag['code'] == 'vram', '分类码必须随 diag 下发（v1.4.77）'
 
 
 def test_free_vram_for_llm_only_when_short(monkeypatch):
@@ -501,11 +502,12 @@ def test_ask_reports_worker_death_not_generic_timeout(monkeypatch, tmp_path):
     srv = T2._Serve('die', [sys.executable, '-u', str(worker)],
                     ready_timeout=30, need_mb=1)
     assert srv._start() is True
-    ok, err = srv.ask({'text': 'x', 'out': 'y'}, timeout=20)
+    ok, err, code = srv.ask({'text': 'x', 'out': 'y'}, timeout=20)
     assert ok is False
     assert '合成超时' not in err, 'worker 都死了还报超时就是误导'
     assert '配音进程已退出' in err and '退出码 3' in err
     assert srv.proc is None, '死掉的进程不许留在 self.proc 上'
+    assert code == 'crash', '进程退出必须归类 crash（v1.4.77 分类码）'
 
 
 def test_ask_still_reports_plain_timeout_when_worker_alive():

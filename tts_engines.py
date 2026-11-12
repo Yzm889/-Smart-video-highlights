@@ -869,6 +869,25 @@ def _tts_note_ok(eng):
     if fails is not None and fails.get(eng):
         fails[eng] = 0
 
+# ---------------------------------------------------------------------------
+# v1.4.77 voice_ref 铸造失败可见化：local_tts_speak 发现「用户填了音色描述但
+# 参考音铸不出来、退回 worker 自带示例音」时置位；编排层收尾读它写 progress.warn。
+# 模块级 dict 而非 _TLS：铸造发生在并发池线程里，收尾在主线程——线程本地互相看不见。
+# 每轮编排开始 reset，防止跨 run 的陈旧标记造成假告警。
+# ---------------------------------------------------------------------------
+_VOICE_REF_STATE = {'degraded': False}
+
+
+def voice_ref_degraded_reset():
+    """新一轮配音编排开始时清零（跨 run 陈旧标记会造成假告警）。"""
+    _VOICE_REF_STATE['degraded'] = False
+
+
+def voice_ref_degraded():
+    """本 run 内出现过「音色描述没生效、用了内置示例音」则 True。"""
+    return _VOICE_REF_STATE['degraded']
+
+
 def _tts_force_downgrade(eng):
     """[2.3] 直接把某引擎在本 run 内降权到最后（引擎自检失败时立即切换）。"""
     banned = set(getattr(_TLS, 'tts_downgraded', ()) or ())
@@ -1163,9 +1182,11 @@ def local_tts_speak(text, out_path):
             # 韵律标记在这里真正被消费：情绪词进 VoiceDesign 的 instruct；
             # 用户在配置里写的音色描述优先于默认描述。
             _base = cfg.get('instruct') or T2.DEFAULT_INSTRUCT
+            _diag = {}
             if T2.qwen3tts_speak(_tts2_clean(text), wv,
-                                 instruct=_base + _hint):
+                                 instruct=_base + _hint, diag=_diag):
                 return _ok('qwen3tts', _apply_speed(wv, T2.rate_to_speed(rate)))
+            _TLS.tts_last_code = _diag.get('code') or ''   # [2.2] 失败分类给编排层
             _tts_note_fail('qwen3tts')
         elif eng == 'indextts2':
             if not T2.indextts2_ready():
@@ -1173,17 +1194,23 @@ def local_tts_speak(text, out_path):
             wv = stem + '_indextts2.wav'
             # 固定参考音：整片同一把嗓子。造不出来（Qwen3 没装好/坏了）就退回
             # worker 自带示例音——仍然是一个固定的人，绝不退回逐句造音色。
+            # 【降级必须可见】用户填了音色描述而铸造失败时记下来，编排层收尾会
+            # 写进 progress.warn——以前静默换示例音，用户一直以为描述生效了。
             _ref = T2.voice_ref(cfg.get('instruct'))
+            if _ref is None and cfg.get('instruct'):
+                _VOICE_REF_STATE['degraded'] = True
             # 情绪词映射成 8 维向量，不再像旧引擎那样被 _strip_tts_markup 丢掉；
             # 词表外/无标记的句子按设置走 emo_text 自动推（_tts2_emotion_kwargs）
             _ekw = _tts2_emotion_kwargs(text, cfg)
+            _diag = {}
             if T2.indextts2_speak(_tts2_clean(text), wv, spk=_ref,
                                   interval_silence=cfg.get('interval_silence'),
-                                  **_ekw):
+                                  diag=_diag, **_ekw):
                 # 语速：克隆会继承参考音的慢节奏（实测单句 5.3 字/秒），
                 # 这里统一按 rate 做保音高变速；本机 indextts 的 infer()
                 # 不接受 duration_factor（会当未知参数报错），只能事后调。
                 return _ok('indextts2', _apply_speed(wv, T2.rate_to_speed(rate)))
+            _TLS.tts_last_code = _diag.get('code') or ''   # [2.2] 失败分类给编排层
             _tts_note_fail('indextts2')
         elif eng == 'edge':
             if not edge_tts_available():
@@ -1961,6 +1988,7 @@ __all__ = [
     "_SHERPA_TTS", "SHERPA_TTS_MODELS", "SHERPA_DEFAULT_MODEL",
     # 配音控制
     "_speak_short_clause", "_tts_run_banned", "_tts_note_fail", "_tts_note_ok",
+    "voice_ref_degraded", "voice_ref_degraded_reset",
     "_tts_force_downgrade", "_ping_preferred_engine",
     # 标注 / 情绪
     "parse_tts_markup", "markup_to_ssml", "markup_to_chattts_text",

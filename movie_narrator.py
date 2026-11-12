@@ -22,7 +22,8 @@ from video_render import (_target_chars, _render_narrate, _cut_video_by_spans,
 from beat_analysis import _cached_scene_cuts
 from tts_engines import (local_tts_speak, edge_tts_speak, edge_tts_available,  # noqa: F401  拆分后留作 M.patch 面
     edge_tts_dead_reason,
-    _edge_internal, has_tts_markup, _enhance_tts_markup, strip_tts_markup)  # noqa: F401
+    _edge_internal, has_tts_markup, _enhance_tts_markup, strip_tts_markup,
+    voice_ref_degraded, voice_ref_degraded_reset)  # noqa: F401
 
 _log = logging.getLogger('framecut.narrator')
 

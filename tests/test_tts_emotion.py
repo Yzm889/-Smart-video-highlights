@@ -135,7 +135,7 @@ class _FakeSrv:
         self._sink.update(req)
         with open(req['out'], 'wb') as f:
             f.write(b'RIFF' + b'0' * 2000)
-        return True, ''
+        return True, '', ''   # v1.4.77：ask 三元组 (ok, err, code)
 
 
 def test_indextts2_speak_passes_emo_alpha_and_gap(monkeypatch, tmp_path):

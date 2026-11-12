@@ -118,6 +118,14 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
     skipped = 0
     skip_idx = set(skip_idx or ())   # 原声让位段：本来就不配音
     _tts_diag = []   # 诊断日志：[{idx, engine, ok, error, duration_ms, source}]
+    # v1.4.77 失败分类：local_tts_speak 把 T2 的分类码写进线程本地
+    # （_TLS.tts_last_code），_synth_one 在同线程里取走，_apply 落进诊断与
+    # tts_failures——前端据此给动作建议（vram→关占卡程序、asset→去模型中心…）
+    _fail_codes = {}   # idx -> code
+    try:
+        _MN.voice_ref_degraded_reset()   # 跨 run 陈旧标记会造成假告警
+    except Exception:
+        pass
     _n_workers = _tts_concurrency()
     _parallel = (not use_mimo) and bool(_MN.edge_tts_available()) and _n_workers > 1
     _prog_lock = threading.Lock()
@@ -204,12 +212,15 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
             else:
                 _err = 'mimo_failed'
         if clip is None:
+            # 清掉上一段的残留分类码再调：线程本地是跨段复用的，脏值会张冠李戴
+            _TLS.tts_last_code = ''
             ok, _eng, lp = _MN.local_tts_speak(txt, os.path.join(run_dir, 'narr%d.mp3' % i))
             if ok:
                 clip = lp
             else:
                 _err = _eng or 'all_engines_failed'
                 _eng = _eng or 'none'
+                _fail_codes[i] = getattr(_TLS, 'tts_last_code', '') or ''
         _dur = int((_time.time() - _t0) * 1000)
         return (i, clip, _eng, _err, _dur, False)
 
@@ -225,7 +236,8 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
                               'duration_ms': _dur, 'source': source})
         else:
             _tts_diag.append({'idx': i, 'engine': _eng, 'ok': False, 'error': _err,
-                              'duration_ms': _dur, 'source': source})
+                              'duration_ms': _dur, 'source': source,
+                              'code': _fail_codes.get(i, '')})
         done += 1
         processed = skipped + done
         if done % 10 == 0:
@@ -332,16 +344,27 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
                            'engines_used': list(set(e.get('engine', '') for e in _tts_diag if e.get('engine'))),
                            'broken_until': _MN._edge_internal().get('dead_until', 0.0),  # [2.4] 线程级熔断状态
                            'failed_segments': [{'idx': e.get('idx'), 'engine': e.get('engine'),
-                                                'error': e.get('error', '')} for e in _bad]}}  # [2.2] 结构化失败原因
+                                                'error': e.get('error', ''),
+                                                'code': e.get('code', '')} for e in _bad]}}  # [2.2] 结构化失败原因（v1.4.77 带分类码）
         with open(_log_path, 'w', encoding='utf8') as _f:
             import json as _json
             _json.dump(_jd, _f, ensure_ascii=False, indent=1)
         if progress:
             # [2.2] 失败段对前端可见（手动调整/进度页可展示「第X段配音失败，已用Y替换/该段静音」）
             progress['tts_failures'] = [{'idx': e.get('idx'), 'engine': e.get('engine'),
-                                         'error': e.get('error', '')} for e in _bad]
+                                         'error': e.get('error', ''),
+                                         'code': e.get('code', '')} for e in _bad]
     except Exception as _e:
         _log.info(f'[DIAG] TTS日志写入失败: {_e}')
+    # v1.4.77 音色铸造失败可见化：降级必须可见——「你描述的音色没生效」必须让用户知道
+    try:
+        if getattr(_MN, 'voice_ref_degraded', lambda: False)() and progress is not None:
+            progress['warn'] = (
+                (progress.get('warn') + '；' if progress.get('warn') else '')
+                + '音色铸造失败，已用内置示例音：你填的音色描述未生效'
+                  '（可到设置页点「重试引擎」后重新生成，或换一句更简单的描述）')
+    except Exception:
+        pass
     _warn_tts_engine_degraded(_tts_diag, progress)
     _log.info('[DIAG] TTS最终完成: %d/%d段, 日志%s' % (len(results), len(narr), _log_path))
     return results
