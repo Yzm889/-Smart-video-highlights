@@ -82,22 +82,44 @@ _EMOTION_VOICES = {
 
 
 def tts_local_cfg():
-    """本地配音配置 {engine, voice, rate, cosy_voice, instruct}。
+    """本地配音配置 {engine, voice, rate, cosy_voice, instruct, emotion,
+    emotion_alpha, interval_silence}。
 
     engine ∈ auto|qwen3tts|indextts2（默认链，见 _auto_order()）
              | edge|cosyvoice|chattts|sherpa|sapi（旧引擎，显式选用仍可用）。
     instruct 是音色描述：Qwen3-TTS VoiceDesign 拿它造音色、IndexTTS2 拿它造参考音；
     空串表示用 tts2_engines.DEFAULT_INSTRUCT。
+    emotion ∈ auto|vector|off（智能情感，v1.4.76）；emotion_alpha 0.2~1 是
+    emo_text 路线的情感强度；interval_silence 是句间气口毫秒（0~1000）。
     """
     c = load_ai_config().get('tts_local') or {}
     rate = str(c.get('rate') or '+0%').strip()
     if rate and not rate.startswith(('+', '-')):
         rate = '+' + rate.replace('%', '') + '%'
+    # v1.4.76 情感接线：auto=标记词命中向量表用向量、词表外交给 QwenEmotion 自动推；
+    # vector=只认标记词；off=全程平读。数值钳制在读取口做，坏配置也不会炸。
+    emo = str(c.get('emotion') or 'auto').lower()
+    if emo not in ('auto', 'vector', 'off'):
+        emo = 'auto'
+    try:
+        ea = float(c.get('emotion_alpha', 0.6))
+    except (TypeError, ValueError):
+        ea = 0.6
+    # 下限 0.2：emo_alpha 低于 0.2 约等于没情感，与「关闭」重复成两个旋钮
+    ea = min(1.0, max(0.2, ea))
+    try:
+        iv = int(float(c.get('interval_silence', 200)))
+    except (TypeError, ValueError):
+        iv = 200
+    iv = max(0, min(1000, iv))
     return {'engine': str(c.get('engine') or 'auto').lower(),
             'voice': str(c.get('voice') or 'zh-CN-XiaoxiaoNeural').strip(),
             'rate': rate or '+0%',
             'cosy_voice': str(c.get('cosy_voice') or '中文女').strip(),
-            'instruct': str(c.get('instruct') or '').strip()}
+            'instruct': str(c.get('instruct') or '').strip(),
+            'emotion': emo,
+            'emotion_alpha': ea,
+            'interval_silence': iv}
 
 # ---------------------------------------------------------------------------
 # 🎬 电影解说引擎：分段→ASR台词→解说稿→时间轴→配音→混音→字幕
@@ -1149,12 +1171,15 @@ def local_tts_speak(text, out_path):
             if not T2.indextts2_ready():
                 continue
             wv = stem + '_indextts2.wav'
-            _hint, _vec = _tts2_style(text)
             # 固定参考音：整片同一把嗓子。造不出来（Qwen3 没装好/坏了）就退回
             # worker 自带示例音——仍然是一个固定的人，绝不退回逐句造音色。
             _ref = T2.voice_ref(cfg.get('instruct'))
-            # 情绪词映射成 8 维向量，不再像旧引擎那样被 _strip_tts_markup 丢掉
-            if T2.indextts2_speak(_tts2_clean(text), wv, emo_vector=_vec, spk=_ref):
+            # 情绪词映射成 8 维向量，不再像旧引擎那样被 _strip_tts_markup 丢掉；
+            # 词表外/无标记的句子按设置走 emo_text 自动推（_tts2_emotion_kwargs）
+            _ekw = _tts2_emotion_kwargs(text, cfg)
+            if T2.indextts2_speak(_tts2_clean(text), wv, spk=_ref,
+                                  interval_silence=cfg.get('interval_silence'),
+                                  **_ekw):
                 # 语速：克隆会继承参考音的慢节奏（实测单句 5.3 字/秒），
                 # 这里统一按 rate 做保音高变速；本机 indextts 的 infer()
                 # 不接受 duration_factor（会当未知参数报错），只能事后调。
@@ -1379,6 +1404,29 @@ def _tts2_clean(text):
     return re.sub(r'，{2,}', '，', t).strip()
 
 
+def _tts2_emotion_kwargs(text, cfg):
+    """v1.4.76 智能情感：决定这次 IndexTTS2 合成带哪些情感参数。
+
+    - auto（默认）：{情绪:X} 命中 EMO_VECTORS → 传 8 维向量；没标记或词表外
+      → emo_text 路线（这句清洗后的原文交给模型内置 QwenEmotion 自动推 8 维，
+      强度取设置值）。之前 LLM 写「严肃/激动」但表里没有 → 静默传空，等于没传；
+      emo_text 路线让任何句子都不再平读。
+    - vector：只有标记词命中才传向量（旧行为）。
+    - off：一律不传（平读）。
+    返回 dict，调用处 indextts2_speak(..., **kw)。
+    """
+    cfg = cfg or {}
+    if cfg.get('emotion') == 'off':
+        return {}
+    _hint, vec = _tts2_style(text)
+    if vec:
+        return {'emo_vector': vec}
+    if cfg.get('emotion') == 'auto':
+        return {'emo_text': _tts2_clean(text),
+                'emo_alpha': cfg.get('emotion_alpha', 0.6)}
+    return {}
+
+
 def local_tts_label():
     """给前端看的当前配音来源说明（用于解说卡状态提示）。"""
     if _cloud_tts_ready():
@@ -1571,6 +1619,9 @@ _PROSODY_EMOTION = {
     '温柔': ('别怕', '轻轻', '放轻', '缓缓', '小心', '小姑娘', '孩子', '安静',
              '慢慢', '平淡', '熟稔', '一搭没一搭'),
     '激动': ('炸开', '终于', '竟然', '轰', '爆发', '冲进', '掀开', '第一次'),
+    # v1.4.76 对齐 EMO_VECTORS：LLM 与韵律层都产出「严肃」，但向量表此前没有它
+    '严肃': ('真相', '秘密', '阴谋', '背叛', '命运', '审判', '代价', '证据',
+             '揭开', '规则'),
 }
 _PROSODY_PAUSE = {'，': 0.12, '、': 0.10, '；': 0.18, '：': 0.18,
                   '。': 0.26, '！': 0.30, '？': 0.30, '—': 0.11}

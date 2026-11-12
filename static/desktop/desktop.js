@@ -2428,6 +2428,8 @@ $('tbSrt').addEventListener('click', importSrt);
 $('tbMusic').addEventListener('click', pickLocalMusic);
 $('settingsClose').addEventListener('click', () => $('settingsMask').style.display = 'none');
 $('settingsSave').addEventListener('click', async () => {
+  // v1.4.76 情感接线：模式/强度/句间气口随 tts_local 一起存（后端白名单已收）
+  const _emoEl = $('setTtsEmotion'), _eaEl = $('setTtsEmoAlpha'), _gapEl = $('setTtsGap');
   const payload = {vision: {}, tts: {}, local: {}, tts_local: {
     engine: $('setTtsEngine').value || 'auto',
     voice: $('setTtsVoice').value || '',
@@ -2436,7 +2438,10 @@ $('settingsSave').addEventListener('click', async () => {
     // 音色描述：后端全链都读（tts_engines.py:1099 造音色 / :1111 铸参考音），
     // 但以前 ①设置页没有输入框 ②/api/ai/config 白名单不存 → 永远等于 DEFAULT_INSTRUCT。
     // 允许空串（= 用默认音色），所以不能用 `|| ''` 之外的花样，直接送。
-    instruct: (($('setTtsInstruct') || {}).value || '').trim()
+    instruct: (($('setTtsInstruct') || {}).value || '').trim(),
+    emotion: _emoEl ? (_emoEl.value || 'auto') : 'auto',
+    emotion_alpha: _eaEl ? (+_eaEl.value || 0.6) : 0.6,
+    interval_silence: _gapEl ? (Math.round(+_gapEl.value) || 0) : 200
   }};
   ['VisBase', 'VisModel'].forEach(f => {
     const el = $('set' + f);
@@ -2832,6 +2837,18 @@ async function fillTtsSettings(){
     $('setTtsRate').value = cfg.rate || '+0%';
     const _ins = $('setTtsInstruct');
     if(_ins) _ins.value = cfg.instruct || '';
+    // v1.4.76 情感接线回填：模式/强度/气口 + 情绪试听按钮（词表来自后端 EMO_VECTORS）
+    const _emo = $('setTtsEmotion');
+    if(_emo) _emo.value = cfg.emotion || 'auto';
+    const _ea = $('setTtsEmoAlpha');
+    if(_ea){
+      _ea.value = (cfg.emotion_alpha != null ? cfg.emotion_alpha : 0.6);
+      const _eav = $('setTtsEmoAlphaVal');
+      if(_eav) _eav.textContent = (+_ea.value).toFixed(2);
+    }
+    const _gap = $('setTtsGap');
+    if(_gap) _gap.value = (cfg.interval_silence != null ? cfg.interval_silence : 200);
+    renderEmoPreview(v.emo_words || []);
     const cv = await fetch('/api/tts/cosyvoice/voices', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: '{}'}).then(r => r.json()).catch(() => null);
     $('setCosyVoice').innerHTML = ((cv && cv.voices) || []).map(x =>
@@ -2883,6 +2900,51 @@ $('btnTtsReset').addEventListener('click', async () => {
     await fillTtsSettings();
   } catch(e){ toast('重置失败：' + e.message, 'bad'); }
   b.disabled = false;
+});
+
+/* ── v1.4.76 情绪试听：每个情绪词一个小按钮，点它听固定示例句在该情绪下的效果 ──
+   词表来自 /api/tts/voices 的 emo_words（后端 EMO_VECTORS 的键，单一来源）；
+   向量本体留在服务端，前端只传 emo_name。 */
+const EMO_SAMPLE_TEXT = '他推开门，看到了桌上那封信。';
+function renderEmoPreview(words){
+  const row = $('emoPreviewRow');
+  if(!row) return;
+  row.innerHTML = (words || []).map(w =>
+    '<button type="button" class="mini-btn emo-btn" data-emo="' + _esc(w) + '">'
+    + _esc(w) + '</button>').join('');
+}
+$('emoPreviewRow').addEventListener('click', async ev => {
+  const b = ev.target.closest('.emo-btn');
+  if(!b || b.dataset.busy === '1') return;
+  const emo = b.dataset.emo;
+  b.dataset.busy = '1';
+  b.disabled = true;
+  const hint = $('emoPreviewHint');
+  hint.textContent = '⏳ 正在合成「' + emo + '」试听…（首次约半分钟起，别关设置窗）';
+  const ctrl = new AbortController();
+  // 与 btnTtsTest 同参：后端加载+合成超时上限 360s，前端留得比它长
+  const kill = setTimeout(() => ctrl.abort(), 360000);
+  try {
+    const r = await fetch('/api/tts/test', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text: EMO_SAMPLE_TEXT, emo_name: emo}),
+      signal: ctrl.signal});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || out.message || '试听失败');
+    hint.textContent = '✅「' + emo + '」' + (out.message || '');
+    if(out.file) new Audio('/media/' + out.file).play().catch(() => {});
+  } catch(e){
+    hint.textContent = '❌「' + emo + '」'
+      + (e.name === 'AbortError' ? '试听超时（6 分钟）。可到「引擎状态」看显存占用' : e.message);
+  } finally {
+    clearTimeout(kill);
+    b.dataset.busy = '';
+    b.disabled = false;
+  }
+});
+$('setTtsEmoAlpha').addEventListener('input', () => {
+  const _eav = $('setTtsEmoAlphaVal');
+  if(_eav) _eav.textContent = (+$('setTtsEmoAlpha').value).toFixed(2);
 });
 
 /* ── 最近项目（关窗不丢：配音方案都在服务器上） ── */

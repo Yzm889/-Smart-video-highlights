@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=51">
+<link rel="stylesheet" href="desktop.css?v=52">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -467,6 +467,29 @@
             <input type="text" id="setTtsRate" placeholder="+0%">
           </details>
         </div>
+        <div class="set-sec">
+          <div class="set-h">情绪表现（智能情感 / 情绪试听）<span class="set-tag">v1.4.76</span></div>
+          <div class="set-row wrap">
+            <select id="setTtsEmotion" style="min-width:0; flex:1">
+              <option value="auto">智能情感（推荐）：有情绪标记用标记，没标记的句子自动推</option>
+              <option value="vector">只认情绪标记：稿子里写了 {情绪:XX} 才生效</option>
+              <option value="off">关闭：全程平读</option>
+            </select>
+          </div>
+          <div class="set-row wrap">
+            <label for="setTtsEmoAlpha" style="margin:0; white-space:nowrap">自动情绪强度</label>
+            <input type="range" id="setTtsEmoAlpha" min="0.2" max="1" step="0.05" style="flex:1; min-width:110px">
+            <span id="setTtsEmoAlphaVal" style="font-size:12px;color:var(--muted);min-width:34px;text-align:right">0.60</span>
+          </div>
+          <div class="set-row wrap">
+            <label for="setTtsGap" style="margin:0; white-space:nowrap">句间气口</label>
+            <input type="number" id="setTtsGap" min="0" max="1000" step="50" style="width:80px">
+            <span style="font-size:12px;color:var(--muted)">毫秒（每句配音之间留的静音）</span>
+          </div>
+          <div class="hint">智能情感：没写情绪标记的句子会交给配音模型内置的情绪分类器按内容自动带情绪，「强度」调它有多浓；写了标记的句子始终优先用标记。</div>
+          <div class="set-row wrap" id="emoPreviewRow"></div>
+          <div class="hint" id="emoPreviewHint">点情绪词试听这一句在该情绪下的效果（本地合成，首次约半分钟起）。</div>
+        </div>
       </div>
 
       <!-- ② 模型中心：安装 / 切换 / 服务地址 -->
@@ -655,6 +678,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=51"></script>
+<script src="desktop.js?v=52"></script>
 </body>
 </html>

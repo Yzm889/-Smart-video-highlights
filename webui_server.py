@@ -5346,13 +5346,16 @@ def tts_model_download_async(model_key=None):
     return True, '开始下载离线配音模型（约 130MB，取决于网速）'
 
 
-def tts_test_speak(text='这是一段中文配音试听。'):
+def tts_test_speak(text='这是一段中文配音试听。', emo_name=None):
     """试听一句：返回 (ok, msg, engine, rel_path)。rel_path 相对 OUTDIR，供 /media 播放。
 
     v1.4.17：只走**当前选中的**新引擎，绝不走 local_tts_speak 的完整兜底链。
     旧实现里 Qwen3 一旦启动慢/失败就静默降级到 IndexTTS2（首次加载实测 202s），
     而前端 fetch 没有超时也没有阶段提示 —— 用户只看到「⏳ 合成中…」永远不结束。
     试听是「听这一个引擎」，降级应该报清楚，而不是偷偷换一个要等三分钟的引擎。
+
+    v1.4.76：emo_name 是情绪词（如「严肃」），在 EMO_VECTORS 里就按该 8 维向量
+    合成——设置页的情绪试听按钮用；向量本体留在服务端，前端只传词。
     """
     import tts2_engines as T2
     text = (text or '').strip() or '这是一段中文配音试听。'
@@ -5373,10 +5376,16 @@ def tts_test_speak(text='这是一段中文配音试听。'):
     # 时间戳文件名避免连点两次互相覆盖；新引擎输出 wav
     out = os.path.join(out_dir, 'sample_%d.wav' % int(time.time() * 1000))
     diag = {}
+    _emo_vec = None
+    if emo_name and emo_name in getattr(T2, 'EMO_VECTORS', {}):
+        _emo_vec = T2.EMO_VECTORS[emo_name]
     if use_idx:
-        # 与正式配音同参：同一条参考音、同一档语速
+        # 与正式配音同参：同一条参考音、同一档语速；带情绪词时用该 8 维向量
         _ref = T2.voice_ref(cfg.get('instruct'))
-        ok = T2.indextts2_speak(text, out, spk=_ref, diag=diag)
+        if _emo_vec:
+            ok = T2.indextts2_speak(text, out, spk=_ref, emo_vector=_emo_vec, diag=diag)
+        else:
+            ok = T2.indextts2_speak(text, out, spk=_ref, diag=diag)
         if ok:
             try:
                 from tts_engines import _apply_speed
@@ -5385,8 +5394,15 @@ def tts_test_speak(text='这是一段中文配音试听。'):
                 pass
         eng = 'indextts2'
     else:
-        ok = T2.qwen3tts_speak(text, out, instruct=(cfg.get('instruct') or None),
-                               diag=diag)
+        # Qwen3-TTS 没有向量接口：情绪试听改用文字「语气要求」追加进描述，
+        # 保证按钮在任何引擎下都不静默失效（降级必须可见）
+        _hint = ('，语气要求：%s' % emo_name) if (_emo_vec and emo_name) else ''
+        if _hint:
+            _base = (cfg.get('instruct') or '').strip() or T2.DEFAULT_INSTRUCT
+            ok = T2.qwen3tts_speak(text, out, instruct=_base + _hint, diag=diag)
+        else:
+            ok = T2.qwen3tts_speak(text, out, instruct=(cfg.get('instruct') or None),
+                                   diag=diag)
         eng = 'qwen3tts'
     if not ok or not os.path.isfile(out):
         name = 'IndexTTS2' if use_idx else 'Qwen3-TTS'

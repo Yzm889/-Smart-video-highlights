@@ -78,12 +78,19 @@ DEFAULT_INSTRUCT = ('沉稳克制的中文男声，影视剧情解说风格，�
                     '句间有自然停顿，咬字清晰，不要播报腔')
 
 # IndexTTS2 八维情绪向量：[喜, 怒, 哀, 惧, 厌, 忧, 惊, 平]
+# 【词表统一唯一源】LLM 写稿（movie_narrator prompt）、韵律层（_PROSODY_EMOTION）、
+# 试听按钮（前端 emo_words）引用的词表都以这里为准——v1.4.76 之前 LLM 允许写
+# 「严肃/激动」但表里没有，查不到就静默传空，这两类情绪等于没传。
 EMO_VECTORS = {
     '紧张': [0, 0, 0, 0.7, 0, 0, 0.3, 0],
     '惊险': [0, 0, 0, 0.7, 0, 0, 0.3, 0],
     '悲伤': [0, 0, 0.8, 0, 0, 0.2, 0, 0],
     '欢快': [0.7, 0, 0, 0, 0, 0, 0.2, 0],
     '愤怒': [0, 0.8, 0, 0, 0, 0, 0.2, 0],
+    # 严肃：低唤醒、偏「忧+平」；激动：高唤醒、偏「喜+怒+惊」。初始值凭维度
+    # 语义配的，真机试听后可再调。
+    '严肃': [0, 0, 0, 0, 0, 0.25, 0, 0.75],
+    '激动': [0.55, 0.25, 0, 0, 0, 0, 0.2, 0],
     '温柔': [0, 0, 0, 0, 0, 0, 0, 0.6],
     '深情': [0, 0, 0, 0, 0, 0.5, 0, 0.4],
     '平静': [0, 0, 0, 0, 0, 0, 0, 0.8],
@@ -903,8 +910,14 @@ def rate_to_speed(rate, default_speed=NARR_SPEED_DEFAULT):
 
 
 def indextts2_speak(text, out_path, emo_vector=None, emo_text=None,
+                    emo_alpha=None, interval_silence=None,
                     duration_factor=None, spk=None, diag=None):
-    """IndexTTS2：8 维情感 + 时长控制；不传 spk 就用仓库自带示例音色。"""
+    """IndexTTS2：8 维情感 + 情感强度 + 句间气口；不传 spk 就用仓库自带示例音色。
+
+    emo_vector（8 维向量）与 emo_text（整句交给模型内置 QwenEmotion 自动推 8 维）
+    二选一：infer_v2 约定传了任一就把 emo_audio_prompt 清空。emo_alpha 只在
+    emo_text 路线生效（0~1，默认 0.6）。interval_silence 是句间静音毫秒数。
+    """
     if not (text or '').strip() or not indextts2_ready():
         if diag is not None:
             diag.update({'engine': 'indextts2', 'reason': '引擎资产不完整',
@@ -915,7 +928,9 @@ def indextts2_speak(text, out_path, emo_vector=None, emo_text=None,
         req['emo_vector'] = emo_vector
     if emo_text:
         req['emo_text'] = emo_text
-        req['emo_alpha'] = 0.6
+        req['emo_alpha'] = float(emo_alpha) if emo_alpha is not None else 0.6
+    if interval_silence is not None and int(interval_silence) > 0:
+        req['interval_silence'] = int(interval_silence)
     if duration_factor:
         req['duration_factor'] = duration_factor
     if spk:

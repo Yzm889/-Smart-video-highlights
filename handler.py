@@ -1120,6 +1120,8 @@ class Handler(BaseHTTPRequestHandler):
             'cosyvoice_voice': _w._COSYVOICE['voice'],
             'cfg': _w.tts_local_cfg(),
             'label': _w.local_tts_label(),
+            # v1.4.76 情绪试听按钮的词表：与 EMO_VECTORS 同源，后端加词前端自动跟随
+            'emo_words': list(__import__('tts2_engines').EMO_VECTORS.keys()),
             'setup': dict(_w.TTS_SETUP),
             # [task #22] 首选引擎失败后降级到备用引擎的提示（静默质量降级可见化）
             'degrade_msg': _w.tts_degrade_msg(),
@@ -1395,6 +1397,21 @@ class Handler(BaseHTTPRequestHandler):
                     if not rate.endswith('%'):
                         rate += '%'
                     cur['rate'] = rate
+                # v1.4.76 情感接线：模式收白名单，数值这里只按类型收下，
+                # 范围钳制统一在 tts_engines.tts_local_cfg 读取时做
+                emo = str(inc.get('emotion') or '').strip().lower()
+                if emo in ('auto', 'vector', 'off'):
+                    cur['emotion'] = emo
+                if inc.get('emotion_alpha') is not None:
+                    try:
+                        cur['emotion_alpha'] = float(inc['emotion_alpha'])
+                    except (TypeError, ValueError):
+                        pass
+                if inc.get('interval_silence') is not None:
+                    try:
+                        cur['interval_silence'] = int(float(inc['interval_silence']))
+                    except (TypeError, ValueError):
+                        pass
                 cfg['tts_local'] = cur
             if isinstance(data.get('video'), dict):
                 # 编码策略：auto(默认·GPU可用则用) / cpu / gpu
@@ -1580,7 +1597,9 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             raw = self.rfile.read(length) if length else b'{}'
             data = json.loads(raw.decode('utf-8') or '{}')
-            ok, msg, engine, rel = _w.tts_test_speak(str(data.get('text') or '这是一段中文配音试听。'))
+            emo = str(data.get('emo_name') or '').strip()
+            ok, msg, engine, rel = _w.tts_test_speak(
+                str(data.get('text') or '这是一段中文配音试听。'), emo_name=emo)
             self._send(200, json.dumps({'ok': ok, 'message': msg, 'engine': engine,
                                         'file': rel}).encode('utf-8'), 'application/json')
         except Exception as e:

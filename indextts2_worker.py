@@ -93,6 +93,9 @@ def main():
                 kw['use_emo_text'] = True
                 kw['emo_text'] = req['emo_text']
                 kw['emo_alpha'] = float(req.get('emo_alpha') or 0.6)
+            if req.get('interval_silence'):
+                # v1.4.76：句间气口毫秒（infer_v2 默认 200）
+                kw['interval_silence'] = int(req['interval_silence'])
             if req.get('duration_factor'):
                 kw['duration_factor'] = float(req['duration_factor'])
             tts.infer(**kw)
