@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=47">
+<link rel="stylesheet" href="desktop.css?v=49">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -309,8 +309,14 @@
         <button class="mini-btn" id="lcpSplit" title="在播放头处分割选中片段（S）">✂ 分割</button>
         <button class="mini-btn" id="lcpDel" title="删除选中片段（Delete）">🗑 删除</button>
         <button class="mini-btn" id="lcpUndo" title="撤销（Ctrl+Z）">↶ 撤销</button>
+        <button class="mini-btn" id="lcpResort" title="时间轴的先后就是成片顺序；拖乱后可一键按源片时间重排">↕ 按时间重排</button>
         <span class="lcp-hint" id="lcpTlHint"></span>
         <span class="tb-flex"></span>
+        <label class="lcp-volall">全部音量
+          <input type="range" id="lcpVolAll" min="0" max="200" value="100">
+          <b id="lcpVolAllV">100%</b>
+          <button class="mini-btn" id="lcpVolApply" title="把当前数值套用到所有片段（可撤销）">套用</button>
+        </label>
         <label class="lcp-zoom">缩放 <input type="range" id="lcpZoom" min="3" max="48" value="8"></label>
         <span class="lcp-total" id="lcpTotal"></span>
       </div>
@@ -649,6 +655,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=47"></script>
+<script src="desktop.js?v=49"></script>
 </body>
 </html>

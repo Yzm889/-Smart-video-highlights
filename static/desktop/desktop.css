@@ -703,3 +703,14 @@ body.lc-crop-on .lc-focus-mark{display:block}
   border-radius:6px;color:var(--txt);padding:3px 6px;font-size:12px;text-align:center}
 .store-auto input[type=checkbox]{accent-color:var(--acc);cursor:pointer}
 .store-auto .hint{flex-basis:100%;margin-top:2px}
+
+/* ── v1.4.72 时间轴工具条：全部音量 ─────────────────────────────── */
+.lcp-volall{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted);
+  white-space:nowrap}
+.lcp-volall input[type=range]{width:88px;accent-color:var(--acc);cursor:pointer}
+.lcp-volall b{color:var(--txt);font-weight:600;min-width:38px;text-align:right}
+.lcp-volall .mini-btn{padding:2px 7px;font-size:11.5px}
+
+/* 工作台打开时：降级提示坞抬到时间轴之上，避免压住正在剪的片段 */
+body.lcp-on .warn-dock{bottom:212px}
+body.lcp-on .fc-notice{bottom:212px}

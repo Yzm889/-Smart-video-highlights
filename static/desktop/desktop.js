@@ -4123,6 +4123,10 @@ function lcpUndo(){
 function lcpOpen(){
   const me = $('lcPrecise'), lc = $('liveClip'), np = $('newProj'), ed = $('editor');
   if(me) me.style.display = 'flex';
+  // 工作台底部整条是时间轴：降级提示坞默认会压在上面（实拍截图里挡住了前几段），
+  // 打开工作台时把它抬到时间轴之上，并先收起来，需要时再展开。
+  document.body.classList.add('lcp-on');
+  _warnDockOpen = false; _warnDockRender();
   if(lc) lc.style.display = 'none';
   if(np) np.style.display = 'none';
   if(ed) ed.style.display = 'none';
@@ -4131,6 +4135,7 @@ function lcpOpen(){
 function lcpClose(){
   const me = $('lcPrecise');
   if(me) me.style.display = 'none';
+  document.body.classList.remove('lcp-on');
   if(_lcpVideo){ try{ _lcpVideo.pause(); }catch(e){} }
   // v1.4.69：关掉工作台就把轮询停掉，否则后台还在拉进度、跑完还往隐藏的
   // overlay 上写结果（以前靠「反正看不见」蒙过去，白烧请求）
@@ -4739,6 +4744,12 @@ function lcpRenderInspector(){
   bPlay.className = 'mini-btn';
   bPlay.textContent = '▶ 只播这段';
   bPlay.addEventListener('click', () => lcpSelect(_lcpSel, true));
+  const bMerge = document.createElement('button');
+  bMerge.className = 'mini-btn';
+  bMerge.textContent = '⇥ 合并下一段';
+  bMerge.title = '把这段和它后面那段连成一段（M）——中间的空隙也会并进来';
+  bMerge.disabled = _lcpSel >= _lcpSegs.length - 1;
+  bMerge.addEventListener('click', lcpMerge);
   const bSplit = document.createElement('button');
   bSplit.className = 'mini-btn';
   bSplit.textContent = '✂ 在播放头分割';
@@ -4751,7 +4762,7 @@ function lcpRenderInspector(){
   bSum.className = 'mini-btn';
   bSum.textContent = '✨ AI 摘要';
   bSum.addEventListener('click', () => lcpSummary(_lcpSel, bSum));
-  r3.append(bPlay, bSplit, bDel, bSum);
+  r3.append(bPlay, bMerge, bSplit, bDel, bSum);
   box.appendChild(r3);
 
   const title = _lcpTitles[_lcpPointKey(s)];
@@ -4795,6 +4806,68 @@ function lcpSelect(i, seek){
     else if(R > seq.scrollLeft + seq.clientWidth - 20) seq.scrollLeft = R - seq.clientWidth + 20;
   }
 }
+/* ── 时间轴整理（v1.4.72） ────────────────────────────────────────
+   纯函数放前面，node 里能直接跑（见 tests/test_precise_timeline_ops.py）。
+   为什么需要：同一支片反复调时，时间轴很快变成一堆碎段——想并回去、想按
+   时间重排、想把全片音量统一压到 30%，以前只能一段段点。 */
+function lcpMergeSegs(segs, i){
+  const arr = (segs || []).map(s => ({
+    start: +s.start, end: +s.end,
+    volume: (s.volume === undefined || s.volume === null) ? 1 : +s.volume
+  }));
+  if(!arr.length || i < 0 || i >= arr.length - 1) return null;
+  const a = arr[i], b = arr[i + 1];
+  const merged = {
+    start: Math.min(a.start, b.start),
+    end: Math.max(a.end, b.end),
+    volume: a.volume              // 音量跟随「被选中的那段」，可预期
+  };
+  if(merged.end - merged.start < 0.1) return null;
+  arr.splice(i, 2, merged);
+  return {segs: arr, merged: merged};
+}
+function lcpSortSegsByStart(segs){
+  return (segs || []).map(s => Object.assign({}, s))
+    .sort((x, y) => (x.start - y.start) || (x.end - y.end));
+}
+
+function lcpMerge(){
+  if(_lcpSel < 0){ toast('先选中一个片段', 'bad'); return; }
+  const r = lcpMergeSegs(_lcpSegs, _lcpSel);
+  if(!r){ toast('最后一段没有下一段可合并', 'bad'); return; }
+  lcpUndoPush();
+  const dur = r.merged.end - r.merged.start;
+  _lcpSegs = r.segs;
+  lcpRenderAll(); lcpSave();
+  toast('已与下一段合并，当前段 ' + _lcpDur(dur));
+}
+
+function lcpResort(){
+  if(_lcpSegs.length < 2){ toast('至少两段才需要重排'); return; }
+  const before = _lcpSegs.map(s => s.start).join(',');
+  const sorted = lcpSortSegsByStart(_lcpSegs);
+  if(sorted.map(s => s.start).join(',') === before){ toast('已经按源片时间排好了'); return; }
+  lcpUndoPush();
+  _lcpSegs = sorted;
+  _lcpSel = -1;
+  lcpRenderAll(); lcpSave();
+  toast('已按源片时间重排（成片顺序随之改变）');
+}
+
+/* 全部音量：返工时最常见的诉求是「整体压到 X%」，一段段拉滑条太慢。
+   滑条只改显示，点「套用」才落盘——避免拖动过程中把 20 多段反复重绘。 */
+function lcpAllVolShow(){
+  if($('lcpVolAllV')) $('lcpVolAllV').textContent = $('lcpVolAll').value + '%';
+}
+function lcpApplyAllVolume(){
+  if(!_lcpSegs.length){ toast('时间轴是空的', 'bad'); return; }
+  const v = _lcpClamp((parseInt($('lcpVolAll').value, 10) || 0) / 100, 0, 2);
+  lcpUndoPush();
+  _lcpSegs.forEach(s => { s.volume = v; });
+  lcpRenderAll(); lcpSave();
+  toast('全部 ' + _lcpSegs.length + ' 段音量 → ' + Math.round(v * 100) + '%');
+}
+
 function lcpSplit(){
   if(_lcpSel < 0){ toast('先选中一个片段', 'bad'); return; }
   const t = _lcpVideo ? (_lcpVideo.currentTime || 0) : 0;
@@ -5021,6 +5094,12 @@ if($('lcpPlay')) $('lcpPlay').addEventListener('click', lcpTogglePlay);
 if($('lcpSplit')) $('lcpSplit').addEventListener('click', lcpSplit);
 if($('lcpDel')) $('lcpDel').addEventListener('click', lcpDelete);
 if($('lcpUndo')) $('lcpUndo').addEventListener('click', lcpUndo);
+if($('lcpResort')) $('lcpResort').addEventListener('click', lcpResort);
+if($('lcpVolAll')){
+  $('lcpVolAll').addEventListener('input', lcpAllVolShow);
+  $('lcpVolAll').addEventListener('change', lcpAllVolShow);
+}
+if($('lcpVolApply')) $('lcpVolApply').addEventListener('click', lcpApplyAllVolume);
 if($('lcpReset')) $('lcpReset').addEventListener('click', () => {
   if(!_lcpPoints.length) return;
   lcpUndoPush();
@@ -5069,6 +5148,7 @@ document.addEventListener('keydown', ev => {
   if(ev.code === 'Space'){ ev.preventDefault(); lcpTogglePlay(); }
   else if(ev.key === 'Delete' || ev.key === 'Backspace'){ ev.preventDefault(); lcpDelete(); }
   else if(ev.key === 's' || ev.key === 'S'){ ev.preventDefault(); lcpSplit(); }
+  else if(ev.key === 'm' || ev.key === 'M'){ ev.preventDefault(); lcpMerge(); }
   else if((ev.ctrlKey || ev.metaKey) && (ev.key === 'z' || ev.key === 'Z')){ ev.preventDefault(); lcpUndo(); }
   else if(ev.key === 'ArrowLeft'){ ev.preventDefault(); lcpSeek((_lcpVideo ? _lcpVideo.currentTime : 0) - 1, false); }
   else if(ev.key === 'ArrowRight'){ ev.preventDefault(); lcpSeek((_lcpVideo ? _lcpVideo.currentTime : 0) + 1, false); }
