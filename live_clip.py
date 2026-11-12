@@ -506,20 +506,40 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
                      'text': s.get('text')} for s in asr if isinstance(s, dict)]}
 
 
-def _vf_chain(aspect, tm):
-    """按输出画幅构造 -vf 滤镜链。aspect：orig=原始 / crop=竖屏9:16居中裁切 /
+def _clamp_focus(focus):
+    """v1.4.62 水平焦点：钳制到 [0,1]，None / 坏值 / 非有限数 → 0.5（居中，旧行为）。
+
+    0=贴左边缘，1=贴右边缘。前端滑条是 0~100%，提交前除以 100。
+    坏值绝不能拼进 ffmpeg 表达式（会被当变量或语法错误，整条导出失败）。"""
+    if focus is None:
+        return 0.5
+    try:
+        v = float(focus)
+    except (TypeError, ValueError):
+        return 0.5
+    if not np.isfinite(v):
+        return 0.5
+    return max(0.0, min(1.0, v))
+
+
+def _vf_chain(aspect, tm, focus=None):
+    """按输出画幅构造 -vf 滤镜链。aspect：orig=原始 / crop=竖屏9:16裁切 /
     blur=竖屏9:16全景+虚化背景（发抖音推荐：侧边摄像头和弹幕都不丢） /
     hd=横屏16:9标准化1280x720（发B站/YouTube横屏投稿）。
     tm 为 HDR tonemap 链（可能为空），永远排在最前（先调色再构图形）。
 
+    focus（v1.4.62）：仅 crop 生效的水平焦点 0~1（None=0.5 居中，与旧版
+    逐位等价）。范文「视觉中心」的轻量版——主播/人脸不在画面正中时，把
+    裁切窗口挪过去，防「人脸截到角落」。
+
     【为什么竖屏默认给 blur 而不是硬裁】直播画面里主播摄像头在角落、弹幕在侧边，
     居中裁切会把它们全部切掉；虚化背景板（剪映同款）保留全部信息还更上镜。
-    crop 留给「主体居中」的素材。"""
+    crop 留给「主体居中或能调焦点」的素材。"""
     _base = 'setpts=(PTS-STARTPTS)' + ((',' + tm) if tm else '')
     if aspect == 'crop':
-        # 居中裁 9:16，再统一到 720x1280（短视频标准竖屏，无奇数维）
+        # 9:16 裁切，x=(iw-cw)*focus；0.5000 与旧的 /2 数值完全一致
         crop = ("crop=w='min(iw\\,ih*9/16)':h=ih:"
-                "x='(iw-min(iw\\,ih*9/16))/2':y=0")
+                "x='(iw-min(iw\\,ih*9/16))*%.4f':y=0" % _clamp_focus(focus))
         return _base + ',' + crop + ',scale=720:1280:flags=lanczos'
     if aspect == 'hd':
         # 横屏 16:9 标准化 1280x720：任何源画幅都归一到标准横屏（B 站/YouTube
@@ -540,15 +560,17 @@ def _vf_chain(aspect, tm):
     return _base
 
 
-def _crop_cover_image(im, aspect):
+def _crop_cover_image(im, aspect, focus=0.5):
     """封面按输出画幅裁切（make_covers 与换封面端点共用，v1.4.60 抽出）。
-    crop/blur=居中裁 9:16；hd=居中裁 16:9；orig=原样。返回 PIL Image。"""
+    crop/blur=横轴按 focus 裁 9:16（v1.4.62，与视频 crop 链同一焦点）；
+    hd=居中裁 16:9（垂直裁，水平焦点不适用）；orig=原样。返回 PIL Image。"""
     if aspect in ('crop', 'blur'):
         w, h = im.size
         cw = min(w, int(h * 9 / 16))
         if cw % 2:
             cw -= 1
-        x0 = (w - cw) // 2
+        # 与 ffmpeg 的 x=(iw-cw)*focus 同一公式；再钳一次防浮点越界
+        x0 = max(0, min(w - cw, int(round((w - cw) * _clamp_focus(focus)))))
         return im.crop((x0, 0, x0 + cw, h))
     if aspect == 'hd':
         w, h = im.size
@@ -560,8 +582,10 @@ def _crop_cover_image(im, aspect):
     return im
 
 
-def rebuild_cover(video_path, t, aspect, out_path):
-    """按指定时刻重抽一帧做封面（换封面端点用）。返回 out_path；失败抛异常。"""
+def rebuild_cover(video_path, t, aspect, out_path, focus=0.5):
+    """按指定时刻重抽一帧做封面（换封面端点用）。返回 out_path；失败抛异常。
+
+    focus（v1.4.62）：与导出画幅的 crop 焦点一致——换完封面不能跟成片错位。"""
     _w = _host()
     cand_dir = os.path.join(os.path.dirname(out_path), '_rebuild_cover')
     os.makedirs(cand_dir, exist_ok=True)
@@ -571,7 +595,7 @@ def rebuild_cover(video_path, t, aspect, out_path):
         if not os.path.exists(fp) or os.path.getsize(fp) < 1024:
             raise RuntimeError('抽帧失败（时刻可能越界或画面全黑）')
         from PIL import Image as _I
-        im = _crop_cover_image(_I.open(fp).convert('RGB'), aspect)
+        im = _crop_cover_image(_I.open(fp).convert('RGB'), aspect, focus)
         im.save(out_path, 'JPEG', quality=88)
         return out_path
     finally:
@@ -582,7 +606,7 @@ def rebuild_cover(video_path, t, aspect, out_path):
             pass
 
 
-def make_covers(video_path, clips, run_dir, progress=None, aspect='orig'):
+def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=0.5):
     """每条切片自动挑一张封面：在切片时间窗内采 6 个候选帧（峰值时刻 + 均布 5 点），
     复用产品已有的封面打分器（对比度+细节-过曝过暗）选最佳一帧，存 ASCII 文件名。
     aspect 为竖屏（crop/blur）时封面同步居中裁成 9:16——直发抖音用得上。
@@ -631,7 +655,7 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig'):
             out = os.path.join(run_dir, _cover_name(i + 1, clips[i]['start']))
             try:
                 from PIL import Image as _I
-                im = _crop_cover_image(_I.open(best).convert('RGB'), aspect)
+                im = _crop_cover_image(_I.open(best).convert('RGB'), aspect, focus)
                 im.save(out, 'JPEG', quality=88)
                 covers.append(out)
             except Exception as e:
@@ -661,10 +685,10 @@ def _clip_name(i, start):
     return 'clip%02d_%02dh%02dm%02ds.mp4' % (i, h, m, s)
 
 
-def export_clips(video_path, clips, run_dir, progress=None, aspect='orig'):
+def export_clips(video_path, clips, run_dir, progress=None, aspect='orig', focus=None):
     """把高光段剪成独立 mp4（重编码，-ss 前置秒级 seek + 帧精确重编码）。
 
-    aspect：orig / crop / blur（见 _vf_chain）。
+    aspect：orig / crop / blur（见 _vf_chain）；focus：crop 的水平焦点 0~1。
     编码契约与 video_render 的中间产物一致（NVENC p1/qp16 或 x264 ultrafast/crf16，
     音轨 aac 160k 44100/2）；HDR 直播录像（少见但存在）套 tonemap 链，失败不阻断。"""
     _w = _host()
@@ -680,7 +704,7 @@ def export_clips(video_path, clips, run_dir, progress=None, aspect='orig'):
             _tags = list(BT709_TAGS)
     except Exception as _e:
         _log.info('[LIVE] HDR 探测跳过: %s', _e)
-    vf = _vf_chain(aspect, _tm)
+    vf = _vf_chain(aspect, _tm, focus)
     outs = []
     for i, c in enumerate(clips):
         up('导出切片 %d/%d' % (i + 1, len(clips)),

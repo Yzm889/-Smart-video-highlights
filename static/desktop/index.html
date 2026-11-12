@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=38">
+<link rel="stylesheet" href="desktop.css?v=39">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -233,6 +233,12 @@
             <option value="ko">韩文</option>
           </select>
         </label>
+      </div>
+      <!-- v1.4.62：crop 画幅的水平焦点（默认隐藏，选「居中裁切」才出现） -->
+      <div class="lc-row" id="lcFocusRow" style="display:none">
+        <label>🎯 水平焦点 <input type="range" id="lcFocus" min="0" max="100" value="50"></label>
+        <span class="np-hint" id="lcFocusLabel" style="margin:0">50%（居中）</span>
+        <span class="np-hint" style="margin:0">竖屏裁切时把主体/人脸挪进画框，防截到角落</span>
       </div>
       <div class="lc-row">
         <label>出几条 <input type="number" id="lcN" value="5" min="1" max="10"></label>
@@ -529,6 +535,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=38"></script>
+<script src="desktop.js?v=39"></script>
 </body>
 </html>

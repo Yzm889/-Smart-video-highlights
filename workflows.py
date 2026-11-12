@@ -835,8 +835,13 @@ def dispatch_live_clip_export(req, prog):
         _aspect = str(req.get('aspect') or draft.get('aspect_default') or 'blur').strip().lower()
         if _aspect not in ('orig', 'crop', 'blur'):
             _aspect = 'blur'
-        files = LC.export_clips(vp, segs, run_dir, progress=prog, aspect=_aspect)
-        covers = LC.make_covers(vp, segs, run_dir, progress=prog, aspect=_aspect)
+        # v1.4.62 水平焦点：只影响 crop；钳制在引擎里做（坏值/越界一律居中），
+        # 视频链与封面共用同一个值，换封面也不会跟成片错位。
+        _focus = LC._clamp_focus(req.get('focus'))
+        files = LC.export_clips(vp, segs, run_dir, progress=prog, aspect=_aspect,
+                                focus=_focus)
+        covers = LC.make_covers(vp, segs, run_dir, progress=prog, aspect=_aspect,
+                                focus=_focus)
         meta = {'video': vp, 'vdur': vdur, 'window': draft.get('window'),
                 'asr_used': draft.get('asr_used')}
         jp_rel, txt_rel = LC.write_report(meta, segs, files, run_dir,

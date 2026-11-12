@@ -86,6 +86,49 @@ def test_unify_skips_empty_dialog():
         monkeypatch.undo()
 
 
+def test_unify_prompt_forbids_title_swaps_and_fabrication():
+    """v1.4.62 prompt 守卫：称号/头衔不是译名，目标必须在字幕里真实出现。"""
+    calls = []
+
+    def fake_llm(prompt, **kw):
+        calls.append(prompt)
+        return '{"mapping": {}}'
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(MN, 'local_llm_chat', fake_llm)
+        MN._unify_names_with_dialog(['秦王李世民出场'], _ASR)
+        p = calls[0]
+        assert '只替换纯译名差异' in p
+        assert '称号/头衔/别名不是译名' in p and '禁止替换' in p
+        assert '秦王' in p and '皇帝李世民' in p, '要给出「秦王李世民→皇帝李世民」反例'
+        assert '必须在台词字幕文本中真实出现过' in p
+    finally:
+        monkeypatch.undo()
+
+
+def test_unify_drops_fabricated_and_title_targets():
+    """v1.4.62 结果级守卫：LLM 不守规则也得拦住。
+
+    字幕是地面真值——目标译名在台词里没出现过，就一定是编造或称号误替换，
+    整条映射丢弃；同批次的合法映射照常生效（不许一竿子打翻）。
+    """
+    def fake_llm(*a, **k):
+        return ('{"mapping": {"秦王李世民": "皇帝李世民", '
+                '"柯蒂斯": "凭空编造的名字", "弗兰克": "法兰克"}}')
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(MN, 'local_llm_chat', fake_llm)
+        texts = ['秦王李世民和柯蒂斯、弗兰克在场']
+        out, mapping = MN._unify_names_with_dialog(texts, _ASR)
+        assert mapping == {'弗兰克': '法兰克'}, mapping
+        assert out == ['秦王李世民和柯蒂斯、法兰克在场'], out
+        assert texts == ['秦王李世民和柯蒂斯、弗兰克在场'], '原列表不许被改'
+    finally:
+        monkeypatch.undo()
+
+
 def test_unify_runs_before_alignment_source_pin():
     """顺序钉：归一必须在句类标注/算法对齐之前（对齐吃的是归一后的 texts）。"""
     import inspect

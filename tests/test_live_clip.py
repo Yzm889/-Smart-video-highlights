@@ -397,7 +397,7 @@ def test_dispatch_export_reads_draft_and_exports(monkeypatch, tmp_path):
     with open(os.path.join(run_dir, 'live_clip_draft.json'), 'w', encoding='utf-8') as f:
         _j.dump(draft, f, ensure_ascii=False)
 
-    def fake_export(video, clips, rdir, progress=None, aspect='orig'):
+    def fake_export(video, clips, rdir, progress=None, aspect='orig', focus=None):
         outs = []
         for i, c in enumerate(clips):
             fp = os.path.join(rdir, LC._clip_name(i + 1, c['start']))
@@ -406,7 +406,7 @@ def test_dispatch_export_reads_draft_and_exports(monkeypatch, tmp_path):
             outs.append(fp)
         return outs
 
-    def fake_covers(video, clips, rdir, progress=None, aspect='orig'):
+    def fake_covers(video, clips, rdir, progress=None, aspect='orig', focus=0.5):
         outs = []
         for i, c in enumerate(clips):
             fp = os.path.join(rdir, LC._cover_name(i + 1, c['start']))
@@ -782,6 +782,86 @@ def test_dispatch_live_clip_danmaku_wiring(monkeypatch, tmp_path):
     assert [e['t'] for e in seen['danmaku_events']] == [3.0, 12.5], 'XML 必须解析后直传 list'
     assert saved['danmaku_used'] is True, '草稿要记是否用了弹幕'
     assert saved['clips'][0]['lines'] == [] or isinstance(saved['clips'][0]['lines'], list)
+
+
+# ---------------------------------------------------------------------------
+# v1.4.62：crop 画幅水平焦点
+# ---------------------------------------------------------------------------
+def test_clamp_focus():
+    """None/坏值/越界一律安全：坏值不能拼进 ffmpeg 表达式（会整条导出失败）。"""
+    for bad in (None, '', 'abc', float('nan'), float('inf'), [], object()):
+        assert LC._clamp_focus(bad) == 0.5
+    assert LC._clamp_focus(-3) == 0.0 and LC._clamp_focus(9) == 1.0
+    assert abs(LC._clamp_focus(0.25) - 0.25) < 1e-9
+
+
+def test_vf_chain_crop_focus():
+    """crop 的 x 表达式参数化；None 与显式 0.5 等价（旧版 /2 逐位兼容）。"""
+    default = LC._vf_chain('crop', '')
+    center = LC._vf_chain('crop', '', 0.5)
+    assert default == center, '不传 focus 必须等于居中（旧行为）'
+    assert '*0.5000' in center and 'min(iw\\,ih*9/16)' in center
+    assert '*0.0000' in LC._vf_chain('crop', '', 0)
+    assert '*1.0000' in LC._vf_chain('crop', '', 1)
+    assert '*1.0000' in LC._vf_chain('crop', '', 42), '越界值必须钳到 1'
+    # 其它画幅不吃焦点（blur 是全景虚化、hd 是垂直裁，没有水平焦点概念）
+    assert LC._vf_chain('blur', '', 0.1) == LC._vf_chain('blur', '')
+    assert LC._vf_chain('hd', '', 0.1) == LC._vf_chain('hd', '')
+
+
+def test_crop_cover_focus_math():
+    """封面横轴与视频链同一公式 x=(w-cw)*focus，且钳制不出画框。"""
+    from PIL import Image
+    im = Image.new('RGB', (1920, 1080))
+    cw = LC._crop_cover_image(im, 'crop', 0.5).size[0]
+    assert cw == 606, '9:16 裁宽取偶'
+    left = LC._crop_cover_image(im, 'crop', 0.0)
+    right = LC._crop_cover_image(im, 'crop', 1.0)
+    assert left.size == right.size == (606, 1080)
+    # 用像素色块验起点：左对齐应取到最左，右对齐应取到最右
+    for x in range(1920):
+        im.putpixel((x, 0), (255, 0, 0) if x < 960 else (0, 0, 255))
+    assert LC._crop_cover_image(im, 'crop', 0.0).getpixel((0, 0)) == (255, 0, 0)
+    assert LC._crop_cover_image(im, 'crop', 1.0).getpixel((605, 0)) == (0, 0, 255)
+    # hd 是垂直裁中部横条，focus 不影响
+    assert LC._crop_cover_image(im, 'hd', 0.0).size == LC._crop_cover_image(im, 'hd', 1.0).size
+
+
+def test_dispatch_export_passes_focus(monkeypatch, tmp_path):
+    """入口链路：focus 钳制后同时透传给视频导出与封面（换封面才不会错位）。"""
+    import json
+    import webui_server as S
+    import workflows as W
+    run = tmp_path / 'live-focus'
+    run.mkdir()
+    (run / 'live_clip_draft.json').write_text(json.dumps({
+        'video_src': str(run / 'src.mp4'), 'vdur': 600.0, 'window': 2.0,
+        'asr_used': False, 'aspect_default': 'crop',
+        'clips': [{'start': 10.0, 'end': 60.0, 'dur': 50.0, 'score': 0.9,
+                   'reasons': ['音量峰值'], 'peak_t': 30.0}]}), encoding='utf-8')
+    (run / 'src.mp4').write_bytes(b'x')
+    monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
+    seen = {}
+
+    def fake_export(vp, clips, rdir, progress=None, aspect='orig', focus=None):
+        seen['export'] = focus
+        fp = os.path.join(rdir, 'c.mp4')
+        with open(fp, 'wb') as f:
+            f.write(b'0' * 20480)
+        return [fp]
+
+    def fake_covers(vp, clips, rdir, progress=None, aspect='orig', focus=0.5):
+        seen['covers'] = focus
+        return ['']
+
+    monkeypatch.setattr(LC, 'export_clips', fake_export)
+    monkeypatch.setattr(LC, 'make_covers', fake_covers)
+    for raw, want in ((0.25, 0.25), (9, 1.0), ('坏值', 0.5)):
+        prog = {'phase': '', 'pct': 0, 'done': False, 'run_dir': 'live-focus'}
+        W.dispatch_live_clip_export({'run_dir': 'live-focus', 'aspect': 'crop',
+                                     'focus': raw}, prog)
+        assert prog.get('done') is True, prog.get('error')
+        assert seen['export'] == want and seen['covers'] == want, (raw, seen)
 
 
 def tmpdir():

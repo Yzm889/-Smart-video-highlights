@@ -496,3 +496,12 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
   font-variant-numeric:tabular-nums;white-space:pre-wrap;word-break:break-word}
 .lc-line + .lc-line{border-top:1px dashed var(--line)}
 .lc-lines-btn{flex:none}
+/* v1.4.62 crop 水平焦点：滑条 + 候选缩略图上的焦点竖线预览 */
+.lc-row input[type=range]{width:170px;accent-color:var(--acc)}
+.lc-thumb-wrap{position:relative;flex:none;width:120px}
+.lc-thumb-wrap .lc-thumb{width:100%}
+.lc-focus-mark{position:absolute;top:0;bottom:0;width:2px;
+  left:calc(var(--lc-focus, .5) * 100%);transform:translateX(-1px);
+  background:var(--acc);box-shadow:0 0 3px rgba(0,0,0,.75);
+  display:none;pointer-events:none}
+body.lc-crop-on .lc-focus-mark{display:block}

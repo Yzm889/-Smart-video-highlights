@@ -3172,6 +3172,7 @@ function showLiveClip(on){
     if(np) np.style.display = 'none';
     if(ed) ed.style.display = 'none';
     lcRestoreParams();   // v1.4.57：回填上次的切片参数
+    lcSyncFocus();       // v1.4.62：画幅可能是记忆恢复的 crop，焦点行要同步显隐
   } else {
     if(_lcFromEditor && ed){ ed.style.display = 'flex'; }
     else if(np) np.style.display = 'flex';
@@ -3192,6 +3193,32 @@ function updateLiveClip(){
              : '选择录像或填写本地路径后开始');
 }
 
+/* ── v1.4.62 crop 画幅水平焦点 ──────────────────────────────────────────
+   范文「视觉中心」的轻量版：竖屏硬裁默认居中会把偏在角落的人脸截掉。
+   滑条 0~100% → 提交时转成 0~1（后端 _clamp_focus 再钳一次），视频链与
+   封面共用同一个值；缩略图上用 CSS 变量画一条焦点竖线做即时预览。 */
+function lcFocusVal(){
+  const el = $('lcFocus');
+  return el ? (parseInt(el.value, 10) || 0) / 100 : 0.5;
+}
+function lcSyncFocus(){
+  const isCrop = !!($('lcAspect') && $('lcAspect').value === 'crop');
+  const row = $('lcFocusRow');
+  if(row) row.style.display = isCrop ? 'flex' : 'none';
+  const f = lcFocusVal();
+  const lab = $('lcFocusLabel');
+  if(lab) lab.textContent = Math.round(f * 100) + '%'
+    + (Math.abs(f - 0.5) < 0.005 ? '（居中）' : (f < 0.5 ? '（偏左）' : '（偏右）'));
+  if(document.documentElement && document.documentElement.style){
+    document.documentElement.style.setProperty('--lc-focus', String(f));
+    if(document.body && document.body.classList){
+      document.body.classList.toggle('lc-crop-on', isCrop);
+    }
+  }
+}
+$('lcAspect').addEventListener('change', lcSyncFocus);
+$('lcFocus').addEventListener('input', lcSyncFocus);
+
 function _lcVideoObj(){
   if(_lcVideo){
     return _lcVideo.upload_id ? {name: _lcVideo.name, upload_id: _lcVideo.upload_id}
@@ -3210,8 +3237,10 @@ function _lcVideoObj(){
 function _lcDanmakuUi(){
   const lbl = $('lcDanmakuLabel'), clr = $('lcDanmakuClear');
   if(_lcDanmakuText){
-    lbl.textContent = '✅ 已载入弹幕 XML（' + Math.round(_lcDanmakuText.length / 1024)
-      + ' KB）——高光排序将跟随观众热度';
+    const kb = _lcDanmakuText.length / 1024;
+    const size = kb >= 1 ? Math.round(kb) + ' KB' : '<1 KB';   // 短文件别显示「0 KB」
+    lbl.textContent = '✅ 已载入弹幕 XML（' + size
+      + '）——高光排序将跟随观众热度';
     clr.style.display = '';
   } else {
     lbl.textContent = 'B 站直播弹幕 XML 让高光排序跟随观众热度';
@@ -3461,11 +3490,17 @@ function _lcRow(c, i){
   bPrev.textContent = '▶ 试看';
   bPrev.addEventListener('click', () => lcPreviewSeg(c));
   if (c.thumb) {
+    // v1.4.62：缩略图上叠一条焦点竖线（纯 CSS 定位，位置由 --lc-focus 统一驱动）
+    const wrap = document.createElement('div');
+    wrap.className = 'lc-thumb-wrap';
     const img = document.createElement('img');
     img.className = 'lc-thumb';
     img.src = '/media/' + c.thumb;
     img.alt = '峰值画面';
-    row.appendChild(img);
+    const mark = document.createElement('div');
+    mark.className = 'lc-focus-mark';
+    wrap.append(img, mark);
+    row.appendChild(wrap);
   }
   row.append(n, lS, lE, dur, bPrev, bDel, why);
   /* v1.4.61 候选台词明细：范文「事件下方字幕列表可翻看」——展开看这段在
@@ -3517,7 +3552,8 @@ async function lcExport(){
   if(!segs.length){ toast('没有可导出的段落：每段至少 3 秒', 'bad'); return; }
   if(!_lcRunDir){ toast('草稿丢失，请重新分析', 'bad'); return; }
   const body = {run_dir: _lcRunDir, segments: segs,
-                aspect: $('lcAspect') ? $('lcAspect').value : 'blur'};
+                aspect: $('lcAspect') ? $('lcAspect').value : 'blur',
+                focus: lcFocusVal()};   // v1.4.62：crop 水平焦点随导出提交
   _lcAspectUsed = body.aspect;   // v1.4.57：结果预览框比例跟着实际画幅切
   $('lcProg').style.display = 'block';
   $('lcFill').style.width = '0%';
@@ -3599,7 +3635,8 @@ function renderLiveClips(p){
           const rr = await fetch('/api/live_clip_cover', {method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({run_dir: _lcRunDir, cover: c.cover,
-                                  t: parseFloat(inp.value) || 0, aspect: _lcAspectUsed})}).then(x => x.json());
+                                  t: parseFloat(inp.value) || 0, aspect: _lcAspectUsed,
+                                  focus: lcFocusVal()})}).then(x => x.json());
           if(!rr.ok) throw new Error(rr.error || '换封面失败');
           v.poster = '/media/' + rr.cover + '?t=' + Date.now();   // 时间戳防缓存
           toast('✅ 封面已更换', 'ok');

@@ -1984,7 +1984,9 @@ class Handler(BaseHTTPRequestHandler):
             if not vp or not os.path.isfile(vp):
                 raise RuntimeError('源片不可访问，无法重抽封面')
             aspect = str(req.get('aspect') or draft.get('aspect_default') or 'blur')
-            _LC.rebuild_cover(vp, t, aspect, out_path)
+            # v1.4.62：换封面沿用导出时的水平焦点，否则 crop 成片与封面横向错位
+            focus = _LC._clamp_focus(req.get('focus'))
+            _LC.rebuild_cover(vp, t, aspect, out_path, focus=focus)
             self._send(200, json.dumps({
                 'ok': True, 'cover': os.path.basename(str(run_dir)) + '/' + cover_base,
             }).encode('utf-8'), 'application/json')

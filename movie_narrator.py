@@ -4095,14 +4095,24 @@ def _unify_names_with_dialog(texts, asr, movie_name=''):
             '只收录有把握的对应（如「柯蒂斯」与「科特」是同一人的不同译名）；\n'
             '两边写法一致的、没有把握的，都不要收。输出 JSON：'
             '{"mapping": {"甲文本写法": "乙文本写法"}}，没有就输出 {"mapping": {}}。\n\n'
+            '【硬规则一：只改纯译名】只替换纯译名差异（同一人名的不同音译写法）；'
+            '称号/头衔/别名不是译名，禁止替换（如「秦王李世民」中的「秦王」是称号，'
+            '「皇帝李世民」不是它的译名，替换会把专名改坏）。\n'
+            '【硬规则二：目标必须真实存在】替换后目标译名必须在台词字幕文本中真实出现过；'
+            '字幕里没有的叫法一律不要给（字幕是画面侧的地面真值，编造的名字帮不了对齐）。\n\n'
             '【甲：解说稿】\n' + _narr + '\n\n【乙：台词字幕】\n' + _dlg)
         r = local_llm_chat(prompt, system='你是译名校对助手，只输出 JSON。', timeout=90)
         obj = _extract_json_obj(r or '') or {}
         mapping = obj.get('mapping') or {}
         if not isinstance(mapping, dict):
             return texts, {}
+        # v1.4.62 结果级守卫：LLM 不守规则也得拦住——目标译名必须真的在台词
+        # 字幕里出现过，否则就是编造（如「皇帝李世民」）或称号误替换，直接丢弃。
+        # 只丢坏条目，合法映射照常生效；字幕文本是地面真值，不需要 LLM 背书。
         mapping = {str(k).strip(): str(v).strip() for k, v in mapping.items()
-                   if str(k).strip() and str(v).strip() and str(k).strip() != str(v).strip()}
+                   if str(k).strip() and str(v).strip()
+                   and str(k).strip() != str(v).strip()
+                   and str(v).strip() in _dlg}
         if not mapping:
             return texts, {}
         new_texts = list(texts)
