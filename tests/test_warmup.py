@@ -149,7 +149,7 @@ def test_warmup_worker_writes_cache_and_skips_vlm(monkeypatch, tmp_path):
     saved = {}
     called = {}
     monkeypatch.setattr(W, 'probe_audio_len', lambda p: 100.0)
-    monkeypatch.setattr(W, 'asr_segments', lambda p: [{'start': 0, 'end': 1, 'text': '你好'}])
+    monkeypatch.setattr(W, 'asr_segments', lambda p, **k: [{'start': 0, 'end': 1, 'text': '你好'}])
     monkeypatch.setattr(W, 'whisper_model_name', lambda: 'base')
     monkeypatch.setattr(W, '_cache_load', lambda k: None)
     monkeypatch.setattr(W, '_cache_save', lambda k, val: saved.update({k: val}))

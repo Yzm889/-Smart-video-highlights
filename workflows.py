@@ -1431,10 +1431,14 @@ def _warmup_worker(video_path, fp):
         asr_key = _video_cache_key(video_path, 'asr_' + whisper_model_name())
         asr = _cache_load(asr_key)
         if not asr:
-            asr = asr_segments(video_path)
+            # 【v1.4.75 预热让位】priority='warmup'：正式转写一到（计数器 +1），
+            # 预热在模型加载前/段落间立刻 AbortError 弃权——把卡让给正式任务。
+            asr = asr_segments(video_path, priority='warmup')
             if asr:
                 _cache_save(asr_key, asr)
                 _log.info('[WARMUP] ASR完成: %d段' % len(asr))
+    except _w.AbortError:
+        _log.info('[WARMUP] 预热让位：正式转写已到达（本次预热丢弃，正式任务自己跑）')
     except Exception as e:
         _log.info('[WARMUP] 预热失败（静默，不影响主流程）: %s' % e)
     finally:

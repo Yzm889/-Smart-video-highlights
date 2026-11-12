@@ -831,8 +831,44 @@ def _fmt_mmss(sec):
     return '%d:%02d' % (s // 60, s % 60) if s < 3600 else '%d:%02d:%02d' % (s // 3600, s % 3600 // 60, s % 60)
 
 
+# ---------------------------------------------------------------------------
+# v1.4.75 Whisper 优先级：预热与正式分析的让位机制
+#
+# 【真问题】预热与正式分析不是「共用模型对象」（每次调用都新建 WhisperModel
+# 实例，_WHISPER_MODELS 只是下载注册表），而是**优先级倒挂**：上传完成即后台
+# 预热（_warmup_worker）持有 _gpu_slot 做长转写，用户点「生成」后正式分析在
+# _gpu_slot 外排队干等（实测卡 5+ 分钟）；预热 90 分钟片要转几分钟，期间
+# 正式任务一个字都出不来。
+#
+# 【修法三件套】
+#   ① _ASR_DEMAND 计数器 —— 正式转写（非预热）进推理段 +1、finally -1；
+#   ② priority='warmup' 的调用（只预热）在**模型加载前**和**每个段落间**
+#      检查计数器，正式任务一到立刻 AbortError 让位——预热本来就是可丢弃的，
+#      让位后正式任务自己跑出完整缓存；
+#   ③ 让位沿既有 AbortError 通道上行，_warmup_worker 捕获记日志（不阻断）。
+# 正式调用（默认 priority）行为逐位不变；无预热参与时计数器恒 0，检查是
+# 一次字典读，零成本。
+_ASR_DEMAND = {'real': 0}
+_ASR_DEMAND_LOCK = threading.Lock()
+
+
+def _asr_demand_push():
+    with _ASR_DEMAND_LOCK:
+        _ASR_DEMAND['real'] += 1
+
+
+def _asr_demand_pop():
+    with _ASR_DEMAND_LOCK:
+        _ASR_DEMAND['real'] = max(0, _ASR_DEMAND['real'] - 1)
+
+
+def _asr_demand():
+    with _ASR_DEMAND_LOCK:
+        return _ASR_DEMAND['real']
+
+
 def asr_segments(video_path, progress=None, pct_range=None, language=None,
-                 model_name=None):
+                 model_name=None, priority=None):
     """本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
     自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
 
@@ -876,6 +912,11 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None,
         from faster_whisper import WhisperModel
     except Exception:
         return []
+    # 【v1.4.75 预热让位】priority='warmup' = 后台预热（可丢弃）；其余调用都算
+    # 正式转写，进推理段时 +1——预热在模型加载前和每个段落间见到计数就让位。
+    _warmup = (priority == 'warmup')
+    if not _warmup:
+        _asr_demand_push()
     wav = None
     try:
         wav = os.path.join(WORKDIR, f'asr_{int(time.time()*1000)}.wav')
@@ -888,6 +929,10 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None,
         _use_gpu = (device == 'cuda')
 
         def _transcribe(dev=None, ctype_=None):
+            # 【v1.4.75 预热让位】模型加载前先看一眼：正式转写已排队/在跑 →
+            # 预热立刻弃权（6GB 权重都不加载，把卡让干净）。
+            if _warmup and _asr_demand() > 0:
+                raise AbortError('预热让位：正式转写已到达')
             # 语言先定、模型后选：模型必须先和语言对得上，否则中文音频喂给
             # 英文专用 distil 模型会整片变成英文幻觉（见 whisper_is_en_only）。
             _lang = whisper_language()
@@ -968,6 +1013,10 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None,
                 # 段间检查取消：transcribe 一旦启动无法从外部中断，只能在消费间隙响应
                 if _aborted():
                     raise AbortError('用户取消了任务')
+                # 【v1.4.75 预热让位】转写中途正式任务到达 → 预热在段落间立刻弃权
+                # （每段间隔检查一次，最多慢一个段落就把卡让出来）
+                if _warmup and _asr_demand() > 0:
+                    raise AbortError('预热让位：正式转写已到达')
                 if s.text and s.text.strip():
                     segs.append({'start': float(s.start), 'end': float(s.end),
                                  'text': (s.text or '').strip()})
@@ -993,6 +1042,12 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None,
                     'GPU 转写失败，已降级 CPU（较慢）：%s: %s' % (type(ex).__name__, str(ex)[:160]))
                 return _transcribe('cpu', 'int8')
         return _transcribe()
+    except AbortError:
+        # 【v1.4.75】AbortError（用户取消/预热让位）必须原样上行：GPU 分支有
+        # 重抛，CPU 直跑与「降级 CPU 重跑」这两条路径以前漏了——预热让位信号
+        # 会在这里被吞成 return []（_warmup_worker 只看到「预热失败」看不到让位）；
+        # 正式任务的取消也会被吃掉继续走完管线。与 GPU 分支的语义对齐。
+        raise
     except Exception as ex:
         # 失败必须留下痕迹：这条路径以前是裸 except -> return []，
         # 上层只看到「ASR 没结果」，用户完全不知道是模型没装、CUDA 缺库还是网络问题。
@@ -1003,6 +1058,8 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None,
         # 中间 wav 无论成功失败都必须删：16kHz/16bit 单声道约 1.9MB/分钟，
         # 98 分钟就是 181MB。以前只在异常分支删、成功路径直接 return 掉，
         # 实测 webui_workspace/ 累计沉淀了 247MB。
+        if not _warmup:
+            _asr_demand_pop()   # 正式转写退出推理段（v1.4.75）
         _silent_remove(wav)
 
 _AI_CFG_CACHE = {'data': None, 'mtime': 0}
