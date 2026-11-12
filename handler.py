@@ -528,6 +528,44 @@ class Handler(BaseHTTPRequestHandler):
             kind, msg = _classify_exception(e)
             self._send_err(500, kind, msg, stage='读取直播切片草稿', detail=str(e))
 
+    def _get_live_clip_timeline(self):
+        """v1.4.64 精剪：读回全片高能点 / 热度曲线 / 全量台词，
+        刷新页面或重启应用后凭 run_dir 直接恢复时间轴（不必重跑 Whisper）。"""
+        try:
+            qs = _w.parse_qs(_w.urlparse(self.path).query)
+            run_dir_name = (qs.get('run_dir') or [''])[0]
+            if not run_dir_name:
+                self._send(200, json.dumps({'ok': False, 'error': '缺少run_dir'}).encode('utf-8'), 'application/json')
+                return
+            try:
+                run_dir = _w._safe_dir(_w.OUTDIR, run_dir_name)
+            except ValueError as _ve:
+                self._send(200, json.dumps({'ok': False, 'error': '非法 run_dir：%s' % _ve}).encode('utf-8'), 'application/json')
+                return
+            import live_clip as _LC
+            d = _LC.load_timeline_draft(str(run_dir))
+            if not d or not d.get('points'):
+                self._send(200, json.dumps({'ok': False, 'error': '该任务没有精剪草稿（高能点分析未完成或已被清理）'}).encode('utf-8'), 'application/json')
+                return
+            video_file = ''
+            vs = str(d.get('video_src') or '')
+            if vs and os.path.dirname(os.path.abspath(vs)) == os.path.abspath(str(run_dir)):
+                video_file = os.path.basename(vs)
+            self._send(200, json.dumps({
+                'ok': True, 'run_dir': run_dir_name,
+                'points': d.get('points') or [],
+                'curve': d.get('curve') or [],
+                'window': d.get('window') or 2.0,
+                'vdur': d.get('vdur') or 0,
+                'asr': d.get('asr') or [],
+                'asr_used': bool(d.get('asr_used')),
+                'danmaku_used': bool(d.get('danmaku_used')),
+                'video_file': video_file,
+            }, ensure_ascii=False).encode('utf-8'), 'application/json')
+        except Exception as e:
+            kind, msg = _classify_exception(e)
+            self._send_err(500, kind, msg, stage='读取精剪草稿', detail=str(e))
+
     def _get_tts_state(self):
         try:
             qs = _w.parse_qs(_w.urlparse(self.path).query)
@@ -1996,6 +2034,58 @@ class Handler(BaseHTTPRequestHandler):
             kind, msg = _classify_exception(e)
             self._send_err(500, kind, msg, stage='重抽封面', detail=str(e))
 
+    def _post_live_clip_timeline(self):
+        """v1.4.64 精剪阶段①：分析全片高能点（不替用户定成片）。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=8 * 1024 * 1024)
+            if req is None:
+                req = {}
+            runid = self._spawn(_w.dispatch_live_clip_timeline, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_live_clip_timeline_export(self):
+        """v1.4.64 精剪阶段②：按时间轴顺序 + 每段音量拼成一条成片。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=512 * 1024)
+            if req is None:
+                req = {}
+            runid = self._spawn(_w.dispatch_live_clip_timeline_export, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_live_clip_summary(self):
+        """v1.4.64 精剪：按需给单个高能点做一句中文摘要（本地 qwen3:8b，离线免 Key）。
+
+        为什么按需而不是分析时批量生成：30 个点 × 3~5 秒 = 2 分钟，用户还没开始剪
+        就要干等；只对「选中/需要命名」的点跑，单次 3 秒内出结果。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = json.loads(self.rfile.read(length).decode('utf-8') or '{}') if length else {}
+            lines = req.get('lines')
+            text = str(req.get('text') or '')
+            if not isinstance(lines, list):
+                lines = [{'text': text}]
+            if not any(str(x.get('text') or '').strip() for x in lines if isinstance(x, dict)):
+                self._send(200, json.dumps({'ok': False, 'error': '这段没有台词可总结'}).encode('utf-8'),
+                           'application/json')
+                return
+            import live_clip as _LC
+            title = _LC.summarize_segment(lines, timeout=45)
+            self._send(200, json.dumps({'ok': True, 'title': title or ''},
+                                       ensure_ascii=False).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)},
+                                       ensure_ascii=False).encode('utf-8'), 'application/json')
+
     def _post_live_clip_export(self):
         """直播切片·阶段②：按用户调整后的段落清单导出。"""
         try:
@@ -2281,6 +2371,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/hardware': '_get_hardware',
         '/api/history': '_get_history',
         '/api/live_clip_draft': '_get_live_clip_draft',
+        '/api/live_clip_timeline': '_get_live_clip_timeline',
         '/api/local/status': '_get_local_status',
         '/api/local/test': '_get_local_test',
         '/api/logs/tail': '_get_logs_tail',
@@ -2343,6 +2434,9 @@ class Handler(BaseHTTPRequestHandler):
         '/api/live_clip': '_post_live_clip',
         '/api/live_clip/export': '_post_live_clip_export',
         '/api/live_clip_cover': '_post_live_clip_cover',
+        '/api/live_clip_timeline': '_post_live_clip_timeline',
+        '/api/live_clip_timeline/export': '_post_live_clip_timeline_export',
+        '/api/live_clip/summary': '_post_live_clip_summary',
         '/api/narrate': '_post_narrate',
         '/api/narrate/align': '_post_narrate_align',
         '/api/narrate_movie': '_post_narrate_movie',

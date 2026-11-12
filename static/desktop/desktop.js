@@ -3428,8 +3428,15 @@ function renderLcEditor(){
   bGo.className = 'btn primary';
   bGo.textContent = '✂ 导出切片（' + _lcCandidates.length + ' 条）';
   bGo.addEventListener('click', lcExport);
+  // v1.4.64：带着本任务进精剪时间轴（复用已转写台词，不重跑 Whisper）
+  const bPrecise = document.createElement('button');
+  bPrecise.className = 'mini-btn lcp-entry-btn';
+  bPrecise.textContent = '🎬 进精剪时间轴';
+  bPrecise.title = '不导出独立切片，改在时间轴上自己剪/删/延长/排序/调音量';
+  bPrecise.addEventListener('click', () => lcpAnalyze({reuseRun: _lcRunDir || undefined}));
   acts.appendChild(bAdd);
   acts.appendChild(bRe);
+  acts.appendChild(bPrecise);
   acts.appendChild(bGo);
   box.appendChild(acts);
 }
@@ -3728,4 +3735,1018 @@ $('envHide').addEventListener('click', () => {
   _envOpen = false;
   $('envCard').style.display = 'none';
   _setEntryActive('tbNarrate');
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   直播精剪工作台 v1.4.64
+   ──────────────────────────────────────────────────────────────────
+   产品语义（与「快速出片」分开）：
+     · 快速出片 = 自动挑 5 条 20~60 秒，直接给成片；
+     · 精剪 = 只在全片每个高能点打注释（评分+台词），用户自己在时间轴上
+       剪切 / 删除 / 前后延长 / 拖拽改顺序 / 调每段音量，最后拼成一条成片。
+   时间轴的**先后就是成片顺序**（不是源片时间），所以拖拽换位=改叙事顺序。
+   所有编辑状态按 run_dir 存 localStorage，关掉应用再回来还能续剪。
+   ══════════════════════════════════════════════════════════════════ */
+let _lcpRunDir = '', _lcpVdur = 0, _lcpWin = 2, _lcpVideoFile = '', _lcpSrcName = '';
+let _lcpPoints = [], _lcpCurve = [], _lcpAsr = [];
+let _lcpSegs = [], _lcpSel = -1;
+let _lcpPx = 8, _lcpSort = 'time', _lcpQ = '';
+let _lcpVideo = null, _lcpStopAt = null, _lcpVideoBound = false;
+let _lcpUndoStk = [], _lcpTitles = {};
+let _lcpPoll = null, _lcpBusy = false, _lcpSaveT = null;
+let _lcpAspectUsed = 'blur';
+let _lcpRaf = null, _lcpDrag = null, _lcpLastReq = {};
+const LCP_UNDO_MAX = 40;
+
+function _lcpFmt(t){
+  t = Math.max(0, Number(t) || 0);
+  const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = Math.floor(t % 60);
+  return (h ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+function _lcpDur(t){
+  const v = Math.max(0, Number(t) || 0);
+  return v < 60 ? v.toFixed(1) + 's'
+    : Math.floor(v / 60) + 'm' + String(Math.round(v % 60)).padStart(2, '0') + 's';
+}
+function _lcpClamp(v, a, b){ return Math.min(b, Math.max(a, v)); }
+function _lcpOverlap(s, pt){
+  return Math.min(s.end, pt.end) - Math.max(s.start, pt.start);
+}
+function _lcpKey(){ return 'framecut_lcp_v1_' + _lcpRunDir; }
+
+/* ── 存档 / 撤销 ───────────────────────────────────────────────── */
+function lcpSaveNow(){
+  try{
+    localStorage.setItem(_lcpKey(), JSON.stringify({
+      vdur: _lcpVdur,
+      aspect: $('lcpAspect') ? $('lcpAspect').value : 'blur',
+      px: _lcpPx, sel: _lcpSel, titles: _lcpTitles,
+      segs: _lcpSegs.map(s => ({start: +(+s.start).toFixed(2), end: +(+s.end).toFixed(2),
+                                volume: +(+s.volume).toFixed(3)})),
+    }));
+  }catch(e){}
+}
+function lcpSave(){
+  if(_lcpSaveT) clearTimeout(_lcpSaveT);
+  _lcpSaveT = setTimeout(lcpSaveNow, 400);
+}
+function lcpSyncUndoBtn(){
+  const b = $('lcpUndo');
+  if(b) b.disabled = !_lcpUndoStk.length;
+}
+function lcpUndoPushSnap(snap){
+  _lcpUndoStk.push(snap || JSON.stringify(_lcpSegs));
+  if(_lcpUndoStk.length > LCP_UNDO_MAX) _lcpUndoStk.shift();
+  lcpSyncUndoBtn();
+}
+function lcpUndoPush(){ lcpUndoPushSnap(JSON.stringify(_lcpSegs)); }
+function lcpUndo(){
+  if(!_lcpUndoStk.length) return;
+  const snap = _lcpUndoStk.pop();
+  try{ _lcpSegs = JSON.parse(snap); }catch(e){ return; }
+  if(_lcpSel >= _lcpSegs.length) _lcpSel = _lcpSegs.length - 1;
+  lcpRenderAll(); lcpSave(); lcpSyncUndoBtn();
+}
+
+/* ── 视图切换 ──────────────────────────────────────────────────── */
+function lcpOpen(){
+  const me = $('lcPrecise'), lc = $('liveClip'), np = $('newProj'), ed = $('editor');
+  if(me) me.style.display = 'flex';
+  if(lc) lc.style.display = 'none';
+  if(np) np.style.display = 'none';
+  if(ed) ed.style.display = 'none';
+  _lcpBindVideo();
+}
+function lcpClose(){
+  const me = $('lcPrecise');
+  if(me) me.style.display = 'none';
+  if(_lcpVideo){ try{ _lcpVideo.pause(); }catch(e){} }
+  showLiveClip(true);
+}
+
+/* ── 分析（阶段①）─────────────────────────────────────────────── */
+function lcpOverlay(title, meta, pct){
+  const ov = $('lcpOverlay');
+  if(!ov) return;
+  ov.style.display = 'flex';
+  ov.classList.remove('wide');
+  const card = ov.querySelector('.lcp-ov-card');
+  if(card){
+    const old = card.querySelector('.lcp-ov-video');
+    if(old) old.remove();
+    const pre = card.querySelector('.lcp-ov-report');
+    if(pre) pre.remove();
+  }
+  $('lcpOvTitle').textContent = title || '';
+  $('lcpOvMeta').textContent = meta || '';
+  $('lcpOvFill').style.width = _lcpClamp(pct || 0, 0, 100) + '%';
+  $('lcpOvActs').innerHTML = '';
+}
+function lcpOverlayHide(){
+  const ov = $('lcpOverlay');
+  if(ov) ov.style.display = 'none';
+}
+function lcpOverlayFail(msg, retryFn){
+  lcpOverlay('出错了', msg || '未知错误', 0);
+  const acts = $('lcpOvActs');
+  const b = document.createElement('button');
+  b.className = 'mini-btn';
+  b.textContent = '← 返回直播切片';
+  b.addEventListener('click', () => { lcpOverlayHide(); lcpClose(); });
+  acts.appendChild(b);
+  if(typeof retryFn === 'function'){
+    const b2 = document.createElement('button');
+    b2.className = 'mini-btn';
+    b2.textContent = '重试';
+    b2.addEventListener('click', retryFn);
+    acts.appendChild(b2);
+  }
+}
+
+async function lcpAnalyze(opts){
+  opts = opts || {};
+  _lcpLastReq = opts;
+  const body = {
+    use_asr: $('lcAsr') ? $('lcAsr').checked : true,
+    asr_language: $('lcLang') ? $('lcLang').value : 'auto',
+    max_points: parseInt(($('lcPoints') || {}).value, 10) || 24,
+    point_max_sec: 40,
+  };
+  if(_lcDanmakuText) body.danmaku_text = _lcDanmakuText;
+  if(opts.reuseRun) body.reuse_run = opts.reuseRun;
+  else {
+    const vo = _lcVideoObj();
+    if(vo) body.video = vo;
+    else {
+      const p = (($('lcPath') || {}).value || '').trim();
+      if(!p){ toast('先选择录像或填写本地路径', 'bad'); return; }
+      body.src_path = p;
+      body.desktop_token = _token || '';
+    }
+  }
+  lcpOpen();
+  _lcpBusy = true;
+  _lcpRunDir = ''; _lcpSegs = []; _lcpSel = -1;
+  _lcpPoints = []; _lcpCurve = []; _lcpAsr = []; _lcpUndoStk = []; _lcpTitles = {};
+  // 换源片前必须把上一支视频卸掉：否则分析期间旧画面还在播，用户会以为分析没开始
+  if(_lcpVideo){
+    try{ _lcpVideo.pause(); }catch(e){}
+    _lcpVideo.removeAttribute('src');
+    _lcpVideo.dataset.src = '';
+    try{ _lcpVideo.load(); }catch(e){}
+  }
+  lcpSyncUndoBtn();
+  if($('lcpNotes')) $('lcpNotes').innerHTML = '';
+  if($('lcpClips')) $('lcpClips').innerHTML = '';
+  if($('lcpRuler')) $('lcpRuler').innerHTML = '';
+  if($('lcpInsp')){ $('lcpInsp').style.display = 'none'; $('lcpInsp').innerHTML = ''; }
+  if($('lcpSrc')) $('lcpSrc').textContent = '';
+  if($('lcpCurSeg')) $('lcpCurSeg').textContent = '未选中片段';
+  lcpOverlay('正在分析全片高能点…',
+    '音量 + 画面动作 + 台词密度' + (_lcDanmakuText ? ' + 弹幕热度' : '') + ' 综合评分', 0);
+  try{
+    const r = await fetch('/api/live_clip_timeline', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '提交失败');
+    if(_lcpPoll) clearInterval(_lcpPoll);
+    _lcpPoll = setInterval(async () => {
+      let p;
+      try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
+      catch(e){ return; }
+      $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
+      $('lcpOvMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
+      if(p.error){
+        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+        lcpOverlayFail(p.error, () => lcpAnalyze(_lcpLastReq || {}));
+        return;
+      }
+      if(p.done && p.draft_saved){
+        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+        lcpApplyAnalysis(p);
+      }
+    }, 1200);
+  }catch(e){
+    _lcpBusy = false;
+    lcpOverlayFail(e.message);
+  }
+}
+
+function lcpApplyAnalysis(p){
+  _lcpRunDir = p.run_dir || '';
+  _lcpVdur = Number(p.vdur) || 0;
+  _lcpWin = Number(p.window) || 2;
+  _lcpVideoFile = p.video_file || '';
+  _lcpPoints = (p.points || []).slice();
+  _lcpCurve = p.curve || [];
+  _lcpAsr = p.asr || [];
+  const pick = (_lcVideo && _lcVideo.name) || (($('lcPath') || {}).value || '').split(/[\\/]/).pop();
+  _lcpSrcName = pick || '源录像';
+  $('lcpSrc').textContent = _lcpSrcName + ' · ' + _lcpFmt(_lcpVdur)
+    + (_lcpPoints.length ? ' · ' + _lcpPoints.length + ' 个高能点' : '');
+  // 初始时间轴 = 全部高能点（按时间）。用户从这条「完整高光带」上删/剪，
+  // 而不是面对一条空时间轴不知道从哪下手。
+  let segs = _lcpPoints.map(pt => ({start: pt.start, end: pt.end, volume: 1}));
+  let restored = false;
+  try{
+    const saved = JSON.parse(localStorage.getItem(_lcpKey()) || 'null');
+    if(saved && Array.isArray(saved.segs) && saved.segs.length
+       && Math.abs((saved.vdur || 0) - _lcpVdur) < 1.5){
+      segs = saved.segs.map(s => ({start: +s.start, end: +s.end,
+                                   volume: s.volume == null ? 1 : +s.volume}))
+        .filter(s => isFinite(s.start) && isFinite(s.end) && s.end > s.start);
+      restored = segs.length > 0;
+      if(saved.titles) _lcpTitles = saved.titles;
+      if(saved.px){ _lcpPx = _lcpClamp(+saved.px, 3, 48); $('lcpZoom').value = _lcpPx; }
+    }
+  }catch(e){}
+  _lcpSegs = segs;
+  _lcpSel = _lcpSegs.length ? 0 : -1;
+  _lcpUndoStk = []; lcpSyncUndoBtn();
+  if(!_lcpVideoFile){
+    toast('该任务源片不在任务目录内，预览不可用（仍可编辑与导出）', 'bad');
+  }
+  _lcpBindVideo();
+  lcpRenderAll();
+  if(_lcpSel >= 0) lcpSelect(_lcpSel, false);   // 同步底部「当前片段」与设置面板
+  lcpOverlayHide();
+  toast(restored
+    ? '✅ 已恢复上次的剪辑（' + _lcpSegs.length + ' 段）'
+    : '✅ 已标记 ' + _lcpPoints.length + ' 个高能点，开始精剪吧', 'ok');
+}
+
+/* ── 预览播放器 ────────────────────────────────────────────────── */
+function lcpSrcUrl(){
+  if(!_lcpRunDir || !_lcpVideoFile) return '';
+  return encodeURI('/media/' + _lcpRunDir.replace(/\\/g, '/') + '/' + _lcpVideoFile);
+}
+function _lcpBindVideo(){
+  if(!_lcpVideo) _lcpVideo = $('lcpVideo');
+  if(!_lcpVideo) return;
+  if(!_lcpVideoBound){
+    _lcpVideoBound = true;
+    _lcpVideo.addEventListener('timeupdate', lcpOnTime);
+    _lcpVideo.addEventListener('seeked', lcpOnTime);
+    _lcpVideo.addEventListener('loadedmetadata', lcpOnTime);
+    _lcpVideo.addEventListener('play', () => { if($('lcpPlay')) $('lcpPlay').textContent = '⏸'; });
+    _lcpVideo.addEventListener('pause', () => { if($('lcpPlay')) $('lcpPlay').textContent = '▶'; });
+    _lcpVideo.addEventListener('error', () => {
+      if(_lcpVideoFile) toast('源片预览加载失败（/media 不可达或浏览器不支持该编码）', 'bad');
+    });
+  }
+  const src = lcpSrcUrl();
+  if(src && _lcpVideo.dataset.src !== src){
+    _lcpVideo.dataset.src = src;
+    _lcpVideo.src = src;
+    _lcpVideo.load();
+  }
+}
+function lcpSeek(t, play, stopAt){
+  if(!_lcpVideo || !_lcpVideoFile) return;
+  const v = _lcpClamp(Number(t) || 0, 0, Math.max(0, _lcpVdur - 0.05));
+  try{ _lcpVideo.currentTime = v; }catch(e){}
+  _lcpStopAt = (stopAt == null ? null : Math.max(v, Number(stopAt)));
+  if(play){ const pp = _lcpVideo.play(); if(pp && pp.catch) pp.catch(() => {}); }
+}
+function lcpTogglePlay(){
+  if(!_lcpVideo || !_lcpVideoFile) return;
+  if(_lcpVideo.paused){ _lcpStopAt = null; const pp = _lcpVideo.play(); if(pp && pp.catch) pp.catch(() => {}); }
+  else _lcpVideo.pause();
+}
+function lcpOnTime(){
+  if(!_lcpVideo) return;
+  const t = _lcpVideo.currentTime || 0;
+  if($('lcpTc')) $('lcpTc').textContent = _lcpFmt(t) + ' / ' + _lcpFmt(_lcpVdur);
+  if(_lcpStopAt != null && t >= _lcpStopAt - 0.03){
+    try{ _lcpVideo.pause(); }catch(e){}
+    _lcpStopAt = null;
+  }
+  const head = $('lcpOvHead');
+  if(head && _lcpVdur > 0) head.style.left = (t / _lcpVdur * 100) + '%';
+  lcpUpdateSeqHead(t);
+}
+function lcpUpdateSeqHead(t){
+  const head = $('lcpSeqHead'), clips = $('lcpClips');
+  if(!head || !clips) return;
+  const offs = _lcpOffsets();
+  let x = 0, idx = -1;
+  for(let i = 0; i < _lcpSegs.length; i++){
+    const s = _lcpSegs[i];
+    if(t >= s.start - 0.001 && t <= s.end + 0.001){
+      x = offs[i] + (t - s.start) * _lcpPx;
+      idx = i;
+      break;
+    }
+  }
+  if(idx >= 0){ head.style.display = 'block'; head.style.left = Math.round(x) + 'px'; }
+  else head.style.display = 'none';
+  Array.from(clips.children).forEach((el, i) => el.classList.toggle('playing', i === idx));
+}
+
+/* ── 时间轴几何 ────────────────────────────────────────────────── */
+function _lcpSegW(s){ return Math.max(28, Math.max(0, s.end - s.start) * _lcpPx); }
+function _lcpOffsets(){
+  const out = [];
+  let x = 0;
+  for(const s of _lcpSegs){ out.push(x); x += _lcpSegW(s) + 2; }
+  return out;
+}
+function _lcpTickStep(){
+  const cands = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  for(const c of cands){ if(c * _lcpPx >= 64) return c; }
+  return 900;
+}
+function _lcpViewW(){
+  const seq = $('lcpSeq');
+  return seq ? Math.max(120, seq.clientWidth - 2) : 600;
+}
+function lcpApplyGeometry(){
+  if(_lcpRaf) return;
+  _lcpRaf = requestAnimationFrame(() => { _lcpRaf = null; lcpApplyGeometryNow(); });
+}
+function lcpApplyGeometryNow(){
+  const clips = $('lcpClips'), inner = $('lcpSeqInner');
+  if(!clips || !inner) return;
+  const offs = _lcpOffsets();
+  const total = offs.length
+    ? offs[offs.length - 1] + _lcpSegW(_lcpSegs[_lcpSegs.length - 1]) + 10 : 0;
+  inner.style.width = Math.max(_lcpViewW(), total) + 'px';
+  Array.from(clips.children).forEach((el, i) => {
+    const s = _lcpSegs[i];
+    if(!s) return;
+    el.style.left = offs[i] + 'px';
+    el.style.width = _lcpSegW(s) + 'px';
+    const tt = el.querySelector('.lcp-clip-t');
+    if(tt) tt.textContent = _lcpFmt(s.start) + '–' + _lcpFmt(s.end);
+  });
+  lcpUpdateTotals();
+}
+
+/* ── 渲染：时间轴 ──────────────────────────────────────────────── */
+function lcpRenderSeq(){
+  const clips = $('lcpClips'), ruler = $('lcpRuler'), inner = $('lcpSeqInner');
+  if(!clips || !ruler || !inner) return;
+  const offs = _lcpOffsets();
+  const total = offs.length
+    ? offs[offs.length - 1] + _lcpSegW(_lcpSegs[_lcpSegs.length - 1]) + 10 : 0;
+  inner.style.width = Math.max(_lcpViewW(), total) + 'px';
+  // 标尺按「成片时长」（各段之和）排，不是源片时长：时间轴是可编辑序列，
+  // 用源片长度画刻度会在末尾拖出一大截无法点击的空白。
+  const seqDur = _lcpSegs.reduce((a, s) => a + Math.max(0, s.end - s.start), 0);
+  ruler.innerHTML = '';
+  const step = _lcpTickStep();
+  for(let t = 0; t <= seqDur + 0.01; t += step){
+    const d = document.createElement('div');
+    d.className = 'lcp-tick';
+    d.style.left = Math.round(t * _lcpPx) + 'px';
+    d.textContent = _lcpFmt(t);
+    ruler.appendChild(d);
+  }
+  clips.innerHTML = '';
+  _lcpSegs.forEach((s, i) => {
+    const el = document.createElement('div');
+    el.className = 'lcp-clip' + (i === _lcpSel ? ' sel' : '')
+      + (s.volume > 1.001 ? ' vol-up' : '') + (s.volume <= 0.001 ? ' vol-zero' : '');
+    el.style.left = offs[i] + 'px';
+    el.style.width = _lcpSegW(s) + 'px';
+    el.dataset.i = i;
+    const n = document.createElement('div');
+    n.className = 'lcp-clip-n';
+    n.textContent = '#' + (i + 1);
+    const tt = document.createElement('div');
+    tt.className = 'lcp-clip-t';
+    tt.textContent = _lcpFmt(s.start) + '–' + _lcpFmt(s.end);
+    const v = document.createElement('div');
+    v.className = 'lcp-clip-v';
+    v.textContent = s.volume <= 0.001 ? '🔇' : ('🔊' + Math.round(s.volume * 100) + '%');
+    const hl = document.createElement('div');
+    hl.className = 'h l'; hl.dataset.h = 'l';
+    const hr = document.createElement('div');
+    hr.className = 'h r'; hr.dataset.h = 'r';
+    el.append(n, tt, v, hl, hr);
+    _lcpBindClip(el, i);
+    clips.appendChild(el);
+  });
+  lcpUpdateSeqHead(_lcpVideo ? (_lcpVideo.currentTime || 0) : 0);
+}
+function _lcpBindClip(el, i){
+  el.addEventListener('pointerdown', ev => {
+    if(ev.button !== 0) return;
+    const h = ev.target && ev.target.dataset ? ev.target.dataset.h : '';
+    if(h){ _lcpStartTrim(ev, i, h); return; }
+    _lcpStartDrag(ev, el, i);
+  });
+}
+function _lcpStartDrag(ev, el, i){
+  ev.preventDefault();
+  const startX = ev.clientX;
+  let moved = false, target = i;
+  const rects = Array.from($('lcpClips').children).map(c => {
+    const r = c.getBoundingClientRect();
+    return r.left + r.width / 2;
+  });
+  const onMove = e => {
+    const dx = e.clientX - startX;
+    if(!moved && Math.abs(dx) > 4) moved = true;
+    if(!moved) return;
+    el.classList.add('dragging');
+    el.style.transform = 'translateX(' + dx + 'px)';
+    let k = 0;
+    for(let j = 0; j < rects.length; j++){ if(e.clientX > rects[j]) k = j + 1; }
+    target = _lcpClamp(k, 0, _lcpSegs.length - 1);
+    Array.from($('lcpClips').children).forEach((c, j) => c.classList.toggle('sel', j === target));
+  };
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    el.classList.remove('dragging');
+    el.style.transform = '';
+    if(!moved){ lcpSelect(i, true); return; }
+    let dst = target;
+    if(dst > i) dst -= 1;
+    if(dst === i){ lcpRenderSeq(); return; }
+    lcpUndoPush();
+    const seg = _lcpSegs.splice(i, 1)[0];
+    _lcpSegs.splice(_lcpClamp(dst, 0, _lcpSegs.length), 0, seg);
+    _lcpSel = _lcpClamp(dst, 0, _lcpSegs.length - 1);
+    lcpRenderAll(); lcpSave();
+    toast('已移动到第 ' + (_lcpSel + 1) + ' 位');
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+function _lcpStartTrim(ev, i, which){
+  ev.preventDefault();
+  ev.stopPropagation();
+  const s = _lcpSegs[i];
+  const startX = ev.clientX;
+  const s0 = s.start, e0 = s.end;
+  const snap = JSON.stringify(_lcpSegs);
+  let dirty = false;
+  lcpSelect(i, false);
+  const onMove = e => {
+    const dx = e.clientX - startX;
+    if(!dirty && Math.abs(dx) > 2) dirty = true;
+    if(!dirty) return;
+    const dt = dx / _lcpPx;
+    if(which === 'l') s.start = _lcpClamp(s0 + dt, 0, e0 - 2);
+    else s.end = _lcpClamp(e0 + dt, s0 + 2, _lcpVdur);
+    lcpApplyGeometry();
+    lcpRenderInspector();
+  };
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    if(dirty){
+      lcpUndoPushSnap(snap);
+      lcpRenderAll(); lcpSave();
+    }
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+/* ── 渲染：注释列表 ────────────────────────────────────────────── */
+function _lcpPtText(pt){
+  if(pt.text) return pt.text;
+  return (pt.lines || []).map(x => x.text || '').join(' ').trim();
+}
+function _lcpPointFor(seg){
+  let best = null, bestOl = 0;
+  for(const pt of _lcpPoints){
+    const ol = _lcpOverlap(seg, pt);
+    if(ol > bestOl){ best = pt; bestOl = ol; }
+  }
+  return best;
+}
+function _lcpPointKey(seg){
+  const pt = _lcpPointFor(seg);
+  if(pt) return 'p' + Math.round(pt.start * 10);
+  return 't' + Math.round(seg.start * 10);
+}
+function _lcpLineOk(text){
+  // 与后端 _line_weight 同一口径：只剩一两个字、或反复同一个字的行是 ASR 在
+  // 音乐/噪音段的幻觉（『纵纵』『呃呃』），不该当成这段的台词给用户看。
+  const s = String(text || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '');
+  if(s.length <= 1) return false;
+  if(new Set(s).size <= 2) return false;
+  return true;
+}
+function _lcpLinesIn(start, end){
+  return (_lcpAsr || []).filter(x => Number(x.end) > start && Number(x.start) < end)
+    .filter(x => _lcpLineOk(x.text))
+    .slice(0, 200);
+}
+function lcpRenderNotes(){
+  const box = $('lcpNotes');
+  if(!box) return;
+  box.innerHTML = '';
+  const q = (_lcpQ || '').trim().toLowerCase();
+  let list = _lcpPoints.map((pt, i) => ({pt, i}));
+  if(q){
+    list = list.filter(o => (_lcpPtText(o.pt) + ' ' + (o.pt.reasons || []).join(' ')).toLowerCase().indexOf(q) >= 0);
+  }
+  if(_lcpSort === 'score') list.sort((a, b) => (b.pt.pct || 0) - (a.pt.pct || 0) || a.pt.start - b.pt.start);
+  else list.sort((a, b) => a.pt.start - b.pt.start);
+  if($('lcpNoteCount')) $('lcpNoteCount').textContent = '· ' + _lcpPoints.length + ' 个';
+  if(!list.length){
+    const e = document.createElement('div');
+    e.className = 'lcp-note';
+    e.style.cursor = 'default';
+    e.textContent = q ? '没有匹配的注释' : '没有注释（录像可能整段平淡）';
+    box.appendChild(e);
+    return;
+  }
+  list.forEach(({pt, i}) => {
+    const usedIdx = _lcpSegs.findIndex(s => _lcpOverlap(s, pt) / Math.max(1e-6, pt.dur) >= 0.4);
+    const el = document.createElement('div');
+    el.className = 'lcp-note' + (usedIdx >= 0 && usedIdx === _lcpSel ? ' on' : '')
+      + (usedIdx < 0 ? ' dim' : '');
+    const top = document.createElement('div');
+    top.className = 'lcp-note-top';
+    const id = document.createElement('span');
+    id.className = 'lcp-note-id';
+    id.textContent = '#' + (i + 1);
+    const tr = document.createElement('span');
+    tr.textContent = _lcpFmt(pt.start) + '–' + _lcpFmt(pt.end);
+    const sc = document.createElement('span');
+    sc.className = 'lcp-note-sc' + ((pt.pct || 0) >= 95 ? '' : ((pt.pct || 0) >= 85 ? ' s2' : ' s3'));
+    sc.textContent = '高分 ' + (pt.pct || 0);
+    sc.title = '全片分位：' + (pt.pct || 0) + '（越高越炸）';
+    top.append(id, tr, sc);
+    const tx = document.createElement('div');
+    tx.className = 'lcp-note-tx';
+    const tt = _lcpPtText(pt);
+    tx.textContent = tt || (pt.noisy ? '（这段像音乐/掌声，没有清晰台词）' : '（这段没有台词记录）');
+    el.append(top, tx);
+    const acts = document.createElement('div');
+    acts.className = 'lcp-note-act';
+    if(usedIdx >= 0){
+      const u = document.createElement('span');
+      u.className = 'lcp-note-used';
+      u.textContent = '✓ 已在时间轴 #' + (usedIdx + 1);
+      acts.appendChild(u);
+    } else {
+      const b = document.createElement('button');
+      b.className = 'mini-btn';
+      b.textContent = '＋ 加入时间轴';
+      b.addEventListener('click', ev => {
+        ev.stopPropagation();
+        lcpUndoPush();
+        const idx = _lcpSegs.filter(s => s.start < pt.start).length;
+        _lcpSegs.splice(idx, 0, {start: pt.start, end: pt.end, volume: 1});
+        _lcpSel = idx;
+        lcpRenderAll(); lcpSave();
+        toast('已加入时间轴第 ' + (idx + 1) + ' 位', 'ok');
+      });
+      acts.appendChild(b);
+    }
+    el.appendChild(acts);
+    el.addEventListener('click', ev => {
+      if(ev.target && ev.target.closest && ev.target.closest('button')) return;
+      if(usedIdx >= 0) lcpSelect(usedIdx, true);
+      else {
+        if(_lcpVideo) _lcpVideo.volume = 1;
+        lcpSeek(pt.start + 0.03, true, pt.end);
+        if($('lcpCurSeg')) $('lcpCurSeg').textContent = '注释 #' + (i + 1) + '（未加入时间轴）';
+        lcpRenderNotes();
+        el.classList.add('on');
+      }
+    });
+    box.appendChild(el);
+  });
+}
+
+/* ── 渲染：片段设置 ────────────────────────────────────────────── */
+function lcpRenderInspector(){
+  const box = $('lcpInsp');
+  if(!box) return;
+  const s = _lcpSegs[_lcpSel];
+  if(!s){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'flex';
+  box.innerHTML = '';
+  const h = document.createElement('div');
+  h.className = 'lcp-insp-h';
+  h.innerHTML = '片段 #' + (_lcpSel + 1) + ' <span>' + _lcpDur(s.end - s.start) + '</span>';
+  box.appendChild(h);
+  const r1 = document.createElement('div');
+  r1.className = 'lcp-insp-row';
+  const mkNum = (label, val, on) => {
+    const w = document.createElement('label');
+    w.style.display = 'flex';
+    w.style.alignItems = 'center';
+    w.style.gap = '4px';
+    w.append(label);
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.step = '0.1';
+    inp.min = '0';
+    inp.max = String(Math.round(_lcpVdur));
+    inp.value = (+val).toFixed(1);
+    inp.addEventListener('change', () => {
+      const snap = JSON.stringify(_lcpSegs);
+      let v = parseFloat(inp.value);
+      if(!isFinite(v)) v = val;
+      on(v);
+      lcpUndoPushSnap(snap);
+      lcpRenderAll(); lcpSave();
+    });
+    w.appendChild(inp);
+    return w;
+  };
+  r1.append(
+    mkNum('起(秒)', s.start, v => { s.start = _lcpClamp(v, 0, s.end - 2); }),
+    mkNum('止(秒)', s.end, v => { s.end = _lcpClamp(v, s.start + 2, _lcpVdur); })
+  );
+  const sp = document.createElement('span');
+  sp.style.color = 'var(--dim)';
+  sp.textContent = '时长 ' + _lcpDur(s.end - s.start);
+  r1.appendChild(sp);
+  box.appendChild(r1);
+
+  const r2 = document.createElement('div');
+  r2.className = 'lcp-insp-row';
+  const lab = document.createElement('span');
+  lab.textContent = '音量';
+  const rg = document.createElement('input');
+  rg.type = 'range'; rg.min = '0'; rg.max = '200'; rg.step = '5';
+  rg.value = String(Math.round(s.volume * 100));
+  const pct = document.createElement('b');
+  pct.textContent = Math.round(s.volume * 100) + '%';
+  pct.style.minWidth = '42px';
+  let volSnap = null;
+  rg.addEventListener('pointerdown', () => { volSnap = JSON.stringify(_lcpSegs); });
+  rg.addEventListener('input', () => {
+    s.volume = _lcpClamp((parseInt(rg.value, 10) || 0) / 100, 0, 2);
+    pct.textContent = Math.round(s.volume * 100) + '%';
+    const clip = $('lcpClips') ? $('lcpClips').children[_lcpSel] : null;
+    if(clip){
+      clip.classList.toggle('vol-up', s.volume > 1.001);
+      clip.classList.toggle('vol-zero', s.volume <= 0.001);
+      const v = clip.querySelector('.lcp-clip-v');
+      if(v) v.textContent = s.volume <= 0.001 ? '🔇' : ('🔊' + Math.round(s.volume * 100) + '%');
+    }
+    lcpSave();
+  });
+  rg.addEventListener('change', () => {
+    if(volSnap){ lcpUndoPushSnap(volSnap); volSnap = null; }
+    lcpSave();
+  });
+  const bMute = document.createElement('button');
+  bMute.className = 'mini-btn';
+  bMute.textContent = '静音';
+  bMute.addEventListener('click', () => {
+    lcpUndoPush();
+    s.volume = s.volume > 0 ? 0 : 1;
+    lcpRenderAll(); lcpSave();
+  });
+  const bOrig = document.createElement('button');
+  bOrig.className = 'mini-btn';
+  bOrig.textContent = '原声 100%';
+  bOrig.addEventListener('click', () => {
+    lcpUndoPush();
+    s.volume = 1;
+    lcpRenderAll(); lcpSave();
+  });
+  r2.append(lab, rg, pct, bMute, bOrig);
+  box.appendChild(r2);
+
+  const r3 = document.createElement('div');
+  r3.className = 'lcp-insp-acts';
+  const bPlay = document.createElement('button');
+  bPlay.className = 'mini-btn';
+  bPlay.textContent = '▶ 只播这段';
+  bPlay.addEventListener('click', () => lcpSelect(_lcpSel, true));
+  const bSplit = document.createElement('button');
+  bSplit.className = 'mini-btn';
+  bSplit.textContent = '✂ 在播放头分割';
+  bSplit.addEventListener('click', lcpSplit);
+  const bDel = document.createElement('button');
+  bDel.className = 'mini-btn';
+  bDel.textContent = '🗑 删除';
+  bDel.addEventListener('click', lcpDelete);
+  const bSum = document.createElement('button');
+  bSum.className = 'mini-btn';
+  bSum.textContent = '✨ AI 摘要';
+  bSum.addEventListener('click', () => lcpSummary(_lcpSel, bSum));
+  r3.append(bPlay, bSplit, bDel, bSum);
+  box.appendChild(r3);
+
+  const title = _lcpTitles[_lcpPointKey(s)];
+  if(title){
+    const d = document.createElement('div');
+    d.className = 'lcp-insp-row';
+    d.style.color = 'var(--acc2)';
+    d.textContent = '摘要：' + title;
+    box.appendChild(d);
+  }
+  if(s.volume > 1.001){
+    const n = document.createElement('div');
+    n.className = 'lcp-insp-row';
+    n.style.color = 'var(--dim)';
+    n.textContent = '预览最多 100%，超过 100% 的增益在导出时生效';
+    box.appendChild(n);
+  }
+}
+
+/* ── 操作：选中 / 分割 / 删除 / 摘要 ───────────────────────────── */
+function lcpSelect(i, seek){
+  _lcpSel = (i >= 0 && i < _lcpSegs.length) ? i : -1;
+  lcpRenderSeq();
+  lcpRenderInspector();
+  lcpRenderNotes();
+  const s = _lcpSegs[_lcpSel];
+  if(s && seek){
+    if(_lcpVideo) _lcpVideo.volume = Math.min(1, Math.max(0, s.volume));
+    lcpSeek(s.start + 0.03, true, s.end);
+  }
+  if($('lcpCurSeg')){
+    $('lcpCurSeg').textContent = s
+      ? ('片段 #' + (_lcpSel + 1) + '  ' + _lcpFmt(s.start) + '–' + _lcpFmt(s.end)
+         + '  ' + _lcpDur(s.end - s.start) + '  ·  音量 ' + Math.round(s.volume * 100) + '%')
+      : '未选中片段';
+  }
+  const seq = $('lcpSeq'), el = $('lcpClips') ? $('lcpClips').children[_lcpSel] : null;
+  if(seq && el){
+    const L = el.offsetLeft, R = L + el.offsetWidth;
+    if(L < seq.scrollLeft + 20) seq.scrollLeft = Math.max(0, L - 20);
+    else if(R > seq.scrollLeft + seq.clientWidth - 20) seq.scrollLeft = R - seq.clientWidth + 20;
+  }
+}
+function lcpSplit(){
+  if(_lcpSel < 0){ toast('先选中一个片段', 'bad'); return; }
+  const t = _lcpVideo ? (_lcpVideo.currentTime || 0) : 0;
+  const s = _lcpSegs[_lcpSel];
+  if(!(t > s.start + 1 && t < s.end - 1)){
+    toast('把播放头放到片段中间再分割（距两端至少 1 秒）', 'bad');
+    return;
+  }
+  lcpUndoPush();
+  const a = {start: s.start, end: +t.toFixed(2), volume: s.volume};
+  const b = {start: +t.toFixed(2), end: s.end, volume: s.volume};
+  _lcpSegs.splice(_lcpSel, 1, a, b);
+  _lcpSel = _lcpSel + 1;
+  lcpRenderAll(); lcpSave();
+  toast('已分割为两段（' + _lcpDur(a.end - a.start) + ' + ' + _lcpDur(b.end - b.start) + '）');
+}
+function lcpDelete(){
+  if(_lcpSel < 0){ toast('先选中一个片段', 'bad'); return; }
+  lcpUndoPush();
+  const gone = _lcpSegs.splice(_lcpSel, 1)[0];
+  if(_lcpSel >= _lcpSegs.length) _lcpSel = _lcpSegs.length - 1;
+  lcpRenderAll(); lcpSave();
+  toast('已删除 ' + _lcpFmt(gone.start) + '–' + _lcpFmt(gone.end) + ' 这段');
+}
+async function lcpSummary(i, btn){
+  const s = _lcpSegs[i];
+  if(!s) return;
+  const pt = _lcpPointFor(s);
+  let lines = (pt && pt.lines && pt.lines.length) ? pt.lines : _lcpLinesIn(s.start, s.end);
+  lines = lines.filter(x => x && String(x.text || '').trim());
+  if(!lines.length){ toast('这段没有台词可总结（未启用转写或整段无语音）', 'bad'); return; }
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '总结中…';
+  try{
+    const r = await fetch('/api/live_clip/summary', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines})}).then(x => x.json());
+    if(!r.ok || !r.title) throw new Error(r.error || '模型没有返回标题');
+    _lcpTitles[_lcpPointKey(s)] = r.title;
+    lcpSave();
+    lcpRenderInspector();
+    lcpRenderNotes();
+    toast('✅ 摘要：' + r.title, 'ok');
+  }catch(e){
+    toast('摘要失败：' + e.message, 'bad');
+  }finally{
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+/* ── 渲染：热度概览 ────────────────────────────────────────────── */
+function lcpDrawOverview(){
+  const cv = $('lcpCurve'), wrap = $('lcpOverview');
+  if(!cv || !wrap) return;
+  const w = wrap.clientWidth || 600, h = wrap.clientHeight || 56;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(w * dpr));
+  cv.height = Math.max(1, Math.round(h * dpr));
+  const c = cv.getContext('2d');
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, w, h);
+  if(_lcpVdur <= 0) return;
+  // 已选区间底色（先画，别盖住曲线）
+  c.fillStyle = 'rgba(63,208,164,.07)';
+  _lcpSegs.forEach(s => {
+    c.fillRect(s.start / _lcpVdur * w, 0,
+      Math.max(1, (s.end - s.start) / _lcpVdur * w), h);
+  });
+  c.strokeStyle = 'rgba(255,255,255,.05)';
+  c.lineWidth = 1;
+  for(let i = 1; i < 4; i++){
+    const y = h * i / 4;
+    c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+  }
+  if(_lcpCurve.length){
+    const n = _lcpCurve.length;
+    const X = i => (i / Math.max(1, n - 1)) * w;
+    const Y = v => h - _lcpClamp(v, 0, 1) * h * 0.9 - 2;
+    const grad = c.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, 'rgba(61,126,255,.50)');
+    grad.addColorStop(1, 'rgba(61,126,255,.04)');
+    c.beginPath();
+    c.moveTo(0, h);
+    for(let i = 0; i < n; i++) c.lineTo(X(i), Y(_lcpCurve[i]));
+    c.lineTo(w, h);
+    c.closePath();
+    c.fillStyle = grad;
+    c.fill();
+    c.beginPath();
+    for(let i = 0; i < n; i++){
+      if(i) c.lineTo(X(i), Y(_lcpCurve[i]));
+      else c.moveTo(X(i), Y(_lcpCurve[i]));
+    }
+    c.strokeStyle = '#6f9cff';
+    c.lineWidth = 1.3;
+    c.stroke();
+  }
+  _lcpPoints.forEach(pt => {
+    const x = _lcpClamp((pt.peak_t || pt.start) / _lcpVdur * w, 0, w - 2);
+    c.fillStyle = (pt.pct || 0) >= 95 ? '#3fd0a4' : ((pt.pct || 0) >= 85 ? '#f5c451' : '#6f9cff');
+    c.globalAlpha = 0.9;
+    c.fillRect(x - 1, h - 11, 2, 9);
+    c.globalAlpha = 1;
+  });
+}
+
+/* ── 汇总 / 导出 ──────────────────────────────────────────────── */
+function lcpUpdateTotals(){
+  const tot = _lcpSegs.reduce((a, s) => a + Math.max(0, s.end - s.start), 0);
+  if($('lcpTotal')) $('lcpTotal').textContent = _lcpSegs.length + ' 段 · ' + _lcpDur(tot);
+  if($('lcpTlHint')){
+    $('lcpTlHint').textContent = _lcpSegs.length
+      ? '拖片段改顺序 · 拖两端改起止 · 空格播放'
+      : '时间轴是空的：从右侧注释点「＋ 加入时间轴」';
+  }
+  if($('lcpExport')) $('lcpExport').disabled = !_lcpSegs.length || _lcpBusy;
+}
+function lcpRenderAll(){
+  lcpRenderSeq();
+  lcpRenderNotes();
+  lcpRenderInspector();
+  lcpDrawOverview();
+  lcpUpdateTotals();
+  lcpSyncUndoBtn();
+}
+
+async function lcpExportNow(){
+  if(!_lcpSegs.length){ toast('时间轴是空的', 'bad'); return; }
+  if(_lcpBusy) return;
+  const segs = _lcpSegs.map(s => ({
+    start: +(+s.start).toFixed(2), end: +(+s.end).toFixed(2),
+    volume: +_lcpClamp(+s.volume, 0, 2).toFixed(3),
+  }));
+  _lcpAspectUsed = $('lcpAspect') ? $('lcpAspect').value : 'blur';
+  lcpSaveNow();
+  _lcpBusy = true;
+  lcpUpdateTotals();
+  lcpOverlay('正在导出精剪成片…',
+    '逐段渲染（各自音量）→ 按时间轴顺序拼接', 3);
+  try{
+    const r = await fetch('/api/live_clip_timeline/export', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run_dir: _lcpRunDir, segments: segs,
+                            aspect: _lcpAspectUsed, focus: 0.5})}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '提交失败');
+    if(_lcpPoll) clearInterval(_lcpPoll);
+    _lcpPoll = setInterval(async () => {
+      let p;
+      try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
+      catch(e){ return; }
+      $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
+      $('lcpOvMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
+      if(p.error){
+        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+        lcpUpdateTotals();
+        lcpOverlayFail(p.error);
+        return;
+      }
+      if(p.done && p.reel){
+        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+        lcpUpdateTotals();
+        lcpShowResult(p);
+      }
+    }, 1200);
+  }catch(e){
+    _lcpBusy = false;
+    lcpUpdateTotals();
+    lcpOverlayFail(e.message);
+  }
+}
+function lcpShowResult(p){
+  const ov = $('lcpOverlay');
+  lcpOverlay('✅ 精剪成片完成',
+    p.reel.n + ' 段 · ' + _lcpDur(p.reel.dur) + ' · ' + p.reel.file, 100);
+  ov.classList.add('wide');
+  const card = ov.querySelector('.lcp-ov-card');
+  const v = document.createElement('video');
+  v.className = 'lcp-ov-video';
+  v.controls = true;
+  v.preload = 'metadata';
+  v.style.aspectRatio = (_lcpAspectUsed === 'blur' || _lcpAspectUsed === 'crop') ? '9 / 16' : '16 / 9';
+  v.src = encodeURI('/media/' + p.reel.rel);
+  card.insertBefore(v, $('lcpOvActs'));
+  const acts = $('lcpOvActs');
+  const bFolder = document.createElement('button');
+  bFolder.className = 'mini-btn';
+  bFolder.textContent = '📁 打开所在文件夹';
+  bFolder.addEventListener('click', () => {
+    fetch('/api/reveal', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file: p.reel.rel})});
+  });
+  const bReport = document.createElement('button');
+  bReport.className = 'mini-btn';
+  bReport.textContent = '📄 查看报告';
+  bReport.addEventListener('click', async () => {
+    try{
+      const t = await fetch(encodeURI('/media/' + p.report_txt)).then(x => x.text());
+      let pre = card.querySelector('.lcp-ov-report');
+      if(!pre){
+        pre = document.createElement('pre');
+        pre.className = 'lcp-ov-report';
+        pre.style.cssText = 'max-height:150px;overflow:auto;font-size:11px;color:var(--dim);'
+          + 'background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;'
+          + 'white-space:pre-wrap;margin:0';
+        card.appendChild(pre);
+      }
+      pre.textContent = t;
+    }catch(e){ toast('报告读取失败：' + e.message, 'bad'); }
+  });
+  const bBack = document.createElement('button');
+  bBack.className = 'mini-btn';
+  bBack.textContent = '↩ 继续编辑';
+  bBack.addEventListener('click', lcpOverlayHide);
+  acts.append(bFolder, bReport, bBack);
+  toast('✅ 精剪成片完成：' + p.reel.file, 'ok');
+}
+
+/* ── 事件绑定 ──────────────────────────────────────────────────── */
+if($('lcpBack')) $('lcpBack').addEventListener('click', lcpClose);
+if($('lcpExport')) $('lcpExport').addEventListener('click', lcpExportNow);
+if($('lcpPlay')) $('lcpPlay').addEventListener('click', lcpTogglePlay);
+if($('lcpSplit')) $('lcpSplit').addEventListener('click', lcpSplit);
+if($('lcpDel')) $('lcpDel').addEventListener('click', lcpDelete);
+if($('lcpUndo')) $('lcpUndo').addEventListener('click', lcpUndo);
+if($('lcpReset')) $('lcpReset').addEventListener('click', () => {
+  if(!_lcpPoints.length) return;
+  lcpUndoPush();
+  _lcpSegs = _lcpPoints.map(pt => ({start: pt.start, end: pt.end, volume: 1}));
+  _lcpSel = _lcpSegs.length ? 0 : -1;
+  lcpRenderAll(); lcpSave();
+  toast('已重置为分析出的全部高能点');
+});
+if($('lcpZoom')) $('lcpZoom').addEventListener('input', () => {
+  _lcpPx = _lcpClamp(parseFloat($('lcpZoom').value) || 8, 3, 48);
+  lcpRenderSeq();
+  lcpUpdateSeqHead(_lcpVideo ? (_lcpVideo.currentTime || 0) : 0);
+  lcpSave();
+});
+if($('lcpSort')) $('lcpSort').addEventListener('change', () => {
+  _lcpSort = $('lcpSort').value;
+  lcpRenderNotes();
+});
+if($('lcpSearch')) $('lcpSearch').addEventListener('input', () => {
+  _lcpQ = $('lcpSearch').value;
+  lcpRenderNotes();
+});
+if($('lcpOverview')) $('lcpOverview').addEventListener('pointerdown', ev => {
+  const box = $('lcpOverview');
+  const r = box.getBoundingClientRect();
+  const toT = cx => _lcpClamp((cx - r.left) / Math.max(1, r.width) * _lcpVdur, 0, _lcpVdur);
+  lcpSeek(toT(ev.clientX), false);
+  const mv = e2 => { if(_lcpVideo) { try{ _lcpVideo.currentTime = toT(e2.clientX); }catch(e){} } };
+  const up = () => {
+    window.removeEventListener('pointermove', mv);
+    window.removeEventListener('pointerup', up);
+  };
+  window.addEventListener('pointermove', mv);
+  window.addEventListener('pointerup', up);
+});
+if($('lcPreciseGo')) $('lcPreciseGo').addEventListener('click', () => lcpAnalyze());
+if(window.ResizeObserver && $('lcpOverview')){
+  try{ new ResizeObserver(() => lcpDrawOverview()).observe($('lcpOverview')); }catch(e){}
+}
+
+document.addEventListener('keydown', ev => {
+  const me = $('lcPrecise');
+  if(!me || me.style.display === 'none') return;
+  const tag = (ev.target && ev.target.tagName) || '';
+  if(/INPUT|TEXTAREA|SELECT/.test(tag)) return;
+  if(ev.code === 'Space'){ ev.preventDefault(); lcpTogglePlay(); }
+  else if(ev.key === 'Delete' || ev.key === 'Backspace'){ ev.preventDefault(); lcpDelete(); }
+  else if(ev.key === 's' || ev.key === 'S'){ ev.preventDefault(); lcpSplit(); }
+  else if((ev.ctrlKey || ev.metaKey) && (ev.key === 'z' || ev.key === 'Z')){ ev.preventDefault(); lcpUndo(); }
+  else if(ev.key === 'ArrowLeft'){ ev.preventDefault(); lcpSeek((_lcpVideo ? _lcpVideo.currentTime : 0) - 1, false); }
+  else if(ev.key === 'ArrowRight'){ ev.preventDefault(); lcpSeek((_lcpVideo ? _lcpVideo.currentTime : 0) + 1, false); }
 });

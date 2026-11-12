@@ -548,6 +548,9 @@ def _asr_collapse_token_runs(text, min_total=4):
     if not text:
         return text
     s = str(text)
+    # 先清掉不可见垃圾：U+FFFD（解码失败的占位符）、零宽字符、控制符。
+    # 实测中文直播里会蹦出「啵啵\ufffd」这种尾巴，看起来像程序出错。
+    s = _re.sub(r'[\ufffd\u200b-\u200f\u2028\u2029\u0000-\u0008\u000b\u000c\u000e-\u001f]', '', s)
     # 英文/数字词：允许词间夹逗号句号空格
     pat_word = _re.compile(r'\b(\w{1,12})\b(?:[\s,，、。.!?！？;；]*\1\b){%d,}' % (min_total - 1),
                            _re.IGNORECASE)
@@ -557,7 +560,71 @@ def _asr_collapse_token_runs(text, min_total=4):
         s = pat_word.sub(r'\1', s)
     # 中日韩单字复读：「哈哈哈哈」「闪闪闪」——中文没有词边界，单独处理
     s = _re.sub(r'([\u4e00-\u9fa5])\1{3,}', r'\1\1', s)
+    # 中日韩**词组**复读：「大人计大人计大人计…」×15。中文没有词边界，上面的
+    # \b 规则完全抓不到，base 模型在纯音乐段实测就是这么吐的——一条 17 秒的
+    # 注释全是同一个词，用户在精剪列表里根本没法判断这段该不该留。
+    s = _asr_collapse_cjk_runs(s)
     return s
+
+
+_PUNCT_JUNK = set('，。、！？；：,.!?;:… \t\r\n-—~～「」《》""\'\'（）()')
+
+
+def _asr_collapse_cjk_runs(s, min_run=3, min_len=2, max_len=6):
+    """折叠中文词组的连续复读（容忍词间标点），并吃掉末尾残留的半截。
+
+    为什么不用正则：中文没有词边界（\\b 失效），同一个 2~6 字词组重复时往往
+    还夹着逗号（『大人计，大人计，大人计』），正则要把「词 + 任意标点 + 同词」
+    写成嵌套量词，既难读又容易回溯爆炸。这里直接按「有效字符」滑动比对：
+    跳过标点后看连续几段是否同一个词组，是就只保留一份。"""
+    if not s:
+        return s
+    pos = [k for k, ch in enumerate(str(s)) if ch not in _PUNCT_JUNK]
+    n = len(pos)
+    if n < min_run * min_len:
+        return s
+
+    def unit_at(p, L):
+        if p + L > n:
+            return None
+        cs = [str(s)[pos[p + t]] for t in range(L)]
+        for ch in cs:
+            if not ('\u4e00' <= ch <= '\u9fa5'):
+                return None
+        return ''.join(cs)
+
+    out = []
+    i = 0
+    done = 0                     # 已经输出到原文的哪个下标
+    while i < n:
+        hit = None
+        # 由短到长试：词组长度按**最小周期**取，否则『大人计』×15 会被 6 字
+        # 窗口匹配成『大人计大人』（6 是 3 的整数倍，看上去也在「重复」），
+        # 折叠出来的结果会多留一份。
+        for L in range(min_len, max_len + 1):
+            u = unit_at(i, L)
+            if not u:
+                continue
+            cnt, j = 1, i + L
+            while unit_at(j, L) == u:
+                cnt += 1
+                j += L
+            if cnt >= min_run:
+                hit = (u, j, L)
+                break
+        if not hit:
+            i += 1
+            continue
+        u, j, L = hit
+        out.append(str(s)[done:pos[i]])          # 复读之前的原文（原样，含标点）
+        out.append(u)
+        tail = ''.join(str(s)[pos[t]] for t in range(j, n))
+        if tail and len(tail) < L and u.startswith(tail):
+            j = n                                # 末尾半截重复（『大人计』后剩个『大』）
+        done = pos[j] if j < n else len(str(s))
+        i = j
+    out.append(str(s)[done:])
+    return ''.join(out)
 
 
 def _asr_collapse_repeats(segs, min_run=2):
@@ -734,7 +801,8 @@ def _fmt_mmss(sec):
     return '%d:%02d' % (s // 60, s % 60) if s < 3600 else '%d:%02d:%02d' % (s // 3600, s % 3600 // 60, s % 60)
 
 
-def asr_segments(video_path, progress=None, pct_range=None, language=None):
+def asr_segments(video_path, progress=None, pct_range=None, language=None,
+                 model_name=None):
     """本地转写台词，返回 [{start,end,text}]。不可用/失败返回 []。
     自动用 GPU（CUDA）加速；无显卡回退 CPU。模型权重首次运行联网下载一次（~140MB）。
 
@@ -747,6 +815,12 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None):
     模型判别）。不传 = 走全局配置 whisper.language（见 whisper_language）。
     直播切片等场景音频语言用户心里有数，固定下来可以避免自动判别翻车
     （2026-11-11 实测：中文直播被误判成 en，台词文本打折）。
+
+    model_name：可选，本次调用的模型覆盖。v1.4.64 新增：配置里的
+    distil-large-v3 是**英文专用**蒸馏模型，中文内容会被硬转成英文（实测
+    「这是好的几说是比较复杂」→「that's, I'm just I'm not…」），精剪注释
+    直接变成乱码。调用方（live_clip）在语言非英文时改传多语言模型兜底。
+    不传 = 走全局配置（行为与旧版逐位一致）。
 
     progress / pct_range：可选。传了就逐段推进进度并响应取消——
     旧实现一次性消费 transcribe 的生成器，长视频（十几分钟）转写期间进度条
@@ -784,8 +858,23 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None):
         _use_gpu = (device == 'cuda')
 
         def _transcribe(dev=None, ctype_=None):
+            # 语言先定、模型后选：模型必须先和语言对得上，否则中文音频喂给
+            # 英文专用 distil 模型会整片变成英文幻觉（见 whisper_is_en_only）。
+            _lang = whisper_language()
+            # 本次调用的显式覆盖优先（'auto'/空 = 不覆盖，走全局配置）
+            _ovr = str(language or '').strip().lower()
+            if _ovr and _ovr != 'auto':
+                _lang = _ovr
+            _auto = (_lang in ('', 'auto', None))
+            _eff_lang = None if _auto else _lang
+            _cfg_model = model_name or whisper_model_name()
+            _mn = whisper_model_for_language(_cfg_model, _eff_lang)
+            if _mn != _cfg_model:
+                _note_progress_warning(
+                    '识别模型 %s 只支持英文，本次内容语言为「%s」，已自动改用多语言模型 %s'
+                    % (_cfg_model, _eff_lang or '自动判别', _mn))
             # 模型加载 + 转写 + 消费生成器：整段处于推理态
-            model = WhisperModel(_whisper_load_path(whisper_model_name()),
+            model = WhisperModel(_whisper_load_path(_mn),
                                  device=dev or device, compute_type=ctype_ or ctype,
                                  download_root=whisper_models_dir())
             # 参数说明（都是「让结果更准/更稳」，实测影响很大）：
@@ -801,13 +890,6 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None):
             #    输出的是一串翻译腔幻觉（实测：英文对白被转成『我跟他们说』×12、
             #    『林顿省警察受伤』×4 这类重复垃圾），而下游剧情理解/语义对齐
             #    会把这些垃圾当台词证据，解说质量从源头就歪了。
-            _lang = whisper_language()
-            # 本次调用的显式覆盖优先（'auto'/空 = 不覆盖，走全局配置）
-            _ovr = str(language or '').strip().lower()
-            if _ovr and _ovr != 'auto':
-                _lang = _ovr
-            _auto = (_lang in ('', 'auto', None))
-            _eff_lang = None if _auto else _lang
             # initial_prompt 只对中文有效：给英文音频塞『以下是普通话的句子』
             # 等于主动把解码器推向中文输出。
             _prompt = '以下是普通话的句子。' if (not _auto and str(_eff_lang).startswith('zh')) else None
@@ -1468,6 +1550,54 @@ def whisper_model_name():
     cfg = load_ai_config().get('whisper') or {}
     m = (cfg.get('model') or 'distil-large-v3')
     return m if m in _WHISPER_MODELS else 'base'
+
+
+# 多语言模型优先级（质量降序）。英文专用模型遇到非英文内容时按此表挑第一个
+# 已下载的做替代——用户手上有 large-v3 就用 large-v3，只有 tiny 就用 tiny。
+_WHISPER_ML_ORDER = ('large-v3', 'large-v2', 'large', 'medium', 'small', 'base', 'tiny')
+
+
+def whisper_is_en_only(name):
+    """该模型是不是「只认英文」：distil-* 蒸馏系列 + *.en 变体。
+
+    faster-whisper 的 distil-large-v3 官方只发布了 en 版本
+    （Systran/faster-distil-whisper-large-v3 就是英文专用），没有中文词表。
+    把中文音频喂进去，解码器会「照着英文往下猜」，输出一串听上去像样的英文
+    幻觉：实测「这是好的几说是比较复杂」→「that's, I'm just I'm not yet,
+    you know」。流程不报错、进度正常、结果有文本，最容易被当成偶发 bug 放过。
+    强制 language='zh' 也救不回来——模型本身没有那个词表。"""
+    n = str(name or '').strip().lower()
+    return n.startswith('distil-') or n.endswith('.en')
+
+
+def whisper_ml_fallback():
+    """给英文专用模型挑一个可用的多语言替代（优先已下载的，避免现场下 1.5G）。"""
+    try:
+        refresh_whisper_models()
+        for m in _WHISPER_ML_ORDER:
+            if (_WHISPER_MODELS.get(m) or {}).get('downloaded'):
+                return m
+    except Exception:
+        pass
+    return 'base'          # 谁都没下载：base 只要 ~140MB，首次自动拉取
+
+
+def whisper_model_for_language(model=None, language=None):
+    """把「配置的模型」和「本次要识别的语言」对齐，返回真正该加载的模型名。
+
+    · 语言明确不是英文（zh / ja / ko …）→ 英文专用模型必然产出垃圾，换多语言模型。
+    · 语言为 auto（'' / 'auto' / None）→ 同样换：自动判别等于「任何语言都可能」，
+      宁可英文精度略降，也不能让非英文片整片变乱码。
+    · 明确要识别英文（en）→ 保持原模型（distil 在英文上又快又准，这是它的主场）。
+
+    model / language 都是「本次调用的覆盖值」，不传则走全局配置。"""
+    m = model or whisper_model_name()
+    lang = str(language or '').strip().lower()
+    if lang in ('', 'auto', 'none'):
+        lang = str(whisper_language() or '').strip().lower()
+    if whisper_is_en_only(m) and lang != 'en':
+        return whisper_ml_fallback()
+    return m
 
 
 def whisper_language():

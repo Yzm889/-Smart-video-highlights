@@ -723,6 +723,26 @@ def dispatch_tts_regen_all(req, prog):
         _w.fail_task(prog, e)
 
 
+def _live_resolve_video(req, run_dir):
+    """直播录像解析：上传件 / 素材库 / 本机路径直读（桌面令牌）三条路。
+
+    v1.4.64 从 dispatch_live_clip 抽出——精剪分析是第二个入口，安全规则必须
+    只有一份：src_path 直读是本机能力，令牌不匹配一律拒绝，否则任意网页都能
+    借本服务把本地文件切片/转写后读走。"""
+    import live_clip as LC
+    vp = _w._resolve_upload_video(req.get('video'), run_dir, 'src')
+    if vp is None and req.get('src_path'):
+        if not _w.DESKTOP_TOKEN or str(req.get('desktop_token') or '') != _w.DESKTOP_TOKEN:
+            raise RuntimeError('本地路径直连仅限桌面版（缺少有效会话令牌），请改用文件选择上传')
+        sp = str(req.get('src_path') or '').strip()
+        if not os.path.isabs(sp) or not os.path.isfile(sp):
+            raise RuntimeError('本地文件不存在：%s' % sp)
+        if os.path.splitext(sp)[1].lower() not in LC.LIVE_EXTS:
+            raise RuntimeError('不支持的录像格式（要 mp4/mkv/flv/ts/mov/webm/avi）')
+        vp = sp
+    return vp
+
+
 def dispatch_live_clip(req, prog):
     """直播切片·阶段①（分析）：本地直播录像 → 自动找高光候选 → 存草稿等用户调整。
 
@@ -737,19 +757,7 @@ def dispatch_live_clip(req, prog):
             raise RuntimeError('直播切片已被 LIVE_CLIP=0 关闭（环境变量回滚开关）')
         run_dir = prog.get('run_dir') or os.path.join(_w.OUTDIR, time.strftime('%Y%m%d-%H%M%S'))
         os.makedirs(run_dir, exist_ok=True)
-        vp = _w._resolve_upload_video(req.get('video'), run_dir, 'src')
-        if vp is None and req.get('src_path'):
-            # src_path 直读本机文件是「桌面版专属」能力，与 _resolve_upload_video 的
-            # path+desktop_token 同一条安全红线：令牌不匹配（或纯浏览器模式没有令牌）
-            # 一律拒绝——否则任意网页都能借本服务把本地文件切片后读走。
-            if not _w.DESKTOP_TOKEN or str(req.get('desktop_token') or '') != _w.DESKTOP_TOKEN:
-                raise RuntimeError('本地路径直连仅限桌面版（缺少有效会话令牌），请改用文件选择上传')
-            sp = str(req.get('src_path') or '').strip()
-            if not os.path.isabs(sp) or not os.path.isfile(sp):
-                raise RuntimeError('本地文件不存在：%s' % sp)
-            if os.path.splitext(sp)[1].lower() not in LC.LIVE_EXTS:
-                raise RuntimeError('不支持的录像格式（要 mp4/mkv/flv/ts/mov/webm/avi）')
-            vp = sp
+        vp = _live_resolve_video(req, run_dir)
         if not vp:
             raise RuntimeError('未收到直播录像：请选择文件，或填写本机录播文件的完整路径')
         prog['phase'] = '读取录像信息'
@@ -795,6 +803,124 @@ def dispatch_live_clip(req, prog):
         prog['done'] = True
         prog['pct'] = 100
         prog['phase'] = '候选已出——可调整段落后再导出'
+    except Exception as e:
+        _w.fail_task(prog, e)
+
+
+def dispatch_live_clip_timeline(req, prog):
+    """v1.4.64 直播精剪·阶段①：全片每个高能点打注释 → 精剪时间轴。
+
+    与 dispatch_live_clip 的关系：同一条信号流水线（live_clip._compute_signals），
+    但**不替用户定成片**——只把全片的高能点连同评分/台词标出来，用户在时间轴上
+    自己剪、删、延长、排序、调音量。分析结果落 run_dir/live_clip_timeline.json。
+
+    reuse_run：从「快速出片」的候选编辑器切过来时带上原任务目录，直接复用已
+    转写台词（live_clip_asr.json）与源片，不再跑一遍 Whisper。"""
+    try:
+        import live_clip as LC
+        if not LC.enabled():
+            raise RuntimeError('直播切片已被 LIVE_CLIP=0 关闭（环境变量回滚开关）')
+        reuse = os.path.basename(str(req.get('reuse_run') or '').strip())
+        if reuse:
+            run_dir = str(_w._safe_dir(_w.OUTDIR, reuse))
+            draft0 = LC.load_draft(run_dir) or {}
+            vp = str(draft0.get('video_src') or '')
+            if not vp or not os.path.isfile(vp):
+                raise RuntimeError('原任务的源录像不在了（任务目录被清理？），请重新选择文件')
+        else:
+            run_dir = prog.get('run_dir') or os.path.join(_w.OUTDIR,
+                                                          time.strftime('%Y%m%d-%H%M%S'))
+            os.makedirs(run_dir, exist_ok=True)
+            vp = _live_resolve_video(req, run_dir)
+            if not vp:
+                raise RuntimeError('未收到直播录像：请选择文件，或填写本机录播文件的完整路径')
+        prog['phase'] = '读取录像信息'
+        prog['pct'] = 3
+        danmaku_events = LC._parse_danmaku_xml(req.get('danmaku_text') or '')
+        meta = LC.analyze_timeline(vp, run_dir, progress=prog,
+                                  use_asr=bool(req.get('use_asr', True)),
+                                  asr_language=req.get('asr_language'),
+                                  danmaku_events=danmaku_events,
+                                  max_points=req.get('max_points'),
+                                  max_sec=req.get('point_max_sec'),
+                                  min_gap=req.get('min_gap'))
+        LC.save_timeline_draft(run_dir, {
+            'video_src': vp,
+            'vdur': meta.get('vdur'),
+            'window': meta.get('window'),
+            'asr_used': meta.get('asr_used'),
+            'danmaku_used': bool(meta.get('danmaku_used')),
+            'points': meta.get('points') or [],
+            'curve': meta.get('curve') or [],
+            'asr': meta.get('asr') or [],
+        })
+        base = os.path.basename(run_dir)
+        prog['video_file'] = (os.path.basename(vp)
+                              if os.path.dirname(os.path.abspath(vp))
+                              == os.path.abspath(run_dir) else '')
+        prog['run_dir'] = base
+        prog['vdur'] = meta.get('vdur')
+        prog['window'] = meta.get('window')
+        prog['points'] = meta.get('points') or []
+        prog['curve'] = meta.get('curve') or []
+        prog['asr'] = meta.get('asr') or []
+        prog['asr_used'] = bool(meta.get('asr_used'))
+        prog['danmaku_used'] = bool(meta.get('danmaku_used'))
+        prog['draft_saved'] = True
+        prog['done'] = True
+        prog['pct'] = 100
+        prog['phase'] = '已标记 %d 个高能点——可开始精剪' % len(prog['points'])
+    except Exception as e:
+        _w.fail_task(prog, e)
+
+
+def dispatch_live_clip_timeline_export(req, prog):
+    """v1.4.64 直播精剪·阶段②：按时间轴顺序出片。
+
+    segments 的顺序就是成片顺序（用户拖过位置），每段自带 volume（0~200%）。
+    与 dispatch_live_clip_export 的区别：那边是 N 条独立切片，这边拼成一条成片。"""
+    try:
+        import live_clip as LC
+        if not LC.enabled():
+            raise RuntimeError('直播切片已被 LIVE_CLIP=0 关闭（环境变量回滚开关）')
+        run_dir_name = req.get('run_dir') or prog.get('run_dir') or ''
+        if not run_dir_name:
+            raise RuntimeError('缺少任务目录（先做高光分析）')
+        run_dir = _w._safe_dir(_w.OUTDIR, os.path.basename(run_dir_name))
+        draft = LC.load_timeline_draft(run_dir)
+        if not draft or not draft.get('video_src'):
+            raise RuntimeError('找不到精剪草稿（live_clip_timeline.json）——请先分析高能点')
+        vp = draft['video_src']
+        if not os.path.isfile(vp):
+            raise RuntimeError('源录像不在了（任务目录被清理？），请重新分析')
+        vdur = float(draft.get('vdur') or 0)
+        segs = LC.validate_timeline_segments(req.get('segments') or [], vdur)
+        if not segs:
+            raise RuntimeError('时间轴是空的：每段至少 2 秒且不超过 600 秒')
+        _aspect = str(req.get('aspect') or 'blur').strip().lower()
+        if _aspect not in ('orig', 'crop', 'blur', 'hd'):
+            _aspect = 'blur'
+        _focus = LC._clamp_focus(req.get('focus'))
+        prog['phase'] = '准备导出精剪'
+        prog['pct'] = 3
+        res = LC.export_timeline(vp, segs, run_dir, progress=prog,
+                                 aspect=_aspect, focus=_focus)
+        jp_rel, txt_rel = LC.write_precise_report(
+            {'video': vp, 'vdur': vdur}, res['segments'], res['file'], run_dir,
+            aspect=_aspect)
+        base = os.path.basename(run_dir)
+        fname = os.path.basename(res['file'])
+        prog['reel'] = {'file': fname, 'rel': base + '/' + fname,
+                        'dur': res['dur'], 'n': res['n']}
+        prog['segments'] = res['segments']
+        prog['report_txt'] = base + '/' + txt_rel
+        prog['report_json'] = base + '/' + jp_rel
+        prog['run_dir'] = base
+        prog['file'] = prog['reel']['rel']
+        prog['done'] = True
+        prog['pct'] = 100
+        prog['phase'] = '精剪成片完成（%d 段 · %.0f 秒）' % (res['n'], res['dur'])
+        _w._record_history(req, prog, 'live_clip')
     except Exception as e:
         _w.fail_task(prog, e)
 
@@ -1448,6 +1574,8 @@ for _name in (
     'dispatch_tts_regen_all',
     'dispatch_live_clip',
     'dispatch_live_clip_export',
+    'dispatch_live_clip_timeline',
+    'dispatch_live_clip_timeline_export',
     'dispatch_instruct',
     'collect_partial',
     'assemble',

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=39">
+<link rel="stylesheet" href="desktop.css?v=41">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -248,6 +248,11 @@
       </div>
       <button class="btn primary big" id="lcGo" disabled>① 分析高光（先出候选，不会直接出片）</button>
       <div class="np-hint" id="lcHint">选择录像或填写本地路径后开始</div>
+      <!-- v1.4.64：精剪入口——不替你定成片，只标出全片每个高能点，自己在时间轴上剪 -->
+      <div class="lc-row lcp-entry">
+        <label>精剪点上限 <input type="number" id="lcPoints" value="24" min="6" max="50"></label>
+        <button class="mini-btn lcp-entry-btn" id="lcPreciseGo">🎬 精剪：标记全片高能点（自己剪，不直接出片）</button>
+      </div>
       <div class="lc-progress" id="lcProg" style="display:none">
         <div class="lc-bar"><div class="lc-fill" id="lcFill"></div></div>
         <div class="np-hint" id="lcMeta"></div>
@@ -255,6 +260,82 @@
       </div>
       <div id="lcEditor" style="display:none"></div>
       <div id="lcResults" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- 直播精剪工作台（v1.4.64）：右预览 + 高能注释，下时间轴，自己剪/删/延长/排序/音量 -->
+  <div class="lc-precise" id="lcPrecise" style="display:none">
+    <div class="lcp-bar">
+      <button class="mini-btn" id="lcpBack">← 返回</button>
+      <div class="lcp-bar-t">🎬 直播精剪</div>
+      <div class="lcp-bar-s" id="lcpSrc"></div>
+      <span class="tb-flex"></span>
+      <label class="lcp-bar-opt">画幅
+        <select id="lcpAspect">
+          <option value="blur" selected>竖屏 9:16 · 虚化背景</option>
+          <option value="crop">竖屏 9:16 · 居中裁切</option>
+          <option value="hd">横屏 16:9 · 1280×720</option>
+          <option value="orig">原始画幅</option>
+        </select>
+      </label>
+      <button class="mini-btn" id="lcpReset" title="丢弃手工调整，回到分析出的全部高能点">↺ 重置为高能点</button>
+      <button class="btn primary" id="lcpExport">⬇ 导出精剪成片</button>
+    </div>
+    <div class="lcp-body">
+      <section class="lcp-stage">
+        <div class="lcp-vbox"><video id="lcpVideo" playsinline></video></div>
+        <div class="lcp-transport">
+          <button class="lcp-play" id="lcpPlay" title="播放 / 暂停（空格）">▶</button>
+          <span class="lcp-tc" id="lcpTc">00:00 / 00:00</span>
+          <span class="lcp-cur" id="lcpCurSeg">未选中片段</span>
+          <span class="tb-flex"></span>
+          <span class="lcp-tip">点注释或片段=试看这一段 · 空格=连续播放</span>
+        </div>
+      </section>
+      <aside class="lcp-side">
+        <div class="lcp-side-h">
+          <b>高能注释</b><span id="lcpNoteCount"></span>
+          <span class="tb-flex"></span>
+          <select id="lcpSort"><option value="time">按时间</option><option value="score">按评分</option></select>
+        </div>
+        <div class="lcp-search"><input type="text" id="lcpSearch" placeholder="搜台词 / 注释…"></div>
+        <div class="lcp-notes" id="lcpNotes"></div>
+        <div class="lcp-insp" id="lcpInsp" style="display:none"></div>
+      </aside>
+    </div>
+    <div class="lcp-tl">
+      <div class="lcp-tl-tools">
+        <b>时间轴</b>
+        <button class="mini-btn" id="lcpSplit" title="在播放头处分割选中片段（S）">✂ 分割</button>
+        <button class="mini-btn" id="lcpDel" title="删除选中片段（Delete）">🗑 删除</button>
+        <button class="mini-btn" id="lcpUndo" title="撤销（Ctrl+Z）">↶ 撤销</button>
+        <span class="lcp-hint" id="lcpTlHint"></span>
+        <span class="tb-flex"></span>
+        <label class="lcp-zoom">缩放 <input type="range" id="lcpZoom" min="3" max="48" value="8"></label>
+        <span class="lcp-total" id="lcpTotal"></span>
+      </div>
+      <div class="lcp-ov-wrap">
+        <div class="lcp-ov-label">源片热度 · 点击任意位置跳转</div>
+        <div class="lcp-overview" id="lcpOverview">
+          <canvas id="lcpCurve"></canvas>
+          <div class="lcp-ov-head" id="lcpOvHead"></div>
+        </div>
+      </div>
+      <div class="lcp-seq" id="lcpSeq">
+        <div class="lcp-seq-inner" id="lcpSeqInner">
+          <div class="lcp-ruler" id="lcpRuler"></div>
+          <div class="lcp-clips" id="lcpClips"></div>
+          <div class="lcp-seqhead" id="lcpSeqHead"></div>
+        </div>
+      </div>
+    </div>
+    <div class="lcp-overlay" id="lcpOverlay" style="display:none">
+      <div class="lcp-ov-card">
+        <div class="lcp-ov-title" id="lcpOvTitle">正在分析全片高能点…</div>
+        <div class="lcp-ov-bar"><div class="lcp-ov-fill" id="lcpOvFill"></div></div>
+        <div class="lcp-ov-meta" id="lcpOvMeta"></div>
+        <div class="lcp-ov-acts" id="lcpOvActs"></div>
+      </div>
     </div>
   </div>
 
@@ -535,6 +616,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=39"></script>
+<script src="desktop.js?v=41"></script>
 </body>
 </html>

@@ -25,7 +25,8 @@ import wave as _wave
 import numpy as np
 
 from ffmpeg_utils import ffmpeg_run
-from ai_providers import asr_segments, local_llm_chat
+from ai_providers import (asr_segments, local_llm_chat, whisper_language,
+                          whisper_model_for_language, whisper_model_name)
 
 _log = logging.getLogger('framecut.live')
 
@@ -149,8 +150,39 @@ def _motion_profile(video_path, window, progress=None):
     return (sums / cnts).astype(np.float32), float(times.max() + 1.0 / 4.0)
 
 
+def _line_weight(text):
+    """一条台词有多少「信息量」（0~1）：用来给台词密度信号降权 / 过滤噪音注释。
+
+    【为什么需要】ASR 在纯音乐、掌声、噪音段会输出同一个字的复读——实测一场
+    直播在 659~708 秒连续三条注释的文字都只有「纵纵」。旧实现把这些片段的
+    覆盖秒数原样算作「这里有人在说话」，于是噪音段因为「台词连续」冲进高能榜，
+    用户在精剪列表里看到一堆只有单字的注释，完全没法判断该不该留。
+
+    真实台词的汉字种类一定多：一句 10 个字里重复率极高（≤2 种）几乎只可能是
+    幻觉。宁可把极少数「啊啊啊」式的真实语气词降权，也不能让噪音占满注释列表。"""
+    t = ''.join(ch for ch in str(text or '')
+                if '\u4e00' <= ch <= '\u9fa5' or ch.isalnum())
+    if len(t) <= 1:
+        return 0.0
+    u = len(set(t))
+    if u <= 2:
+        return 0.12          # 「纵纵」「呃呃呃」：几乎肯定是复读幻觉
+    if u <= 3 and len(t) <= 6:
+        return 0.40          # 「哈哈哈」「对对对」：算语气词，不当证据
+    return 1.0
+
+
+def _clean_lines(lines):
+    """只留有信息量的台词行（去掉音乐/噪音段的复读幻觉）。"""
+    return [x for x in (lines or [])
+            if _line_weight((x or {}).get('text')) >= 0.40]
+
+
 def _speech_profile(asr, nwin, window):
-    """每窗口的台词覆盖秒数 + 高能词次数。返回 (density, kw_counts)。"""
+    """每窗口的台词覆盖秒数 + 高能词次数。返回 (density, kw_counts)。
+
+    覆盖秒数按台词的「信息量」加权（见 _line_weight）：噪音段的复读只算几乎
+    不计分，避免 ASR 幻觉把静音段抬成高能点。"""
     density = np.zeros(nwin, dtype=np.float32)
     kw = np.zeros(nwin, dtype=np.float32)
     for seg in (asr or []):
@@ -163,15 +195,18 @@ def _speech_profile(asr, nwin, window):
             e = s + 0.5
         i0 = max(0, int(s / window))
         i1 = min(nwin, max(i0 + 1, int(e / window) + 1))
+        txt = str(seg.get('text', '') or '')
+        w = _line_weight(txt)
+        if w <= 0:
+            continue                     # 连一个字都没有：不是「有人说话」的证据
         for i in range(i0, i1):
             # 每个覆盖窗只累加**窗内实际覆盖秒数**（旧写法把整段时长加给了每个窗，
             # 一条 5 秒台词会让覆盖到的每个窗都 +5，密度曲线直接爆表）
             cov = min(e, (i + 1) * window) - max(s, i * window)
             if cov > 0:
-                density[i] += min(cov, window)
-        txt = str(seg.get('text', '') or '')
+                density[i] += min(cov, window) * w
         if txt:
-            kw[i0:i1] += float(min(3, sum(txt.count(w) for w in HL_WORDS)))
+            kw[i0:i1] += float(min(3, sum(txt.count(w2) for w2 in HL_WORDS))) * w
     return density, kw
 
 
@@ -341,6 +376,144 @@ def select_clips(score, window, vdur, n_clips=None, min_sec=None, max_sec=None,
     return out
 
 
+def detect_points(score, window, vdur, min_sec=6.0, max_sec=40.0, min_gap=10.0,
+                  max_points=30):
+    """v1.4.64 精剪路线：把全片**每个值得一看的局部峰**都标出来，而不是只留 N 条。
+
+    与 select_clips 的区别（都是产品决策，不是实现差异）：
+      · 数量：最多 max_points 个点（默认 30），不是 5 条；
+      · 时长：默认 6~40 秒（快速出片是 20~60 秒），点要短，用户自己延长；
+      · 门槛：要求「绝对高度 + 局部显著性」双达标（见下方双闸），中腰部高光
+        也保留，但平坦录像里的随机噪声不会被硬凑成注释；
+      · 间距：min_gap 默认 10 秒（快速出片 45 秒），允许密集高光挨着出现。
+
+    峰位判定用 ±min_gap/2 窗口的局部极大值 + 全局分位地板，再按分数贪心去重
+    （贪心而不是按时间扫描：一条 90 分钟直播里最热的往往集中在几个段落，
+    按分数优先能保证先保住真正的高光，后补中腰部）。
+    返回 [{start,end,peak_t,score,pct,dur}]，按时间升序，互不重叠。"""
+    s = smooth(score, max(3, int(2.5 / max(0.5, float(window)))))
+    n = int(s.size)
+    if n <= 0 or vdur <= 0:
+        return []
+    rk = pct_rank(s)
+    # 【显著性闸，2026-11-12 合成曲线实测补的】只看「全片前 X%」会把平坦录像里
+    # 的随机噪声也标成高能点（实测 15 分钟纯噪声能填满 30 个点、评分还都 80+）。
+    # 这里用 (中位数 → P95) 的动态范围自适应定门槛：真高光至少落在该区间前 60%
+    # 的位置。P95 会被高光本身抬高，所以吵闹片/安静片是同一套相对标准。
+    # 不用「局部突出度」：一场 2 分钟的持续高潮会被邻域中位数吃掉，整段漏标。
+    med = float(np.median(s))
+    span = max(0.0, float(np.percentile(s, 95)) - med)
+    if span < 0.03:                       # 曲线几乎是平的：这段录像没有高光可言
+        _log.info('[LIVE] 高能曲线过于平坦（动态范围 %.3f），不生成注释', span)
+        return []
+    thr = med + 0.40 * span
+    half = max(1, int(float(min_gap) / max(0.5, float(window)) / 2.0))
+    cand = []
+    for i in range(n):
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        if s[i] >= thr and s[i] >= float(s[lo:hi].max()) - 1e-9:
+            cand.append(i)
+    cand.sort(key=lambda i: (-float(s[i]), i))
+    kept = []
+    gap = max(1.0, float(min_gap))
+    for i in cand:
+        t = (i + 0.5) * float(window)
+        if all(abs(t - (k + 0.5) * float(window)) >= gap for k in kept):
+            kept.append(i)
+        if len(kept) >= max(1, int(max_points)):
+            break
+    if not kept:
+        return []
+    pts = []
+    for i in kept:
+        floor = float(s[i]) * 0.60
+        lo = hi = i
+        while (hi - lo) * window < max_sec:
+            grow_hi = hi + 1 < n and s[hi + 1] >= floor
+            grow_lo = lo - 1 >= 0 and s[lo - 1] >= floor
+            if not grow_hi and not grow_lo:
+                break
+            if grow_hi:
+                hi += 1
+            if grow_lo and (hi - lo) * window < max_sec:
+                lo -= 1
+        while (hi - lo) * window < min_sec and (lo > 0 or hi < n - 1):
+            if lo > 0:
+                lo -= 1
+            if (hi - lo) * window < min_sec and hi < n - 1:
+                hi += 1
+        pts.append({'start': max(0.0, lo * window),
+                    'end': min(vdur, (hi + 1) * window),
+                    'peak_t': (i + 0.5) * window,
+                    'score': round(float(s[i]), 3),
+                    'pct': int(round(float(rk[i]) * 100))})
+    pts.sort(key=lambda c: c['start'])
+    # 扩边会让相邻点贴上：在重叠区中点切开。不合并——两个峰就是两个注释，
+    # 合并会把用户想单独保留/删除的高光吞掉。
+    for a, b in zip(pts, pts[1:]):
+        if a['end'] > b['start']:
+            mid = (max(a['start'], b['start']) + min(a['end'], b['end'])) / 2.0
+            a['end'] = min(a['end'], max(a['start'] + 1.0, mid))
+            b['start'] = max(b['start'], min(b['end'] - 1.0, mid))
+    out = []
+    for p in pts:
+        if p['end'] - p['start'] < 1.0:
+            continue
+        p['start'] = round(p['start'], 2)
+        p['end'] = round(p['end'], 2)
+        p['peak_t'] = round(p['peak_t'], 2)
+        p['dur'] = round(p['end'] - p['start'], 2)
+        out.append(p)
+    return out
+
+
+def analyze_timeline(video_path, run_dir, progress=None, use_asr=True,
+                     asr_language=None, danmaku_events=None, max_points=None,
+                     max_sec=None, min_gap=None):
+    """v1.4.64 精剪阶段①：一条录像 → 全片高能点（注释）+ 热度曲线 + 全量台词。
+
+    与 analyze_highlights 共用 _compute_signals，所以「精剪里看到的高能点」与
+    「快速出片挑的片段」是同一套分数，不会出现两条路径结论互相打脸。
+
+    返回：
+      points  每个高能点的起止/峰值/评分(0~1)/全片分位(pct 0~100)/理由/台词行
+      curve   热度曲线（每 window 秒一点，0~1），前端画时间轴热力底图
+      asr     全量台词（右侧注释面板可翻看/搜索，点行跳转）"""
+    up = (lambda phase, pct: progress.update({'phase': phase, 'pct': pct})
+          if progress else (lambda phase, pct: None))
+    sig = _compute_signals(video_path, run_dir, progress=progress, use_asr=use_asr,
+                           asr_language=asr_language, danmaku_events=danmaku_events)
+    win, vdur = sig['win'], sig['vdur']
+    npts = max(5, min(60, int(max_points or 30)))
+    mx = max(5.0, min(120.0, float(max_sec or 40.0)))
+    mg = max(4.0, min(120.0, float(min_gap or 10.0)))
+    up('标记全片高能点', 72)
+    points = detect_points(sig['combined'], win, vdur, min_sec=min(6.0, mx),
+                          max_sec=mx, min_gap=mg, max_points=npts)
+    if not points:
+        raise RuntimeError('没检测到高能点（录像可能整段都是静音/静止画面）')
+    for p in points:
+        pk = int(p['peak_t'] / win)
+        p['reasons'] = _reasons(pk, [sig['r_danmaku'], sig['ranks'][0],
+                                     sig['r_motion'], sig['r_speech']], sig['kw'],
+                                ('弹幕热度', '音量', '画面动作', '台词密度'))
+        _raw = _lines_in_range(sig['asr'], p['start'], p['end'])
+        p['lines'] = _clean_lines(_raw)
+        p['text'] = ' '.join(str(x.get('text') or '') for x in p['lines']).strip()[:200]
+        # 有台词但全是噪音复读：注释面板显示「像音乐/掌声」，而不是让用户看『纵纵』
+        p['noisy'] = bool(_raw) and not p['lines']
+    curve = [round(float(x), 4) for x in sig['combined']]
+    _log.info('[LIVE] 精剪高能点: %d 个（曲线 %d 窗，台词 %d 段，弹幕 %s）',
+              len(points), len(curve), len(sig['asr']),
+              '有' if sig['danmaku'] is not None else '无')
+    return {'points': points, 'curve': curve, 'window': win,
+            'vdur': round(vdur, 2), 'asr_used': bool(sig['asr']),
+            'danmaku_used': bool(sig['danmaku'] is not None),
+            'asr': [{'start': s.get('start'), 'end': s.get('end'),
+                     'text': s.get('text')} for s in sig['asr']
+                    if isinstance(s, dict)]}
+
+
 def _lines_in_range(asr, start, end, limit=200):
     """v1.4.61 候选台词明细：取与 [start, end) 有重叠的台词（截 limit 条）。
 
@@ -385,16 +558,100 @@ def _reasons(peak_idx, ranks, kw, keywords_names=('音量', '画面动作', '台
     return parts[:3]
 
 
-def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
-                       min_sec=None, max_sec=None, use_asr=True, asr_language=None,
-                       danmaku_events=None):
-    """主入口：一条录像 → 高光段列表（含可读理由）。
+def _asr_cache_path(run_dir):
+    return os.path.join(str(run_dir or ''), 'live_clip_asr.json')
 
-    danmaku_events（v1.4.61）：可选的 [{t, text}] 直播弹幕（B 站录播姬 XML
-    解析产物）。给了就多融一路「观众投票」，没给则整条链路与旧版逐位等价。
 
-    进度约定与全产品一致：progress['phase']/['pct']，用户取消抛 AbortError
-    （ffmpeg_run/帧分析/ASR 都已接 RUN_PROCS 协作取消）。"""
+# 台词缓存格式/清洗规则版本：文本后处理（复读折叠、垃圾字符清理）改了就要 +1，
+# 否则旧缓存里的脏台词会一直「命中」下去——重跑也不会变干净。
+_ASR_CACHE_VER = 2
+
+
+def _asr_signature(asr_language=None):
+    """v1.4.64：本次转写的「语言 + 模型」指纹，用来校验台词缓存。
+
+    【为什么必须校验】缓存只按片名+时长认片，换模型/换语言不识别的还是同一片，
+    旧缓存就会被当命中直接复用。实测踩过：默认 distil-large-v3 把中文整片转成
+    英文幻觉并已落盘缓存，切到多语言模型重跑，因为「缓存命中」一条都没重转，
+    界面上看起来「改了配置也没用」。指纹对不上就作废旧缓存，重新转写。"""
+    lang = str(asr_language or '').strip().lower()
+    if lang in ('', 'auto'):
+        try:
+            lang = str(whisper_language() or 'auto').strip().lower()
+        except Exception:
+            lang = 'auto'
+    eff = None if lang in ('', 'auto') else lang
+    try:
+        model = whisper_model_for_language(None, eff)
+    except Exception:
+        model = 'base'
+    return {'model': model, 'lang': eff or 'auto'}
+
+
+def _save_asr_cache(run_dir, video_path, vdur, asr, sig=None):
+    """v1.4.64：台词转写落盘缓存——精剪时间轴复用同一任务目录时不必再跑一遍
+    Whisper（15 分钟片约 40 秒、90 分钟片要好几分钟）。写临时文件再 os.replace，
+    用户中途取消不会留下半个 JSON 把下次复用带崩。"""
+    if not run_dir or not asr:
+        return
+    try:
+        fp = _asr_cache_path(run_dir)
+        tmp = fp + '.tmp'
+        sig = sig or {}
+        data = {'video': os.path.basename(str(video_path or '').replace('\\', '/')),
+                'vdur': round(float(vdur or 0), 1),
+                'v': _ASR_CACHE_VER,
+                'model': sig.get('model') or '',
+                'lang': sig.get('lang') or '',
+                'segments': [{'start': s.get('start'), 'end': s.get('end'),
+                              'text': s.get('text')}
+                             for s in asr if isinstance(s, dict)]}
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, fp)
+    except Exception as e:
+        _log.info('[LIVE] 台词缓存写入失败（不影响本次分析）: %s', e)
+
+
+def _load_asr_cache(run_dir, video_path, vdur, sig=None):
+    """读台词缓存；片名、时长或「模型+语言指纹」对不上就作废——绝不把别的录像
+    的台词、或别的模型转出的台词套到这次结果上。缓存坏了也只当没有。"""
+    if not run_dir:
+        return None
+    try:
+        fp = _asr_cache_path(run_dir)
+        if not os.path.exists(fp):
+            return None
+        with open(fp, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if os.path.basename(str(video_path or '').replace('\\', '/')) != data.get('video'):
+            return None
+        if int(data.get('v') or 0) != _ASR_CACHE_VER:
+            _log.info('[LIVE] 台词缓存是旧清洗规则（v%s ≠ v%s），重新转写',
+                      data.get('v'), _ASR_CACHE_VER)
+            return None
+        if abs(float(data.get('vdur') or 0) - float(vdur or 0)) > 1.5:
+            return None
+        sig = sig or {}
+        if sig:
+            if str(data.get('model') or '') != str(sig.get('model') or '') \
+                    or str(data.get('lang') or '') != str(sig.get('lang') or ''):
+                _log.info('[LIVE] 台词缓存与本次模型不符（旧 %s/%s ≠ 新 %s/%s），重新转写',
+                          data.get('model'), data.get('lang'),
+                          sig.get('model'), sig.get('lang'))
+                return None
+        segs = [s for s in (data.get('segments') or []) if isinstance(s, dict)]
+        return segs or None
+    except Exception:
+        return None
+
+
+def _compute_signals(video_path, run_dir, progress=None, use_asr=True,
+                     asr_language=None, danmaku_events=None):
+    """v1.4.64 抽出的信号层：音量 / 画面运动 / 台词 / 弹幕 → 相对化融合曲线。
+
+    阶段①「挑 N 条」与精剪时间轴「全片每个高能点」共用同一次计算——两条产品
+    路径的高光口径不会分叉，时间轴里标记的热度也正好等于快速出片用的分数。"""
     up = (lambda phase, pct: progress.update({'phase': phase, 'pct': pct})
           if progress else (lambda phase, pct: None))
     vdur, has_audio = _probe_duration(video_path)
@@ -422,14 +679,22 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
         motion = m2
 
     asr = []
+    asr_sig = _asr_signature(asr_language) if (use_asr and vdur <= ASR_MAX_SEC) else {}
     if use_asr and vdur <= ASR_MAX_SEC:
-        _lang_note = {'auto': '自动判别'}.get(asr_language or '', asr_language)
-        up('转写台词（Whisper · %s，长片请耐心）' % (_lang_note or '自动判别'), 40)
-        try:
-            asr = asr_segments(video_path, language=asr_language or None) or []
-        except Exception as e:
-            _log.info('[LIVE] ASR 失败（降级为音量+画面双信号）: %s', e)
-            asr = []
+        asr = _load_asr_cache(run_dir, video_path, vdur, asr_sig) or []
+        if asr:
+            up('复用已转写台词（同一任务无需重跑 Whisper）', 40)
+        else:
+            _lang_note = {'auto': '自动判别'}.get(asr_language or '', asr_language)
+            up('转写台词（Whisper · %s · %s，长片请耐心）'
+               % (_lang_note or '自动判别', asr_sig.get('model') or '默认模型'), 40)
+            try:
+                asr = asr_segments(video_path, language=asr_language or None) or []
+            except Exception as e:
+                _log.info('[LIVE] ASR 失败（降级为音量+画面双信号）: %s', e)
+                asr = []
+            if asr:
+                _save_asr_cache(run_dir, video_path, vdur, asr, asr_sig)
     elif use_asr:
         _log.info('[LIVE] 录像 %.0f 分钟超过 %.0f 分钟，跳过台词信号（省一半时间）',
                   vdur / 60.0, ASR_MAX_SEC / 60.0)
@@ -451,7 +716,7 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
             danmaku = dc
 
     # 融合：各路分位次按权重合成（某路缺席就把权重匀给其它路，不空算）
-    up('挑选高光片段', 62)
+    up('计算综合高能曲线', 62)
     r_audio = pct_rank(audio)
     if r_audio.size < nwin2:                 # 音频比视频短（尾部无音轨）：中性值补齐
         a2 = np.full(nwin2, 0.5)
@@ -480,14 +745,37 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
     combined = np.zeros(nwin2, dtype=np.float64)
     for r, w in zip(ranks, weights):
         combined[:r.size] += float(w / wsum) * r
-    clips = select_clips(combined, win, vdur, n_clips=n_clips,
+    return {'vdur': vdur, 'has_audio': has_audio, 'win': win, 'nwin': nwin,
+            'nwin2': nwin2, 'combined': combined, 'asr': asr,
+            'kw': kw, 'ranks': ranks, 'r_danmaku': r_danmaku,
+            'r_motion': r_motion, 'r_speech': r_speech, 'danmaku': danmaku}
+
+
+def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
+                       min_sec=None, max_sec=None, use_asr=True, asr_language=None,
+                       danmaku_events=None):
+    """主入口：一条录像 → 高光段列表（含可读理由）。
+
+    danmaku_events（v1.4.61）：可选的 [{t, text}] 直播弹幕（B 站录播姬 XML
+    解析产物）。给了就多融一路「观众投票」，没给则整条链路与旧版逐位等价。
+
+    进度约定与全产品一致：progress['phase']/['pct']，用户取消抛 AbortError
+    （ffmpeg_run/帧分析/ASR 都已接 RUN_PROCS 协作取消）。"""
+    up = (lambda phase, pct: progress.update({'phase': phase, 'pct': pct})
+          if progress else (lambda phase, pct: None))
+    sig = _compute_signals(video_path, run_dir, progress=progress, use_asr=use_asr,
+                           asr_language=asr_language, danmaku_events=danmaku_events)
+    vdur, win = sig['vdur'], sig['win']
+    up('挑选高光片段', 70)
+    clips = select_clips(sig['combined'], win, vdur, n_clips=n_clips,
                          min_sec=min_sec, max_sec=max_sec)
     for c in clips:
         pk = int(c['peak_t'] / win)
         # 弹幕置顶：parts 只留 3 条，观众投票的理由不能被音量/画面挤掉
-        c['reasons'] = _reasons(pk, [r_danmaku, ranks[0], r_motion, r_speech], kw,
+        c['reasons'] = _reasons(pk, [sig['r_danmaku'], sig['ranks'][0],
+                                     sig['r_motion'], sig['r_speech']], sig['kw'],
                                 ('弹幕热度', '音量', '画面动作', '台词密度'))
-        c['lines'] = _lines_in_range(asr, c['start'], c['end'])
+        c['lines'] = _clean_lines(_lines_in_range(sig['asr'], c['start'], c['end']))
         c['score'] = round(c['score'], 3)
         c['start'] = round(c['start'], 2)
         c['end'] = round(c['end'], 2)
@@ -496,14 +784,16 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
     if not clips:
         raise RuntimeError('没挑出任何高光段（录像可能整段都是静音/静止画面）')
     _log.info('[LIVE] 高光挑选完成: %d 条（音量窗口 %d，运动 %s，台词 %s段，弹幕 %s）',
-              len(clips), nwin, '有' if motion is not None else '无', len(asr),
-              '有' if danmaku is not None else '无')
+              len(clips), sig['nwin'], '有' if sig['r_motion'] is not None else '无',
+              len(sig['asr']), '有' if sig['danmaku'] is not None else '无')
     # asr 全量只随 meta 返回给上层（不落草稿，避免 90 分钟片的草稿膨胀）；
     # 每段可见的 lines 已经附在 clips 上，随 draft 持久化、恢复候选也在。
     return {'clips': clips, 'vdur': round(vdur, 2), 'window': win,
-            'asr_used': bool(asr), 'danmaku_used': bool(danmaku is not None),
+            'asr_used': bool(sig['asr']),
+            'danmaku_used': bool(sig['danmaku'] is not None),
             'asr': [{'start': s.get('start'), 'end': s.get('end'),
-                     'text': s.get('text')} for s in asr if isinstance(s, dict)]}
+                     'text': s.get('text')} for s in sig['asr']
+                    if isinstance(s, dict)]}
 
 
 def _clamp_focus(focus):
@@ -821,6 +1111,223 @@ def carry_reasons(segs, draft_clips, overlap_ratio=0.5):
         else:
             res.append({'score': '', 'reasons': ['手动指定']})
     return res
+
+
+def _timeline_volume(s):
+    """精剪音量：百分比 → 倍率，钳制 0~200%。坏值按 100%（原声）处理。"""
+    try:
+        v = float(s.get('volume', 1.0))
+    except (TypeError, ValueError, AttributeError):
+        v = 1.0
+    if not np.isfinite(v):
+        v = 1.0
+    return max(0.0, min(2.0, v))
+
+
+def validate_timeline_segments(segs, vdur, min_sec=2.0, max_sec=600.0, max_count=60):
+    """v1.4.64 精剪：清洗用户排好的顺序片段清单。
+
+    与 validate_segments 的关键区别：**不按时间排序**——时间轴上的先后就是
+    成片顺序（用户可以把 10:00 的片段拖到 02:00 前面），排序会直接毁掉「更改
+    位置」这个功能。过短/坏数据丢弃，音量钳制 0~200%。"""
+    out = []
+    for s in (segs or []):
+        try:
+            a = float(s.get('start'))
+            b = float(s.get('end'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        a = max(0.0, min(a, float(vdur or 0)))
+        b = max(0.0, min(b, float(vdur or 0)))
+        if b - a < min_sec:
+            continue
+        if b - a > max_sec:
+            b = a + max_sec
+        out.append({'start': round(a, 2), 'end': round(b, 2),
+                    'dur': round(b - a, 2), 'volume': round(_timeline_volume(s), 3)})
+        if len(out) >= max_count:
+            break
+    return out
+
+
+def save_timeline_draft(run_dir, data):
+    """精剪阶段①结果落盘：live_clip_timeline.json（与快速出片的 draft 分开存，
+    互不覆盖——同一任务可以两种方式各来一遍）。"""
+    fp = os.path.join(run_dir, 'live_clip_timeline.json')
+    tmp = fp + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, fp)
+    return fp
+
+
+def load_timeline_draft(run_dir):
+    fp = os.path.join(str(run_dir or ''), 'live_clip_timeline.json')
+    if not os.path.exists(fp):
+        return None
+    try:
+        with open(fp, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _reel_name(n, total, run_dir):
+    """精剪成片文件名：段数 + 总时长一眼可见（文件名里带时长是剪辑工具惯例）。
+    中文名现在能走 /media（unquote），重名自动加序号不覆盖上一条成片。"""
+    base = '精剪成片_%d段_%02dm%02ds' % (n, int(total // 60), int(total % 60))
+    name = base + '.mp4'
+    k = 2
+    while os.path.exists(os.path.join(run_dir, name)):
+        name = '%s_%d.mp4' % (base, k)
+        k += 1
+    return name
+
+
+def export_timeline(video_path, segs, run_dir, progress=None, aspect='blur', focus=0.5):
+    """v1.4.64 精剪阶段②：按时间轴顺序逐段渲染（各自音量）→ 拼成一条成片。
+
+    为什么两段式（先逐段 mp4 再 concat）而不是一条巨型 filter_complex：
+      · 30 段时命令行与滤镜图会膨胀到几 KB，出错时日志根本看不清是哪一段；
+      · 逐段失败能精确报「第 N 段渲染失败」，用户可以删掉那段再导；
+      · concat 直拷（-c copy）零重编码，30 段也只要几秒；失败自动回退重编码。
+    """
+    _w = _host()
+    up = (lambda phase, pct: progress.update({'phase': phase, 'pct': pct})
+          if progress else (lambda phase, pct: None))
+    if not segs:
+        raise RuntimeError('时间轴是空的：先保留至少一个片段')
+    vdur, has_audio = _probe_duration(video_path)
+    if vdur <= 0:
+        raise RuntimeError('读不到源片时长（文件损坏？）')
+    total = sum(float(s['end']) - float(s['start']) for s in segs)
+    enc = list(_w.video_encode_args_interim())
+    _tm = ''
+    _tags = []
+    try:
+        from video_render import probe_is_hdr, tonemap_available, tonemap_chain, BT709_TAGS
+        if probe_is_hdr(video_path) and tonemap_available(video_path):
+            _tm = tonemap_chain()
+            _tags = list(BT709_TAGS)
+    except Exception as _e:
+        _log.info('[LIVE] HDR 探测跳过: %s', _e)
+    vf = _vf_chain(aspect, _tm, focus)
+    parts_dir = os.path.join(run_dir, '_tl_parts')
+    import shutil as _sh
+    _sh.rmtree(parts_dir, ignore_errors=True)
+    os.makedirs(parts_dir, exist_ok=True)
+    parts = []
+    n = len(segs)
+    for i, s in enumerate(segs):
+        up('渲染片段 %d/%d（成片共 %.0f 秒）' % (i + 1, n, total),
+           5 + int(65 * i / max(1, n)))
+        out = os.path.join(parts_dir, 'p%03d.mp4' % i)
+        vol = _timeline_volume(s)
+        cmd = ['-y', '-ss', '%.3f' % float(s['start']), '-i', video_path,
+               '-t', '%.3f' % (float(s['end']) - float(s['start']))]
+        if vf.startswith('[0:v]'):
+            graph, maps = vf, ['-map', '[vout]']
+            if has_audio:
+                graph += ';[0:a]volume=%.4f,asetpts=PTS-STARTPTS[aout]' % vol
+                maps += ['-map', '[aout]']
+            cmd += ['-filter_complex', graph] + maps
+        else:
+            cmd += ['-vf', vf]
+            if has_audio:
+                cmd += ['-af', 'volume=%.4f,asetpts=PTS-STARTPTS' % vol]
+        cmd += enc
+        if _tm:
+            cmd += _tags
+        cmd += ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', out]
+        rc, _o, e = ffmpeg_run(cmd)
+        if rc != 0 or not os.path.exists(out) or os.path.getsize(out) < 10240:
+            raise RuntimeError('第 %d 段渲染失败（%s）: %s'
+                               % (i + 1, _fmt_range(s), e.decode('utf-8', 'ignore')[-200:]))
+        parts.append(out)
+    up('拼接成片（%d 段 · %.0f 秒）' % (n, total), 74)
+    final = os.path.join(run_dir, _reel_name(n, total, run_dir))
+    lst = os.path.join(parts_dir, 'concat.txt')
+    with open(lst, 'w', encoding='utf-8') as f:
+        for p in parts:
+            f.write("file '%s'\n" % os.path.basename(p))
+    rc, _o, e = ffmpeg_run(['-y', '-f', 'concat', '-safe', '0', '-i', lst,
+                            '-c', 'copy', '-movflags', '+faststart', final])
+    ok = rc == 0 and os.path.exists(final) and os.path.getsize(final) > 10240
+    if not ok:
+        _log.info('[LIVE] concat 直拷失败，回退重编码拼接: %s',
+                  e.decode('utf-8', 'ignore')[-200:])
+        cmd = ['-y']
+        for p in parts:
+            cmd += ['-i', p]
+        if has_audio:
+            graph = ''.join('[%d:v:0][%d:a:0]' % (k, k) for k in range(n))
+            graph += 'concat=n=%d:v=1:a=1[v][a]' % n
+            maps = ['-map', '[v]', '-map', '[a]']
+        else:
+            graph = ''.join('[%d:v:0]' % k for k in range(n))
+            graph += 'concat=n=%d:v=1:a=0[v]' % n
+            maps = ['-map', '[v]']
+        cmd += ['-filter_complex', graph] + maps + enc
+        if _tm:
+            cmd += _tags
+        cmd += ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
+                '-movflags', '+faststart', final]
+        rc, _o, e = ffmpeg_run(cmd)
+        if rc != 0 or not os.path.exists(final) or os.path.getsize(final) < 10240:
+            raise RuntimeError('拼接成片失败: %s' % e.decode('utf-8', 'ignore')[-200:])
+    up('清理临时片段', 90)
+    try:
+        _sh.rmtree(parts_dir, ignore_errors=True)
+    except Exception:
+        pass
+    return {'file': final, 'dur': round(total, 2), 'n': n,
+            'segments': [{'start': s['start'], 'end': s['end'],
+                          'dur': s['dur'], 'volume': s['volume']} for s in segs]}
+
+
+def _fmt_range(s):
+    def _t(v):
+        v = max(0.0, float(v or 0))
+        return '%02d:%02d' % (int(v // 60), int(v % 60))
+    return '%s~%s' % (_t(s.get('start')), _t(s.get('end')))
+
+
+def write_precise_report(meta, segs, out_path, run_dir, aspect='blur'):
+    """精剪成片报告：顺序、源片区间、每段音量、总时长（复盘/二次编辑用）。"""
+    _names = {'orig': '原始横屏', 'crop': '竖屏 9:16（居中裁切）',
+              'blur': '竖屏 9:16（全景+虚化背景）', 'hd': '横屏 16:9（1280×720）'}
+    total = sum(float(s['end']) - float(s['start']) for s in segs)
+    items = []
+    for i, s in enumerate(segs):
+        items.append({'order': i + 1, 'start': s['start'], 'end': s['end'],
+                      'dur': s.get('dur'), 'volume': s.get('volume', 1.0),
+                      'range': _fmt_range(s)})
+    data = {'video': os.path.basename(str(meta.get('video') or '').replace('\\', '/')),
+            'video_dur': meta.get('vdur'),
+            'aspect': _names.get(aspect, aspect),
+            'generated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'total_dur': round(total, 2), 'reel': os.path.basename(out_path),
+            'segments': items}
+    jp = os.path.join(run_dir, 'live_clip_precise_report.json')
+    with open(jp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    lines = ['直播精剪报告（%s）' % data['generated_at'],
+             '源片：%s（时长 %.1f 分钟）｜输出画幅：%s'
+             % (data['video'], (meta.get('vdur') or 0) / 60.0, data['aspect']),
+             '成片：%s（%d 段 · 共 %.1f 秒）'
+             % (data['reel'], len(items), total),
+             '']
+    for it in items:
+        vol = int(round(float(it['volume']) * 100))
+        lines.append('%d. 源片 %s（%d 秒）  音量 %d%%%s'
+                     % (it['order'], it['range'], int(it['dur'] or 0), vol,
+                        '（静音）' if vol == 0 else ''))
+    lines.append('')
+    lines.append('成片按时间轴顺序拼接，保留原声；音量是各段独立增益。')
+    tp = os.path.join(run_dir, 'live_clip_precise_report.txt')
+    with open(tp, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+    return os.path.basename(jp), os.path.basename(tp)
 
 
 def save_draft(run_dir, data):

@@ -505,3 +505,150 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
   background:var(--acc);box-shadow:0 0 3px rgba(0,0,0,.75);
   display:none;pointer-events:none}
 body.lc-crop-on .lc-focus-mark{display:block}
+
+/* ══════════════════════════════════════════════════════════════════
+   直播精剪工作台 v1.4.64
+   布局：上=预览（左）+ 高能注释（右），下=热度概览 + 序列时间轴
+   剪辑语义：时间轴上的先后就是成片顺序；拖片段改顺序、拖两端改起止、
+   分割/删除/音量都在这一屏完成，导出时按顺序拼成一条成片。
+   ══════════════════════════════════════════════════════════════════ */
+.lc-precise{position:absolute;inset:0;z-index:10;display:flex;flex-direction:column;
+  background:radial-gradient(1000px 420px at 50% -120px,rgba(61,126,255,.10),transparent 70%),var(--bg);
+  overflow:hidden}
+.lcp-bar{height:50px;flex:none;display:flex;align-items:center;gap:9px;padding:0 14px;
+  border-bottom:1px solid var(--line);background:linear-gradient(180deg,#161d2d,#131926)}
+.lcp-bar-t{font-size:14px;font-weight:800;letter-spacing:.01em;
+  background:linear-gradient(90deg,#eaf1ff,#9db9ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lcp-bar-s{font-size:11.5px;color:var(--dim);max-width:280px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.lcp-bar-opt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.lcp-bar-opt select{background:var(--card);border:1px solid var(--line);border-radius:7px;
+  padding:5px 8px;font-size:12px;color:var(--txt)}
+.lcp-bar-opt select:focus{outline:none;border-color:var(--acc)}
+
+.lcp-body{flex:1;min-height:0;display:flex;gap:10px;padding:10px 12px 0}
+.lcp-stage{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+.lcp-vbox{flex:1;min-height:0;background:#000;border:1px solid var(--line);border-radius:11px;
+  display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:var(--shadow-1)}
+.lcp-vbox video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
+.lcp-transport{flex:none;height:34px;display:flex;align-items:center;gap:10px;padding:0 4px}
+.lcp-play{width:34px;height:30px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);
+  color:var(--txt);font-size:13px;display:flex;align-items:center;justify-content:center}
+.lcp-play:hover{background:var(--acc-dim);border-color:rgba(61,126,255,.5)}
+.lcp-tc{font-size:12.5px;color:var(--txt);font-variant-numeric:tabular-nums;min-width:112px}
+.lcp-cur{font-size:12px;color:var(--acc2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46%}
+.lcp-tip{font-size:11px;color:var(--dim);white-space:nowrap}
+
+.lcp-side{width:336px;flex:none;display:flex;flex-direction:column;min-height:0;
+  background:var(--panel);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.lcp-side-h{flex:none;display:flex;align-items:center;gap:7px;padding:8px 10px;
+  border-bottom:1px solid var(--line);font-size:12.5px;color:var(--txt)}
+.lcp-side-h b{font-weight:700}
+.lcp-side-h span{font-size:11px;color:var(--dim)}
+.lcp-side-h select{background:var(--card);border:1px solid var(--line);border-radius:6px;
+  padding:3px 6px;font-size:11px;color:var(--muted)}
+.lcp-search{flex:none;padding:7px 9px;border-bottom:1px solid var(--line)}
+.lcp-search input{width:100%;background:var(--card);border:1px solid var(--line);border-radius:7px;
+  padding:6px 9px;font-size:12px;color:var(--txt)}
+.lcp-search input:focus{outline:none;border-color:var(--acc)}
+.lcp-notes{flex:1;min-height:0;overflow:auto;padding:6px 7px;display:flex;flex-direction:column;gap:6px}
+.lcp-note{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:7px 8px;
+  cursor:pointer;transition:border-color .12s var(--ease),background .12s var(--ease)}
+.lcp-note:hover{border-color:var(--line2);background:#1e2637}
+.lcp-note.on{border-color:rgba(61,126,255,.65);background:rgba(61,126,255,.10)}
+.lcp-note.dim{opacity:.58}
+.lcp-note-top{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.lcp-note-id{color:var(--acc);font-weight:700}
+.lcp-note-sc{margin-left:auto;font-weight:800;font-size:11.5px;padding:1px 7px;border-radius:999px;
+  color:#0b1220;background:linear-gradient(135deg,#8ee6c8,#3fd0a4)}
+.lcp-note-sc.s2{background:linear-gradient(135deg,#ffe08a,#f5c451)}
+.lcp-note-sc.s3{background:linear-gradient(135deg,#9db9ff,#6f9cff);color:#081020}
+.lcp-note-tx{margin-top:4px;font-size:11.5px;line-height:1.55;color:var(--dim);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.lcp-note-act{display:flex;gap:6px;margin-top:5px}
+.lcp-note-used{font-size:10.5px;color:var(--ok)}
+.lcp-note-act .mini-btn{padding:3px 8px;font-size:11px}
+
+.lcp-insp{flex:none;max-height:44%;overflow:auto;border-top:1px solid var(--line);
+  background:var(--panel2);padding:8px 10px 10px;display:flex;flex-direction:column;gap:7px}
+.lcp-insp-h{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--txt);font-weight:700}
+.lcp-insp-h span{font-weight:400;font-size:11px;color:var(--dim)}
+.lcp-insp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+.lcp-insp-row input[type=number]{width:78px;background:var(--bg);border:1px solid var(--line);
+  border-radius:6px;padding:4px 6px;font-size:11.5px;color:var(--txt);font-variant-numeric:tabular-nums}
+.lcp-insp-row input[type=number]:focus{outline:none;border-color:var(--acc)}
+.lcp-insp-row input[type=range]{flex:1;min-width:90px;accent-color:var(--acc)}
+.lcp-insp-acts{display:flex;gap:6px;flex-wrap:wrap}
+
+.lcp-tl{flex:none;height:clamp(196px,31vh,268px);display:flex;flex-direction:column;gap:6px;
+  padding:8px 12px 10px}
+.lcp-tl-tools{flex:none;height:28px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--txt)}
+.lcp-tl-tools b{font-weight:700}
+.lcp-hint{font-size:11px;color:var(--dim)}
+.lcp-zoom{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+.lcp-zoom input{width:110px;accent-color:var(--acc)}
+.lcp-total{font-size:11.5px;color:var(--acc2);font-variant-numeric:tabular-nums;min-width:110px;text-align:right}
+.lcp-ov-wrap{flex:none;display:flex;flex-direction:column;gap:2px}
+.lcp-ov-label{font-size:10.5px;color:var(--dim);letter-spacing:.02em}
+.lcp-overview{position:relative;height:56px;border:1px solid var(--line);border-radius:8px;
+  background:linear-gradient(180deg,#101623,#0d1320);overflow:hidden;cursor:crosshair}
+.lcp-overview canvas{position:absolute;inset:0;width:100%;height:100%}
+.lcp-ov-head{position:absolute;top:0;bottom:0;left:0;width:2px;background:#ff5d5d;
+  box-shadow:0 0 6px rgba(255,93,93,.7);pointer-events:none;z-index:3}
+
+.lcp-seq{flex:1;min-height:0;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line);
+  border-radius:9px;background:linear-gradient(180deg,#111725,#0e1421)}
+.lcp-seq-inner{position:relative;height:100%;min-width:100%}
+.lcp-ruler{position:absolute;top:0;left:0;right:0;height:20px;border-bottom:1px solid var(--line);
+  background:rgba(255,255,255,.02);z-index:2}
+.lcp-tick{position:absolute;top:0;bottom:0;border-left:1px solid rgba(255,255,255,.10);
+  font-size:10px;color:var(--dim);padding:3px 0 0 4px;white-space:nowrap}
+.lcp-clips{position:absolute;top:20px;left:0;right:0;bottom:0}
+.lcp-clip{position:absolute;top:7px;bottom:9px;border-radius:7px;overflow:hidden;
+  background:linear-gradient(180deg,#26365a,#1b2540);border:1px solid #35456a;
+  cursor:grab;touch-action:none;user-select:none;padding:3px 9px;
+  display:flex;flex-direction:column;justify-content:flex-start;gap:1px;
+  transition:border-color .1s var(--ease),box-shadow .1s var(--ease)}
+.lcp-clip:hover{border-color:#4a5d8a}
+.lcp-clip.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 4px 16px rgba(61,126,255,.28);z-index:4}
+.lcp-clip.dragging{opacity:.85;z-index:6;cursor:grabbing;box-shadow:0 8px 24px rgba(0,0,0,.55)}
+.lcp-clip.playing{background:linear-gradient(180deg,#2b4a5f,#1d3142);border-color:var(--acc2)}
+.lcp-clip-n{font-size:10.5px;font-weight:800;color:#cfe0ff;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.lcp-clip-t{font-size:10px;color:#93a3c4;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.lcp-clip-v{position:absolute;right:5px;bottom:3px;font-size:9.5px;color:var(--dim)}
+.lcp-clip.vol-up .lcp-clip-v{color:var(--warn)}
+.lcp-clip.vol-zero .lcp-clip-v{color:var(--bad)}
+.lcp-clip .h{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:2;
+  background:rgba(255,255,255,.05)}
+.lcp-clip .h:hover{background:rgba(61,126,255,.6)}
+.lcp-clip .h.l{left:0}.lcp-clip .h.r{right:0}
+.lcp-seqhead{position:absolute;top:0;bottom:0;left:0;width:2px;background:#ff5d5d;z-index:5;
+  box-shadow:0 0 6px rgba(255,93,93,.65);pointer-events:none;display:none}
+
+.lcp-overlay{position:absolute;inset:0;z-index:30;background:rgba(6,10,18,.72);
+  backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:24px}
+.lcp-ov-card{width:min(440px,92vw);background:linear-gradient(180deg,#182031,#121926);
+  border:1px solid var(--line2);border-radius:14px;padding:20px 22px;box-shadow:var(--shadow-2);
+  display:flex;flex-direction:column;gap:10px}
+.lcp-overlay.wide .lcp-ov-card{width:min(760px,94vw)}
+.lcp-ov-title{font-size:15px;font-weight:800;color:var(--txt)}
+.lcp-ov-bar{height:8px;border-radius:5px;background:var(--bg);border:1px solid var(--line);overflow:hidden}
+.lcp-ov-fill{height:100%;width:0%;background:var(--grad-acc);box-shadow:0 0 10px rgba(61,126,255,.4);
+  transition:width .2s var(--ease)}
+.lcp-ov-meta{font-size:12px;color:var(--muted);line-height:1.6;min-height:18px}
+.lcp-ov-acts{display:flex;gap:8px;flex-wrap:wrap}
+.lcp-ov-acts .mini-btn{padding:6px 12px}
+.lcp-ov-video{width:100%;border-radius:10px;background:#000;max-height:46vh;object-fit:contain}
+
+/* 入口按钮：精剪与快速出片并列，不抢主按钮视觉但足够显眼 */
+.lcp-entry{margin-top:10px;padding-top:12px;border-top:1px dashed var(--line);justify-content:center}
+.lcp-entry-btn{border-color:rgba(34,195,166,.45);color:#a9f0e0;background:rgba(34,195,166,.10)}
+.lcp-entry-btn:hover{background:rgba(34,195,166,.18);border-color:var(--acc2);color:#d8fff7}
+
+@media (max-width:1120px){
+  .lcp-side{width:296px}
+  .lcp-tip{display:none}
+}
