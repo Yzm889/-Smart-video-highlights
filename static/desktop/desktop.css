@@ -652,3 +652,25 @@ body.lc-crop-on .lc-focus-mark{display:block}
   .lcp-side{width:296px}
   .lcp-tip{display:none}
 }
+
+/* ── v1.4.65 运行期提示卡（模型/语言不匹配等） ─────────────────────────
+   为什么是卡片而不是 toast：toast 3 秒就消失、最多 3 条、还会被后续 toast
+   挤掉；这条提示要求用户「去改设置」，必须停在那儿直到他处理或关掉。 */
+.fc-notice{position:fixed;right:18px;bottom:44px;width:392px;max-width:calc(100vw - 36px);
+  background:linear-gradient(180deg,#1c2334,#151b28);border:1px solid var(--line2);
+  border-left:3px solid var(--warn);border-radius:12px;box-shadow:var(--shadow-2);
+  padding:13px 14px 11px;z-index:9200;animation:fcNoticeIn .22s var(--ease)}
+@keyframes fcNoticeIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+.fc-notice-h{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--txt);margin-bottom:7px}
+.fc-notice-ic{color:var(--warn);font-size:14px;line-height:1}
+.fc-notice-b{font-size:12.3px;line-height:1.62;color:var(--muted);margin-bottom:10px;user-select:text}
+.fc-notice-b b{color:var(--txt);font-weight:600}
+.fc-notice-b code{background:#0f1521;border:1px solid var(--line);border-radius:4px;
+  padding:0 4px;font-size:11.5px;color:#cbd5e8}
+.fc-notice-a{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap}
+.fc-notice-a .mini-btn{padding:5px 10px;border-radius:7px;border:1px solid var(--line2);
+  background:#1e2637;color:var(--txt);font-size:12px}
+.fc-notice-a .mini-btn:hover{background:#263047}
+.fc-notice-a .mini-btn.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+.fc-notice-a .mini-btn.primary:hover{filter:brightness(1.08)}
+.warn-hint{color:var(--warn);line-height:1.6}

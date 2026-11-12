@@ -25,8 +25,9 @@ import wave as _wave
 import numpy as np
 
 from ffmpeg_utils import ffmpeg_run
-from ai_providers import (asr_segments, local_llm_chat, whisper_language,
-                          whisper_model_for_language, whisper_model_name)
+from ai_providers import (asr_segments, local_llm_chat, note_asr_model_mismatch,
+                          whisper_language, whisper_model_for_language,
+                          whisper_model_name)
 
 _log = logging.getLogger('framecut.live')
 
@@ -684,6 +685,14 @@ def _compute_signals(video_path, run_dir, progress=None, use_asr=True,
         asr = _load_asr_cache(run_dir, video_path, vdur, asr_sig) or []
         if asr:
             up('复用已转写台词（同一任务无需重跑 Whisper）', 40)
+            # 缓存命中就不跑 asr_segments 了，那里挂的弹窗提示也就不会触发；
+            # 但「配置的模型只认英文」这件事没变，用户下次还是会中招。
+            # force=True：缓存是别的模型转的，说明当时就是靠兜底才转对。
+            try:
+                note_asr_model_mismatch(None, asr_sig.get('lang'),
+                                        used=asr_sig.get('model'), force=True)
+            except Exception:
+                pass
         else:
             _lang_note = {'auto': '自动判别'}.get(asr_language or '', asr_language)
             up('转写台词（Whisper · %s · %s，长片请耐心）'

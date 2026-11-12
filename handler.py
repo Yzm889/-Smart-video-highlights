@@ -1201,9 +1201,27 @@ class Handler(BaseHTTPRequestHandler):
         _w.refresh_whisper_models()
         md = _w.whisper_models_dir()
         avail = sorted(d for d in os.listdir(md)) if os.path.isdir(md) else []
+        # v1.4.65：给每个模型带上 en_only / 推荐替代，前端据此在设置页与运行期
+        # 弹窗里直接告诉用户「这个只认英文，换成哪个」。判定逻辑只在
+        # ai_providers.whisper_is_en_only 一处（distil-* 是英文专用蒸馏模型）。
+        _valid = {}
+        for _k, _v in (_w._WHISPER_MODELS or {}).items():
+            _e = dict(_v or {})
+            try:
+                _e['en_only'] = bool(_w.whisper_is_en_only(_k))
+            except Exception:
+                _e['en_only'] = False
+            _valid[_k] = _e
+        _suggest = ''
+        try:
+            _suggest = _w.whisper_ml_fallback()
+        except Exception:
+            _suggest = 'base'
         self._send(200, json.dumps({
             'ok': True,
             'selected': _w.whisper_model_name(),
+            'selected_en_only': bool(_w.whisper_is_en_only(_w.whisper_model_name())),
+            'suggest_multilingual': _suggest,
             'models_dir': md,
             'ready': _w.whisper_model_ready(),
             'downloading': _w.WHISPER_DL['running'],
@@ -1214,7 +1232,7 @@ class Handler(BaseHTTPRequestHandler):
             'dl_mb_done': _w.WHISPER_DL.get('mb_done'), 'dl_mb_total': _w.WHISPER_DL.get('mb_total'),
             'dl_speed': _w.WHISPER_DL.get('speed', ''),
             'available': avail,
-            'valid_models': _w._WHISPER_MODELS,
+            'valid_models': _valid,
             # [B] 推理设备信息：前端据此展示「当前 GPU/CPU，CPU 时提示启用 GPU」
             'device': _w.whisper_device()[0],
             'compute_type': _w.whisper_device()[1],

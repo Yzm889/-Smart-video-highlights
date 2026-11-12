@@ -80,6 +80,100 @@ function setBtnIcon(id, icon, text){
   const b = $(id);
   if(b) b.innerHTML = '<svg class="ic"><use href="#' + icon + '"/></svg>' + text;
 }
+
+/* ── 运行期提示卡（v1.4.65） ─────────────────────────────────────────
+   后端在 PROGRESS[run].notices 里挂「必须让用户当场处理」的问题（目前是
+   「台词模型只认英文」）。这里是唯一的展示入口：所有 /api/progress 轮询
+   拿到 p 之后调 uiNotices(p) 即可，不在各条流水线里各写一遍弹窗。
+   为什么不用 toast：toast 2.6 秒必消失、最多 3 条还会被后续挤掉，而这条
+   要求用户去改设置，必须停到他处理或主动关掉。 */
+const _fcNoticeSeen = new Set();   // 同 code+model 只弹一次（本次会话）
+const _fcNoticeQ = [];
+let _fcNoticeOn = false;
+
+const _FC_LANG_CN = {zh:'中文', en:'英语', ja:'日语', ko:'韩语', yue:'粤语',
+                     ru:'俄语', fr:'法语', de:'德语', es:'西班牙语', auto:'自动判别'};
+function _fcLangName(code){
+  if(!code) return '非英文';
+  return _FC_LANG_CN[String(code).toLowerCase()] || String(code);
+}
+
+function uiNotices(p){
+  const list = (p && p.notices) || [];
+  for(const n of list){
+    if(!n || !n.code) continue;
+    const key = n.code + '|' + (n.model || '');
+    if(_fcNoticeSeen.has(key)) continue;
+    _fcNoticeSeen.add(key);
+    _fcNoticeQ.push(n);
+  }
+  _fcNoticePump();
+}
+function _fcNoticePump(){
+  if(_fcNoticeOn || !_fcNoticeQ.length) return;
+  const el = $('fcNotice');
+  if(!el) return;
+  const n = _fcNoticeQ.shift();
+  _fcNoticeOn = true;
+  if(n.code === 'asr_model_en_only') _fcRenderAsrModelNotice(n, el);
+  else { _fcNoticeOn = false; _fcNoticePump(); return; }   // 未知 code 不弹，别拦路
+  el.style.display = 'block';
+}
+function _fcNoticeHide(){
+  const el = $('fcNotice');
+  if(el) el.style.display = 'none';
+  _fcNoticeOn = false;
+  setTimeout(_fcNoticePump, 160);
+}
+function _fcRenderAsrModelNotice(n, el){
+  const install = n.reason === 'install';       // 装完模型就提示 vs 跑到一半才发现
+  const lang = _fcLangName(n.detected || n.lang);
+  const name = _esc(n.model || '当前模型');
+  const alt = _esc(n.used || 'base');
+  document.getElementById('fcNoticeTitle').textContent = install
+    ? '这个台词模型只认英文，中文片会整段变英文'
+    : '台词模型只认英文，中文会被转成英文乱码';
+  document.getElementById('fcNoticeBody').innerHTML = install
+    ? '<b>' + name + '</b> 是英文专用模型（没有中文词表）。用它识别中文/日语，'
+      + '会输出一串看着像模像样的英文（「Thank you, you know」这类），不是偶发故障。<br>'
+      + '要识别中文请选多语言模型 <b>' + alt + '</b>（已下载，可直接切换）。'
+    : '<b>' + name + '</b> 是英文专用模型（没有中文词表）。这次识别到的是 <b>' + lang
+      + '语音</b>，它会把中文硬转成英文（「Thank you, you know」这类）。<br>'
+      + '本次已自动改用 <b>' + alt + '</b> 继续识别，结果不受影响；'
+      + '换成多语言模型之后就不用每次兜底了。';
+  const fix = document.getElementById('fcNoticeFix');
+  if(n.used){
+    fix.style.display = '';
+    fix.className = 'mini-btn primary';
+    fix.textContent = '换成 ' + n.used;
+    fix.onclick = async () => {
+      fix.disabled = true;
+      const ok = await _fcSwitchWhisperModel(n.used);
+      fix.disabled = false;
+      if(ok){
+        _fcNoticeHide();
+        toast('✅ 台词模型已换成 ' + n.used + '，下次识别直接生效', 'ok');
+      }
+    };
+  } else {
+    fix.style.display = 'none';
+  }
+  document.getElementById('fcNoticeMore').onclick = () => { _fcNoticeHide(); openSettings('secWhisper'); };
+  document.getElementById('fcNoticeClose').onclick = () => _fcNoticeHide();
+}
+async function _fcSwitchWhisperModel(model){
+  try{
+    const r = await fetch('/api/ai/config', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({whisper: {model: model}})}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '保存失败');
+    renderWhisperOptions();
+    return true;
+  }catch(e){
+    toast('切换失败：' + e.message, 'bad');
+    return false;
+  }
+}
 function setStatus(s, kind){
   const el = $('stState');
   el.textContent = '● ' + s;
@@ -1003,6 +1097,7 @@ function pollTTS(runid){
     try {
       const r = await fetch('/api/progress?run=' + runid);
       const p = await r.json();
+      uiNotices(p);
       $('gmFill').style.width = Math.min(100, p.pct || 0) + '%';
       // 【v1.4.52 配音失败可见化】首轮失败段实时可见（tts_failures 已随 progress 下发）
       if(p.tts_failures && p.tts_failures.length){
@@ -2191,6 +2286,9 @@ function openSettings(sec){
   $('settingsMask').style.display = 'flex';
   if(sec === 'secVoice') showSettingsPane('voice');
   else if(sec === 'secModelCenter') showSettingsPane('models');
+  // v1.4.65：Whisper 台词模型也在「模型中心」那一栏，切过去才滚得到；
+  // 否则弹窗停在「配音·音色」，用户点了「去设置」却看不到要改的那个下拉。
+  else if(sec === 'secWhisper') showSettingsPane('models');
   if(sec){
     setTimeout(() => {
       const el = $(sec);
@@ -2249,6 +2347,11 @@ $('settingsSave').addEventListener('click', async () => {
     payload.vlm = {enabled: true, mode: 'ollama', base_url: _vb};
     if(_vm) payload.vlm.model = _vm;
   }
+  // 【v1.4.65 修】以前设置页压根没把 Whisper 下拉存进配置：用户选了 base、
+  // 点保存，ai_config.whisper.model 仍是默认 distil-large-v3 —— 下拉框只是
+  // 「下载哪个模型」的选择器。这就是「换了模型但识别结果没变」的根源。
+  const _wm = (($('setWhisperModel') || {}).value || '').trim();
+  if(_wm) payload.whisper = {model: _wm};
   try {
     const r = await fetch('/api/ai/config', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
@@ -2256,6 +2359,9 @@ $('settingsSave').addEventListener('click', async () => {
     if(!out.ok) throw new Error(out.error || '保存失败');
     $('settingsMask').style.display = 'none';
     toast('✅ 设置已保存');
+    if(_wm && _wspEnOnly[_wm]){
+      toast('⚠ ' + _wm + ' 只支持英文：识别中文会输出英文乱码，建议换成 ' + _wspSuggest, 'bad');
+    }
   } catch(e){ toast('保存失败：' + e.message, 'bad'); }
 });
 
@@ -2275,21 +2381,57 @@ $('btnWhisperDl').addEventListener('click', async () => {
       const d = s.download || {};
       _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', d.downloading, d.download_pct, d.dl_mb_done, d.dl_mb_total, d.dl_speed);
       stEl.textContent = d.downloading ? ('下载中 ' + (d.download_pct || 0) + '%') : (d.download_ok ? '✅ ' + (d.download_msg || '完成') : (d.download_msg || ''));
-      if(!d.downloading){ clearInterval(iv); if(d.download_ok) renderWhisperOptions(); }
+      if(!d.downloading){
+        clearInterval(iv);
+        if(d.download_ok){
+          await renderWhisperOptions();
+          // 刚装完的模型只认英文：立刻提示，别等用户剪完一条片才发现台词全是英文
+          if(_wspEnOnly[model]){
+            uiNotices({notices: [{code: 'asr_model_en_only', model: model,
+                                  used: _wspSuggest, reason: 'install', lang: 'auto'}]});
+          }
+        }
+      }
     }, 2000);
   } catch(e){ stEl.textContent = '❌ ' + e.message; }
 });
+let _wspEnOnly = {};        // 模型 → 是否英文专用（后端 whisper_is_en_only 判定，前端不自己猜）
+let _wspSuggest = 'base';   // 后端推荐的多语言替代（已下载的优先）
+
 function renderWhisperOptions(){
-  fetch('/api/whisper/status').then(r => r.json()).then(s => {
+  return fetch('/api/whisper/status').then(r => r.json()).then(s => {
     const sel = $('setWhisperModel');
     if(!sel) return;
     const valid = s.valid_models || {};
-    sel.innerHTML = Object.keys(valid).map(k =>
-      '<option value="' + k + '"' + (valid[k].downloaded ? ' data-dl="1"' : '') + '>' +
-      k + (valid[k].downloaded ? ' ✓' : '（未下载）') + '</option>').join('');
-    if([...sel.options].some(o => o.value === 'large-v3' && o.dataset.dl)) sel.value = 'large-v3';
+    _wspEnOnly = {};
+    Object.keys(valid).forEach(k => { if(valid[k] && valid[k].en_only) _wspEnOnly[k] = 1; });
+    _wspSuggest = s.suggest_multilingual || 'base';
+    sel.innerHTML = Object.keys(valid).map(k => {
+      const dl = !!(valid[k] && valid[k].downloaded);
+      return '<option value="' + k + '"' + (dl ? ' data-dl="1"' : '') + '>'
+        + k + (dl ? ' ✓' : '（未下载）') + (_wspEnOnly[k] ? ' · 仅英文' : '') + '</option>';
+    }).join('');
+    // 回显「当前真正生效的模型」：旧实现无条件选 large-v3（只要它下载过），
+    // 于是下拉显示的和实际在跑的模型不是一个，用户以为换了其实没换。
+    const cur = s.selected || '';
+    if(cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+    _whisperLangHint();
   }).catch(() => {});
 }
+
+/* 设置页里的「只认英文」红字提醒：选到 distil-* 立刻可见，不用等到跑出英文乱码 */
+function _whisperLangHint(){
+  const el = $('whisperLangHint');
+  const sel = $('setWhisperModel');
+  if(!el || !sel) return;
+  const m = sel.value || '';
+  if(!_wspEnOnly[m]){ el.style.display = 'none'; el.textContent = ''; return; }
+  el.style.display = '';
+  el.innerHTML = '⚠ <b>' + _esc(m) + '</b> 是英文专用模型，只能识别英文——'
+    + '中文/日语等会被硬转成英文乱码（例如「Thank you, you know」这类英文幻觉）。'
+    + '多语种请选 <b>large-v3 / medium / small / base</b>（推荐 <b>' + _esc(_wspSuggest) + '</b>）。';
+}
+if($('setWhisperModel')) $('setWhisperModel').addEventListener('change', _whisperLangHint);
 
 /* ── 设置：模型中心（与网页版同一份候选目录） ── */
 const LOCAL_MODEL_CATALOG = [
@@ -3019,6 +3161,7 @@ function pollTask(runid){
       try {
         const r = await fetch('/api/progress?run=' + runid);
         const p = await r.json();
+        uiNotices(p);
         if(p.error){ clearInterval(iv); reject(new Error(p.error)); return; }
         if(p.done && p.audio){ clearInterval(iv); resolve(p); return; }
         if(p.done){ clearInterval(iv); reject(new Error('任务结束但未返回音频')); return; }
@@ -3035,6 +3178,7 @@ function pollCompose(runid){
     try {
       const r = await fetch('/api/progress?run=' + runid);
       const p = await r.json();
+      uiNotices(p);
       const sc = $('sbCancel'); if(sc) sc.style.display = 'none';
       if(p.error){
         clearInterval(_pollTimer);
@@ -3348,6 +3492,7 @@ $('lcGo').addEventListener('click', async () => {
     if(_lcPollTimer) clearInterval(_lcPollTimer);
     _lcPollTimer = setInterval(async () => {
       const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
+      uiNotices(p);
       $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
       $('lcMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
@@ -3575,6 +3720,7 @@ async function lcExport(){
     if(_lcPollTimer) clearInterval(_lcPollTimer);
     _lcPollTimer = setInterval(async () => {
       const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
+      uiNotices(p);
       $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
       $('lcMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
@@ -3913,6 +4059,7 @@ async function lcpAnalyze(opts){
       let p;
       try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
       catch(e){ return; }
+      uiNotices(p);
       $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
       $('lcpOvMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
@@ -4624,6 +4771,7 @@ async function lcpExportNow(){
       let p;
       try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
       catch(e){ return; }
+      uiNotices(p);
       $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
       $('lcpOvMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){

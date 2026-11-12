@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=41">
+<link rel="stylesheet" href="desktop.css?v=43">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -496,7 +496,7 @@
             <button class="mini-btn" id="btnHwApply">按本机一键配置</button>
           </div>
         </div>
-        <div class="set-sec">
+        <div class="set-sec" id="secWhisper">
           <div class="set-h">Whisper 台词识别模型</div>
           <div class="set-row">
             <select id="setWhisperModel"></select>
@@ -507,6 +507,8 @@
             <div class="pbar-meta" id="whisperPullMeta"></div>
           </div>
           <div class="hint" id="whisperDlStatus"></div>
+          <!-- v1.4.65：英文专用模型提示（distil-* 只认英文，中文会变英文乱码） -->
+          <div class="hint warn-hint" id="whisperLangHint" style="display:none"></div>
         </div>
         <div class="set-sec">
           <div class="set-h">本地服务地址（一般不用改）</div>
@@ -616,6 +618,18 @@
   </div>
 </div>
 
-<script src="desktop.js?v=41"></script>
+<!-- v1.4.65 运行期提示卡：模型/语言不匹配这类「不处理就会一直错」的问题主动弹出来，
+     不再只写在结果页的 warnings 小字里（用户根本不会往下翻）。 -->
+<div class="fc-notice" id="fcNotice" style="display:none" role="alertdialog" aria-live="assertive">
+  <div class="fc-notice-h"><span class="fc-notice-ic">⚠</span><span id="fcNoticeTitle"></span></div>
+  <div class="fc-notice-b" id="fcNoticeBody"></div>
+  <div class="fc-notice-a">
+    <button class="mini-btn" id="fcNoticeFix" style="display:none"></button>
+    <button class="mini-btn" id="fcNoticeMore">去设置</button>
+    <button class="mini-btn" id="fcNoticeClose">知道了</button>
+  </div>
+</div>
+
+<script src="desktop.js?v=43"></script>
 </body>
 </html>

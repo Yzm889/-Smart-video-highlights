@@ -222,7 +222,37 @@ def _note_progress_warning(msg):
         return
     p = PROGRESS.get(rid)
     if isinstance(p, dict):
-        p['warnings'] = list(p.get('warnings') or []) + [msg]
+        cur = list(p.get('warnings') or [])
+        # 同一条只留一次：GPU 失败降级 CPU 会把同一段转写重跑一遍，前半段的
+        # 提示（识别语言/换模型）就会原样再推一次，结果页里看起来像重复上报。
+        if msg not in cur:
+            cur.append(msg)
+            p['warnings'] = cur
+
+
+def _note_progress_notice(code, severity='warn', **fields):
+    """把一条「必须让用户当场做动作」的提示挂到当前任务的 notices 上，前端会弹窗。
+
+    与 warnings 的分工：warnings 是结果页里的一行小字，用户经常压根没看到；
+    notices 会主动弹出来，所以只放「不处理就会一直出错」的事（如台词模型只认
+    英文）。同 code + model 只留一条，避免每个任务都刷一次同样的弹窗。
+
+    fields 里放结构化字段（model / used / lang …），由前端拼文案与按钮——
+    后端不写死界面文案，后面加「一键换模型」之类不必改这里。"""
+    rid = getattr(_TLS, 'runid', None)
+    if not rid:
+        return
+    p = PROGRESS.get(rid)
+    if not isinstance(p, dict):
+        return
+    item = {'code': code, 'severity': severity}
+    item.update({k: v for k, v in fields.items() if v is not None})
+    lst = list(p.get('notices') or [])
+    for old in lst:
+        if old.get('code') == code and old.get('model') == item.get('model'):
+            return
+    lst.append(item)
+    p['notices'] = lst
 
 
 def _silent_remove(path):
@@ -902,13 +932,29 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None,
                 compression_ratio_threshold=2.4,
                 log_prob_threshold=-1.0,
                 no_speech_threshold=0.6)
+            _det = ''
             try:
-                _det = str(getattr(info, 'language', '') or '')
+                _det = str(getattr(info, 'language', '') or '').strip().lower()
                 if _det:
                     _note_progress_warning('识别语言：%s（%s）' % (
                         _det, '自动判别' if _auto else '按配置指定'))
             except Exception:
-                pass
+                _det = ''
+            # 【弹窗提示】模型和语言对不上时，光在 warnings 里写一行字不够——用户
+            # 看到的是「台词全是英文/乱码」，根本不会往下翻小字。这里挂一条 notice，
+            # 前端会弹窗说明原因并给「换成多语言模型」的按钮（见 uiNotices）。
+            # 只在「确实不是英文」时弹：auto 判成英文时不打扰（虽然也换了模型，
+            # 但结果是对的，没必要让用户去改配置）。
+            if _mn != _cfg_model:
+                # 换过模型说明「配置的模型只认英文」；语言不是英文才弹窗（见 helper）
+                note_asr_model_mismatch(_cfg_model, _eff_lang, used=_mn,
+                                        detected=_det, auto=bool(_auto))
+                if _det.startswith('en'):
+                    # 判成英文：这次换模型其实没必要（base 英文精度不如 distil），
+                    # 但至少结果是对的。留一行警告便于排查「为什么变慢了」。
+                    _note_progress_warning(
+                        '自动判别为英文，本次用多语言模型 %s（配置的 %s 只支持英文）'
+                        % (_mn, _cfg_model))
             total = 0.0
             try:
                 total = float(getattr(info, 'duration', 0) or 0)
@@ -1598,6 +1644,34 @@ def whisper_model_for_language(model=None, language=None):
     if whisper_is_en_only(m) and lang != 'en':
         return whisper_ml_fallback()
     return m
+
+
+def note_asr_model_mismatch(model=None, lang=None, used=None, detected='',
+                           auto=False, force=False):
+    """给「模型只认英文 / 内容是别的语言」挂一条前端弹窗提示（幂等，同模型只留一条）。
+
+    抽成公共函数是因为触发点不止一处：
+      · asr_segments 跑完模型加载后（知道真实语言，最准）
+      · live_clip 复用台词缓存时（这次不跑转写，但配置模型仍然配错了）
+
+    force=True：语言未知也要弹（缓存路径）。缓存里的模型和当前配置不一样，
+    说明当时就是靠多语言模型兜底转出来的——配置本身确实配错了，该提醒。
+    """
+    m = model or whisper_model_name()
+    if not whisper_is_en_only(m):
+        return
+    lang_seen = str(lang or '').strip().lower()
+    det = str(detected or '').strip().lower()
+    eff = lang_seen if lang_seen not in ('', 'auto') else det
+    if not eff:
+        if not force:
+            return
+        eff = 'auto'          # 不知道具体语言，但「换过模型」已经说明不是英文
+    if eff.startswith('en'):
+        return
+    _note_progress_notice('asr_model_en_only', 'warn', model=m,
+                          used=used or whisper_ml_fallback(),
+                          lang=lang_seen or det or 'auto', detected=det, auto=bool(auto))
 
 
 def whisper_language():
