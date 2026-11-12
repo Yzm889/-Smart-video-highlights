@@ -30,16 +30,20 @@ def test_desktop_has_warning_dock():
     assert 'id="warnDockList"' in html
 
 
-def test_all_progress_polls_surface_warnings():
+def test_single_progress_choke_point():
+    """v1.4.69 起所有进度轮询收敛到 pollRun：整个前端只允许出现一处 fetch。
+
+    这样「降级提示漏接」在结构上就不可能发生——以前 7 条流水线各写一遍，
+    新加一条很容易忘了接 uiProgressHints。"""
     js = _read('static', 'desktop', 'desktop.js')
     assert 'function uiWarnings(' in js and 'function uiProgressHints(' in js
-    # 任何 /api/progress 轮询都必须经过统一入口，否则那条流水线的降级又静默了
+    assert 'function pollRun(' in js, '必须有统一轮询入口'
     n_poll = len(re.findall(r"/api/progress\?run=", js))
-    n_hint = js.count('uiProgressHints(p)')
-    assert n_poll >= 5, '/api/progress 轮询点异常：%d' % n_poll
-    assert n_hint >= n_poll - 1, (
-        '有 %d 处进度轮询、只有 %d 处接了 uiProgressHints：漏接的那条流水线'
-        '降级了用户看不到' % (n_poll, n_hint))
+    assert n_poll == 1, '进度轮询出现 %d 处，应收敛到 pollRun 里的唯一一处' % n_poll
+    # uiProgressHints 只能在 pollRun 里调用一次（定义处那次不算）
+    assert js.count('    uiProgressHints(p);') == 1, 'uiProgressHints 必须只由 pollRun 调用'
+    # 老的 setInterval 轮询写法不该再出现在进度链路上
+    assert 'setInterval(async () => {' not in js, '仍有 setInterval 轮询残留' 
 
 
 # ---------- 2) 后端：弹幕解析失败要留痕 ----------

@@ -216,6 +216,76 @@ function _warnDockBind(){
   });
 }
 function uiProgressHints(p){ uiNotices(p); uiWarnings(p); }
+
+/* ── 统一进度轮询（v1.4.69） ────────────────────────────────────────
+   以前 7 条流水线各写一遍 setInterval + fetch + 完成/失败判断，结果是：
+   · 有的漏接 uiProgressHints（降级提示就丢了）
+   · 有的用 setInterval，请求慢时会重叠发
+   · 取消/关闭只能各自 clearInterval，容易漏成幽灵轮询
+   这里统一成「一次请求 → 判断 → 再排下一次」，并保证 notices/warnings
+   只在一个地方处理。onDone 可以抛错，抛了就 reject（给「结束了但没数据」
+   这种情形用）。 */
+function stopHandle(h){
+  if(!h) return;
+  if(typeof h.stop === 'function') h.stop();
+  else clearInterval(h);           // 兼容历史 setInterval 句柄
+}
+function pollRun(runid, o){
+  o = o || {};
+  const iv = Math.max(300, o.interval || 1200);
+  const t0 = Date.now();
+  const limit = Math.max(0, o.timeout || 0);      // 0 = 不限时
+  let stopped = false, timer = null, resolveFn = null, rejectFn = null;
+  const promise = new Promise((res, rej) => { resolveFn = res; rejectFn = rej; });
+  const handle = {
+    promise: promise,
+    stop: function(){
+      if(stopped) return;
+      stopped = true;
+      if(timer) clearTimeout(timer);
+      timer = null;
+      try{ o.onStop && o.onStop(); }catch(e){ /* 清理失败不影响主流程 */ }
+    }
+  };
+  const next = () => { if(!stopped) timer = setTimeout(tick, iv); };
+  async function tick(){
+    if(stopped) return;
+    let p;
+    try{
+      // o.url 可指向别的状态接口（模型下载等）；默认就是任务进度
+      p = await fetch(o.url || ('/api/progress?run=' + encodeURIComponent(runid)),
+                      {cache: 'no-store'}).then(x => x.json());
+    }catch(e){
+      if(limit && Date.now() - t0 > limit){
+        handle.stop();
+        rejectFn(new Error('等待进度超时'));
+        return;
+      }
+      next(); return;              // 网络抖动：下次再试，不打断流水线
+    }
+    if(stopped) return;
+    uiProgressHints(p);            // 唯一入口：notices + warnings 都不会漏
+    try{ o.onTick && o.onTick(p); }catch(e){ console.warn('[pollRun] onTick:', e); }
+    if(o.isError ? o.isError(p) : !!p.error){
+      handle.stop();
+      const err = new Error((p && p.error) || '任务失败');
+      err.progress = p;
+      try{ o.onError && o.onError(p, err); }catch(e){ /* 回调异常不二次抛 */ }
+      rejectFn(err);
+      return;
+    }
+    if(o.isDone ? o.isDone(p) : !!p.done){
+      let thrown = null;
+      try{ if(o.onDone) await o.onDone(p); }catch(e){ thrown = e; }
+      handle.stop();
+      if(thrown) rejectFn(thrown); else resolveFn(p);
+      return;
+    }
+    next();
+  }
+  tick();
+  return handle;
+}
 _warnDockBind();     // 脚本在 body 末尾，此时 #warnDock 已存在
 function setStatus(s, kind){
   const el = $('stState');
@@ -1135,12 +1205,10 @@ $('npGo').addEventListener('click', async () => {
 function pollTTS(runid){
   _runDir = runid;
   _pollRunId = runid;
-  if(_pollTimer) clearInterval(_pollTimer);
-  _pollTimer = setInterval(async () => {
-    try {
-      const r = await fetch('/api/progress?run=' + runid);
-      const p = await r.json();
-      uiProgressHints(p);
+  stopHandle(_pollTimer);
+  _pollTimer = pollRun(runid, {
+    interval: 1200,
+    onTick: p => {
       $('gmFill').style.width = Math.min(100, p.pct || 0) + '%';
       // 【v1.4.52 配音失败可见化】首轮失败段实时可见（tts_failures 已随 progress 下发）
       if(p.tts_failures && p.tts_failures.length){
@@ -1151,27 +1219,25 @@ function pollTTS(runid){
       } else {
         $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
       }
-      if(p.error){
-        clearInterval(_pollTimer);
-        $('genMask').style.display = 'none';
-        $('npGo').disabled = false;
-        toast('生成失败：' + p.error, 'bad');
-        return;
-      }
-      if(p.done && p.tts_list && p.tts_list.length){
-        clearInterval(_pollTimer);
-        _runDir = p.run_dir || '';
-        _videoFile = p.video_file || '';
-        $('genMask').style.display = 'none';
-        await loadAdjustItems(_runDir);
-        openEditor();
-        // 【v1.4.52】完成提示带上失败汇总（宁可不静默：哪几段曾经失败，调整页有 ⚠ 标记）
-        const nf = (p.tts_failures || []).length;
-        toast('✅ 已生成 ' + p.tts_list.length + ' 段配音与画面方案'
-          + (nf ? '（⚠ ' + nf + ' 条失败记录，详情见调整页 ⚠ 标记）' : ''));
-      }
-    } catch(e){ /* 抖动忽略 */ }
-  }, 1200);
+    },
+    onError: p => {
+      $('genMask').style.display = 'none';
+      $('npGo').disabled = false;
+      toast('生成失败：' + p.error, 'bad');
+    },
+    isDone: p => !!(p.done && p.tts_list && p.tts_list.length),
+    onDone: async p => {
+      _runDir = p.run_dir || '';
+      _videoFile = p.video_file || '';
+      $('genMask').style.display = 'none';
+      await loadAdjustItems(_runDir);
+      openEditor();
+      // 【v1.4.52】完成提示带上失败汇总（宁可不静默：哪几段曾经失败，调整页有 ⚠ 标记）
+      const nf = (p.tts_failures || []).length;
+      toast('✅ 已生成 ' + p.tts_list.length + ' 段配音与画面方案'
+        + (nf ? '（⚠ ' + nf + ' 条失败记录，详情见调整页 ⚠ 标记）' : ''));
+    }
+  }).promise.catch(() => { /* 失败已在 onError 里提示 */ });
 }
 function openEditor(){
   showEditor(true);
@@ -1182,7 +1248,7 @@ $('gmCancel').addEventListener('click', async () => {
     try { await fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({runid: _pollRunId})}); } catch(e){ /* 尽力取消 */ }
   }
-  if(_pollTimer) clearInterval(_pollTimer);
+  stopHandle(_pollTimer); _pollTimer = null;
   $('genMask').style.display = 'none';
   $('npGo').disabled = false;
   toast('已取消生成');
@@ -1191,7 +1257,7 @@ $('sbCancel').addEventListener('click', async () => {
   if(!_pollRunId) return;
   try { await fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({runid: _pollRunId})}); } catch(e){ /* 尽力取消 */ }
-  if(_pollTimer) clearInterval(_pollTimer);
+  stopHandle(_pollTimer); _pollTimer = null;
   $('sbCancel').style.display = 'none';
   const btn = $('tbCompose'); btn.disabled = false;
   setStatus('已取消合成', 'warn');
@@ -2418,24 +2484,27 @@ $('btnWhisperDl').addEventListener('click', async () => {
     const out = await r.json();
     if(!out.ok && !/开始|已存在/.test(out.message || out.error || '')) throw new Error(out.error || out.message || '失败');
     stEl.textContent = out.message || '已开始下载';
-    const iv = setInterval(async () => {
-      const s = await fetch('/api/whisper/status').then(x => x.json()).catch(() => null);
-      if(!s) return;
-      const d = s.download || {};
-      _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', d.downloading, d.download_pct, d.dl_mb_done, d.dl_mb_total, d.dl_speed);
-      stEl.textContent = d.downloading ? ('下载中 ' + (d.download_pct || 0) + '%') : (d.download_ok ? '✅ ' + (d.download_msg || '完成') : (d.download_msg || ''));
-      if(!d.downloading){
-        clearInterval(iv);
-        if(d.download_ok){
-          await renderWhisperOptions();
-          // 刚装完的模型只认英文：立刻提示，别等用户剪完一条片才发现台词全是英文
-          if(_wspEnOnly[model]){
-            uiNotices({notices: [{code: 'asr_model_en_only', model: model,
-                                  used: _wspSuggest, reason: 'install', lang: 'auto'}]});
-          }
+    pollRun(model, {
+      url: '/api/whisper/status', interval: 2000,
+      isError: () => false,                       // 状态接口没有 error 语义
+      onTick: s2 => {
+        const d = s2.download || {};
+        _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', d.downloading, d.download_pct, d.dl_mb_done, d.dl_mb_total, d.dl_speed);
+        stEl.textContent = d.downloading ? ('下载中 ' + (d.download_pct || 0) + '%')
+          : (d.download_ok ? '✅ ' + (d.download_msg || '完成') : (d.download_msg || ''));
+      },
+      isDone: s2 => !((s2.download || {}).downloading),
+      onDone: async s2 => {
+        const d = s2.download || {};
+        if(!d.download_ok) return;
+        await renderWhisperOptions();
+        // 刚装完的模型只认英文：立刻提示，别等用户剪完一条片才发现台词全是英文
+        if(_wspEnOnly[model]){
+          uiNotices({notices: [{code: 'asr_model_en_only', model: model,
+                                used: _wspSuggest, reason: 'install', lang: 'auto'}]});
         }
       }
-    }, 2000);
+    }).promise.catch(() => { /* 下载状态拉取失败：保持上一次文案即可 */ });
   } catch(e){ stEl.textContent = '❌ ' + e.message; }
 });
 let _wspEnOnly = {};        // 模型 → 是否英文专用（后端 whisper_is_en_only 判定，前端不自己猜）
@@ -3260,46 +3329,36 @@ async function composeAll(){
   }
 }
 function pollTask(runid){
-  return new Promise((resolve, reject) => {
-    const iv = setInterval(async () => {
-      try {
-        const r = await fetch('/api/progress?run=' + runid);
-        const p = await r.json();
-        uiProgressHints(p);
-        if(p.error){ clearInterval(iv); reject(new Error(p.error)); return; }
-        if(p.done && p.audio){ clearInterval(iv); resolve(p); return; }
-        if(p.done){ clearInterval(iv); reject(new Error('任务结束但未返回音频')); return; }
-      } catch(e){ /* 重试 */ }
-    }, 1200);
-  });
+  // 等一条「会产出音频」的任务；结束但没音频算失败（以前是 setInterval + 手写 resolve）
+  return pollRun(runid, {
+    interval: 1200,
+    isDone: p => !!p.done,
+    onDone: p => { if(!p.audio) throw new Error('任务结束但未返回音频'); }
+  }).promise;
 }
 function pollCompose(runid){
-  if(_pollTimer) clearInterval(_pollTimer);
+  stopHandle(_pollTimer);
   _pollRunId = runid;
   const sc = $('sbCancel'); if(sc) sc.style.display = '';
   setStatus('合成中…');
-  _pollTimer = setInterval(async () => {
-    try {
-      const r = await fetch('/api/progress?run=' + runid);
-      const p = await r.json();
-      uiProgressHints(p);
-      const sc = $('sbCancel'); if(sc) sc.style.display = 'none';
-      if(p.error){
-        clearInterval(_pollTimer);
-        setStatus('合成失败', 'bad');
-        toast('合成失败：' + p.error, 'bad');
-        return;
-      }
-      if(p.done && p.file){
-        clearInterval(_pollTimer);
-        setStatus('✅ 成片已生成', 'ok');
-        // 【v1.4.46】合成后刷新调整数据：新的 composed_plan（成片坐标）与预览源，
-        // 用户点「返回编辑」时看到的就是新成片的时间轴。
-        try { await loadAdjustItems(_runDir); } catch(e){ /* 尽力刷新 */ }
-        openExport(p.file);
-      }
-    } catch(e){ /* 抖动 */ }
-  }, 1200);
+  _pollTimer = pollRun(runid, {
+    interval: 1200,
+    onTick: p => {
+      const c = $('sbCancel'); if(c) c.style.display = 'none';
+    },
+    onError: p => {
+      setStatus('合成失败', 'bad');
+      toast('合成失败：' + p.error, 'bad');
+    },
+    isDone: p => !!(p.done && p.file),
+    onDone: async p => {
+      setStatus('✅ 成片已生成', 'ok');
+      // 【v1.4.46】合成后刷新调整数据：新的 composed_plan（成片坐标）与预览源，
+      // 用户点「返回编辑」时看到的就是新成片的时间轴。
+      try { await loadAdjustItems(_runDir); } catch(e){ /* 尽力刷新 */ }
+      openExport(p.file);
+    }
+  }).promise.catch(() => { /* 失败已在 onError 里提示 */ });
 }
 function openExport(file){
   _lastExport = file;
@@ -3425,7 +3484,7 @@ function showLiveClip(on){
     if(_lcFromEditor && ed){ ed.style.display = 'flex'; }
     else if(np) np.style.display = 'flex';
   }
-  if(!on && _lcPollTimer){ clearInterval(_lcPollTimer); _lcPollTimer = null; }
+  if(!on && _lcPollTimer){ stopHandle(_lcPollTimer); _lcPollTimer = null; }
   updateLiveClip();
   _setEntryActive(on ? 'tbLiveClip' : 'tbNarrate');
 }
@@ -3593,24 +3652,25 @@ $('lcGo').addEventListener('click', async () => {
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(x => x.json());
     if(!r.ok) throw new Error(r.error || '提交失败');
     _lcPollRunId = r.runid;
-    if(_lcPollTimer) clearInterval(_lcPollTimer);
-    _lcPollTimer = setInterval(async () => {
-      const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
-      uiProgressHints(p);
-      $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
-      $('lcMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
-      if(p.error){
-        clearInterval(_lcPollTimer); _lcPollTimer = null; _lcPollRunId = null;
+    stopHandle(_lcPollTimer);
+    _lcPollTimer = pollRun(r.runid, {
+      interval: 1500,
+      onTick: p => {
+        $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
+        $('lcMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
+      },
+      onError: p => {
+        _lcPollTimer = null; _lcPollRunId = null;
         $('lcProg').style.display = 'none';
         if($('lcCancel')) $('lcCancel').style.display = 'none';
         updateLiveClip();
         // v1.4.55：用户主动取消不算失败，轻提示即可
         if(/取消/.test(p.error || '')) toast('已取消分析');
         else toast('分析失败：' + p.error, 'bad');
-        return;
-      }
-      if(p.done && p.draft_saved){
-        clearInterval(_lcPollTimer); _lcPollTimer = null; _lcPollRunId = null;
+      },
+      isDone: p => !!(p.done && p.draft_saved),
+      onDone: p => {
+        _lcPollTimer = null; _lcPollRunId = null;
         $('lcProg').style.display = 'none';
         if($('lcCancel')) $('lcCancel').style.display = 'none';
         _lcRunDir = p.run_dir || '';
@@ -3621,7 +3681,7 @@ $('lcGo').addEventListener('click', async () => {
         renderLcEditor();
         toast('✅ 候选高光已出：' + _lcCandidates.length + ' 条，可调整后导出', 'ok');
       }
-    }, 1500);
+    }).promise.catch(() => { /* 已在 onError 提示 */ });
   } catch(e){
     $('lcProg').style.display = 'none';
     if($('lcCancel')) $('lcCancel').style.display = 'none';
@@ -3638,7 +3698,7 @@ $('lcCancel').addEventListener('click', async () => {
     await fetch('/api/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({runid: _lcPollRunId})});
   } catch(e){ /* 尽力取消 */ }
-  clearInterval(_lcPollTimer); _lcPollTimer = null; _lcPollRunId = null;
+  stopHandle(_lcPollTimer); _lcPollTimer = null; _lcPollRunId = null;
   $('lcProg').style.display = 'none';
   if($('lcCancel')) $('lcCancel').style.display = 'none';
   updateLiveClip();
@@ -3821,25 +3881,26 @@ async function lcExport(){
     const r = await fetch('/api/live_clip/export', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(x => x.json());
     if(!r.ok) throw new Error(r.error || '提交失败');
-    if(_lcPollTimer) clearInterval(_lcPollTimer);
-    _lcPollTimer = setInterval(async () => {
-      const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
-      uiProgressHints(p);
-      $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
-      $('lcMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
-      if(p.error){
-        clearInterval(_lcPollTimer); _lcPollTimer = null;
+    stopHandle(_lcPollTimer);
+    _lcPollTimer = pollRun(r.runid, {
+      interval: 1500,
+      onTick: p => {
+        $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
+        $('lcMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
+      },
+      onError: p => {
+        _lcPollTimer = null;
         $('lcProg').style.display = 'none';
         renderLcEditor();
         toast('导出失败：' + p.error, 'bad');
-        return;
-      }
-      if(p.done && p.clips && p.clips.length){
-        clearInterval(_lcPollTimer); _lcPollTimer = null;
+      },
+      isDone: p => !!(p.done && p.clips && p.clips.length),
+      onDone: p => {
+        _lcPollTimer = null;
         $('lcProg').style.display = 'none';
         renderLiveClips(p);
       }
-    }, 1500);
+    }).promise.catch(() => { /* 已在 onError 提示 */ });
   } catch(e){
     $('lcProg').style.display = 'none';
     renderLcEditor();
@@ -3953,7 +4014,7 @@ function showNewProj(){
   const lc = $('liveClip'), np = $('newProj');
   if(lc) lc.style.display = 'none';
   if(np) np.style.display = 'flex';
-  if(_lcPollTimer){ clearInterval(_lcPollTimer); _lcPollTimer = null; }
+  if(_lcPollTimer){ stopHandle(_lcPollTimer); _lcPollTimer = null; }
   updateLiveClip();
   _setEntryActive('tbNarrate');
 }
@@ -4071,6 +4132,9 @@ function lcpClose(){
   const me = $('lcPrecise');
   if(me) me.style.display = 'none';
   if(_lcpVideo){ try{ _lcpVideo.pause(); }catch(e){} }
+  // v1.4.69：关掉工作台就把轮询停掉，否则后台还在拉进度、跑完还往隐藏的
+  // overlay 上写结果（以前靠「反正看不见」蒙过去，白烧请求）
+  stopHandle(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
   showLiveClip(true);
 }
 
@@ -4158,24 +4222,23 @@ async function lcpAnalyze(opts){
     const r = await fetch('/api/live_clip_timeline', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(x => x.json());
     if(!r.ok) throw new Error(r.error || '提交失败');
-    if(_lcpPoll) clearInterval(_lcpPoll);
-    _lcpPoll = setInterval(async () => {
-      let p;
-      try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
-      catch(e){ return; }
-      uiProgressHints(p);
-      $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
-      $('lcpOvMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
-      if(p.error){
-        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+    stopHandle(_lcpPoll);
+    _lcpPoll = pollRun(r.runid, {
+      interval: 1200,
+      onTick: p => {
+        $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
+        $('lcpOvMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
+      },
+      onError: p => {
+        _lcpPoll = null; _lcpBusy = false;
         lcpOverlayFail(p.error, () => lcpAnalyze(_lcpLastReq || {}));
-        return;
-      }
-      if(p.done && p.draft_saved){
-        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+      },
+      isDone: p => !!(p.done && p.draft_saved),
+      onDone: p => {
+        _lcpPoll = null; _lcpBusy = false;
         lcpApplyAnalysis(p);
       }
-    }, 1200);
+    }).promise.catch(() => { /* 已在 onError 提示 */ });
   }catch(e){
     _lcpBusy = false;
     lcpOverlayFail(e.message);
@@ -4879,26 +4942,25 @@ async function lcpExportNow(){
       body: JSON.stringify({run_dir: _lcpRunDir, segments: segs,
                             aspect: _lcpAspectUsed, focus: 0.5})}).then(x => x.json());
     if(!r.ok) throw new Error(r.error || '提交失败');
-    if(_lcpPoll) clearInterval(_lcpPoll);
-    _lcpPoll = setInterval(async () => {
-      let p;
-      try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
-      catch(e){ return; }
-      uiProgressHints(p);
-      $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
-      $('lcpOvMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
-      if(p.error){
-        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+    stopHandle(_lcpPoll);
+    _lcpPoll = pollRun(r.runid, {
+      interval: 1200,
+      onTick: p => {
+        $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
+        $('lcpOvMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
+      },
+      onError: p => {
+        _lcpPoll = null; _lcpBusy = false;
         lcpUpdateTotals();
         lcpOverlayFail(p.error);
-        return;
-      }
-      if(p.done && p.reel){
-        clearInterval(_lcpPoll); _lcpPoll = null; _lcpBusy = false;
+      },
+      isDone: p => !!(p.done && p.reel),
+      onDone: p => {
+        _lcpPoll = null; _lcpBusy = false;
         lcpUpdateTotals();
         lcpShowResult(p);
       }
-    }, 1200);
+    }).promise.catch(() => { /* 已在 onError 提示 */ });
   }catch(e){
     _lcpBusy = false;
     lcpUpdateTotals();
