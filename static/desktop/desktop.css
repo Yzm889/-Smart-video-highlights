@@ -693,3 +693,13 @@ body.lc-crop-on .lc-focus-mark{display:block}
 .warn-dock-list li{font-size:12px;line-height:1.6;color:var(--muted);padding:4px 0 4px 13px;
   position:relative;user-select:text}
 .warn-dock-list li::before{content:'·';position:absolute;left:2px;color:var(--warn)}
+
+/* ── v1.4.68 存储面板：自动清理策略行 ───────────────────────────── */
+.store-auto{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:8px 10px;
+  margin-bottom:8px;background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.store-auto .store-chk,.store-auto .store-num{display:flex;align-items:center;gap:5px;
+  font-size:12px;color:var(--muted);white-space:nowrap}
+.store-auto input[type=number]{width:62px;background:var(--bg);border:1px solid var(--line2);
+  border-radius:6px;color:var(--txt);padding:3px 6px;font-size:12px;text-align:center}
+.store-auto input[type=checkbox]{accent-color:var(--acc);cursor:pointer}
+.store-auto .hint{flex-basis:100%;margin-top:2px}

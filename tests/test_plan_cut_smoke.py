@@ -36,7 +36,12 @@ def _get(path, timeout=15):
         return json.loads(r.read().decode('utf-8'))
 
 
-@pytest.mark.skipif(os.environ.get('SKIP_SMOKE') == '1', reason='smoke disabled')
+# 【默认不跑】这条会连本机 8765 的真实服务跑完整解说链路（几分钟，且要模型就绪）。
+# 以前是「服务在跑就自动跑」——结果平时回归 2 分钟，某天顺手起了服务就变成十几分钟，
+# 大家只好 Ctrl+C，等于把整个测试套件变成不可信。改成显式开关：
+#   SMOKE=1 pytest tests/test_plan_cut_smoke.py
+@pytest.mark.skipif(os.environ.get('SMOKE') != '1',
+                    reason='真机冒烟需显式开启：SMOKE=1（并确保 8765 服务在跑）')
 def test_confirm_plan_really_cuts_video():
     if not os.path.exists(VIDEO):
         pytest.skip('素材缺失：' + VIDEO)

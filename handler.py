@@ -137,8 +137,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(content)))
         # 页面与静态资源禁止缓存：前端更新后浏览器必须拉最新版，
-        # 否则旧缓存的 index.html/app.js 会与新后端接口错位（本机单用户场景无性能顾虑）
-        self.send_header('Cache-Control', 'no-cache')
+        # 否则旧缓存的 index.html/app.js 会与新后端接口错位（本机单用户场景无性能顾虑）。
+        # v1.4.68：JSON 接口用 no-store——no-cache 只要求「复用前校验」，而没有
+        # ETag/Last-Modified 时浏览器会启发式复用，于是 /api/storage 会返回上一次
+        # 的磁盘扫描结果（实测：配置刚从关改成开，面板仍显示旧值）。
+        self.send_header('Cache-Control',
+                         'no-store' if ctype.startswith('application/json') else 'no-cache')
         # 禁止 MIME 嗅探：否则上传的 .html 素材被当成 text/html 在同源下执行（存储型 XSS）
         self.send_header('X-Content-Type-Options', 'nosniff')
         # CSP：收紧 XSS 面（详见上方 CSP_POLICY 说明）。对 /media、JSON 等非文档响应
@@ -1074,7 +1078,10 @@ class Handler(BaseHTTPRequestHandler):
                        'vlm': mask(cfg.get('vlm')),
                        'tts_local': dict(cfg.get('tts_local') or {}),
                        'mirror': dict(cfg.get('mirror') or {}),
-                       'video': dict(cfg.get('video') or {})},
+                       'video': dict(cfg.get('video') or {}),
+                       # v1.4.68：读接口是白名单，漏一个就「存进去了但界面读不到」——
+                       # whisper.model 就是这么坑过一次，这里一并补上 storage
+                       'storage': dict(cfg.get('storage') or {})},
             'vision_available': _w._vision_available(),
             'tts_available': _w._tts_available(),
             'local_enabled': _w.local_llm_enabled(),
@@ -1251,9 +1258,22 @@ class Handler(BaseHTTPRequestHandler):
                                     'pull_speed': _w.VLM_PULL.get('speed', '')}).encode('utf-8'),
                        'application/json')
 
+    def _storage_payload(self):
+        """存储面板数据：磁盘扫描 + 自动清理配置。
+
+        【为什么单独抽一个】桌面版走 GET、网页版走 POST，两处各写一遍就会漏
+        （实测：只给 POST 加了 auto_clean，桌面面板拿不到、一直显示默认值）。
+        """
+        d = _w._storage_scan()
+        try:
+            d['auto_clean'] = _w.storage_cfg()
+        except Exception:
+            d['auto_clean'] = {'auto_clean': False, 'keep_days': 14, 'keep_max': 60}
+        return d
+
     def _get_storage(self):
         try:
-            self._send(200, json.dumps(_w._storage_scan()).encode('utf-8'), 'application/json')
+            self._send(200, json.dumps(self._storage_payload()).encode('utf-8'), 'application/json')
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
 
@@ -1314,6 +1334,20 @@ class Handler(BaseHTTPRequestHandler):
                 if inc.get('model') is not None:
                     cur['model'] = str(inc['model']).strip()
                 cfg['whisper'] = cur
+            if isinstance(data.get('storage'), dict):
+                # v1.4.68 自动清理开关：数值越界交给 web_storage.storage_cfg 钳制，
+                # 这里只按类型收下，避免把 "abc" 写进配置后每次启动都抛异常。
+                inc = data['storage']
+                cur = dict(cfg.get('storage') or {})
+                if inc.get('auto_clean') is not None:
+                    cur['auto_clean'] = bool(inc['auto_clean'])
+                for _k in ('keep_days', 'keep_max'):
+                    if inc.get(_k) is not None:
+                        try:
+                            cur[_k] = int(inc[_k])
+                        except (TypeError, ValueError):
+                            pass
+                cfg['storage'] = cur
             if isinstance(data.get('vlm'), dict):
                 inc = data['vlm']
                 cur = dict(cfg.get('vlm') or {})
@@ -2330,9 +2364,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_storage(self):
         try:
-            self._send(200, json.dumps(_w._storage_scan()).encode('utf-8'), 'application/json')
+            self._send(200, json.dumps(self._storage_payload()).encode('utf-8'),
+                       'application/json')
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]}).encode('utf-8'), 'application/json')
+
+    def _post_storage_autoclean(self):
+        """v1.4.68：按保留策略清理残留/临时文件。body: {dry_run: bool}
+
+        dry_run=true 只报「会删哪些、能省多少」，不真删；前端先用它给用户看清单。
+        永远不碰有历史记录的成片目录（见 web_storage._AUTOCLEAN_GROUPS）。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=64 * 1024) or {}
+            r = _w.storage_autoclean(dry_run=bool(req.get('dry_run')))
+            self._send(200, json.dumps(r, ensure_ascii=False).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:180]},
+                                       ensure_ascii=False).encode('utf-8'), 'application/json')
 
     def _post_storage_delete(self):
         try:
@@ -2461,6 +2511,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/plan': '_post_plan',
         '/api/storage': '_post_storage',
         '/api/storage/delete': '_post_storage_delete',
+        '/api/storage/autoclean': '_post_storage_autoclean',
         '/api/tts/cosyvoice/add_voice': '_post_tts_cosyvoice_add_voice',
         '/api/tts/cosyvoice/install': '_post_tts_cosyvoice_install',
         '/api/tts/cosyvoice/voices': '_post_tts_cosyvoice_voices',
@@ -2506,6 +2557,28 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+def _autoclean_on_boot(delay=8.0, log=None):
+    """启动后台自清：按保留策略删残留/临时文件（默认关闭）。
+
+    为什么延迟 8 秒：启动瞬间用户通常已经在点「分析」，这时候去 rmtree
+    一批目录会抢磁盘 IO，反而让第一条任务变慢。"""
+    import logging          # 本模块只在 start_server 里 import 过，这里单独取一次
+    try:
+        time.sleep(delay)
+        cfg = _w.storage_cfg()
+        if not cfg.get('auto_clean'):
+            return
+        r = _w.storage_autoclean(cfg=cfg)
+        n = len(r.get('removed') or [])
+        if n:
+            _m = (r.get('freed') or 0) / 1048576.0
+            (log or logging.getLogger('framecut.storage')).info(
+                '[STORAGE] 自动清理 %d 项，释放 %.1f MB（保留 %d 天 / 最多 %d 个）',
+                n, _m, cfg['keep_days'], cfg['keep_max'])
+    except Exception as e:      # 自清失败绝不能影响启动
+        (log or logging.getLogger('framecut.storage')).info('[STORAGE] 自动清理跳过: %s', e)
+
+
 def start_server(port=8765, open_browser=True):
     os.makedirs(_w.WORKDIR, exist_ok=True)
     os.makedirs(_w.OUTDIR, exist_ok=True)
@@ -2518,6 +2591,10 @@ def start_server(port=8765, open_browser=True):
     _handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
     logging.getLogger().addHandler(_handler)
     logging.getLogger().setLevel(logging.INFO)
+    # v1.4.68 启动自清：默认关闭，只在用户显式打开 storage.auto_clean 后才做。
+    # 放后台线程 + 延迟，别和「用户打开就要点的分析」抢磁盘。
+    threading.Thread(target=_autoclean_on_boot, name='storage-autoclean',
+                     daemon=True).start()
     host = os.environ.get('HOST', '127.0.0.1')
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f'http://{host}:{port}/'

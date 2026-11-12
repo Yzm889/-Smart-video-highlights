@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=45">
+<link rel="stylesheet" href="desktop.css?v=46">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -589,6 +589,14 @@
       <button class="mini-btn" id="storeClean"><svg class="ic"><use href="#i-trash"/></svg>一键清理可回收</button>
       <button class="mini-btn" id="storeRefresh"><svg class="ic"><use href="#i-search"/></svg>刷新</button>
     </div>
+    <!-- v1.4.68 自动清理：默认关闭；只清任务残留/临时文件，有历史记录的成片不动 -->
+    <div class="store-auto">
+      <label class="store-chk"><input type="checkbox" id="storeAuto"> 启动时自动清理</label>
+      <label class="store-num">保留 <input type="number" id="storeDays" min="1" max="3650" value="14"> 天</label>
+      <label class="store-num">最多 <input type="number" id="storeMax" min="2" max="5000" value="60"> 个</label>
+      <button class="mini-btn" id="storeAutoNow">按策略立即清理</button>
+      <div class="hint" id="storeAutoHint">只清理「任务残留 / 临时文件」；有历史记录的成片永远不会被自动删。</div>
+    </div>
     <div id="storeList"><div class="ins-empty">扫描中…</div></div>
   </div>
 </div>
@@ -641,6 +649,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=45"></script>
+<script src="desktop.js?v=46"></script>
 </body>
 </html>

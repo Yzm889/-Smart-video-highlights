@@ -2723,7 +2723,8 @@ def _safe_join(base, name):
 # 宿主晚绑定规则同 movie_narrator 拆分（子模块 _WS. 调用期查找，patch 宿主照样命中）。
 from web_storage import (  # noqa: F401,E402  v1.4.54 拆出
     _storage_dir_size, _STORAGE_ALLOW, _storage_resolve_deletable,
-    _storage_scan, _purge_history_prefix)
+    _storage_scan, _purge_history_prefix,
+    storage_cfg, select_expired, storage_autoclean)   # v1.4.68 自动清理
 
 
 # 📤 大文件分片上传：>64MB 的视频走「分片 base64」而非一次性 base64 JSON——

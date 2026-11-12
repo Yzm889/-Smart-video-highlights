@@ -3090,6 +3090,7 @@ function loadStorage(){
   $('storeList').innerHTML = '<div class="ins-empty">扫描中…</div>';
   fetch('/api/storage').then(r => r.json()).then(d => {
     _storeGroups = (d && d.groups) || [];
+    _storeAutoFill(d && d.auto_clean);
     $('storeSummary').textContent = '项目共 ' + _fmtSize(d.total_bytes)
       + ' · 可回收约 ' + _fmtSize(d.reclaimable_bytes) + ' · 磁盘剩余 ' + _fmtSize(d.free_bytes);
     const rows = [];
@@ -3123,6 +3124,66 @@ function loadStorage(){
     }));
   }).catch(e => { $('storeList').innerHTML = '<div class="ins-empty">加载失败：' + _esc(e.message) + '</div>'; });
 }
+/* ── v1.4.68 自动清理策略 ─────────────────────────────────────────
+   默认关闭。清理是破坏性操作，只允许清「任务残留/临时文件」；有历史记录的
+   成片目录永远不进自动清理范围（删了历史页整排「文件已丢失」）。 */
+function _storeAutoFill(c){
+  if(!c) return;
+  $('storeAuto').checked = !!c.auto_clean;
+  $('storeDays').value = c.keep_days || 14;
+  $('storeMax').value = c.keep_max || 60;
+  _storeAutoHint(c);
+}
+function _storeAutoHint(c){
+  const el = $('storeAutoHint');
+  if(!el) return;
+  el.textContent = c.auto_clean
+    ? '启动时自动清理：保留最近 ' + c.keep_days + ' 天 / 最多 ' + c.keep_max
+      + ' 个；只清任务残留与临时文件，成片不动'
+    : '只清理「任务残留 / 临时文件」；有历史记录的成片永远不会被自动删。';
+}
+async function _storeAutoSave(){
+  const body = {storage: {
+    auto_clean: !!$('storeAuto').checked,
+    keep_days: Math.max(1, Math.min(3650, parseInt($('storeDays').value, 10) || 14)),
+    keep_max: Math.max(2, Math.min(5000, parseInt($('storeMax').value, 10) || 60))
+  }};
+  try{
+    const r = await fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '保存失败');
+    $('storeDays').value = body.storage.keep_days;
+    $('storeMax').value = body.storage.keep_max;
+    _storeAutoHint(body.storage);
+    toast('✅ 清理策略已保存', 'ok');
+  }catch(e){ toast('保存失败：' + e.message, 'bad'); }
+}
+['storeAuto', 'storeDays', 'storeMax'].forEach(id => {
+  const el = $(id);
+  if(el) el.addEventListener('change', _storeAutoSave);
+});
+$('storeAutoNow').addEventListener('click', async () => {
+  const btn = $('storeAutoNow');
+  btn.disabled = true;
+  try{
+    // 先 dry-run：把「会删哪些、能省多少」摆给用户看，再动手
+    const pre = await fetch('/api/storage/autoclean', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run: true})}).then(x => x.json());
+    if(!pre.ok) throw new Error(pre.error || '预检失败');
+    const items = pre.removed || [];
+    if(!items.length){ toast('按当前策略没有可清理的残留'); return; }
+    const names = items.slice(0, 5).map(x => (x.rel || '').split('/').pop()).join('、');
+    if(!await uiConfirm('清理 ' + items.length + ' 项历史残留？',
+      '预计释放 ' + _fmtSize(pre.freed) + '\n包括：' + names + (items.length > 5 ? ' 等' : '')
+      + '\n\n只删任务残留与临时文件，有历史记录的成片不会被删。', '开始清理')) return;
+    const r = await fetch('/api/storage/autoclean', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run: false})}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '清理失败');
+    toast('✅ 已清理 ' + (r.removed || []).length + ' 项，释放 ' + _fmtSize(r.freed), 'ok');
+    loadStorage();
+  }catch(e){ toast('清理失败：' + e.message, 'bad'); }
+  finally{ btn.disabled = false; }
+});
 $('storeClean').addEventListener('click', async () => {
   if(!await uiConfirm('清理所有「可回收」项？', '模型权重需重新下载，默认不动。', '开始清理')) return;
   const b = $('storeClean');

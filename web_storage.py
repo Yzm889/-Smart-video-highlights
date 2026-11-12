@@ -221,3 +221,119 @@ def _purge_history_prefix(prefix):
         return removed
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# 自动清理（v1.4.68）
+#
+# 默认**关闭**：磁盘是用户的，不问自删不可接受；清理本身是破坏性操作，宁可让
+# 用户手动点。开启后也**只碰「任务残留 + 临时文件」**，永远不碰 outputs
+# （有历史记录的成片）——那些删了，历史页会整排变成「⚠️ 文件已丢失」。
+# ---------------------------------------------------------------------------
+_AUTOCLEAN_GROUPS = ('run_residual', 'asr_temp', 'music_temp',
+                     'upload_leftover', 'analysis_cache')
+
+
+def storage_cfg(cfg=None):
+    """读自动清理配置。非法值一律回退默认——宁可不清，也不能清错。"""
+    if cfg is None:
+        try:
+            import webui_server as _WS
+            cfg = (_WS.load_ai_config() or {}).get('storage') or {}
+        except Exception:
+            cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    def _i(k, d, lo, hi):
+        try:
+            v = int(cfg.get(k, d))
+        except (TypeError, ValueError):
+            v = d
+        return max(lo, min(hi, v))
+
+    return {'auto_clean': bool(cfg.get('auto_clean', False)),
+            'keep_days': _i('keep_days', 14, 1, 3650),
+            'keep_max': _i('keep_max', 60, 2, 5000)}
+
+
+def select_expired(items, now, keep_days=14, keep_max=60):
+    """挑出该清理的项，两条规则取并集：
+
+      · 天数规则：改动时间早于 keep_days 天前 → 该删
+      · 数量规则：不在「最近 keep_max 个」里，且距今超过 24 小时 → 该删
+
+    【为什么数量规则要配 24 小时硬底线】只按数量删会把「今天一口气跑出来的
+    200 个 run」删掉 140 个，而用户可能正等着用其中某个。24 小时内的一律不动，
+    既保住了「最多 M 个」这个上限，又不会删到手上正在用的东西。
+    最新那一个无论如何都不删。
+
+    items: [{'rel'|'name', 'mtime', 'size'}]，返回同结构的子集。"""
+    lst = [it for it in (items or []) if isinstance(it, dict)]
+    if not lst:
+        return []
+    lst.sort(key=lambda x: float(x.get('mtime') or 0), reverse=True)
+    keep_n = max(1, int(keep_max or 1))
+    in_count = {(it.get('rel') or it.get('name')) for it in lst[:keep_n]}
+    age_cut = float(now) - float(keep_days) * 86400.0
+    day_floor = float(now) - 86400.0
+    out = []
+    for it in lst:
+        key = it.get('rel') or it.get('name')
+        try:
+            mt = float(it.get('mtime') or 0)
+        except (TypeError, ValueError):
+            mt = 0.0
+        if mt >= day_floor:
+            continue                       # 24 小时内：绝对不动（可能正在跑）
+        if mt < age_cut or key not in in_count:
+            out.append(it)
+    return out
+
+
+def storage_autoclean(dry_run=False, cfg=None, now=None):
+    """按保留策略清理残留/临时文件，返回 {'ok','removed','freed','kept','cfg'}。
+
+    删除前每个路径都过 _storage_resolve_deletable（单段目录名白名单 + 越界
+    commonpath 校验），越权路径直接跳过——自动清理比手动点更危险，不能只靠
+    「我记得目录是干净的」。
+    """
+    import time as _t
+    c = cfg if isinstance(cfg, dict) else storage_cfg(cfg)
+    now = float(now if now is not None else _t.time())
+    removed, freed, skipped = [], 0, []
+    try:
+        scan = _storage_scan()
+    except Exception as e:
+        return {'ok': False, 'error': '扫描失败：%s' % e, 'removed': [], 'freed': 0, 'cfg': c}
+    # 先把允许清理的几组合并成一个池子再选：「最多保留 M 个」是**全局上限**，
+    # 否则每个组各留 M 个，总量永远压不下来。
+    pool = []
+    for g in (scan.get('groups') or []):
+        if g.get('key') in _AUTOCLEAN_GROUPS:
+            pool.extend([it for it in (g.get('items') or []) if isinstance(it, dict)])
+    for it in select_expired(pool, now, c['keep_days'], c['keep_max']):
+        rel = it.get('rel') or ''
+        full = _storage_resolve_deletable(rel)
+        if not full:
+            skipped.append(rel)          # 不在白名单/越界：宁可不删
+            continue
+        size = int(it.get('size') or 0)
+        if dry_run:
+            removed.append({'rel': rel, 'size': size})
+            freed += size
+            continue
+        try:
+            if os.path.isdir(full):
+                shutil.rmtree(full)
+            elif os.path.isfile(full):
+                os.remove(full)
+            else:
+                continue
+            removed.append({'rel': rel, 'size': size})
+            freed += size
+        except OSError as e:
+            skipped.append('%s(%s)' % (rel, e))
+    return {'ok': True, 'dry_run': bool(dry_run), 'removed': removed,
+            'freed': freed, 'skipped': skipped, 'cfg': c,
+            'groups': list(_AUTOCLEAN_GROUPS)}
