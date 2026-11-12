@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=37">
+<link rel="stylesheet" href="desktop.css?v=38">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -205,6 +205,12 @@
         <svg class="ic ic-big"><use href="#i-folder"/></svg>
         <span id="lcPickLabel">选择直播录像（OBS 录制 / 平台回放）</span>
       </button>
+      <!-- v1.4.61：弹幕热度信号（观众投票比音量准）。XML 文本直传后端，不落盘 -->
+      <div class="lc-row" style="margin-top:8px">
+        <button class="mini-btn" id="lcDanmaku">💬 弹幕 XML（可选）</button>
+        <button class="mini-btn" id="lcDanmakuClear" style="display:none">✖ 清除</button>
+        <span class="np-hint" id="lcDanmakuLabel" style="margin:0">B 站直播弹幕 XML 让高光排序跟随观众热度</span>
+      </div>
       <div class="field">
         <label>或填写本机已有录像的完整路径</label>
         <input type="text" id="lcPath" placeholder="例如 D:\Recordings\2026-11-11 20-30-15.mkv">
@@ -523,6 +529,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=37"></script>
+<script src="desktop.js?v=38"></script>
 </body>
 </html>

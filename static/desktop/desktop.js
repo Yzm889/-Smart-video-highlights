@@ -3100,6 +3100,7 @@ _setEntryActive('tbNarrate');
    阶段①调 /api/live_clip 只做分析落草稿（不出片）；候选渲染成可编辑清单，
    每段可删、起止秒数可改、可手动圈段；阶段②调 /api/live_clip/export 出片。 */
 let _lcVideo = null;          // {name, path} 本地直连 或 {name, upload_id} 浏览器上传
+let _lcDanmakuText = '';      // v1.4.61：弹幕 XML 原文（直传 /api/live_clip，不落盘）
 let _lcPollTimer = null;
 let _lcPollRunId = null;      // v1.4.55：取消按钮凭它发 /api/cancel
 let _lcAspectUsed = 'blur';   // v1.4.57：导出实际用的画幅（结果预览框比例跟着切）
@@ -3199,6 +3200,57 @@ function _lcVideoObj(){
   return null;
 }
 
+/* ── v1.4.61 弹幕热度信号 ─────────────────────────────────────────────────
+   范文（切片助手）的核心优势：按每个高光事件的弹幕数量排序——观众用弹幕
+   直接投票，比音量/画面运动更贴近「哪里好看」。我们只吸收信号，不做录播
+   工具链（自动录弹幕/一键开播）。XML 文本直传后端解析，不落盘、不入库。
+   桌面桥复用 pick_srt（其对话框含「所有文件 (*.*)」可选 .xml）+ read_text_file；
+   浏览器走 FileReader 同款解码链（v1.4.49 的 _decodeSubtitleBytes：UTF-8
+   严格 → GBK → 兜底），避免 GBK 弹幕在读取那一步就乱码。 */
+function _lcDanmakuUi(){
+  const lbl = $('lcDanmakuLabel'), clr = $('lcDanmakuClear');
+  if(_lcDanmakuText){
+    lbl.textContent = '✅ 已载入弹幕 XML（' + Math.round(_lcDanmakuText.length / 1024)
+      + ' KB）——高光排序将跟随观众热度';
+    clr.style.display = '';
+  } else {
+    lbl.textContent = 'B 站直播弹幕 XML 让高光排序跟随观众热度';
+    clr.style.display = 'none';
+  }
+}
+function _lcDanmakuLoaded(text, name){
+  if(!text || !String(text).trim()){ toast('弹幕 XML 是空的（未载入）', 'bad'); return; }
+  _lcDanmakuText = String(text);
+  _lcDanmakuUi();
+  toast('✅ 弹幕已载入：' + name + '（分析时按弹幕热度排序）', 'ok');
+}
+$('lcDanmakuClear').addEventListener('click', () => {
+  _lcDanmakuText = '';
+  _lcDanmakuUi();
+  toast('已清除弹幕（高光排序回到音量+画面+台词）');
+});
+$('lcDanmaku').addEventListener('click', async () => {
+  if(await _ensureBridge()){
+    window.pywebview.api.pick_srt().then(r => {
+      if(!r || !r.path) return null;
+      return window.pywebview.api.read_text_file(r.path).then(t => {
+        if(!t.ok) throw new Error(t.error || '读取失败');
+        return {text: t.text, name: r.name || r.path.split(/[\\/]/).pop()};
+      });
+    }).then(r => {
+      if(r) _lcDanmakuLoaded(r.text, r.name);
+    }).catch(e => toast('弹幕 XML 读取失败：' + e.message, 'bad'));
+  } else {
+    _browserFileInput('.xml,.txt', async f => {
+      try {
+        const text = _decodeSubtitleBytes(await f.arrayBuffer());
+        if(!text) throw new Error('解码失败');
+        _lcDanmakuLoaded(text, f.name);
+      } catch(e){ toast('弹幕 XML 读取失败：' + e.message, 'bad'); }
+    });
+  }
+});
+
 $('tbLiveClip').addEventListener('click', () => showLiveClip(true));
 $('lcBack').addEventListener('click', () => showLiveClip(false));
 $('lcPath').addEventListener('input', updateLiveClip);
@@ -3244,6 +3296,7 @@ $('lcGo').addEventListener('click', async () => {
     aspect: $('lcAspect') ? $('lcAspect').value : 'blur',
     asr_language: $('lcLang') ? $('lcLang').value : 'auto',
   };
+  if(_lcDanmakuText) body.danmaku_text = _lcDanmakuText;   // v1.4.61 弹幕热度信号
   if(vo){ body.video = vo; }
   else {
     const p = ($('lcPath').value || '').trim();
@@ -3352,6 +3405,12 @@ function renderLcEditor(){
   box.appendChild(acts);
 }
 
+function _lcFmtT(v){
+  const t = Math.max(0, Number(v) || 0);
+  return String(Math.floor(t / 60)).padStart(2, '0') + ':'
+    + String(Math.floor(t % 60)).padStart(2, '0');
+}
+
 function _lcRow(c, i){
   const row = document.createElement('div');
   row.className = 'lc-seg';
@@ -3409,6 +3468,34 @@ function _lcRow(c, i){
     row.appendChild(img);
   }
   row.append(n, lS, lE, dur, bPrev, bDel, why);
+  /* v1.4.61 候选台词明细：范文「事件下方字幕列表可翻看」——展开看这段在
+     说什么，不选中可收起。lines 随 draft 持久化，「恢复候选」后照样能翻。 */
+  const bLines = document.createElement('button');
+  bLines.className = 'mini-btn lc-lines-btn';
+  bLines.textContent = '💬 台词';
+  const linesBox = document.createElement('div');
+  linesBox.className = 'lc-lines';
+  linesBox.style.display = 'none';
+  const _lines = Array.isArray(c.lines) ? c.lines : [];
+  if(_lines.length){
+    _lines.forEach(s => {
+      const it = document.createElement('div');
+      it.className = 'lc-line';
+      it.textContent = _lcFmtT(s.start) + '  ' + String(s.text || '');
+      linesBox.appendChild(it);
+    });
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'lc-line';
+    empty.textContent = '（这段没有台词记录：可能未启用转写，或录像为纯音乐/静默）';
+    linesBox.appendChild(empty);
+  }
+  bLines.addEventListener('click', () => {
+    const open = linesBox.style.display !== 'none';
+    linesBox.style.display = open ? 'none' : 'block';
+    bLines.textContent = open ? '💬 台词' : '💬 收起台词';
+  });
+  row.append(bLines, linesBox);
   refreshDur();
   return row;
 }

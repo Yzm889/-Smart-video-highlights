@@ -658,6 +658,132 @@ def test_cover_crop_math_and_rebuild_contract():
         pass
 
 
+# ---------------------------------------------------------------------------
+# v1.4.61：弹幕热度信号 + 候选台词明细
+# ---------------------------------------------------------------------------
+_XML_OK = ('<i><d p="12.5,1,25,16777215,0,0,0,0">哈哈</d>'
+           '<d p="3.0,1,25,16777215,0,0,0,0">666</d>'
+           '<d p="bad,1,25">坏时间戳</d>'
+           '<d p="9.0,1,25,16777215,0,0,0,0"></d></i>')
+
+
+def test_parse_danmaku_xml():
+    """B 站录播姬 XML → [{t,text}] 按时间升序；坏/空输入一律 [] 不抛。"""
+    ev = LC._parse_danmaku_xml(_XML_OK)
+    assert [e['t'] for e in ev] == [3.0, 12.5], '坏时间戳与空文本要跳过，并按时间排序'
+    assert [e['text'] for e in ev] == ['666', '哈哈']
+    for bad in ('', '   ', 'not xml at all', '<i><d p="1,2">未闭合', None):
+        assert LC._parse_danmaku_xml(bad) == [], '坏输入必须静默降级，不阻断分析'
+
+
+def test_danmaku_profile_window_aggregation():
+    """每窗弹幕条数曲线：跨窗按 int(t/window) 聚合，越界忽略。"""
+    ev = [{'t': 0.5}, {'t': 2.0}, {'t': 3.9}, {'t': 999.0}, {'t': -3.0}, {}]
+    c = LC._danmaku_profile(ev, 10, 2.0)
+    # 缺 t 的坏事件按 0 秒兜底（与 _speech_profile 同款），越界的 999 / -3 忽略
+    assert c.tolist() == [2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert LC._danmaku_profile([], 10, 2.0).sum() == 0
+
+
+def _flat_pipeline(monkeypatch, tmp_path):
+    """全片一样响 + 无画面 + 无台词：只有弹幕能打破平坦地形，便于验证排序。"""
+    win, vdur, rate = 2.0, 300.0, 8000
+    pcm = (np.random.default_rng(7).standard_normal(int(vdur / win) * int(rate * win))
+           * 800).astype(np.int16)
+    monkeypatch.setattr(LC, '_probe_duration', lambda p: (vdur, True))
+    monkeypatch.setattr(LC, '_load_pcm', lambda *a, **k: (pcm, rate))
+    monkeypatch.setattr(LC, '_motion_profile', lambda *a, **k: (None, 0.0))
+    return win
+
+
+def test_pct_rank_ties_keeps_equal_windows_equal():
+    """稀疏弹幕曲线：并列的 0 窗必须同分位，不许越靠片尾分越高。
+
+    stable 排序会让 98 个并列的零窗拿到 0~0.98 的递增分位次——片尾「一条
+    弹幕都没有」的窗口反被判成全片峰值（实测把高光拖到 281 秒）。
+    """
+    x = np.zeros(100, dtype=np.float64)
+    x[10:12] = 5.0
+    r = LC.pct_rank(x, ties=True)
+    zero_wins = np.concatenate([r[:10], r[12:]])
+    assert np.allclose(zero_wins, zero_wins[0]), '并列零窗必须同分位'
+    assert r[10] > 0.9 and r[10] > r[0] + 0.4
+    assert LC.pct_rank(np.full(5, 0.3)).tolist() == [0.5] * 5, '默认行为不许变'
+
+
+def test_analyze_danmaku_fusion_and_reasons(monkeypatch, tmp_path):
+    """弹幕融进第 4 路：观众刷屏的窗口被选成高光，理由出现「弹幕热度」。"""
+    _flat_pipeline(monkeypatch, tmp_path)
+    # 200~220s 集中刷屏；其余时间零星几条
+    dan = [{'t': 200.0 + (i % 20) * 1.0, 'text': '哈哈'} for i in range(200)]
+    dan += [{'t': 20.0 + i * 5.0, 'text': 'x'} for i in range(10)]
+    res = LC.analyze_highlights('f.mp4', run_dir=str(tmp_path), use_asr=False,
+                                n_clips=1, min_sec=20, max_sec=60,
+                                danmaku_events=dan)
+    assert res['danmaku_used'] is True and res['asr'] == []
+    assert res['clips'] and any(abs(c['peak_t'] - 210.0) < 30 for c in res['clips']), \
+        '弹幕峰值窗必须主导高光排序：%r' % [c['peak_t'] for c in res['clips']]
+    assert any('弹幕热度' in r for c in res['clips'] for r in c['reasons']), \
+        '理由必须出现弹幕热度（弹幕置顶，不被 parts[:3] 挤掉）'
+    assert 'lines' in res['clips'][0]
+
+
+def test_analyze_without_danmaku_is_identical(monkeypatch, tmp_path):
+    """无弹幕 = 旧行为逐位等价：None / 空 list / 全落在片长外的弹幕都一样。"""
+    _flat_pipeline(monkeypatch, tmp_path)
+    kw = dict(run_dir=str(tmp_path), use_asr=False, n_clips=1, min_sec=20, max_sec=60)
+    base = LC.analyze_highlights('f.mp4', **kw)
+    for absent in ([], [{'t': 99999.0, 'text': 'x'}]):
+        got = LC.analyze_highlights('f.mp4', danmaku_events=absent, **kw)
+        assert got['clips'] == base['clips'], '缺席弹幕不得改变候选/理由/分数'
+        assert got['danmaku_used'] is False
+    assert abs(LC.W_DANMAKU - 0.4) < 1e-9, '弹幕权重（观众直接投票，高于画面运动）'
+
+
+def test_clip_lines_overlap_and_cap():
+    """lines：与段有重叠的台词都可见（跨边界半句也要），最多 200 条，坏数据跳过。"""
+    asr = [{'start': 5.0, 'end': 11.0, 'text': '跨左边界'},
+           {'start': 12.0, 'end': 15.0, 'text': '段内'},
+           {'start': 19.5, 'end': 25.0, 'text': '跨右边界'},
+           {'start': 30.0, 'end': 31.0, 'text': '段外'},
+           {'start': '坏', 'end': 13.0, 'text': '坏数据'},
+           None]
+    got = LC._lines_in_range(asr, 10.0, 20.0)
+    assert [x['text'] for x in got] == ['跨左边界', '段内', '跨右边界'], got
+    many = [{'start': float(i), 'end': float(i) + 0.5, 'text': str(i)} for i in range(260)]
+    assert len(LC._lines_in_range(many, 0.0, 1000.0)) == 200
+    assert LC._lines_in_range([], 0, 10) == []
+
+
+def test_dispatch_live_clip_danmaku_wiring(monkeypatch, tmp_path):
+    """入口链路：danmaku_text 解析成 list 直传分析器（不落盘）、草稿记 danmaku_used。"""
+    import webui_server as S
+    import workflows as W
+    monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
+    vp = str(tmp_path / 'src.mp4')
+    (tmp_path / 'src.mp4').write_bytes(b'x')
+    monkeypatch.setattr(S, '_resolve_upload_video', lambda *a, **k: vp)
+    seen = {}
+
+    def fake_analyze(_vp, run_dir, **kw):
+        seen.update(kw)
+        return {'clips': [{'start': 1.0, 'end': 30.0, 'peak_t': 10.0, 'score': 0.8,
+                           'reasons': ['弹幕热度峰值（全片前1%）'], 'lines': []}],
+                'vdur': 300.0, 'window': 2.0, 'asr_used': True,
+                'danmaku_used': True, 'asr': []}
+
+    monkeypatch.setattr(LC, 'analyze_highlights', fake_analyze)
+    monkeypatch.setattr(LC, 'make_candidate_thumbs', lambda *a, **k: [''])
+    saved = {}
+    monkeypatch.setattr(LC, 'save_draft', lambda rd, data: saved.update(data) or 'ok')
+    prog = {'phase': '', 'pct': 0, 'done': False, 'run_dir': str(tmp_path / 'run1')}
+    W.dispatch_live_clip({'video': {'name': 'src.mp4'}, 'danmaku_text': _XML_OK}, prog)
+    assert prog.get('done') is True, prog.get('error')
+    assert [e['t'] for e in seen['danmaku_events']] == [3.0, 12.5], 'XML 必须解析后直传 list'
+    assert saved['danmaku_used'] is True, '草稿要记是否用了弹幕'
+    assert saved['clips'][0]['lines'] == [] or isinstance(saved['clips'][0]['lines'], list)
+
+
 def tmpdir():
     import tempfile
     return tempfile.mkdtemp()

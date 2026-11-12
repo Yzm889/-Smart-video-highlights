@@ -151,14 +151,14 @@ class TestCacheVersionBump(unittest.TestCase):
     """缓存版本号 bump 到 24。"""
 
     def test_desktop_js_v24(self):
-        """desktop.js?v=37。"""
+        """desktop.js?v=38。"""
         html = _read_index_html()
-        self.assertIn('desktop.js?v=37', html)
+        self.assertIn('desktop.js?v=38', html)
 
     def test_desktop_css_v24(self):
-        """desktop.css?v=37。"""
+        """desktop.css?v=38。"""
         html = _read_index_html()
-        self.assertIn('desktop.css?v=37', html)
+        self.assertIn('desktop.css?v=38', html)
 
     def test_js_css_versions_equal(self):
         """desktop.js 和 desktop.css 的版本号必须相等。"""
@@ -337,4 +337,4 @@ def test_music_persist_and_reuse_all():
     assert '一键复用上次全部' in js
     assert 'reuseLastMusic()' in js
     html = _read_index_html()
-    assert 'desktop.js?v=37' in html and 'desktop.css?v=37' in html
+    assert 'desktop.js?v=38' in html and 'desktop.css?v=38' in html

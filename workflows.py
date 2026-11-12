@@ -754,18 +754,23 @@ def dispatch_live_clip(req, prog):
             raise RuntimeError('未收到直播录像：请选择文件，或填写本机录播文件的完整路径')
         prog['phase'] = '读取录像信息'
         prog['pct'] = 3
+        # v1.4.61 弹幕热度：前端把 XML 文本直传（不落盘），解析成 [{t,text}]
+        # 直接交给分析器；坏 XML 解析返回 [] → 自动退回旧的三路融合，不阻断。
+        danmaku_events = LC._parse_danmaku_xml(req.get('danmaku_text') or '')
         meta = LC.analyze_highlights(vp, run_dir, progress=prog,
                                      n_clips=req.get('n_clips'),
                                      min_sec=req.get('min_sec'),
                                      max_sec=req.get('max_sec'),
                                      use_asr=bool(req.get('use_asr', True)),
-                                     asr_language=req.get('asr_language'))
+                                     asr_language=req.get('asr_language'),
+                                     danmaku_events=danmaku_events)
         base = os.path.basename(run_dir)
         LC.save_draft(run_dir, {
             'video_src': vp,
             'vdur': meta.get('vdur'),
             'window': meta.get('window'),
             'asr_used': meta.get('asr_used'),
+            'danmaku_used': bool(meta.get('danmaku_used')),
             'aspect_default': str(req.get('aspect') or 'blur'),
             'clips': meta.get('clips') or [],
         })

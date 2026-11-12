@@ -67,6 +67,9 @@ MIN_GAP = _env_float('LIVE_CLIP_GAP', 45.0)       # 两条高光至少隔开（�
 W_AUDIO = _env_float('LIVE_CLIP_W_AUDIO', 0.5)    # 音量权重
 W_MOTION = _env_float('LIVE_CLIP_W_MOTION', 0.3)  # 画面运动权重
 W_SPEECH = _env_float('LIVE_CLIP_W_SPEECH', 0.2)  # 台词密度权重
+# 弹幕热度权重（v1.4.61）：观众用弹幕直接投票「哪里好看」，信号价值高于音量
+# 之外的任何一路；缺席（没传弹幕）自动把权重匀给其它路，行为与旧版完全一致。
+W_DANMAKU = _env_float('LIVE_CLIP_W_DANMAKU', 0.4)
 ASR_MAX_SEC = _env_float('LIVE_CLIP_ASR_MAX', 5400.0)  # 超过 90 分钟跳过台词信号
 # 扩边时的能量地板：窗口分位次低于峰值这么多倍就认为高光结束
 _EDGE_FLOOR = _env_float('LIVE_CLIP_EDGE_FLOOR', 0.35)
@@ -172,14 +175,74 @@ def _speech_profile(asr, nwin, window):
     return density, kw
 
 
-def pct_rank(x):
+def _parse_danmaku_xml(text):
+    """解析 B 站直播弹幕 XML（录播姬/直播工具导出的 <d p="时间,模式,...">文本</d>）。
+
+    【v1.4.61 弹幕信号】范文（切片助手演示）的核心优势：按弹幕数量给高光排序
+    ——观众用弹幕投票，比音量/画面信号都准。stdlib ElementTree 解析（Python
+    3.7.1+ 默认不解析外部实体，无 XXE 风险）；空/坏输入返回 [] 绝不抛。
+    返回 [{t: 秒, text: 弹幕文本}]，按时间升序。"""
+    if not text or not str(text).strip():
+        return []
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(str(text))
+    except Exception as e:
+        _log.info('[LIVE] 弹幕 XML 解析失败（忽略弹幕信号）: %s', e)
+        return []
+    out = []
+    for d in root.iter('d'):
+        p = str(d.get('p') or '')
+        parts = p.split(',')
+        if not parts or not parts[0]:
+            continue
+        try:
+            t = float(parts[0])
+        except ValueError:
+            continue
+        txt = (d.text or '').strip()
+        if txt:
+            out.append({'t': max(0.0, t), 'text': txt})
+    out.sort(key=lambda x: x['t'])
+    _log.info('[LIVE] 弹幕解析: %d 条（时间跨度 %.0f 秒）',
+              len(out), (out[-1]['t'] - out[0]['t']) if out else 0.0)
+    return out
+
+
+def _danmaku_profile(events, nwin, window):
+    """每 window 秒的弹幕条数曲线（v1.4.61）。仿 _speech_profile 的窗口聚合：
+    弹幕时刻 t 落进第 int(t/window) 窗，计数 +1。"""
+    curve = np.zeros(nwin, dtype=np.float32)
+    for ev in (events or []):
+        try:
+            t = float(ev.get('t', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        i = int(t / window)
+        if 0 <= i < nwin:
+            curve[i] += 1.0
+    return curve
+
+
+def pct_rank(x, ties=False):
     """0~1 全片分位次（相对化核心）：对绝对音量、编码响度差异、分辨率差异免疫。
-    常数序列（无声/静态画面）返回全 0.5，避免把「全场一样响」误判成处处峰值。"""
+    常数序列（无声/静态画面）返回全 0.5，避免把「全场一样响」误判成处处峰值。
+
+    ties=True（v1.4.61 弹幕专用）：**相同值给相同排位**（并列取平均名次）。
+    弹幕是稀疏计数——90 分钟录像里 95% 的窗口都是 0；stable 排序会把这些
+    并列的 0 按索引依次排开，分位次从 0 一路涨到 0.95，片尾「一条弹幕都没有」
+    的窗口反而成了全片最高分（实测高光峰被拖到 281s，弹幕密集的 210s 落选）。
+    默认 False → 音量/画面/台词三路行为逐位不变。"""
     x = np.asarray(x, dtype=np.float64)
     if x.size == 0:
         return x
     if float(x.max() - x.min()) <= 1e-9:
         return np.full(x.shape, 0.5)
+    if ties:
+        _uniq, inv, cnts = np.unique(x, return_inverse=True, return_counts=True)
+        starts = np.cumsum(cnts) - cnts
+        mid = starts + (cnts - 1) / 2.0
+        return mid[inv] / max(1, x.size - 1)
     order = np.argsort(x, kind='stable')
     ranks = np.empty(x.size, dtype=np.float64)
     ranks[order] = np.arange(x.size)
@@ -278,8 +341,33 @@ def select_clips(score, window, vdur, n_clips=None, min_sec=None, max_sec=None,
     return out
 
 
+def _lines_in_range(asr, start, end, limit=200):
+    """v1.4.61 候选台词明细：取与 [start, end) 有重叠的台词（截 limit 条）。
+
+    范文里「事件下方字幕列表可翻看」——主人调段时不用盲猜这段在说什么。
+    重叠判定而不是「起点落在段内」：跨边界的长台词也要能看到（切出来会带半句）。
+    返回 [{start, end, text}]，坏数据跳过、绝不抛。"""
+    out = []
+    for s in (asr or []):
+        try:
+            s0 = float(s.get('start', 0) or 0)
+            s1 = float(s.get('end', s0) or s0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if s1 > start and s0 < end:
+            out.append({'start': round(s0, 2), 'end': round(s1, 2),
+                        'text': str(s.get('text') or '')})
+            if len(out) >= limit:
+                break
+    return out
+
+
 def _reasons(peak_idx, ranks, kw, keywords_names=('音量', '画面动作', '台词密度')):
-    """人能看懂的入选理由：只报「全片前 X%」级别的强信号，最多三条。"""
+    """人能看懂的入选理由：只报「全片前 X%」级别的强信号，最多三条。
+
+    默认三路与 ranks 一一对应（既有调用不变）。v1.4.61 的 analyze_highlights
+    会显式传 4 元组并把弹幕放**首位**——观众直接投票的高热段，理由必须能被
+    看见（parts 只留 3 条，追加在末尾会被音量/画面/台词挤掉）。"""
     parts = []
     for name, r in zip(keywords_names, ranks):
         if r is None or r.size == 0 or peak_idx >= r.size:
@@ -298,8 +386,12 @@ def _reasons(peak_idx, ranks, kw, keywords_names=('音量', '画面动作', '台
 
 
 def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
-                       min_sec=None, max_sec=None, use_asr=True, asr_language=None):
+                       min_sec=None, max_sec=None, use_asr=True, asr_language=None,
+                       danmaku_events=None):
     """主入口：一条录像 → 高光段列表（含可读理由）。
+
+    danmaku_events（v1.4.61）：可选的 [{t, text}] 直播弹幕（B 站录播姬 XML
+    解析产物）。给了就多融一路「观众投票」，没给则整条链路与旧版逐位等价。
 
     进度约定与全产品一致：progress['phase']/['pct']，用户取消抛 AbortError
     （ffmpeg_run/帧分析/ASR 都已接 RUN_PROCS 协作取消）。"""
@@ -349,7 +441,16 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
         speech[:min(nwin2, d.size)] = d[:min(nwin2, d.size)]
         kw[:min(nwin2, k.size)] = k[:min(nwin2, k.size)]
 
-    # 融合：三路分位次按权重合成（某路缺席就把权重匀给其它路，不空算）
+    # v1.4.61 弹幕热度：观众用弹幕投票「哪里好看」。时间轴与音量/画面共用
+    # 同一个 nwin2 窗格；全 0（比如弹幕时刻全落在片长之外）视为缺席，不参与
+    # 融合——否则一条常数曲线会把所有窗口的分数拉平。
+    danmaku = None
+    if danmaku_events:
+        dc = _danmaku_profile(danmaku_events, nwin2, win)
+        if dc.size and float(dc.max()) > 0:
+            danmaku = dc
+
+    # 融合：各路分位次按权重合成（某路缺席就把权重匀给其它路，不空算）
     up('挑选高光片段', 62)
     r_audio = pct_rank(audio)
     if r_audio.size < nwin2:                 # 音频比视频短（尾部无音轨）：中性值补齐
@@ -370,6 +471,11 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
     if r_speech is not None:
         ranks.append(r_speech)
         weights.append(W_SPEECH)
+    # ties=True：弹幕是稀疏计数，并列的 0 窗必须同分位次，不许按时间索引错开
+    r_danmaku = pct_rank(danmaku, ties=True) if danmaku is not None else None
+    if r_danmaku is not None:
+        ranks.append(r_danmaku)
+        weights.append(W_DANMAKU)
     wsum = float(sum(weights)) or 1.0
     combined = np.zeros(nwin2, dtype=np.float64)
     for r, w in zip(ranks, weights):
@@ -378,7 +484,10 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
                          min_sec=min_sec, max_sec=max_sec)
     for c in clips:
         pk = int(c['peak_t'] / win)
-        c['reasons'] = _reasons(pk, [ranks[0], r_motion, r_speech], kw)
+        # 弹幕置顶：parts 只留 3 条，观众投票的理由不能被音量/画面挤掉
+        c['reasons'] = _reasons(pk, [r_danmaku, ranks[0], r_motion, r_speech], kw,
+                                ('弹幕热度', '音量', '画面动作', '台词密度'))
+        c['lines'] = _lines_in_range(asr, c['start'], c['end'])
         c['score'] = round(c['score'], 3)
         c['start'] = round(c['start'], 2)
         c['end'] = round(c['end'], 2)
@@ -386,10 +495,15 @@ def analyze_highlights(video_path, run_dir, progress=None, n_clips=None,
         c['peak_t'] = round(c['peak_t'], 2)
     if not clips:
         raise RuntimeError('没挑出任何高光段（录像可能整段都是静音/静止画面）')
-    _log.info('[LIVE] 高光挑选完成: %d 条（音量窗口 %d，运动 %s，台词 %s段）',
-              len(clips), nwin, '有' if motion is not None else '无', len(asr))
+    _log.info('[LIVE] 高光挑选完成: %d 条（音量窗口 %d，运动 %s，台词 %s段，弹幕 %s）',
+              len(clips), nwin, '有' if motion is not None else '无', len(asr),
+              '有' if danmaku is not None else '无')
+    # asr 全量只随 meta 返回给上层（不落草稿，避免 90 分钟片的草稿膨胀）；
+    # 每段可见的 lines 已经附在 clips 上，随 draft 持久化、恢复候选也在。
     return {'clips': clips, 'vdur': round(vdur, 2), 'window': win,
-            'asr_used': bool(asr)}
+            'asr_used': bool(asr), 'danmaku_used': bool(danmaku is not None),
+            'asr': [{'start': s.get('start'), 'end': s.get('end'),
+                     'text': s.get('text')} for s in asr if isinstance(s, dict)]}
 
 
 def _vf_chain(aspect, tm):

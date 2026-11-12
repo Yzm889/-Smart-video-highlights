@@ -489,3 +489,10 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
 .tb-btn.active{background:var(--acc-dim);border-color:rgba(61,126,255,.5);color:#cfe0ff}
 .lc-thumb{width:120px;aspect-ratio:16/9;object-fit:cover;border-radius:6px;
   border:1px solid var(--line);flex:none;background:#000}
+/* v1.4.61 候选台词明细：展开的台词列表（时间 + 文本），可收起 */
+.lc-lines{flex-basis:100%;max-height:190px;overflow:auto;background:var(--bg);
+  border:1px solid var(--line);border-radius:6px;padding:6px 9px;margin-top:2px}
+.lc-line{font-size:11.5px;color:var(--dim);line-height:1.75;
+  font-variant-numeric:tabular-nums;white-space:pre-wrap;word-break:break-word}
+.lc-line + .lc-line{border-top:1px dashed var(--line)}
+.lc-lines-btn{flex:none}

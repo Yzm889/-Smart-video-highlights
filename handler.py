@@ -1943,7 +1943,10 @@ class Handler(BaseHTTPRequestHandler):
         """直播切片：本地直播录像 → 自动高光 → N 条原声切片。"""
         try:
             length = int(self.headers.get('Content-Length', 0))
-            req = self._read_json(length, max_len=64 * 1024)
+            # v1.4.61：弹幕 XML 随请求体直传，一场直播几万条轻松超过 64KB——
+            # 上限放到 8MB（仍远低于 _read_json 的 300MB 默认上限），否则大弹幕
+            # 会被判「请求过大」返回 None → 前端只看到「未收到直播录像」。
+            req = self._read_json(length, max_len=8 * 1024 * 1024)
             if req is None:
                 req = {}
             runid = self._spawn(_w.dispatch_live_clip, req)
