@@ -26,7 +26,8 @@ import numpy as np
 
 from ffmpeg_utils import ffmpeg_run
 from ai_providers import (asr_segments, local_llm_chat, note_asr_model_mismatch,
-                          whisper_language, whisper_model_for_language)
+                          whisper_language, whisper_model_for_language,
+                          _note_progress_warning)
 
 _log = logging.getLogger('framecut.live')
 
@@ -228,6 +229,8 @@ def _parse_danmaku_xml(text):
         root = ET.fromstring(str(text))
     except Exception as e:
         _log.info('[LIVE] 弹幕 XML 解析失败（忽略弹幕信号）: %s', e)
+        _note_progress_warning('弹幕文件解析失败，本次没有用弹幕热度（格式不对或文件损坏）：'
+                               + str(e)[:120])
         return []
     out = []
     for d in root.iter('d'):
@@ -676,6 +679,11 @@ def _compute_signals(video_path, run_dir, progress=None, use_asr=True,
     # progress 透传：逐帧分析长片要跑几十秒~几分钟，beat_analysis 会在同一段
     # progress 上推进百分比——不透传的话进度条在这段全程冻结，像卡死。
     motion, _mdur = _motion_profile(video_path, win, progress=progress)
+    # 【降级必须可见】运动信号缺席时高光只按音量/台词算，动作场面会被系统性
+    # 漏掉——分数照样出、结果照样看起来正常，用户完全无从判断「为什么没剪到
+    # 那段打斗」。以前只写日志，等于把一路信号丢了不吭声。
+    if motion is None or not getattr(motion, 'size', 0):
+        _note_progress_warning('画面运动分析失败：本次只按音量/台词打分，动作多的片段可能被漏掉')
     if motion is not None and motion.size and motion.size != nwin:
         n = min(nwin, motion.size)
         m2 = np.zeros(nwin, dtype=np.float32)
@@ -726,6 +734,10 @@ def _compute_signals(video_path, run_dir, progress=None, use_asr=True,
         dc = _danmaku_profile(danmaku_events, nwin2, win)
         if dc.size and float(dc.max()) > 0:
             danmaku = dc
+        else:
+            _note_progress_warning('弹幕时间与片长对不上（%d 条弹幕全部落在 0~%.0f 秒之外），'
+                                   '本次没有用弹幕热度——检查是不是贴错了别的场次的弹幕'
+                                   % (len(danmaku_events), vdur))
 
     # 融合：各路分位次按权重合成（某路缺席就把权重匀给其它路，不空算）
     up('计算综合高能曲线', 62)
@@ -919,6 +931,7 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=
           if progress else (lambda phase, pct: None))
     cand_dir = os.path.join(run_dir, '_covers')
     covers = []
+    _n_fail = 0          # 失败条数：一条一条报警会把提示刷爆，最后汇总一条
     try:
         for i, c in enumerate(clips):
             up('挑封面 %d/%d' % (i + 1, len(clips)),
@@ -937,6 +950,7 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=
                 _w._cover_candidates_sequential(video_path, cand_dir, ts_list)
             except Exception as e:
                 _log.info('[LIVE] 封面候选抽帧失败（跳过该封面）: %s', e)
+                _n_fail += 1
                 covers.append('')
                 continue
             best, best_s = '', float('-inf')
@@ -964,6 +978,7 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=
                 covers.append(out)
             except Exception as e:
                 _log.info('[LIVE] 封面落盘失败: %s', e)
+                _n_fail += 1
                 covers.append('')
     finally:
         try:
@@ -971,6 +986,9 @@ def make_covers(video_path, clips, run_dir, progress=None, aspect='orig', focus=
             _sh.rmtree(cand_dir, ignore_errors=True)
         except Exception:
             pass
+    if _n_fail:
+        _note_progress_warning('有 %d 条切片没生成封面（抽帧或写盘失败），成片本身不受影响'
+                               % _n_fail)
     return covers
 
 
@@ -1005,6 +1023,7 @@ def summarize_segment(lines, timeout=60):
         return title or None
     except Exception as e:
         _log.info('[LIVE] 片段总结失败（回退时间戳命名）: %s', e)
+        _note_progress_warning('这一段的 AI 摘要没生成（本地模型没就绪？），文件名先用时间戳')
         return None
 
 
@@ -1268,6 +1287,7 @@ def export_timeline(video_path, segs, run_dir, progress=None, aspect='blur', foc
     if not ok:
         _log.info('[LIVE] concat 直拷失败，回退重编码拼接: %s',
                   e.decode('utf-8', 'ignore')[-200:])
+        _note_progress_warning('各段参数不一致，拼接已改用重编码（结果没问题，只是慢一些）')
         cmd = ['-y']
         for p in parts:
             cmd += ['-i', p]

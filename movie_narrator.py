@@ -3629,6 +3629,7 @@ def _llm_script_sectioned(movie_name, plot_text, n_beats, material=None, style='
 
     # ② 分批写正文：每批 6 节，带前情，顺序锁定在纲要上
     beats = []
+    _fail_chunks = 0
     for bi in range(0, len(points), batch):
         if _aborted():
             raise AbortError('用户取消了任务')
@@ -3684,8 +3685,15 @@ def _llm_script_sectioned(movie_name, plot_text, n_beats, material=None, style='
         if not got or not got.get('beats'):
             # 某一批失败：跳过，不硬凑（后续节数变少，但整篇仍可用）
             _log.info('[DIAG] 写稿第 %d-%d 节失败，跳过' % (bi + 1, bi + len(chunk)))
+            _fail_chunks += 1
             continue
         beats.extend(got['beats'][:len(chunk)])
+    if _fail_chunks:
+        # 【不能说没就没】以前只写一行 DIAG 日志：用户拿到的是「短了一截、中间
+        # 剧情跳了」的解说，却不知道是模型这批超时了，只会觉得「AI 写得莫名其
+        # 妙」。这类降级必须摆到结果页上（桌面端见 warnDock）。
+        _note_progress_warning('有 %d 批稿子没写出来（模型超时或返回格式不对），'
+                               '成片会比预期短、中间剧情可能跳段' % _fail_chunks)
     if not beats:
         return None
 
@@ -4472,6 +4480,21 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
                 raise
             except Exception as e:
                 _log.info('[DIAG] 分批润色异常(保留原稿): %s' % e)
+
+    # 【对齐覆盖率】哪几句没对上画面，用户本该知道：没对齐的句子会沿用相邻镜头，
+    # 表现为「说到 B 画面还在 A」，是最容易被当成「AI 剪得乱」的一类问题。
+    # 只写 DIAG 日志等于没说——这里按最终结果统计一次（不管走的是哪条分支）。
+    if not _has_user_script:
+        _n_txt = len(texts or [])
+        _n_al = sum(1 for v in (scene_alignment or {}).values() if v)
+        if _n_txt and _n_al < _n_txt:
+            _miss = _n_txt - _n_al
+            _pct = 100.0 * _n_al / _n_txt
+            if _pct < 95.0:
+                _note_progress_warning(
+                    '有 %d/%d 句解说没对上具体画面（覆盖率 %.0f%%），这些句子会沿用'
+                    '相邻镜头，个别地方可能出现「说的和画的对不上」'
+                    % (_miss, _n_txt, _pct))
 
     # 落盘到 progress：合成阶段会写进 tts_state，出问题可离线复算对齐，不用重跑。
     # 放在整个 if/elif/else 之后——用户稿子路线走 elif，赋值放在分支里会被跳过。

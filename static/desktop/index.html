@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=44">
+<link rel="stylesheet" href="desktop.css?v=45">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -618,6 +618,17 @@
   </div>
 </div>
 
+<!-- v1.4.67 降级提示坞：后端把任何兜底/降级写进 p.warnings，这里常驻展示。
+     网页版 app.js 早就有 red 的 renderWarnings，桌面版一直没接（等于白写）。 -->
+<div class="warn-dock" id="warnDock" style="display:none">
+  <div class="warn-dock-head">
+    <span class="warn-dock-n" id="warnDockN">⚠ 0 条提示</span>
+    <button class="warn-dock-tg" id="warnDockTg">展开</button>
+    <button class="warn-dock-clr" id="warnDockClr" title="清空提示">✕</button>
+  </div>
+  <ul class="warn-dock-list" id="warnDockList" style="display:none"></ul>
+</div>
+
 <!-- v1.4.65 运行期提示卡：模型/语言不匹配这类「不处理就会一直错」的问题主动弹出来，
      不再只写在结果页的 warnings 小字里（用户根本不会往下翻）。 -->
 <div class="fc-notice" id="fcNotice" style="display:none" role="alertdialog" aria-live="assertive">
@@ -630,6 +641,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=44"></script>
+<script src="desktop.js?v=45"></script>
 </body>
 </html>

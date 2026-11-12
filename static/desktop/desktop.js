@@ -174,6 +174,49 @@ async function _fcSwitchWhisperModel(model){
     return false;
   }
 }
+
+/* ── 降级提示坞（v1.4.67） ─────────────────────────────────────────
+   后端把所有「兜底/降级」写进 PROGRESS[run].warnings，这里常驻展示。
+   为什么单独一块：网页版 static/app.js 的 renderWarnings 早就有了，桌面版
+   一直没接——于是「画面分析失败/弹幕没用上/封面没出」这些事只落进日志，
+   用户看到的是分数照出、结果照有，只是悄悄变差了。 */
+const _uiWarnSeen = new Set();     // 同一条只进坞一次（跨任务也去重）
+let _uiWarnItems = [];
+let _warnDockOpen = false;
+
+function uiWarnings(p){
+  const ws = (p && p.warnings) || [];
+  let added = false;
+  for(const w of ws){
+    const t = String(w || '').trim();
+    if(!t || _uiWarnSeen.has(t)) continue;
+    _uiWarnSeen.add(t);
+    _uiWarnItems.push(t);
+    added = true;
+  }
+  if(!added) return;
+  if(!_warnDockOpen){ _warnDockOpen = true; }   // 新提示一律先展开，别让人错过
+  _warnDockRender();
+}
+function _warnDockRender(){
+  const dock = $('warnDock'), list = $('warnDockList'), n = $('warnDockN');
+  if(!dock || !list || !n) return;
+  if(!_uiWarnItems.length){ dock.style.display = 'none'; return; }
+  dock.style.display = 'block';
+  n.textContent = '⚠ 本次 ' + _uiWarnItems.length + ' 条提示';
+  list.innerHTML = _uiWarnItems.map(t => '<li>' + _esc(t) + '</li>').join('');
+  list.style.display = _warnDockOpen ? 'block' : 'none';
+  if($('warnDockTg')) $('warnDockTg').textContent = _warnDockOpen ? '收起' : '展开';
+}
+function _warnDockBind(){
+  const tg = $('warnDockTg'), clr = $('warnDockClr');
+  if(tg) tg.addEventListener('click', () => { _warnDockOpen = !_warnDockOpen; _warnDockRender(); });
+  if(clr) clr.addEventListener('click', () => {
+    _uiWarnItems = []; _uiWarnSeen.clear(); _warnDockOpen = false; _warnDockRender();
+  });
+}
+function uiProgressHints(p){ uiNotices(p); uiWarnings(p); }
+_warnDockBind();     // 脚本在 body 末尾，此时 #warnDock 已存在
 function setStatus(s, kind){
   const el = $('stState');
   el.textContent = '● ' + s;
@@ -1097,7 +1140,7 @@ function pollTTS(runid){
     try {
       const r = await fetch('/api/progress?run=' + runid);
       const p = await r.json();
-      uiNotices(p);
+      uiProgressHints(p);
       $('gmFill').style.width = Math.min(100, p.pct || 0) + '%';
       // 【v1.4.52 配音失败可见化】首轮失败段实时可见（tts_failures 已随 progress 下发）
       if(p.tts_failures && p.tts_failures.length){
@@ -3161,7 +3204,7 @@ function pollTask(runid){
       try {
         const r = await fetch('/api/progress?run=' + runid);
         const p = await r.json();
-        uiNotices(p);
+        uiProgressHints(p);
         if(p.error){ clearInterval(iv); reject(new Error(p.error)); return; }
         if(p.done && p.audio){ clearInterval(iv); resolve(p); return; }
         if(p.done){ clearInterval(iv); reject(new Error('任务结束但未返回音频')); return; }
@@ -3178,7 +3221,7 @@ function pollCompose(runid){
     try {
       const r = await fetch('/api/progress?run=' + runid);
       const p = await r.json();
-      uiNotices(p);
+      uiProgressHints(p);
       const sc = $('sbCancel'); if(sc) sc.style.display = 'none';
       if(p.error){
         clearInterval(_pollTimer);
@@ -3492,7 +3535,7 @@ $('lcGo').addEventListener('click', async () => {
     if(_lcPollTimer) clearInterval(_lcPollTimer);
     _lcPollTimer = setInterval(async () => {
       const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
-      uiNotices(p);
+      uiProgressHints(p);
       $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
       $('lcMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
@@ -3720,7 +3763,7 @@ async function lcExport(){
     if(_lcPollTimer) clearInterval(_lcPollTimer);
     _lcPollTimer = setInterval(async () => {
       const p = await fetch('/api/progress?run=' + r.runid).then(x => x.json());
-      uiNotices(p);
+      uiProgressHints(p);
       $('lcFill').style.width = Math.min(100, p.pct || 0) + '%';
       $('lcMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
@@ -4059,7 +4102,7 @@ async function lcpAnalyze(opts){
       let p;
       try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
       catch(e){ return; }
-      uiNotices(p);
+      uiProgressHints(p);
       $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
       $('lcpOvMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
@@ -4780,7 +4823,7 @@ async function lcpExportNow(){
       let p;
       try{ p = await fetch('/api/progress?run=' + r.runid).then(x => x.json()); }
       catch(e){ return; }
-      uiNotices(p);
+      uiProgressHints(p);
       $('lcpOvFill').style.width = _lcpClamp(p.pct || 0, 0, 100) + '%';
       $('lcpOvMeta').textContent = (p.phase || '导出中') + ' · ' + (p.pct || 0) + '%';
       if(p.error){
