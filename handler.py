@@ -1592,6 +1592,40 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
                        'application/json')
 
+    def _get_tts2_model_status(self):
+        """模型中心·配音权重下载的实时状态（/api/tts2/model/status）。
+
+        返回体里的 ok 是**下载任务**的状态（None=进行中/True/False），
+        不是本端点的握手字段——前端 onDone 靠它判断成败。"""
+        try:
+            st = __import__('tts2_models').status()
+            self._send(200, json.dumps(st).encode('utf-8'), 'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_tts2_model_download(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = __import__('tts2_models').download_async(
+                str(data.get('engine') or '').strip())
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
+    def _post_tts2_model_cancel(self):
+        try:
+            ok, msg = __import__('tts2_models').cancel()
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
     def _post_tts_test(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -2479,6 +2513,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/video_frame': '_get_video_frame',
         '/api/vlm/status': '_get_vlm_status',
         '/api/version_check': '_get_version_check',
+        '/api/tts2/model/status': '_get_tts2_model_status',
         '/api/whisper/status': '_get_whisper_status',
         '/api/ollama/install': '_get_ollama_install',
         '/index.html': '_get_index',
@@ -2538,6 +2573,8 @@ class Handler(BaseHTTPRequestHandler):
         '/api/tts/install_chattts': '_post_tts_install_chattts',
         '/api/tts/model/download': '_post_tts_model_download',
         '/api/tts/model/uninstall': '_post_tts_model_uninstall',
+        '/api/tts2/model/download': '_post_tts2_model_download',
+        '/api/tts2/model/cancel': '_post_tts2_model_cancel',
         '/api/tts/test': '_post_tts_test',
         '/api/tts_regen_all': '_post_tts_regen_all',
         '/api/regen_segment': '_post_regen_segment',

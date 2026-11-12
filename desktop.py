@@ -409,4 +409,11 @@ def main():
 
 
 if __name__ == '__main__':
+    # v1.4.78 模型中心·配音权重下载：打包版用 EXE 自举一个下载子进程
+    # （进程内 huggingface_hub 已随包，不用另外找 Python）；取消 = 杀进程，
+    # snapshot_download 自带断点续传。守卫必须在 main() 之前——子进程
+    # 不开窗口、不起服务，只下载完就退出。
+    if len(sys.argv) >= 3 and sys.argv[1] == '--tts2-dl-worker':
+        import tts2_models as _t2m
+        sys.exit(_t2m.dl_worker_main(sys.argv[2]))
     main()
