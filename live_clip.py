@@ -26,8 +26,7 @@ import numpy as np
 
 from ffmpeg_utils import ffmpeg_run
 from ai_providers import (asr_segments, local_llm_chat, note_asr_model_mismatch,
-                          whisper_language, whisper_model_for_language,
-                          whisper_model_name)
+                          whisper_language, whisper_model_for_language)
 
 _log = logging.getLogger('framecut.live')
 
@@ -152,24 +151,28 @@ def _motion_profile(video_path, window, progress=None):
 
 
 def _line_weight(text):
-    """一条台词有多少「信息量」（0~1）：用来给台词密度信号降权 / 过滤噪音注释。
+    """一条台词有多少「信息量」（0~1）：给台词密度信号降权 / 过滤噪音注释。
 
-    【为什么需要】ASR 在纯音乐、掌声、噪音段会输出同一个字的复读——实测一场
-    直播在 659~708 秒连续三条注释的文字都只有「纵纵」。旧实现把这些片段的
-    覆盖秒数原样算作「这里有人在说话」，于是噪音段因为「台词连续」冲进高能榜，
-    用户在精剪列表里看到一堆只有单字的注释，完全没法判断该不该留。
-
-    真实台词的汉字种类一定多：一句 10 个字里重复率极高（≤2 种）几乎只可能是
-    幻觉。宁可把极少数「啊啊啊」式的真实语气词降权，也不能让噪音占满注释列表。"""
+    【判据是「整条是不是同一个单元在复读」，不是「字种少」】
+    噪音段 ASR 输出的是**周期串**：『呃呃』『纵纵』『对对对』『哈哈哈哈』；
+    而真实短句『好的』『卧槽666』虽然也短、字种也少，但不是周期串。
+    早先按「不同字数 ≤N」判，把『卧槽666』这种真高能台词也打成噪音，回归测试
+    直接抓住了（test_speech_profile_counts_coverage_and_keywords）。"""
     t = ''.join(ch for ch in str(text or '')
                 if '\u4e00' <= ch <= '\u9fa5' or ch.isalnum())
-    if len(t) <= 1:
+    n = len(t)
+    if n <= 1:
         return 0.0
-    u = len(set(t))
-    if u <= 2:
-        return 0.12          # 「纵纵」「呃呃呃」：几乎肯定是复读幻觉
-    if u <= 3 and len(t) <= 6:
-        return 0.40          # 「哈哈哈」「对对对」：算语气词，不当证据
+    for L in range(1, n // 2 + 1):
+        if n % L:
+            continue
+        rep = n // L
+        # 单字单元重复 2 次就算（『呃呃』『对对』）；多字单元要 3 次以上
+        # （『我不怕我不怕』是真人强调，不算幻觉）
+        if L > 1 and rep < 3:
+            continue
+        if t == t[:L] * rep:
+            return 0.12          # 整条 = 同一个单元复读：幻觉，几乎不计分
     return 1.0
 
 

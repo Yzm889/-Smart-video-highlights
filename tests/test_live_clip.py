@@ -397,7 +397,8 @@ def test_dispatch_export_reads_draft_and_exports(monkeypatch, tmp_path):
     with open(os.path.join(run_dir, 'live_clip_draft.json'), 'w', encoding='utf-8') as f:
         _j.dump(draft, f, ensure_ascii=False)
 
-    def fake_export(video, clips, rdir, progress=None, aspect='orig', focus=None):
+    def fake_export(video, clips, rdir, progress=None, aspect='orig', focus=None,
+                    titles=None):
         outs = []
         for i, c in enumerate(clips):
             fp = os.path.join(rdir, LC._clip_name(i + 1, c['start']))
@@ -406,7 +407,8 @@ def test_dispatch_export_reads_draft_and_exports(monkeypatch, tmp_path):
             outs.append(fp)
         return outs
 
-    def fake_covers(video, clips, rdir, progress=None, aspect='orig', focus=0.5):
+    def fake_covers(video, clips, rdir, progress=None, aspect='orig', focus=0.5,
+                    titles=None):
         outs = []
         for i, c in enumerate(clips):
             fp = os.path.join(rdir, LC._cover_name(i + 1, c['start']))
@@ -843,14 +845,16 @@ def test_dispatch_export_passes_focus(monkeypatch, tmp_path):
     monkeypatch.setattr(S, 'OUTDIR', str(tmp_path))
     seen = {}
 
-    def fake_export(vp, clips, rdir, progress=None, aspect='orig', focus=None):
+    def fake_export(vp, clips, rdir, progress=None, aspect='orig', focus=None,
+                    titles=None):
         seen['export'] = focus
         fp = os.path.join(rdir, 'c.mp4')
         with open(fp, 'wb') as f:
             f.write(b'0' * 20480)
         return [fp]
 
-    def fake_covers(vp, clips, rdir, progress=None, aspect='orig', focus=0.5):
+    def fake_covers(vp, clips, rdir, progress=None, aspect='orig', focus=0.5,
+                    titles=None):
         seen['covers'] = focus
         return ['']
 

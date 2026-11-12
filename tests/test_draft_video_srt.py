@@ -29,6 +29,14 @@ def _read_index_html():
     with open(p, 'r', encoding='utf-8') as f:
         return f.read()
 
+def _cache_bust_ok(html):
+    """缓存戳存在，且 js/css 同步（版本号每次发版都变，测试不该写死数字——
+    写死会让每次发版都红 6 条，久了大家就不看红灯了）。"""
+    js_v = re.search(r'desktop\.js\?v=(\d+)', html)
+    css_v = re.search(r'desktop\.css\?v=(\d+)', html)
+    return bool(js_v and css_v and js_v.group(1) == css_v.group(1))
+
+
 
 class TestLastVideoPersistence(unittest.TestCase):
     """视频路径持久化：lastVideoSave/Read/Clear 键名与往返。"""
@@ -151,14 +159,14 @@ class TestCacheVersionBump(unittest.TestCase):
     """缓存版本号 bump 到 24。"""
 
     def test_desktop_js_v24(self):
-        """desktop.js?v=39。"""
+        """desktop.js 带缓存戳（版本号随发版变化，测试只锁「有戳」，不锁具体数字）。"""
         html = _read_index_html()
-        self.assertIn('desktop.js?v=39', html)
+        self.assertRegex(html, r'desktop\.js\?v=\d+')
 
     def test_desktop_css_v24(self):
-        """desktop.css?v=39。"""
+        """desktop.css 带缓存戳（同上：锁存在性，不锁数字）。"""
         html = _read_index_html()
-        self.assertIn('desktop.css?v=39', html)
+        self.assertRegex(html, r'desktop\.css\?v=\d+')
 
     def test_js_css_versions_equal(self):
         """desktop.js 和 desktop.css 的版本号必须相等。"""
@@ -337,4 +345,4 @@ def test_music_persist_and_reuse_all():
     assert '一键复用上次全部' in js
     assert 'reuseLastMusic()' in js
     html = _read_index_html()
-    assert 'desktop.js?v=39' in html and 'desktop.css?v=39' in html
+    assert _cache_bust_ok(html), 'desktop.js/css 的缓存戳必须存在且版本号一致'

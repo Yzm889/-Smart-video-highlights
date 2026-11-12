@@ -8,6 +8,7 @@ toggle → 展开/收起、时间格式化、空态。
 """
 import json
 import os
+import re
 import subprocess
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -18,6 +19,13 @@ _HTML = os.path.join(_ROOT, "static", "desktop", "index.html")
 def _read(path):
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+def _cache_bust_ok(html):
+    """缓存戳存在且 js/css 同步（不写死数字：版本号每次发版都变）。"""
+    js_v = re.search(r'desktop\.js\?v=(\d+)', html)
+    css_v = re.search(r'desktop\.css\?v=(\d+)', html)
+    return bool(js_v and css_v and js_v.group(1) == css_v.group(1))
+
 
 
 _HARNESS = r'''
@@ -179,7 +187,7 @@ def test_danmaku_wiring_source_pins():
     with open(os.path.join(_ROOT, "handler.py"), encoding="utf-8") as f:
         hd = f.read()
     assert "max_len=8 * 1024 * 1024" in hd, '弹幕 XML 会超 64KB，请求体上限必须放宽'
-    assert 'desktop.js?v=39' in html and 'desktop.css?v=39' in html
+    assert _cache_bust_ok(html), 'desktop.js/css 缓存戳必须存在且版本号一致'
 
 
 def test_focus_wiring_source_pins():
@@ -199,4 +207,4 @@ def test_focus_wiring_source_pins():
     assert "LC._clamp_focus(req.get('focus'))" in wf, '导出端必须钳制'
     assert "_LC._clamp_focus(req.get('focus'))" in hd, '换封面端必须同步钳制'
     assert "rebuild_cover(vp, t, aspect, out_path, focus=focus)" in hd
-    assert 'desktop.js?v=39' in html and 'desktop.css?v=39' in html
+    assert _cache_bust_ok(html), 'desktop.js/css 缓存戳必须存在且版本号一致'

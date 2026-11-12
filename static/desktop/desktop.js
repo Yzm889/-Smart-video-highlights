@@ -4371,11 +4371,20 @@ function _lcpPointKey(seg){
   return 't' + Math.round(seg.start * 10);
 }
 function _lcpLineOk(text){
-  // 与后端 _line_weight 同一口径：只剩一两个字、或反复同一个字的行是 ASR 在
-  // 音乐/噪音段的幻觉（『纵纵』『呃呃』），不该当成这段的台词给用户看。
+  // 与后端 _line_weight 同一口径：整条台词是同一个单元在复读才算噪音
+  //（『呃呃』『纵纵』『对对对』）。早先按「不同字数 ≤2」判，会把
+  //『好的』『卧槽666』这种真实短句也滤掉，前后端口径不一致。
   const s = String(text || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '');
-  if(s.length <= 1) return false;
-  if(new Set(s).size <= 2) return false;
+  const n = s.length;
+  if(n <= 1) return false;
+  for(let L = 1; L <= (n >> 1); L++){
+    if(n % L) continue;
+    const rep = n / L;
+    if(L > 1 && rep < 3) continue;          // 多字单元要重复 3 次以上才算幻觉
+    let same = true;
+    for(let i = L; i < n; i++){ if(s[i] !== s[i - L]){ same = false; break; } }
+    if(same) return false;
+  }
   return true;
 }
 function _lcpLinesIn(start, end){
