@@ -871,3 +871,51 @@ def test_dispatch_export_passes_focus(monkeypatch, tmp_path):
 def tmpdir():
     import tempfile
     return tempfile.mkdtemp()
+
+
+def test_dispatch_export_accepts_hd_aspect(tmp_path, monkeypatch):
+    """v1.4.74 修 P0：导出画幅白名单必须含 'hd'（v1.4.56 引入横屏 16:9 时漏了）。
+
+    旧行为：前端能选 hd，这里却静默回退 blur——用户选 16:9 实际出竖屏虚化版。"""
+    import json
+    import live_clip as LC
+    import workflows as WF
+
+    run = tmp_path / "live-hd"
+    run.mkdir()
+    src = run / "src.mp4"
+    src.write_bytes(b"x")
+    draft = {"video_src": str(src), "vdur": 600.0, "aspect_default": "hd",
+             "clips": [{"start": 10.0, "end": 60.0, "dur": 50.0, "score": "",
+                        "reasons": ["手动指定"], "peak_t": 30.0}]}
+    (run / "live_clip_draft.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
+
+    seen = {}
+
+    def fake_export(vp, segs, rdir, progress=None, aspect="orig", focus=None, titles=None):
+        seen["aspect"] = aspect
+        return [str(run / "clip01.mp4")]
+
+    # dispatch 内部「import live_clip as LC」在调用期解析到同一模块对象，
+    # 所以 patch live_clip 的属性即可命中（不要 patch WF.LC——那是函数局部名）。
+    monkeypatch.setattr(LC, "validate_segments", lambda segs, vdur: segs)
+    monkeypatch.setattr(LC, "carry_reasons", lambda segs, clips: segs)
+    monkeypatch.setattr(LC, "summarize_segment", lambda lines: None)
+    monkeypatch.setattr(LC, "_clamp_focus", lambda v: 0.5)
+    monkeypatch.setattr(LC, "export_clips", fake_export)
+    monkeypatch.setattr(LC, "make_covers",
+                        lambda vp, segs, rdir, progress=None, aspect="orig", focus=None, titles=None: ["cover01.jpg"])
+    monkeypatch.setattr(LC, "write_report", lambda *a, **k: ("r.json", "r.txt"))
+    monkeypatch.setattr(WF, "_w", type("_W", (), {  # dispatch 经 _w._record_history 写历史
+        "_record_history": staticmethod(lambda *a, **k: None),
+        "_safe_dir": staticmethod(lambda base, name: os.path.join(str(base), str(name))),
+        "OUTDIR": str(tmp_path),
+        "fail_task": staticmethod(lambda prog, e: prog.update(
+            {"error": str(e), "done": True})),
+    })())
+
+    prog = {}
+    WF.dispatch_live_clip_export({"run_dir": "live-hd", "segments": [],
+                                  "aspect": "hd"}, prog)
+    assert prog.get("error") is None, prog
+    assert seen["aspect"] == "hd", "hd 必须原样传给导出（不许静默回退 blur）"

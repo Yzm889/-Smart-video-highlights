@@ -970,7 +970,9 @@ def dispatch_live_clip_export(req, prog):
         prog['phase'] = '准备导出'
         prog['pct'] = 5
         _aspect = str(req.get('aspect') or draft.get('aspect_default') or 'blur').strip().lower()
-        if _aspect not in ('orig', 'crop', 'blur'):
+        # 【v1.4.74 修 P0】白名单补 'hd'：v1.4.56 前端就能选横屏 16:9，但这里没进
+        # 白名单 → 静默回退 blur，用户选了 16:9 实际出的却是竖屏虚化版。
+        if _aspect not in ('orig', 'crop', 'blur', 'hd'):
             _aspect = 'blur'
         # v1.4.62 水平焦点：只影响 crop；钳制在引擎里做（坏值/越界一律居中），
         # 视频链与封面共用同一个值，换封面也不会跟成片错位。
