@@ -4155,10 +4155,14 @@ function lcpOverlay(title, meta, pct){
     if(old) old.remove();
     const pre = card.querySelector('.lcp-ov-report');
     if(pre) pre.remove();
+    const rv = card.querySelector('.lcp-rv');     // v1.4.73 导出前总览
+    if(rv) rv.remove();
   }
   $('lcpOvTitle').textContent = title || '';
   $('lcpOvMeta').textContent = meta || '';
   $('lcpOvFill').style.width = _lcpClamp(pct || 0, 0, 100) + '%';
+  const bar = ov.querySelector('.lcp-ov-bar');
+  if(bar) bar.style.display = '';        // 每次复原，避免「确认框」把进度条永久藏掉
   $('lcpOvActs').innerHTML = '';
 }
 function lcpOverlayHide(){
@@ -4996,7 +5000,102 @@ function lcpRenderAll(){
   lcpSyncUndoBtn();
 }
 
-async function lcpExportNow(){
+/* ── 导出前总览（v1.4.73） ────────────────────────────────────────
+   导出一次要几十秒到几分钟，导完才发现「整片 12 分钟」「有 3 处画面重复」
+   代价太大。这里先把账算清楚——纯函数，node 里可以直接跑。 */
+function lcpExportSummary(segs){
+  const raw = segs || [];
+  const arr = [], bad = [];
+  raw.forEach((s, i) => {
+    const a = +((s || {}).start), b = +((s || {}).end);
+    if(!isFinite(a) || !isFinite(b) || b - a < 0.05){ bad.push(i + 1); return; }
+    arr.push({start: a, end: b, volume: (s.volume === undefined || s.volume === null) ? 1 : +s.volume});
+  });
+  const n = arr.length;
+  if(!n) return {n: 0, total: 0, max: 0, min: 0, vmin: 0, vmax: 0,
+                 overlaps: [], tooShort: [], muted: [], overCount: false, bad: bad};
+  const durs = arr.map(s => s.end - s.start);
+  const vols = arr.map(s => s.volume);
+  const overlaps = [];
+  for(let i = 0; i < n; i++){
+    for(let j = i + 1; j < n; j++){
+      const ov = Math.min(arr[i].end, arr[j].end) - Math.max(arr[i].start, arr[j].start);
+      if(ov > 0.5) overlaps.push([i + 1, j + 1, Math.round(ov * 10) / 10]);
+    }
+  }
+  const tooShort = [], muted = [];
+  arr.forEach((s, i) => {
+    if(s.end - s.start < 1.0) tooShort.push(i + 1);
+    if(s.volume <= 0.001) muted.push(i + 1);
+  });
+  return {
+    n: n,
+    total: durs.reduce((a, b) => a + b, 0),
+    max: Math.max.apply(null, durs),
+    min: Math.min.apply(null, durs),
+    vmin: Math.min.apply(null, vols),
+    vmax: Math.max.apply(null, vols),
+    overlaps: overlaps, tooShort: tooShort, muted: muted,
+    overCount: n > 60, bad: bad
+  };
+}
+
+function lcpExportReview(){
+  if(_lcpBusy){ toast('正在导出，先等这次跑完', 'bad'); return; }
+  const sum = lcpExportSummary(_lcpSegs);
+  if(!sum.n){ toast('时间轴是空的', 'bad'); return; }
+  const rows = [];
+  rows.push('<div class="lcp-rv-hero">' + sum.n + ' 段 · 成片 <b>' + _lcpDur(sum.total) + '</b></div>');
+  rows.push('<div class="lcp-rv-sub">最长 ' + _lcpDur(sum.max) + ' · 最短 ' + _lcpDur(sum.min)
+    + ' · 音量 ' + Math.round(sum.vmin * 100) + '%~' + Math.round(sum.vmax * 100) + '%</div>');
+  const warn = [];
+  if(sum.bad.length){
+    warn.push('有 ' + sum.bad.length + ' 段时间非法（起止为空或结束早于开始）：#' + sum.bad.slice(0, 6).join('、'));
+  }
+  if(sum.overCount) warn.push('段数 ' + sum.n + ' 超过 60，后端会拒绝导出——先合并几段再导');
+  if(sum.overlaps.length){
+    warn.push('有 ' + sum.overlaps.length + ' 处画面重叠：同一段素材会在成片里出现两次（'
+      + sum.overlaps.slice(0, 3).map(o => '#' + o[0] + '↔#' + o[1]).join('、')
+      + (sum.overlaps.length > 3 ? ' 等' : '') + '）');
+  }
+  if(sum.tooShort.length){
+    warn.push('有 ' + sum.tooShort.length + ' 段不足 1 秒（#' + sum.tooShort.slice(0, 6).join('、') + '），会一闪而过');
+  }
+  if(sum.muted.length){
+    warn.push('有 ' + sum.muted.length + ' 段是静音（#' + sum.muted.slice(0, 6).join('、') + '）');
+  }
+  if(warn.length){
+    rows.push('<ul class="lcp-rv-warn">' + warn.map(t => '<li>' + _esc(t) + '</li>').join('') + '</ul>');
+  } else {
+    rows.push('<div class="lcp-rv-ok">✓ 没有发现明显问题，可以导出</div>');
+  }
+
+  lcpOverlay('导出前确认', '', 100);
+  // 这是「确认」不是「进度」：把 100% 的进度条藏掉，别让人以为已经导完了
+  const _bar = $('lcpOverlay').querySelector('.lcp-ov-bar');
+  if(_bar) _bar.style.display = 'none';
+  const card = $('lcpOverlay').querySelector('.lcp-ov-card');
+  const box = document.createElement('div');
+  box.className = 'lcp-rv';
+  box.innerHTML = rows.join('');
+  card.insertBefore(box, $('lcpOvActs'));
+
+  const acts = $('lcpOvActs');
+  const bBack = document.createElement('button');
+  bBack.className = 'mini-btn';
+  bBack.textContent = '返回调整';
+  bBack.addEventListener('click', lcpOverlayHide);
+  const bGo = document.createElement('button');
+  bGo.className = 'mini-btn primary';
+  bGo.id = 'lcpExportGoBtn';
+  bGo.textContent = '确认导出';
+  bGo.disabled = !!(sum.overCount || sum.bad.length);
+  if(bGo.disabled) bGo.title = '先修掉上面的问题再导出';
+  bGo.addEventListener('click', lcpExportGo);
+  acts.append(bBack, bGo);
+}
+
+async function lcpExportGo(){
   if(!_lcpSegs.length){ toast('时间轴是空的', 'bad'); return; }
   if(_lcpBusy) return;
   const segs = _lcpSegs.map(s => ({
@@ -5040,6 +5139,8 @@ async function lcpExportNow(){
     lcpOverlayFail(e.message);
   }
 }
+function lcpExportNow(){ lcpExportReview(); }   // 入口统一先看总览
+
 function lcpShowResult(p){
   const ov = $('lcpOverlay');
   lcpOverlay('✅ 精剪成片完成',

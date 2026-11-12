@@ -3524,7 +3524,7 @@ def ensure_deps():
 
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter   # ImageFont 随 v1.4.70 拆到 font_setup.py
 
 def hx(h):
     h = h.lstrip('#'); return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))

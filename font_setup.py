@@ -13,7 +13,6 @@ web_storage / movie_narrator 的拆分说明）。
 import os
 import sys
 import time
-import threading
 
 from PIL import Image, ImageDraw, ImageFont
 

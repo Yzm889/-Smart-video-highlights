@@ -31,6 +31,7 @@ function blockOf(prefix){
 }
 eval(blockOf("function lcpMergeSegs("));
 eval(blockOf("function lcpSortSegsByStart("));
+eval(blockOf("function lcpExportSummary("));
 
 const out = {};
 
@@ -73,6 +74,44 @@ const sorted = lcpSortSegsByStart(shuffled);
 out.s_order = sorted.map(s => s.start + "-" + s.end);
 out.s_input_untouched = shuffled[0].start === 40;
 out.s_same_start_short_first = sorted[0].end === 20;
+
+/* ⑦ 导出前总览：段数/总时长/最长最短/音量范围 */
+const s1 = lcpExportSummary([
+  {start: 0, end: 10, volume: 1},
+  {start: 20, end: 32.5, volume: 0.5},
+  {start: 40, end: 41, volume: 1.5}
+]);
+out.e_count = s1.n;
+out.e_total = s1.total;
+out.e_max = s1.max;
+out.e_min = s1.min;
+out.e_vol = [s1.vmin, s1.vmax];
+
+/* ⑧ 重叠：同一段素材出现两次要报出来（>0.5s 才算） */
+const s2 = lcpExportSummary([
+  {start: 0, end: 10, volume: 1},
+  {start: 5, end: 15, volume: 1},     // 与 #1 重叠 5s
+  {start: 30, end: 40, volume: 1},
+  {start: 39.6, end: 50, volume: 1}   // 与 #3 只重叠 0.4s → 不算
+]);
+out.e_overlaps = s2.overlaps;
+
+/* ⑨ 过短 / 静音 / 超 60 段 / 非法时间 */
+const s3 = lcpExportSummary([
+  {start: 0, end: 0.5, volume: 1},    // 过短
+  {start: 10, end: 20, volume: 0},    // 静音
+  {start: 30, end: 30, volume: 1},    // 非法：时长为 0
+  {start: "a", end: 5, volume: 1}     // 非法：起止非数字
+]);
+out.e_tooShort = s3.tooShort;
+out.e_muted = s3.muted;
+out.e_bad = s3.bad;
+out.e_n_valid = s3.n;
+
+const many = [];
+for(let i = 0; i < 61; i++) many.push({start: i * 10, end: i * 10 + 5, volume: 1});
+out.e_overCount = lcpExportSummary(many).overCount;
+out.e_empty = lcpExportSummary([]).n;
 
 console.log(JSON.stringify(out));
 '''
@@ -128,3 +167,30 @@ def test_wiring_source_pins():
     assert "$('lcpVolAll').addEventListener('input', lcpAllVolShow)" in js
     assert "bMerge.textContent = '⇥ 合并下一段'" in js
     assert "ev.key === 'm' || ev.key === 'M'" in js, 'M 快捷键必须绑定合并'
+
+
+def test_export_summary_counts():
+    o = _run()
+    assert o["e_count"] == 3
+    assert abs(o["e_total"] - 23.5) < 1e-9, "总时长要按段累加"
+    assert o["e_max"] == 12.5 and o["e_min"] == 1
+    assert o["e_vol"] == [0.5, 1.5]
+
+
+def test_export_summary_flags_overlaps():
+    o = _run()
+    assert o["e_overlaps"] == [[1, 2, 5]], o["e_overlaps"]  # 0.4s 的轻微重叠不报
+
+
+def test_export_summary_flags_short_muted_bad():
+    o = _run()
+    assert o["e_tooShort"] == [1]
+    assert o["e_muted"] == [2]
+    assert o["e_bad"] == [3, 4], "时长为 0 / 起止非数字都要挑出来"
+    assert o["e_n_valid"] == 2
+
+
+def test_export_summary_blockers():
+    o = _run()
+    assert o["e_overCount"] is True, "超过 60 段后端会拒，必须提前拦"
+    assert o["e_empty"] == 0
