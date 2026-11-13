@@ -17,7 +17,13 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'   # 桌面窗口（pywebview/CLR）在 3.11 支持最稳
+          # v1.4.80 改为 3.13：3.11 打的包**窗口层启动失败**
+          # （clr_loader 报 Failed to resolve Python.Runtime.Loader.Initialize），
+          # 实测 3.11 包 _internal 只有 273 个文件、3.13 有 917 个（收集不完整），
+          # 且塞了冲突的 api-ms-win-*/ucrtbase 转发器。本机 3.13 打包已
+          # 3/3 稳定验证可启动，与主人日常源码态运行环境一致。
+          # ⚠ 改回 3.11 前必须先用真机验证窗口能开（--selftest 不验窗口层）。
+          python-version: '3.13'
 
       # 只装主程序运行所需（不装 torch：CosyVoice/ChatTTS 走各自 venv 子进程）
       - name: 安装依赖（版本锁定，见 requirements-build.txt）
@@ -29,6 +35,31 @@ jobs:
 
       - name: 冒烟自检
         run: dist\FrameCut\FrameCut.exe --selftest
+
+      # v1.4.80 新增：**窗口层**真启动检查。历史教训——`--selftest` 只验重依赖
+      # 导入，不验 pywebview/CLR 窗口层，于是打出的 EXE 窗口开不了也能发布
+      # （v1.4.31/v1.4.75-b/v1.4.80 都踩过）。这里真启动进程并轮询 8765 端口，
+      # 起不来就 fail 构建，绝不把打不开的包发出去。
+      - name: 窗口层真启动检查（起不来就不发版）
+        shell: pwsh
+        run: |
+          $env:FRAMECUT_DATA_DIR = Join-Path $env:RUNNER_TEMP "fc_smoke"
+          $p = Start-Process -FilePath "dist\FrameCut\FrameCut.exe" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            if (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue) {
+              $ok = $true; break
+            }
+            if ($p.HasExited) { break }
+          }
+          if (-not $ok) {
+            Write-Error "窗口层启动失败：30s 内 8765 未监听（EXE 打不开，拒绝发版）"
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            exit 1
+          }
+          Write-Host "窗口层启动 OK（8765 已监听）"
+          Stop-Process -Id $p.Id -Force
 
       - name: 打 zip（排除 models：模型由应用运行时下载）
         shell: pwsh
