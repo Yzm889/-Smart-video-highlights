@@ -58,10 +58,18 @@ jobs:
       - name: 窗口层真启动检查（起不来就不发版）
         shell: pwsh
         run: |
+          # v1.4.83：CI runner 工作路径很长（D:\a\<repo>\<repo>\dist\FrameCut\...），
+          # 实测长路径会让 pythonnet 的 CLR 加载失败；同一份包复制到短路径 C:\FC
+          # 后 CLR 正常。这是环境特异、不是包缺陷（用户解压路径通常很短）。
+          # 故复制到短路径再验，既贴近用户场景，也避免门禁误判。
+          $short = 'C:\FC'
+          if (Test-Path $short) { Remove-Item $short -Recurse -Force }
+          Copy-Item -Path 'dist\FrameCut' -Destination $short -Recurse -Force
+          $exe = Join-Path $short 'FrameCut.exe'
           $env:FRAMECUT_DATA_DIR = Join-Path $env:RUNNER_TEMP "fc_smoke"
           $log = Join-Path $env:RUNNER_TEMP "fc_launch.out"
           $errLog = Join-Path $env:RUNNER_TEMP "fc_launch.err"
-          $p = Start-Process -FilePath "dist\FrameCut\FrameCut.exe" -PassThru `
+          $p = Start-Process -FilePath $exe -PassThru `
                  -RedirectStandardOutput $log -RedirectStandardError $errLog
           $ok = $false
           for ($i = 0; $i -lt 30; $i++) {

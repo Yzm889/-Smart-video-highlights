@@ -31,3 +31,10 @@ def test_window_gate_checks_clr_crash_not_just_port():
     assert 'Python\\.Runtime\\.Loader' in s, '必须检查 CLR 崩溃日志'
     assert 'Failed to execute script' in s, '必须检查未处理异常'
     assert 'Start-Sleep -Seconds 6' in s, '必须留出窗口层初始化观察窗'
+
+
+def test_window_gate_runs_from_short_path():
+    """长路径会让 CLR 加载失败（环境特异），门禁必须复制到短路径再验。"""
+    s = _yml()
+    assert 'C:\\FC' in s, '门禁必须在短路径下启动 EXE'
+    assert 'Copy-Item' in s, '必须复制打包产物到短路径'
