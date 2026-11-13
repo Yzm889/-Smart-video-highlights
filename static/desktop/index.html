@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=62">
+<link rel="stylesheet" href="desktop.css?v=63">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -556,6 +556,8 @@
                 <span class="env-badge wait" id="wspVerifyBadge">待校验</span>
                 <button class="mini-btn" id="btnWhisperVerify" title="加载一次模型做真实校验；本地已存在时不会重新联网下载">✓ 校验</button>
               </div>
+              <!-- 常驻选型提示：主人反馈「根本不知道下哪个」，一眼给出答案 -->
+              <div class="hint" id="wspPickHint">不知道下哪个？<b>中文视频选 small</b>（约 500MB，速度/准确均衡）；<b>英文视频选 distil-large-v3</b>。base 最快但效果一般，large-v3 最准（约 3GB）。</div>
               <div class="hint" id="wspVerifyHint">没有校验证据时只显示「待校验」，不会凭目录存在就写「完整无误」。</div>
               <!-- v1.4.65：英文专用模型提示（distil-* 只认英文，中文会变英文乱码） -->
               <div class="hint warn-hint" id="whisperLangHint" style="display:none"></div>
@@ -719,6 +721,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=62"></script>
+<script src="desktop.js?v=63"></script>
 </body>
 </html>

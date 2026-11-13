@@ -2707,6 +2707,18 @@ if($('btnWhisperVerify')) $('btnWhisperVerify').addEventListener('click', () => 
 let _wspEnOnly = {};        // 模型 → 是否英文专用（后端 whisper_is_en_only 判定，前端不自己猜）
 let _wspSuggest = 'base';   // 后端推荐的多语言替代（已下载的优先）
 
+/* 常用清单（主人反馈 2026-11-14：12 个模型挑花眼、不知道下哪个）——
+   下拉只列这几个，按推荐度排序；清单外未下载的不显示，
+   但后端 _WHISPER_KNOWN 全表保留：手动放置的模型照样能被识别、出现在「已下载」区。 */
+const _WSP_POPULAR = [
+  {k: 'small',           tag: '★推荐 · 中文可用'},
+  {k: 'medium',          tag: '中文可用 · 更准更慢'},
+  {k: 'large-v3',        tag: '中文可用 · 最准 · 约3GB'},
+  {k: 'distil-large-v3', tag: '仅英文 · 英文片首选'},
+  {k: 'base',            tag: '最快 · 效果一般'}
+];
+function _wspPopIdx(k){ return _WSP_POPULAR.findIndex(m => m.k === k); }
+
 function renderWhisperOptions(){
   return fetch('/api/whisper/status').then(r => r.json()).then(s => {
     const sel = $('setWhisperModel');
@@ -2715,14 +2727,23 @@ function renderWhisperOptions(){
     _wspEnOnly = {};
     Object.keys(valid).forEach(k => { if(valid[k] && valid[k].en_only) _wspEnOnly[k] = 1; });
     _wspSuggest = s.suggest_multilingual || 'base';
-    sel.innerHTML = Object.keys(valid).map(k => {
+    // 只显示：已下载的（按推荐度排前）+ 清单里未下载的前几个推荐 + 当前生效模型兜底。
+    // 清单外且未下载的（tiny / distil-small / large-v2 / distil-medium / large / distil-large-v2）不再列出。
+    const downloaded = Object.keys(valid).filter(k => valid[k] && valid[k].downloaded)
+      .sort((a, b) => _wspPopIdx(a) - _wspPopIdx(b));
+    const popUndl = _WSP_POPULAR.map(m => m.k).filter(k => valid[k] && !valid[k].downloaded);
+    const order = downloaded.concat(popUndl);
+    const cur = s.selected || '';
+    if(cur && valid[cur] && !order.includes(cur)) order.push(cur);   // 当前生效模型不在清单也必须显示，否则用户以为配置丢了
+    sel.innerHTML = order.map(k => {
       const dl = !!(valid[k] && valid[k].downloaded);
+      const pop = _WSP_POPULAR.find(m => m.k === k);
+      const tag = pop ? (' · ' + pop.tag) : (_wspEnOnly[k] ? ' · 仅英文' : '');
       return '<option value="' + k + '"' + (dl ? ' data-dl="1"' : '') + '>'
-        + k + (dl ? ' ✓' : '（未下载）') + (_wspEnOnly[k] ? ' · 仅英文' : '') + '</option>';
+        + k + (dl ? ' ✓' : '（未下载）') + tag + '</option>';
     }).join('');
     // 回显「当前真正生效的模型」：旧实现无条件选 large-v3（只要它下载过），
     // 于是下拉显示的和实际在跑的模型不是一个，用户以为换了其实没换。
-    const cur = s.selected || '';
     if(cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
     _whisperLangHint();
     _wspRefreshCards(s);

@@ -71,6 +71,23 @@ def test_failure_is_resumable_and_never_says_redo():
     assert '已下部分保留' in s
 
 
+def test_whisper_dropdown_is_curated_with_recommendation():
+    """主人反馈（2026-11-14）：12 个模型挑花眼、根本不知道下哪个。
+    下拉必须只列常用清单 + 已下载的，且带推荐标注和常驻选型提示。"""
+    s = _text(JS)
+    h = _text(HTML)
+    assert '_WSP_POPULAR' in s, '必须有常用清单，不能把后端全表甩给用户'
+    # 清单外未下载的模型不许再整批列出（old 行为：Object.keys(valid).map 直接全渲染）
+    assert "Object.keys(valid).map(" not in s, '下拉不许再按后端全表无脑全渲染'
+    assert '清单外未下载的' in s and '不再列出' in s, '精简意图要写进注释防回退'
+    # 推荐标注与选型提示缺一不可
+    for tag in ('★推荐 · 中文可用', '仅英文 · 英文片首选'):
+        assert tag in s, '下拉要带推荐标注：' + tag
+    assert 'wspPickHint' in h and '中文视频选 small' in h, '常驻选型提示要存在'
+    # 当前生效模型兜底显示，不让用户以为配置丢了
+    assert '!order.includes(cur)' in s
+
+
 def test_cache_bump_is_paired():
     """改了 JS + CSS + HTML，缓存戳必须成对 bump，且不能留旧版本。"""
     h = _text(HTML)
