@@ -42,3 +42,17 @@ def test_tts2_progress_shown_immediately_and_guarded():
     assert '++ticks >= 2 && !p.running' in s, '配音下载同样要挡首帧 idle'
     assert "bw.style.display = ''" in s, '点击后必须立刻亮进度条'
     assert "$('tts2PullMeta').textContent = r.message || '正在启动…'" in s
+
+
+def test_download_progress_survives_idle_first_frames():
+    """UI 实测：首帧 idle 会把刚点亮的进度条藏回去，且轮询第 2 次就误判结束。
+
+    修法：前两帧强制保持点亮 + 只有「见过 running / 拿到终态 / 等满 6 次」才允许结束；
+    配音点击成功后不再立刻 fillModelCenter，避免它的异步首帧又把进度条藏掉。
+    """
+    s = _text(JS)
+    assert 'seenRunning' in s, '必须记录是否真的进入过 running，不能停在「还没开始」'
+    assert 'ticks >= 6' in s, '需要宽限窗口，状态接口卡住时不能立刻收工'
+    assert "$('whisperPullMeta').textContent = '正在启动…'" in s, 'Whisper 前两帧要保持点亮'
+    assert "_pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', false)" in s, '终态收起进度条'
+    assert '成功时不在这里刷模型中心' in s, '配音成功后不能立刻异步刷新模型中心'
