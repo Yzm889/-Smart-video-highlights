@@ -84,7 +84,10 @@ jobs:
           foreach ($f in @($log, $errLog)) {
             if (Test-Path $f) { $text += (Get-Content $f -Raw -ErrorAction SilentlyContinue) }
           }
-          $clrBad = $text -match 'Python\.Runtime\.Loader|Failed to execute script'
+          # 只认 CLR 专有错误。CI runner 无交互桌面，WebView2 初始化降级会触发
+          # 通用的 'Failed to execute script'，那是环境限制、不是包缺陷
+          # （v1.4.82/v1.4.83 两次误判即由此而来，见 AI_CHANGELOG）。
+          $clrBad = $text -match 'Python\.Runtime\.Loader'
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
           if (-not $ok -or $clrBad) {
             Write-Error "窗口层启动失败（端口=$ok CLR崩溃=$clrBad），拒绝发版"

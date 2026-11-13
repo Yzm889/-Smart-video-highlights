@@ -29,7 +29,7 @@ def test_window_gate_checks_clr_crash_not_just_port():
     s = _yml()
     assert '8765' in s, '端口门禁不能丢'
     assert 'Python\\.Runtime\\.Loader' in s, '必须检查 CLR 崩溃日志'
-    assert 'Failed to execute script' in s, '必须检查未处理异常'
+    assert '只认 CLR 专有错误' in s, '不得把通用未处理异常当包缺陷（CI 无桌面会误报）'
     assert 'Start-Sleep -Seconds 6' in s, '必须留出窗口层初始化观察窗'
 
 
