@@ -36,15 +36,33 @@ jobs:
       - name: 冒烟自检
         run: dist\FrameCut\FrameCut.exe --selftest
 
-      # v1.4.80 新增：**窗口层**真启动检查。历史教训——`--selftest` 只验重依赖
-      # 导入，不验 pywebview/CLR 窗口层，于是打出的 EXE 窗口开不了也能发布
-      # （v1.4.31/v1.4.75-b/v1.4.80 都踩过）。这里真启动进程并轮询 8765 端口，
-      # 起不来就 fail 构建，绝不把打不开的包发出去。
+      # v1.4.82：CI runner 的 PyInstaller 会把 UCRT 转发器一并收进 _internal
+      # （44 个 api-ms-win-*.dll + ucrtbase.dll），与系统 UCRT 冲突后 pythonnet
+      # 报 Failed to resolve Python.Runtime.Loader.Initialize → 窗口层崩。
+      # 本机 3.13 打的好包里这些文件是 0 个（实测对比），故打包后统一移除。
+      # v1.4.81 就是漏了这一步，CI 却 success（见下方门禁的假阳性说明）。
+      - name: 移除 CI 混入的 UCRT 转发器（否则 CLR 加载崩）
+        shell: pwsh
+        run: |
+          $d = 'dist\FrameCut\_internal'
+          $fwd = @(Get-ChildItem $d -Filter 'api-ms-win-*.dll' -ErrorAction SilentlyContinue)
+          $u = Join-Path $d 'ucrtbase.dll'
+          if (Test-Path $u) { Remove-Item $u -Force }
+          foreach ($f in $fwd) { Remove-Item $f.FullName -Force }
+          Write-Host "已移除 $($fwd.Count) 个 api-ms-win 转发器 + ucrtbase.dll"
+
+      # v1.4.82：原门禁只轮询 8765 会**假阳性**——服务线程先起监听，窗口层随后
+      # CLR 崩溃、进程退出（v1.4.81 就是这样被放行，发出了打不开窗口的包）。
+      # 现在同时要求 8765 监听 + 启动日志里没有 CLR 崩溃 / 未处理异常。
+      # CI runner 无桌面，WebView2 运行时缺失导致的降级不算失败（用户机器有）。
       - name: 窗口层真启动检查（起不来就不发版）
         shell: pwsh
         run: |
           $env:FRAMECUT_DATA_DIR = Join-Path $env:RUNNER_TEMP "fc_smoke"
-          $p = Start-Process -FilePath "dist\FrameCut\FrameCut.exe" -PassThru
+          $log = Join-Path $env:RUNNER_TEMP "fc_launch.out"
+          $errLog = Join-Path $env:RUNNER_TEMP "fc_launch.err"
+          $p = Start-Process -FilePath "dist\FrameCut\FrameCut.exe" -PassThru `
+                 -RedirectStandardOutput $log -RedirectStandardError $errLog
           $ok = $false
           for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 2
@@ -53,13 +71,19 @@ jobs:
             }
             if ($p.HasExited) { break }
           }
-          if (-not $ok) {
-            Write-Error "窗口层启动失败：30s 内 8765 未监听（EXE 打不开，拒绝发版）"
-            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          Start-Sleep -Seconds 6   # 给窗口层 CLR 初始化留出暴露崩溃的时间窗
+          $text = ''
+          foreach ($f in @($log, $errLog)) {
+            if (Test-Path $f) { $text += (Get-Content $f -Raw -ErrorAction SilentlyContinue) }
+          }
+          $clrBad = $text -match 'Python\.Runtime\.Loader|Failed to execute script'
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if (-not $ok -or $clrBad) {
+            Write-Error "窗口层启动失败（端口=$ok CLR崩溃=$clrBad），拒绝发版"
+            if ($text) { Write-Host $text.Substring(0, [Math]::Min(3000, $text.Length)) }
             exit 1
           }
-          Write-Host "窗口层启动 OK（8765 已监听）"
-          Stop-Process -Id $p.Id -Force
+          Write-Host "窗口层启动 OK（8765 已监听、无 CLR 崩溃）"
 
       - name: 打 zip（排除 models：模型由应用运行时下载）
         shell: pwsh
