@@ -116,6 +116,7 @@ function _fcNoticePump(){
   const n = _fcNoticeQ.shift();
   _fcNoticeOn = true;
   if(n.code === 'asr_model_en_only') _fcRenderAsrModelNotice(n, el);
+  else if(n.code === 'asr_model_broken') _fcRenderModelIssueNotice(n, el);
   else { _fcNoticeOn = false; _fcNoticePump(); return; }   // 未知 code 不弹，别拦路
   el.style.display = 'block';
 }
@@ -158,6 +159,38 @@ function _fcRenderAsrModelNotice(n, el){
   } else {
     fix.style.display = 'none';
   }
+  document.getElementById('fcNoticeMore').onclick = () => { _fcNoticeHide(); openSettings('secWhisper'); };
+  document.getElementById('fcNoticeClose').onclick = () => _fcNoticeHide();
+}
+/* v1.4.81-ux：模型文件有误的弹窗。不写「失败」两个字就完事，必须给出
+   ①已下部分还在 ②点哪里续传 ③镜像/代理排查 ④手动放置 ⑤临时换模型。 */
+function _fcRenderModelIssueNotice(n, el){
+  const name = _esc(n.model || '当前模型');
+  const why = _esc(n.reason || '文件不完整');
+  document.getElementById('fcNoticeTitle').textContent = '台词模型 ' + name + ' 文件有误';
+  document.getElementById('fcNoticeBody').innerHTML =
+      '<b>出了什么问题</b>：' + why + '。常见于下载中断、镜像返回不完整或手动拷贝模型。<br>'
+    + '<b>已下载的部分还在</b>：下载器支持断点续传，<b>不会从头重下</b>。<br>'
+    + '<b>按顺序试</b>：<br>'
+    + '① 点下面「重新下载（续传）」——只补缺的部分；<br>'
+    + '② 反复失败就去「🌐 国内下载镜像」检查代理是否开着，或切直连；<br>'
+    + '③ 也可手动把完整模型放进 <code>models/whisper/</code>，回来点「✓ 校验」；<br>'
+    + '④ 急着用先换成已就绪的多语言模型 <b>' + _esc(n.used || 'base') + '</b>。';
+  const fix = document.getElementById('fcNoticeFix');
+  fix.style.display = '';
+  fix.className = 'mini-btn primary';
+  fix.textContent = '重新下载（续传）';
+  fix.onclick = async () => {
+    fix.disabled = true;
+    try{
+      _fcNoticeHide();
+      openSettings('secWhisper');
+      const sel = $('setWhisperModel');
+      if(sel && n.model && [...sel.options].some(o => o.value === n.model)) sel.value = n.model;
+      _wspRefreshCards();
+      await _wspStartTask(false);
+    } finally { fix.disabled = false; }
+  };
   document.getElementById('fcNoticeMore').onclick = () => { _fcNoticeHide(); openSettings('secWhisper'); };
   document.getElementById('fcNoticeClose').onclick = () => _fcNoticeHide();
 }
@@ -2490,18 +2523,127 @@ $('settingsSave').addEventListener('click', async () => {
   } catch(e){ toast('保存失败：' + e.message, 'bad'); }
 });
 
-/* ── Whisper 模型下载（设置对话框内） ── */
-$('btnWhisperDl').addEventListener('click', async () => {
+/* ── 进度数字通用格式化（Whisper / 配音共用，v1.4.81-ux） ──
+   主人原话：「进度也不知道，速度也不知道，就干等」。所有长任务至少给出
+   % / 已下·总量 / 速度 / 预计剩余 / 已耗时，不再只给一根条或「已等 N 分钟」。 */
+function _fmtDur(sec){
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  if(sec < 60) return sec + ' 秒';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if(m < 60) return m + ' 分' + (s ? ' ' + s + ' 秒' : '');
+  return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+}
+function _speedMB(v){
+  // '2.0 MB/s' / '800 KB/s' / 数字(MB/s) → MB/s
+  if(typeof v === 'number') return v > 0 ? v : 0;
+  const m = /^([\d.]+)\s*(MB|KB|GB)\/s/i.exec(String(v || ''));
+  if(!m) return 0;
+  const n = parseFloat(m[1]) || 0, u = m[2].toUpperCase();
+  return u === 'KB' ? n / 1024 : (u === 'GB' ? n * 1024 : n);
+}
+function _fmtMB(mb){
+  const n = Number(mb) || 0;
+  return n >= 1024 ? (n / 1024).toFixed(2) + ' GB' : Math.round(n) + ' MB';
+}
+function _progressMeta(pct, done, total, speed, extra, label){
+  const bits = [(label || '进度') + ' ' + (pct || 0) + '%'];
+  if(done !== undefined && done !== null && total) bits.push(_fmtMB(done) + ' / ' + _fmtMB(total));
+  const sp = _speedMB(speed);
+  if(speed) bits.push(typeof speed === 'number' ? (speed + ' MB/s') : String(speed));
+  if(sp > 0 && total && done !== undefined && done !== null && total > done){
+    bits.push('预计剩余 ' + _fmtDur((total - done) / sp));
+  }
+  if(extra) bits.push(extra);
+  return bits.join(' · ');
+}
+
+/* ── Whisper 台词模型区：下载格 / 选择格（v1.4.81-ux） ──
+   主人反馈：下载与选择挤一行、状态只写在 <option> 里、文件全不全没人告诉。
+   拆成两个格子：① 状态+动作+进度 ② 选择+完整性结论+解决办法。
+   校验证据落 localStorage；没有证据时只写「待校验」，绝不凭目录存在就写「完整无误」。 */
+let _wspLastStatus = null;
+let _wspVerify = {};
+try{ _wspVerify = JSON.parse(localStorage.getItem('framecut_wsp_verify') || '{}') || {}; }catch(e){}
+function _wspSaveVerify(model, ok, msg){
+  _wspVerify[model] = {ok: !!ok, ts: Date.now(), msg: String(msg || '').slice(0, 200)};
+  try{ localStorage.setItem('framecut_wsp_verify', JSON.stringify(_wspVerify)); }catch(e){}
+}
+function _wspSetBadge(id, text, cls){
+  const el = $(id); if(!el) return;
+  el.textContent = text; el.className = 'env-badge ' + cls;
+}
+function _wspDownloaded(s, m){
+  const v = (s && s.valid_models && s.valid_models[m]) || {};
+  return !!(v.downloaded || (s && s.available && s.available.indexOf(m) >= 0));
+}
+function _wspShowIssue(model, reason){
+  uiNotices({notices: [{code: 'asr_model_broken', model: model,
+                        reason: reason || '模型文件不完整', used: _wspSuggest}]});
+}
+function _wspRefreshCards(s){
+  if(s) _wspLastStatus = s;
+  const sel = $('setWhisperModel');
+  const m = sel ? sel.value : '';
+  if(!m) return;
+  const st = _wspLastStatus || {};
+  const dl = _wspDownloaded(st, m);
+  const rec = _wspVerify[m];
+  const modelEl = $('wspDlModel');
+  if(modelEl) modelEl.textContent = '选中模型：' + m;
+  const needResume = !!(rec && rec.ok === false && dl);
+  if(st.downloading) _wspSetBadge('wspDlBadge', '下载中 ' + (st.download_pct || 0) + '%', 'wait');
+  else if(needResume) _wspSetBadge('wspDlBadge', '需续传', 'bad');
+  else _wspSetBadge('wspDlBadge', dl ? '已下载' : '未下载', dl ? 'ok' : 'wait');
+  const btn = $('btnWhisperDl');
+  if(btn) btn.innerHTML = needResume
+    ? '<svg class="ic"><use href="#i-download"/></svg>继续下载（续传）'
+    : (dl ? '<svg class="ic"><use href="#i-download"/></svg>校验 / 续传'
+          : '<svg class="ic"><use href="#i-download"/></svg>下载选中模型');
+  const hint = $('wspVerifyHint');
+  if(!dl){
+    _wspSetBadge('wspVerifyBadge', '未下载', 'wait');
+    if(hint) hint.textContent = '这个模型还没下载：先在左边格子点下载，完成后回来校验。';
+  } else if(rec && rec.ok === true){
+    _wspSetBadge('wspVerifyBadge', '完整无误', 'ok');
+    if(hint) hint.textContent = '已通过加载校验（' + new Date(rec.ts).toLocaleString()
+      + '）：模型可正常使用。选中后记得点「保存设置」才会生效。';
+  } else if(rec && rec.ok === false){
+    _wspSetBadge('wspVerifyBadge', '模型有误', 'bad');
+    if(hint) hint.textContent = '上次校验/下载未通过：' + (rec.msg || '文件不完整')
+      + '。已下部分保留，点「继续下载（续传）」即可，不会从头重下。';
+    _wspShowIssue(m, rec.msg);
+  } else if(st.ready === true && st.selected === m){
+    // 后端 whisper_model_ready() 对「当前生效模型」做过真实文件检查（权重+配置齐全），
+    // 这算正面证据，可以直接给结论；其余模型没这个检查，不许跟着沾光。
+    _wspSetBadge('wspVerifyBadge', '完整无误', 'ok');
+    if(hint) hint.textContent = '后端已确认权重与配置齐全（当前生效模型）。换模型后记得选中并「保存设置」才会生效。';
+    _wspSaveVerify(m, true, '后端就绪检查通过');
+  } else {
+    _wspSetBadge('wspVerifyBadge', '待校验', 'wait');
+    if(hint) hint.textContent = '权重文件已就位，但还没做过加载校验；点右侧「✓ 校验」确认可用。';
+  }
+}
+
+async function _wspStartTask(verifyOnly){
   const model = $('setWhisperModel').value;
   const stEl = $('whisperDlStatus');
+  if(verifyOnly && !_wspDownloaded(_wspLastStatus, model)){
+    stEl.textContent = '这个模型还没下载：先在左边格子点下载，完成后再校验。';
+    _wspSetBadge('wspVerifyBadge', '未下载', 'wait');
+    return;
+  }
+  const t0 = Date.now();
   try {
     const r = await fetch('/api/whisper/download', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: model})});
     const out = await r.json();
     if(!out.ok && !/开始|已存在/.test(out.message || out.error || '')) throw new Error(out.error || out.message || '失败');
-    stEl.textContent = out.message || '已开始下载';
+    stEl.textContent = verifyOnly ? '正在加载校验模型…' : (out.message || '已开始下载');
+    // 新一轮下载/校验开始后，上一次的「完整无误」就不再成立，先撤成「校验中…」
+    _wspSetBadge('wspVerifyBadge', '校验中…', 'wait');
     // 点击即亮进度条，不等第一次轮询（后端状态在线程里才置位，有首帧 idle 竞态）
     _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', true, 0);
+    _wspSetBadge('wspDlBadge', '启动中 0%', 'wait');
     let ticks = 0, seenRunning = false;
     pollRun(model, {
       url: '/api/whisper/status', interval: 2000,
@@ -2510,27 +2652,46 @@ $('btnWhisperDl').addEventListener('click', async () => {
       // 结果恒为空，于是进度条被藏、文案被清空、isDone 首帧即真、onDone 也不刷新下拉。
       onTick: s2 => {
         if(s2.downloading) seenRunning = true;
+        const booting = ticks < 2 && !s2.downloading && s2.download_ok == null;
         _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta',
                  s2.downloading, s2.download_pct, s2.dl_mb_done, s2.dl_mb_total, s2.dl_speed);
         // 前两帧后端可能仍是 idle，别把刚点亮的进度条又藏回去（EXE 后端未热更时有竞态）
-        if(ticks < 2 && !s2.downloading && s2.download_ok == null){
+        if(booting){
           const bw = $('whisperPullWrap');
           if(bw && bw.style.display === 'none'){
             bw.style.display = 'block';
             $('whisperPullFill').style.width = '0%';
             $('whisperPullMeta').textContent = '正在启动…';
           }
+        } else {
+          // 数字行：% / 已下·总量 / 速度 / 预计剩余 / 已耗时——不再让人干等
+          const meta = $('whisperPullMeta');
+          if(meta) meta.textContent = _progressMeta(s2.download_pct, s2.dl_mb_done,
+            s2.dl_mb_total, s2.dl_speed, '已耗时 ' + _fmtDur((Date.now() - t0) / 1000));
         }
+        _wspSetBadge('wspDlBadge', s2.downloading ? ('下载中 ' + (s2.download_pct || 0) + '%')
+          : (booting ? '启动中' : (s2.download_ok === true ? '已完成' : (s2.download_ok === false ? '失败·可续传' : '准备中'))),
+          (s2.downloading || booting) ? 'wait' : (s2.download_ok === false ? 'bad' : 'ok'));
         stEl.textContent = s2.downloading ? ('下载中 ' + (s2.download_pct || 0) + '%')
           : (s2.download_ok === true ? '✅ ' + (s2.download_msg || '完成')
-             : (s2.download_ok === false ? '❌ ' + (s2.download_msg || '失败')
+             : (s2.download_ok === false ? '❌ ' + (s2.download_msg || '失败') + ' —— 已下部分保留，点「继续下载（续传）」即可，不会从头重下'
                 : (s2.download_msg || '准备中…')));
       },
       // 至少轮询 2 次且不能停在「还没开始」：必须见过 running、拿到终态，或等满 6 次宽限
       isDone: s2 => (++ticks >= 2 && !s2.downloading && (seenRunning || s2.download_ok === true || s2.download_ok === false || ticks >= 6)),
       onDone: async s2 => {
         _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', false);  // 终态收起
+        if(s2.download_ok === false){
+          _wspSaveVerify(model, false, s2.download_msg || '下载/校验失败');
+          _wspSetBadge('wspDlBadge', '失败·可续传', 'bad');
+          stEl.textContent = '❌ ' + (s2.download_msg || '失败') + ' —— 已下部分保留，点「继续下载（续传）」继续，不会从头重下';
+          await renderWhisperOptions();
+          _wspShowIssue(model, s2.download_msg);
+          return;
+        }
         if(s2.download_ok !== true) return;
+        _wspSaveVerify(model, true, s2.download_msg || '加载校验通过');
+        stEl.textContent = '✅ ' + (s2.download_msg || '完成') + ' —— 选中后记得点「保存设置」才会生效';
         await renderWhisperOptions();
         // 刚装完的模型只认英文：立刻提示，别等用户剪完一条片才发现台词全是英文
         if(_wspEnOnly[model]){
@@ -2540,7 +2701,9 @@ $('btnWhisperDl').addEventListener('click', async () => {
       }
     }).promise.catch(() => { /* 下载状态拉取失败：保持上一次文案即可 */ });
   } catch(e){ stEl.textContent = '❌ ' + e.message; }
-});
+}
+$('btnWhisperDl').addEventListener('click', () => _wspStartTask(false));
+if($('btnWhisperVerify')) $('btnWhisperVerify').addEventListener('click', () => _wspStartTask(true));
 let _wspEnOnly = {};        // 模型 → 是否英文专用（后端 whisper_is_en_only 判定，前端不自己猜）
 let _wspSuggest = 'base';   // 后端推荐的多语言替代（已下载的优先）
 
@@ -2562,6 +2725,7 @@ function renderWhisperOptions(){
     const cur = s.selected || '';
     if(cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
     _whisperLangHint();
+    _wspRefreshCards(s);
   }).catch(() => {});
 }
 
@@ -2577,7 +2741,10 @@ function _whisperLangHint(){
     + '中文/日语等会被硬转成英文乱码（例如「Thank you, you know」这类英文幻觉）。'
     + '多语种请选 <b>large-v3 / medium / small / base</b>（推荐 <b>' + _esc(_wspSuggest) + '</b>）。';
 }
-if($('setWhisperModel')) $('setWhisperModel').addEventListener('change', _whisperLangHint);
+if($('setWhisperModel')) $('setWhisperModel').addEventListener('change', () => {
+  _whisperLangHint();
+  _wspRefreshCards();          // 选完立刻给「完整无误 / 模型有误 / 待校验」结论
+});
 
 /* ── 设置：模型中心（与网页版同一份候选目录） ── */
 const LOCAL_MODEL_CATALOG = [
@@ -2662,6 +2829,8 @@ async function fillModelCenter(){
    Qwen3-TTS 环境可一键安装（缺权重会先下载再装环境）；IndexTTS-2 权重可下、
    环境按 README 手动（依赖面重，不收编），按钮如实分步。 */
 let _tts2DlHandle = null;
+let _tts2TaskStart = 0;          // 点击/接上任务的时间，用来算「已耗时 / 预计剩余」
+let _tts2Failed = null;          // {engine, op}：失败后按钮改「继续（续传）」，别让人以为要重下
 function _renderTts2ModelCards(S){
   const map = {qwen3tts: ['tts2BadgeQwen', 'tts2LabelQwen', 'btnTts2DlQwen'],
                indextts2: ['tts2BadgeIdx', 'tts2LabelIdx', 'btnTts2DlIdx']};
@@ -2676,6 +2845,11 @@ function _renderTts2ModelCards(S){
       badgeCls = 'wait';
       badgeText = (S.op === 'install') ? '安装中' : '下载中';
       btnText = '⏹ 取消'; act = 'cancel';
+    } else if(_tts2Failed && _tts2Failed.engine === eng){
+      // 失败后不要让用户以为要从头再下 5GB：直接给「继续（续传）」
+      badgeCls = 'bad'; badgeText = '未完成·可续传';
+      btnText = '▶ 继续（断点续传）';
+      act = (_tts2Failed.op === 'install') ? 'install' : 'download';
     } else if(st.ready){
       badgeCls = 'ok'; badgeText = '已就绪'; btnText = '✅ 已就绪'; btnOn = false;
     } else if(st.weights){
@@ -2707,13 +2881,30 @@ function _renderTts2ModelCards(S){
   if(barWrap){
     barWrap.style.display = running ? '' : 'none';
     if(running){
-      $('tts2PullFill').style.width = Math.min(100, S.pct || 0) + '%';
-      $('tts2PullMeta').textContent = (S.msg || '处理中…')
-        + '（取消：点对应卡的「⏹ 取消」；已下载/已装的部分保留）';
+      const pct = Math.min(100, S.pct || 0);
+      $('tts2PullFill').style.width = pct + '%';
+      // v1.4.81-ux：主人反馈「等了 3 分钟，进度/速度都不知道，就干等」。
+      // 下载阶段有真实字节数就用字节算 ETA；安装阶段只有按耗时爬行的阶段进度，
+      // 必须写明「按耗时估算」，不能冒充下载字节进度。
+      const hasBytes = Number(S.mb_total) > 0 && Number(S.mb_done) > 0;
+      const elapsed = (Date.now() - (_tts2TaskStart || Date.now())) / 1000;
+      let extra = '已耗时 ' + _fmtDur(elapsed);
+      if(!hasBytes && pct > 0 && pct < 100){
+        extra += ' · 预计剩余 ' + _fmtDur(elapsed * (100 - pct) / pct);
+      }
+      $('tts2PullMeta').textContent = _progressMeta(pct,
+        hasBytes ? S.mb_done : null, hasBytes ? S.mb_total : null,
+        hasBytes ? (S.speed_mb_s || 0) : null, extra,
+        hasBytes ? '下载进度' : '阶段进度（按耗时估算）')
+        + ' · ' + (S.msg || '处理中…')
+        + '（点「⏹ 取消」；已下/已装部分保留，续传不会从头重下）';
     }
   }
   // 设置页开着时发现任务在跑 → 自动接上轮询（关掉再开不丢进度）
-  if(running && !_tts2DlHandle) _pollTts2Model();
+  if(running && !_tts2DlHandle){
+    if(!_tts2TaskStart) _tts2TaskStart = Date.now();
+    _pollTts2Model();
+  }
 }
 function _pollTts2Model(){
   if(_tts2DlHandle) _tts2DlHandle.stop();
@@ -2739,13 +2930,16 @@ function _pollTts2Model(){
     onDone: async S => {
       _tts2DlHandle = null;
       if(S.ok === true){
+        _tts2Failed = null;
         // 一键安装与仅下权重的成功语义不同，提示必须分开（别让用户以为装好了环境）
         toast(S.op === 'install'
           ? '✅ 安装完成：权重与运行环境都就绪，可回配音页试听'
           : ('✅ 权重下载完成' + (S.engine === 'qwen3tts'
             ? '（点「⚙ 安装运行环境」补齐 venv + PyTorch）' : '')), 'ok');
       } else {
-        toast(S.msg || '任务未完成', 'bad');
+        // 失败要回答三件事：已下的还在吗 / 点哪里继续 / 会不会从头重下
+        _tts2Failed = {engine: S.engine || '', op: S.op || 'download'};
+        toast((S.msg || '任务未完成') + ' —— 已下/已装部分保留，点「▶ 继续（断点续传）」接着跑，不会从头重下', 'bad');
       }
       fillModelCenter(); fillTtsSettings();
     }
@@ -2771,6 +2965,8 @@ $('secTts2Models').addEventListener('click', async ev => {
     body: JSON.stringify({engine: eng})}).then(x => x.json()).catch(() => null);
   if(r && r.ok){
     toast(r.message || '已开始', 'ok');
+    _tts2TaskStart = Date.now();
+    _tts2Failed = null;
     // 点击即亮进度条，别让用户只看到一句「开始下载」却不知道有没有在跑
     const bw = $('tts2PullWrap');
     if(bw){

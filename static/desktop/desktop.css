@@ -342,6 +342,16 @@ canvas.tl-wave{position:absolute;left:0;right:0;bottom:0;width:100%;height:34px;
 .set-save-hint{font-size:11px;color:var(--dim)}
 .hint{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5}
 
+/* ── Whisper 台词模型区：下载 / 选择各自一个格子（v1.4.81-ux） ── */
+.wsp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.wsp-card{border:1px solid var(--line2);border-radius:8px;padding:10px 11px;background:var(--panel2);min-width:0}
+.wsp-card-h{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.wsp-card-t{font-size:11.5px;font-weight:600;color:var(--txt);white-space:nowrap}
+/* 下拉独占一行：模型名较长，和徽标/按钮挤一行会被截成「distil-large-v3（未」 */
+.wsp-card .set-row select{min-width:100%;flex:1 1 100%}
+.wsp-card .env-badge{flex:none}
+@media(max-width:1080px){.wsp-grid{grid-template-columns:1fr}}
+
 /* ── 下载进度条 ── */
 .pull-wrap{margin-top:6px}
 .pbar.slim{height:8px;border-radius:4px}

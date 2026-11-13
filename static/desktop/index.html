@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=58">
+<link rel="stylesheet" href="desktop.css?v=62">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -527,17 +527,40 @@
         </div>
         <div class="set-sec" id="secWhisper">
           <div class="set-h">Whisper 台词识别模型</div>
-          <div class="set-row">
-            <select id="setWhisperModel"></select>
-            <button class="mini-btn" id="btnWhisperDl"><svg class="ic"><use href="#i-download"/></svg>下载选中模型</button>
+          <div class="wsp-grid">
+            <!-- 格子① 下载：状态、按钮、进度都在这里，不再和「选择」挤一行 -->
+            <div class="wsp-card">
+              <div class="wsp-card-h">
+                <span class="wsp-card-t">① 下载与状态</span>
+                <span class="env-badge wait" id="wspDlBadge">检测中</span>
+              </div>
+              <div class="set-row wrap">
+                <span class="hint" style="flex:1;min-width:110px;margin:0" id="wspDlModel">选中模型：—</span>
+                <button class="mini-btn" id="btnWhisperDl"><svg class="ic"><use href="#i-download"/></svg>下载选中模型</button>
+              </div>
+              <div class="pull-wrap" id="whisperPullWrap" style="display:none">
+                <div class="pbar slim"><i id="whisperPullFill"></i></div>
+                <div class="pbar-meta" id="whisperPullMeta"></div>
+              </div>
+              <div class="hint" id="whisperDlStatus"></div>
+              <div class="hint" id="wspDlTip">支持断点续传：失败后已下部分会保留，再点一次继续，不会从头重下。</div>
+            </div>
+            <!-- 格子② 选择：下拉后面直接给「完整无误 / 模型有误 / 待校验」结论 -->
+            <div class="wsp-card">
+              <div class="wsp-card-h">
+                <span class="wsp-card-t">② 选择与完整性</span>
+                <span class="wsp-card-t" style="color:var(--dim);font-weight:400">选完保存才生效</span>
+              </div>
+              <div class="set-row wrap">
+                <select id="setWhisperModel"></select>
+                <span class="env-badge wait" id="wspVerifyBadge">待校验</span>
+                <button class="mini-btn" id="btnWhisperVerify" title="加载一次模型做真实校验；本地已存在时不会重新联网下载">✓ 校验</button>
+              </div>
+              <div class="hint" id="wspVerifyHint">没有校验证据时只显示「待校验」，不会凭目录存在就写「完整无误」。</div>
+              <!-- v1.4.65：英文专用模型提示（distil-* 只认英文，中文会变英文乱码） -->
+              <div class="hint warn-hint" id="whisperLangHint" style="display:none"></div>
+            </div>
           </div>
-          <div class="pull-wrap" id="whisperPullWrap" style="display:none">
-            <div class="pbar slim"><i id="whisperPullFill"></i></div>
-            <div class="pbar-meta" id="whisperPullMeta"></div>
-          </div>
-          <div class="hint" id="whisperDlStatus"></div>
-          <!-- v1.4.65：英文专用模型提示（distil-* 只认英文，中文会变英文乱码） -->
-          <div class="hint warn-hint" id="whisperLangHint" style="display:none"></div>
         </div>
         <div class="set-sec" id="secTts2Models">
           <div class="set-h">配音模型权重与环境（一键安装）<span class="set-tag">v1.4.79</span></div>
@@ -555,7 +578,7 @@
             <div class="pbar slim"><i id="tts2PullFill"></i></div>
             <div class="pbar-meta" id="tts2PullMeta"></div>
           </div>
-          <div class="hint" id="tts2DlHint">下载走国内镜像直连、支持断点续传，下载/安装中可点「⏹ 取消」。<b>Qwen3-TTS 支持「一键安装」</b>——权重与 venv 运行环境（Python 3.11/3.12 + PyTorch cu121）一次装好，不用自己动手；IndexTTS-2 权重可下载，运行环境依赖较重，请按 README 手动装。</div>
+          <div class="hint" id="tts2DlHint">下载走国内镜像直连、<b>支持断点续传</b>：进度条下方会显示百分比、已下载/总量、速度、已耗时与预计剩余；中途失败或取消后，<b>已下载/已安装的部分会保留，再点「▶ 继续（断点续传）」接着跑，不会从头重下</b>。<b>Qwen3-TTS 支持「一键安装」</b>——权重与 venv 运行环境（Python 3.11/3.12 + PyTorch cu121）一次装好；安装阶段没有字节进度，界面会标明「按耗时估算」。IndexTTS-2 权重可下载，运行环境请按 README 手动装。</div>
         </div>
         <div class="set-sec">
           <div class="set-h">本地服务地址（一般不用改）</div>
@@ -696,6 +719,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=58"></script>
+<script src="desktop.js?v=62"></script>
 </body>
 </html>

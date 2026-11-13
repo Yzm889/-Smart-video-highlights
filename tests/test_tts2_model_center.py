@@ -227,6 +227,13 @@ function fetch(url, opt){
 }
 const src = [
   "let _tts2DlHandle = null;",
+  "let _tts2TaskStart = Date.now();",
+  "let _tts2Failed = null;",
+  /* v1.4.81-ux：进度数字行抽成共用函数，harness 要把它们一起带进来 */
+  blockOf("function _fmtDur"),
+  blockOf("function _speedMB"),
+  blockOf("function _fmtMB"),
+  blockOf("function _progressMeta"),
   blockOf("function _pollTts2Model"),
   blockOf("function _renderTts2ModelCards"),
   blockOf("$('secTts2Models').addEventListener"),
@@ -239,6 +246,7 @@ new Function("$", "_esc", "toast", "fetch", "pollRun", "fillModelCenter",
   els, fetchCalls, state);
 const out = {};
 const mk = (ready, weights) => ({running: false, engine: "", ok: null, pct: 0, msg: "",
+  mb_done: 2800, mb_total: 6800, speed_mb_s: 30.0,
   engines: {qwen3tts: {label: "Q", size_hint: "5.3 GB", ready: true, weights: true},
             indextts2: {label: "I", size_hint: "6.8 GB", ready, weights}}});
 /* ① 未下载态 */

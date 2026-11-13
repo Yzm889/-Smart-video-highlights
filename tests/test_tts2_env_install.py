@@ -332,6 +332,13 @@ function toast(){}
 const state = {};
 const src = [
   "let _tts2DlHandle = null;",
+  "let _tts2TaskStart = Date.now();",
+  "let _tts2Failed = null;",
+  /* v1.4.81-ux：进度数字行抽成共用函数，harness 要把它们一起带进来 */
+  blockOf("function _fmtDur"),
+  blockOf("function _speedMB"),
+  blockOf("function _fmtMB"),
+  blockOf("function _progressMeta"),
   blockOf("function _pollTts2Model"),
   blockOf("function _renderTts2ModelCards"),
   "\nstate.render = _renderTts2ModelCards;"
