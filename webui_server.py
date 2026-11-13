@@ -3538,8 +3538,9 @@ def ensure_deps():
                                '--no-input'] + missing, creationflags=_NO_WIN)
 
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageFilter   # ImageFont 随 v1.4.70 拆到 font_setup.py
+# （numpy 只在 _cover_score 局部使用，v1.4.82 起 analyze_beats 不再用 numpy，
+#   模块级导入随之移除——flake8 F401）
 
 def hx(h):
     h = h.lstrip('#'); return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
@@ -4202,30 +4203,12 @@ def video_encoder_label():
 
 
 def analyze_beats(path):
-    """Analyze audio with librosa: return (bpm, beat_times_in_seconds).
-    beat_times are precise floats (ms precision). Returns None if analysis fails."""
-    try:
-        import librosa
-    except Exception:
-        return None
-    try:
-        y, sr = librosa.load(path, sr=22050, mono=True)
-        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units='frames')
-        if beat_frames is None or len(beat_frames) == 0:
-            tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-        beats = [float(v) for v in librosa.frames_to_time(beat_frames, sr=sr)]
-        # filter out beats beyond audio length
-        T = float(len(y)) / sr
-        beats = [b for b in beats if b < T - 0.05]
-        bpm_val = None
-        try:
-            arr = np.asarray(tempo)
-            bpm_val = float(arr.ravel()[0] if arr.ndim else arr)
-        except Exception:
-            bpm_val = None
-        return bpm_val, beats
-    except Exception:
-        return None
+    """分析音乐节拍：返回 (bpm, beat_times_in_seconds)；失败返回 None。
+
+    v1.4.82：librosa 已退出打包清单（其 numba 依赖破坏 pythonnet CLR 加载，
+    见 requirements-build.txt 头注释），改用 beat_analysis 的 ffmpeg+numpy
+    实现（能量 onset 自相关估 BPM + 相位对齐节拍网格）。返回契约不变。"""
+    return beat_analysis._analyze_beats_grid(path)
 
 
 def plan_beat_durations(item_durs, beats, fade, step=1):

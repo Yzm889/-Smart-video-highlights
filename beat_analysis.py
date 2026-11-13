@@ -304,29 +304,178 @@ def detect_visual_cues(video_path, fps_s=4.0, strength='standard'):
     return _detect_visual_from_frames(_analyze_video_frames(video_path, fps_s), strength)
 
 
+def _decode_audio_mono(path, sr=22050):
+    """ffmpeg 解码任意音频/视频容器为单声道 float32 PCM（v1.4.82 替代 librosa.load）。
+
+    librosa 已退出打包清单（其 numba 依赖破坏 pythonnet CLR 加载，见
+    requirements-build.txt 头注释），音频解码改走 ffmpeg 直通管道。
+    失败抛异常，由调用方按各自契约降级。"""
+    cmd = [ffmpeg_exe(), '-v', 'error', '-i', path,
+           '-ac', '1', '-ar', str(sr), '-f', 'f32le', '-']
+    p = _sp.run(cmd, capture_output=True, timeout=300)
+    if p.returncode != 0:
+        raise RuntimeError('ffmpeg 解码失败: %s' % (p.stderr or b'')[-200:])
+    y = np.frombuffer(p.stdout, dtype='<f4').astype(np.float32)
+    if y.size < sr:                      # 不足 1 秒，没有分析价值
+        raise RuntimeError('音频过短（<1s）')
+    return y
+
+
+def _onset_envelope(y, sr=22050, hop=512, win=1024):
+    """对数能量 onset 包络（numpy，替代 librosa.onset.onset_strength）。
+
+    两路求和捕捉不同性质的瞬态：宽带能量攻（鼓点）+ 一阶差分攻（高频，踩镲/气声），
+    归一化到峰值=1——调用方的 delta 从 librosa 原始刻度改为 0..1 相对刻度。
+    帧中心约定与 librosa 一致：第 i 帧对应 i*hop/sr 秒。"""
+    n_frames = 1 + (len(y) - win) // hop
+    if n_frames < 4:
+        return np.zeros(0)
+    idx0 = hop * np.arange(n_frames)
+    cs = np.concatenate(([0.0], np.cumsum(y.astype(np.float64) ** 2)))
+    e = np.sqrt(np.maximum(cs[idx0 + win] - cs[idx0], 0.0) / win)
+    d = np.diff(y, prepend=y[:1])        # 一阶差分 ≈ 高通，凸显高频瞬态
+    csd = np.concatenate(([0.0], np.cumsum(d.astype(np.float64) ** 2)))
+    ed = np.sqrt(np.maximum(csd[idx0 + win] - csd[idx0], 0.0) / win)
+
+    def _flux(x):
+        lx = np.log(x + 1e-6)
+        return np.maximum(0.0, np.diff(lx, prepend=lx[:1]))
+
+    env = _flux(e) + 0.5 * _flux(ed)
+    m = float(env.max())
+    return env / m if m > 0 else env
+
+
+def _pick_onset_peaks(env, sr, hop, delta, wait):
+    """局部极大 + 双阈值挑峰（对齐 librosa.util.peak_pick 的 8 帧窗语义）。
+
+    峰值条件：是 ±8 帧窗口内的最大值，且高于「窗口均值 + delta」；
+    wait（**秒**）为两峰最小间隔。返回帧索引列表。"""
+    n = len(env)
+    peaks = []
+    last_t = -1e9
+    for i in range(1, n - 1):
+        t = i * hop / float(sr)
+        if t - last_t < wait:
+            continue
+        v = env[i]
+        if v < delta:
+            continue
+        lo, hi = max(0, i - 8), min(n, i + 9)
+        w = env[lo:hi]
+        if v < w.max() or v <= w.mean() + delta:
+            continue
+        peaks.append(i)
+        last_t = t
+    return peaks
+
+
 def _music_onset_peaks(music_path, delta=0.18, wait=0.25, sr=22050, hop=512):
-    """librosa onset 峰值检测公共层：「智能强卡点」与「节拍同步」两引擎共用同一套
-    加载+onset 包络+峰值挑选，避免两份逐行重复的 librosa 代码各自漂移。
-    返回 (峰值秒列表, 峰值onset强度列表, 音乐总时长)；librosa 不可用/失败返回 ([], [], 0.0)。
-    注意：librosa peak_pick 的 wait 单位是「帧」不是秒（hop=512@22050Hz ≈ 23ms/帧）。"""
+    """onset 峰值检测公共层：「智能强卡点」「detect_beats」「节拍网格」三处共用
+    同一套解码+onset 包络+峰值挑选（v1.4.82 起为 ffmpeg+numpy，不再依赖 librosa）。
+    返回 (峰值秒列表, 峰值onset强度列表, 音乐总时长)；失败返回 ([], [], 0.0)。
+    delta：0..1 相对阈值（包络已按峰值归一化）；wait：**秒**（两峰最小间隔，
+    历史上曾帧/秒混用，本次统一为秒）。"""
     try:
-        import librosa
-    except Exception:
-        return [], [], 0.0
-    try:
-        y, sr = librosa.load(music_path, sr=sr, mono=True)
-        if len(y) < sr:
+        y = _decode_audio_mono(music_path, sr)
+        env = _onset_envelope(y, sr, hop)
+        if env.size == 0:
             return [], [], 0.0
+        idx = _pick_onset_peaks(env, sr, hop, delta=delta, wait=max(0.0, wait))
         T = float(len(y)) / sr
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-        times = librosa.times_like(onset_env, sr=sr, hop_length=hop)
-        peaks = librosa.util.peak_pick(onset_env, pre_max=8, post_max=8, pre_avg=8,
-                                       post_avg=8, delta=delta, wait=wait)
-        pts = [float(times[p]) for p in peaks]
-        vals = [float(onset_env[p]) for p in peaks]
+        pts = [float(i * hop / sr) for i in idx]
+        vals = [float(env[i]) for i in idx]
         return pts, vals, T
     except Exception:
         return [], [], 0.0
+
+
+def _analyze_beats_grid(path, sr=22050, hop=512,
+                        bpm_min=60.0, bpm_max=180.0):
+    """节拍网格分析（v1.4.82 替代 librosa.beat.beat_track）。
+
+    自相关给候选滞后（含半速/倍速），再用**网格捕获的总 onset 能量**定 Tempo
+    与相位：真节拍网格会命中几乎每一个瞬态，半速网格只能命中一半——这一把尺子
+    同时纠正「半速误判」与「帧量化漂移」（拍点周期非整数帧时，单点自相关会
+    系统性偏爱 2 倍周期：实测 0.5s 周期的音轨 ac[1.0s]=0.93 >> ac[0.5s]=0.53）。
+    返回 (bpm, beats秒列表) 或 None（不可分析）。"""
+    try:
+        y = _decode_audio_mono(path, sr)
+        env = _onset_envelope(y, sr, hop)
+        n = len(env)
+        if n < 8:
+            return None
+        e = env - float(env.mean())
+        f = np.fft.rfft(e, 2 * n)
+        ac = np.fft.irfft(f * np.conj(f))[:n]
+        if float(ac[0]) <= 0:
+            return None
+        ac = ac / ac[0]
+        k_min = max(2, int(60.0 / bpm_max * sr / hop))
+        k_max = min(n - 2, int(60.0 / bpm_min * sr / hop))
+        if k_max <= k_min:
+            return None
+        k0 = k_min + int(np.argmax(ac[k_min:k_max + 1]))
+        a, b, c = ac[k0 - 1], ac[k0], ac[k0 + 1]
+        den = a - 2 * b + c
+        shift = max(-0.5, min(0.5, 0.5 * (a - c) / den)) if abs(den) > 1e-12 else 0.0
+        lag_ref = (k0 + shift) * hop / float(sr)          # 秒
+        lag_min, lag_max = 60.0 / bpm_max, 60.0 / bpm_min
+        cands = [L for L in (lag_ref, lag_ref * 0.5, lag_ref * 2.0)
+                 if lag_min <= L <= lag_max]
+
+        def _best_phase(lag_s):
+            """给定滞后（秒），扫相位取「网格捕获的 onset 总能量」最大者。
+
+            返回 (score, phi_f)；phi_f 是网格起点的帧坐标（浮点，亚帧精度）。"""
+            lag_f = lag_s * sr / hop
+            steps = max(24, int(lag_f * 2))
+            best_s, best_p = 0.0, 0.0
+            for q in range(steps):
+                phi = lag_f * q / steps
+                m = int((n - phi) // lag_f) + 1
+                if m < 2:
+                    continue
+                idx = np.round(phi + np.arange(m) * lag_f).astype(int)
+                idx = idx[(idx >= 0) & (idx < n)]
+                s = float(env[idx].sum()) if idx.size else 0.0
+                if s > best_s:
+                    best_s, best_p = s, phi
+            return best_s, best_p
+
+        scored = []
+        for L in cands:
+            s, ph = _best_phase(L)
+            scored.append((s, L, ph))
+        if not scored:
+            return None
+        scored.sort(key=lambda x: -x[0])
+        # 【滞后精修】自相关的帧量化（hop≈23ms）会让周期带 ~1% 误差——长音乐上
+        # 累计漂移可达秒级（3 分钟漂 2s+，后面的卡点全踩空）。在候选周围扫 ±1%
+        # 倍率，仍以「网格捕获总能量」选最优：能量会偏向「整段都贴在瞬态上」的滞后。
+        _, lag0, _ = scored[0]
+        for mult in (0.99, 0.995, 1.0, 1.005, 1.01):
+            L = lag0 * mult
+            if not (lag_min <= L <= lag_max):
+                continue
+            s, ph = _best_phase(L)
+            scored.append((s, L, ph))
+        scored.sort(key=lambda x: -x[0])
+        _, lag_s, phi_f = scored[0]
+        bpm = 60.0 / lag_s
+        if not (bpm_min <= bpm <= bpm_max):
+            return None
+        beats = []
+        t = phi_f * hop / float(sr)
+        T = float(len(y)) / sr
+        while t < T - 0.05:
+            beats.append(float(t))
+            t += lag_s
+        if not beats:
+            return None
+        return float(bpm), beats
+    except Exception:
+        return None
 
 
 def detect_strong_beats(music_path, top_k=None, min_sep=0.25):
@@ -640,9 +789,10 @@ def beat_cut_video(video_path, music_path, run_dir, params, progress=None):
     return final, diag
 def detect_beats(audio_path, sensitivity=0.5):
     """检测音乐节拍点(秒，升序)。sensitivity∈(0,1) 越高越灵敏；检测失败返回 []。"""
-    # 灵敏度越高 → delta 越小 → 检出越多拍点；wait=15 帧约 0.35s 最小拍间隔
+    # 灵敏度越高 → delta 越小 → 检出越多拍点；wait=0.35s 最小拍间隔
+    # （v1.4.82：wait 单位统一为秒。旧值 15 是 librosa 的「帧」，换算后即 0.35s）
     delta = max(0.02, 0.30 - 0.25 * float(sensitivity))
-    pts, _vals, T = _music_onset_peaks(audio_path, delta=delta, wait=15)
+    pts, _vals, T = _music_onset_peaks(audio_path, delta=delta, wait=0.35)
     if not pts:
         return []
     return [t for t in pts if t < T - 0.05]
