@@ -336,15 +336,20 @@ def test_broken_timeline_is_warned(real_video):
 
 
 def test_subtitle_longer_than_video_is_bad(real_video):
-    """未删减版字幕配删减版视频：成批台词起点落在视频结束之后，必须报 bad。
+    """版本错位红线：超出条与片内字幕之间**边界断档**（片内没贴到视频结束就断了）。
 
-    【这条是端到端跑出来才发现的】原实现只有 `tail_gap = vdur - last` 一个方向，
-    字幕比视频长时 tail_gap 变负数，①②③④ 四个分支一个都不进 —— 完全静默。
-    而这正是错版的镜像情形：对白与画面的对应关系整体错位，界面却显示 ✅。
+    【v1.4.82 分级】连续贴齐的尾部溢出（全集字幕配前 N 分钟）降级为提示，
+    见下方 v60 真视频组；本测试钉的是仍须红警的形态——片内字幕 500s 就断了、
+    超出条从 561s 才开始（边界断档 60s），片内与视频版本明显对不上。
     """
-    level, msgs, _g = A.subtitle_sync_report(_mk(220), real_video)   # 到 657s，超 97s
-    assert level == 'bad', '字幕比视频长被判 %s，这一类错版被完全放过了' % level
+    segs = _mk(167)                      # 0..500.4s：片内不贴齐（<560*0.9）
+    for i in range(11):                  # 超出条从 561s 起：边界断档 60.6s
+        segs.append({'start': 561 + i * 3.0, 'end': 563.4 + i * 3.0,
+                     'text': '超出%d' % i})
+    level, msgs, _g = A.subtitle_sync_report(segs, real_video)
+    assert level == 'bad', '边界断档的错版被判 %s' % level
     assert any('比视频长' in m for m in msgs), '文案没点明「字幕比视频长」: %r' % (msgs,)
+    assert any('自查' in m for m in msgs), '红警必须带「怎么自查」: %r' % (msgs,)
 
 
 def test_few_stray_lines_beyond_video_are_silent(real_video):
@@ -380,3 +385,65 @@ def test_sync_report_reaches_task_warnings(monkeypatch, real_video):
     got.clear()
     A._report_subtitle_sync(_mk(186), real_video)         # 正常字幕
     assert not got, '正常字幕产生了噪音提示: %r' % (got,)
+
+
+# ---------------------------------------------------------------------------
+# v1.4.82 尾部溢出分级（60s 真视频，真跑不 skip）
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope='module')
+def v60(tmp_path_factory):
+    """60 秒黑屏视频：时长探测的真实输入（判据全部随 vdur 缩放）。"""
+    p = tmp_path_factory.mktemp('vid') / 'v60.mp4'
+    rc, _o, e = A.ffmpeg_run(['-y', '-f', 'lavfi', '-i', 'color=black:s=64x64:d=60',
+                              '-r', '10', str(p)], timeout=120)
+    if rc != 0:
+        pytest.skip('ffmpeg 造不出测试视频: %s' % e.decode('utf-8', 'ignore')[-120:])
+    vd = A.probe_duration(str(p))
+    assert vd > 59, '测试视频时长异常: %.2f' % vd
+    return str(p)
+
+
+def _mk_rel(vdur, in_end_gap, beyond_gap, n_beyond=5, step=3.0):
+    """按真实 vdur 构造字幕：片内最后一条结束于 vdur-in_end_gap，
+    超出条从 vdur+beyond_gap 起、共 n_beyond 条（step 间隔）。"""
+    cues = []
+    t = 0.0
+    while t + 2.4 <= vdur - in_end_gap:
+        cues.append({'start': t, 'end': t + 2.4, 'text': '台词%d' % len(cues)})
+        t += step
+    for i in range(n_beyond):
+        s = vdur + beyond_gap + i * step
+        cues.append({'start': s, 'end': s + 2.4, 'text': '超出%d' % i})
+    return cues
+
+
+def test_continuous_tail_overflow_is_hint(v60):
+    """【新契约】连续贴齐的尾部溢出（全集字幕配前 N 分钟）→ 绿色提示，不报警。
+
+    2026-11-14 主人实测形态：片内最后一条距视频尾 0.8s、超出条紧接其后——
+    旧版对此报红色「整体错位」，吓住了最常见、其实无害的场景。"""
+    vd = A.probe_duration(v60)
+    segs = _mk_rel(vd, in_end_gap=0.8, beyond_gap=1.5, n_beyond=6)
+    level, msgs, _g = A.subtitle_sync_report(segs, v60)
+    assert level == 'ok', '尾部溢出被判 %s: %r' % (level, msgs)
+    assert any('已自动忽略' in m for m in msgs), '缺少「已自动忽略」提示: %r' % (msgs,)
+    assert not any('⚠️' in m for m in msgs), '绿色提示里混进了红警: %r' % (msgs,)
+
+
+def test_discontinuous_beyond_is_bad(v60):
+    """边界断档（片内 20s 就断了、超出条 61s 才开始）→ 仍须红警。"""
+    vd = A.probe_duration(v60)
+    segs = _mk_rel(vd, in_end_gap=39.0, beyond_gap=41.0, n_beyond=5)
+    level, msgs, _g = A.subtitle_sync_report(segs, v60)
+    assert level == 'bad', '边界断档的错版被判 %s: %r' % (level, msgs)
+    assert any('比视频长' in m for m in msgs) and any('自查' in m for m in msgs), msgs
+
+
+def test_all_beyond_is_bad(v60):
+    """全部台词都在视频之外（字幕整个是另一段内容）→ 必须红警。"""
+    vd = A.probe_duration(v60)
+    segs = [{'start': vd + 1 + i * 3, 'end': vd + 3 + i * 3, 'text': '外%d' % i}
+            for i in range(6)]
+    level, msgs, _g = A.subtitle_sync_report(segs, v60)
+    assert level == 'bad', '整段错位被判 %s: %r' % (level, msgs)

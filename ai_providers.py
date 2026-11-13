@@ -790,20 +790,40 @@ def subtitle_sync_report(segs, video_path):
         msgs = [m for m in msgs if '字幕比视频早结束' not in m]
 
     # ②b 字幕比视频长：有相当一批台词**起点就落在视频结束之后**。
-    # 这是尾部缺口的镜像情形，同样属于「错版」：字幕是更长版本（导演剪辑/未删减）
-    # 的，套在短版本视频上。① 抓不到它，因为 tail_gap 变成负数，一个分支都不进。
-    #
+    # 【v1.4.82 分级】两类形态，处置完全不同：
+    #   · 尾部溢出（无害，最常见）：超出条**连续地**排在片内字幕之后（边界无断档），
+    #     且片内字幕贴到视频结束附近——这是「全集字幕配前 N 分钟切片」的标准形态
+    #     （2026-11-14 主人实测：全集字幕末尾 20:57.5、视频正好 20:00、片内最后一条
+    #     结束于 19:59.2、边界无缝）。片内对位 1:1 正确，超出部分管线本来就会忽略
+    #     （vlm_index 锚点只取 0<=st<vdur），降级为绿色提示，不再吓人。
+    #   · 版本错位（真问题）：边界有断档（片内字幕与超出条之间隔了一大段），或片内
+    #     字幕根本没贴到视频结束——字幕与视频大概率不是同一版本，保留红色警告。
     # 为什么不直接用 last - vdur：有些字幕文件末尾带一条时间轴乱写的译者鸣谢
     # （比如 99:59:59），单看最后一条会把正常字幕误判成错版。改成数「落在片外的
     # 台词条数」，一两条野数据淹没不掉，而真的长版本字幕是成批超出。
-    beyond = sum(1 for st in starts if st >= vdur)
+    beyond_starts = [st for st in starts if st >= vdur]
+    beyond = len(beyond_starts)
     if not _head_shift and beyond >= max(3, int(len(starts) * 0.02)):
-        level = 'bad'
-        msgs.append(
-            '⚠️ 有 %d 条台词（共 %d 条）的起点在视频结束之后 —— 这个字幕比视频长，'
-            '多半是「未删减版字幕配了删减版视频」，对白与画面的对应关系会整体错位。'
-            '建议换成与视频同版本的字幕。'
-            % (beyond, len(starts)))
+        _in_ends = [e for i, e in enumerate(ends) if starts[i] < vdur]
+        _last_in_end = max(_in_ends) if _in_ends else 0.0
+        _tracks = _last_in_end >= vdur * 0.90           # 片内字幕贴到视频结束附近
+        _boundary_gap = (min(beyond_starts) - _last_in_end) if _in_ends else None
+        _continuous = (_boundary_gap is not None
+                       and _boundary_gap <= max(30.0, vdur * 0.05))
+        if _tracks and _continuous:
+            msgs.append(
+                '提示：字幕尾部多出 %s（%d 条，起点在视频结束之后），已自动忽略——'
+                '片内字幕与视频逐秒贴齐，不影响成片。'
+                % (_fmt_mmss(max(0.0, max(ends) - vdur)), beyond))
+        else:
+            level = 'bad'
+            msgs.append(
+                '⚠️ 有 %d 条台词（共 %d 条）的起点在视频结束之后 —— 这个字幕比视频长，'
+                '多半是「未删减版字幕配了删减版视频」，对白与画面的对应关系会整体错位。'
+                '建议换成与视频同版本的字幕。'
+                '（自查：若超出条全部紧接片内字幕、片内字幕贴到视频结束，属「尾部超出」'
+                '可忽略；否则请人工核对版本。）'
+                % (beyond, len(starts)))
 
     # ③ 覆盖率：视频大面积没有台词覆盖（中间断档多）→ 字幕可能是删减版
     covered = sum(max(0.0, e - s) for s, e in zip(starts, ends))
