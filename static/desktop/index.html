@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=64">
+<link rel="stylesheet" href="desktop.css?v=65">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -137,6 +137,7 @@
       <div class="np-opts">
         <label class="chk"><input type="checkbox" id="npScript"> 这是写好的完整解说稿（AI 不改一字）</label>
         <label class="chk"><input type="checkbox" id="npCut" checked> 剧情精剪（保留高光，剪掉填充——成片约 10 分钟）</label>
+        <div class="hint" style="margin-top:-4px">两种都出完整成片，区别在画面：勾上=只保留解说覆盖的画面，其余剪掉，成片长度跟着解说走（20 分钟原片 → 约 3~10 分钟）；不勾=原片整长一秒不剪，解说与字幕叠在原位、配音偏长会自动加速——适合只加解说音轨、不动原片画面的用法。</div>
         <label class="chk"><input type="checkbox" id="npBgm"> 加背景音乐（解说时自动闪避）</label>
       </div>
       <div class="field" style="margin-top:8px">
@@ -721,6 +722,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=64"></script>
+<script src="desktop.js?v=65"></script>
 </body>
 </html>
