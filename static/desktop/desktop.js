@@ -3162,7 +3162,16 @@ function renderTtsInstalls(v){
     ['Qwen3-TTS · VoiceDesign', st.qwen3tts, '纯文字描述造音色，不用录参考音，离线运行', 'qwen3tts'],
     ['IndexTTS2', st.indextts2, '8 维情感 + 时长控制，自带示例音色', 'indextts2']
   ];
-  box.innerHTML = rows.map(r =>
+  // v1.4.84 引导行：先告诉用户「现在能不能跑、用的是谁」，再说缺什么
+  const _usable = st.qwen3tts || st.indextts2;
+  const _lead = _usable
+    ? ('✅ 现在就能配音：「自动」模式会用已装的 ' + (st.indextts2 ? 'IndexTTS2' : 'Qwen3-TTS')
+       + '，另一个装不装都不影响当前使用。')
+    : '两个配音模型都未装：到下方「模型中心」装一个即可（推荐 Qwen3-TTS，可一键装权重+运行环境）。';
+  box.innerHTML = '<div class="set-row"><span class="env-badge '
+      + (_usable ? 'ok' : 'bad') + '" style="flex:none">' + (_usable ? '可配音' : '待安装')
+      + '</span><span class="hint" style="flex:1">' + _lead + '</span></div>'
+    + rows.map(r =>
       '<div class="set-row"><span class="env-badge ' + (r[1] ? 'ok' : 'bad') + '">'
       + (r[1] ? '已装' : '未装') + '</span><span class="hint" style="flex:1">'
       + r[0] + ' · ' + r[2] + '</span>'
@@ -3215,13 +3224,45 @@ let _setupTimer = null;
 const TTS_ENGINES = [['auto','自动（IndexTTS2 克隆优先）'],
   ['qwen3tts','Qwen3 按文字描述造音色 → IndexTTS2 克隆（无需录音）'],
   ['indextts2','IndexTTS2（情感 / 时长可控）']];
+/* ── v1.4.84 引导随实际状态走 ── 主人实测抓的引导矛盾：IndexTTS2 未装时，
+   状态区写「未装」、下拉却写「自动（IndexTTS2 克隆优先）」——用户没法判断
+   现在会用谁、要不要装。三个纯函数把文案变成实际就绪状态的函数。 */
+function _autoEngineLabel(st){
+  st = st || {};
+  if (st.indextts2) return '自动（IndexTTS2 克隆优先）';
+  if (st.qwen3tts) return '自动（IndexTTS2 未装 · 当前用 Qwen3-TTS 配音）';
+  return '自动（配音模型未装 · 到模型中心一键安装）';
+}
+function _qwenEngineLabel(st){
+  st = st || {};
+  return st.indextts2
+    ? 'Qwen3 按文字描述造音色 → IndexTTS2 克隆（无需录音）'
+    : 'Qwen3-TTS · VoiceDesign（IndexTTS2 未装时由它直接配音）';
+}
+function _autoEngineHint(st){
+  st = st || {};
+  if (st.indextts2 && st.qwen3tts)
+    return '保持「自动」即可：优先 IndexTTS2 克隆音色（整片同一把嗓子），Qwen3-TTS 负责造参考音、并在克隆失败时兜底。试听只合成一句，不跑全片。';
+  if (st.qwen3tts)
+    return '现在就能跑：IndexTTS2 未装，「自动」会直接用 Qwen3-TTS 配音；到模型中心装好 IndexTTS2 后无需任何设置，自动恢复「克隆优先」。';
+  if (st.indextts2)
+    return 'Qwen3-TTS 未装：「自动」会用 IndexTTS2（自带示例音色）配音。';
+  return '两个配音模型都未装：到下方「模型中心」装 Qwen3-TTS（可一键装权重+运行环境）后即可配音。';
+}
 async function fillTtsSettings(){
   try {
     const v = await fetch('/api/tts/voices').then(r => r.json());
     const cfg = v.cfg || {};
-    $('setTtsEngine').innerHTML = TTS_ENGINES.map(e =>
-      '<option value="' + e[0] + '">' + e[1] + '</option>').join('');
+    const st2 = v.tts2 || {};
+    const _engines = [
+      ['auto', _autoEngineLabel(st2)],
+      ['qwen3tts', _qwenEngineLabel(st2)],
+      ['indextts2', 'IndexTTS2（情感 / 时长可控）']];
+    $('setTtsEngine').innerHTML = _engines.map(e =>
+      '<option value="' + e[0] + '">' + _esc(e[1]) + '</option>').join('');
     $('setTtsEngine').value = cfg.engine || 'auto';
+    const _engHint = $('ttsEngineHint');
+    if(_engHint) _engHint.textContent = _autoEngineHint(st2);
     $('setTtsVoice').innerHTML = (v.voices || []).map(n =>
       '<option value="' + _esc(n) + '">' + _esc(n) + '</option>').join('');
     $('setTtsVoice').value = cfg.voice || 'zh-CN-XiaoxiaoNeural';

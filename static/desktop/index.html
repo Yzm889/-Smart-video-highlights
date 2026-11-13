@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=63">
+<link rel="stylesheet" href="desktop.css?v=64">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -453,7 +453,7 @@
             <button class="mini-btn" id="btnCloneVoice"><svg class="ic"><use href="#i-mic"/></svg>克隆音色</button>
             <button class="mini-btn" id="btnTtsReset" title="重置配音引擎状态，下次合成重新选择最优引擎">重试引擎</button>
           </div>
-          <div class="hint">保持「自动」即可：优先 IndexTTS2 克隆音色（整片同一把嗓子），Qwen3-TTS VoiceDesign 负责造参考音、并在克隆失败时兜底。试听只合成一句，不跑全片。</div>
+          <div class="hint" id="ttsEngineHint">保持「自动」即可：优先 IndexTTS2 克隆音色（整片同一把嗓子），Qwen3-TTS VoiceDesign 负责造参考音、并在克隆失败时兜底。试听只合成一句，不跑全片。</div>
           <details class="set-more">
             <summary>精细调节（音色描述 / 音色 / 语速）</summary>
             <label>音色描述（新引擎的「嗓子」）</label>
@@ -721,6 +721,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=63"></script>
+<script src="desktop.js?v=64"></script>
 </body>
 </html>

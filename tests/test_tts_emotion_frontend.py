@@ -84,6 +84,9 @@ const state = {};
 const src = [
   lineOf("const EMO_SAMPLE_TEXT"),
   blockOf("function renderEmoPreview"),
+  blockOf("function _autoEngineLabel"),
+  blockOf("function _qwenEngineLabel"),
+  blockOf("function _autoEngineHint"),
   blockOf("async function fillTtsSettings"),
   blockOf("$('emoPreviewRow').addEventListener('click'"),
   blockOf("$('setTtsEmoAlpha').addEventListener('input'"),
