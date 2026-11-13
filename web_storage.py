@@ -70,9 +70,20 @@ _STORAGE_ALLOW = [
 ]
 
 
+def _data_base():
+    """数据目录基准（白名单 rel 的解析根）。
+
+    v1.4.80：数据已外置，基准从「程序目录 HERE」改为**数据根**。用
+    `dirname(OUTDIR)` 而不是直接读 `_WS.DATA_ROOT`：生产两者相等
+    （OUTDIR = DATA_ROOT/webui_output），而测试 patch 的是 `S.OUTDIR`——
+    从 OUTDIR 派生才能同时跟踪到测试的临时根，否则面板扫不到/删不掉。
+    """
+    import webui_server as _WS
+    return os.path.dirname(os.path.normpath(_WS.OUTDIR))
+
+
 def _storage_resolve_deletable(rel):
     """校验 rel 是否为可清理路径，返回绝对路径；否则 None（拒绝穿越/越权删除）。"""
-    import webui_server as _WS
     import re as _re
     if not rel:
         return None
@@ -81,8 +92,8 @@ def _storage_resolve_deletable(rel):
         return None
     for pat in _STORAGE_ALLOW:
         if _re.match(pat, rel):
-            full = os.path.normpath(os.path.join(_WS.HERE, rel))
-            base_abs = os.path.abspath(_WS.HERE)
+            full = os.path.normpath(os.path.join(_data_base(), rel))
+            base_abs = os.path.abspath(_data_base())
             if os.path.commonpath([base_abs, full]) == base_abs:
                 return full
             return None
@@ -174,7 +185,7 @@ def _storage_scan():
                    'items': [{'name': 'analysis_cache', 'rel': 'webui_workspace/analysis_cache',
                               'size': ac_size, 'mtime': int(os.path.getmtime(ac))}] if ac_size else []})
 
-    models_dir = os.path.join(_WS.HERE, 'models')
+    models_dir = os.path.join(_data_base(), 'models')
     if os.path.isdir(models_dir):
         msize = _storage_dir_size(models_dir)
         groups.append({'key': 'models', 'label': '模型权重（models/，删除需重新下载）',
@@ -193,7 +204,7 @@ def _storage_scan():
     reclaimable = sum(g['total'] for g in groups if g['tier'] == 'safe' and g['deletable'])
     total_all = sum(g['total'] for g in groups)
     try:
-        free = shutil.disk_usage(_WS.HERE).free
+        free = shutil.disk_usage(_data_base()).free
     except Exception:
         free = 0
     return {'ok': True, 'groups': groups, 'total_bytes': total_all,

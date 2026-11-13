@@ -19,6 +19,7 @@ import threading
 # 非 Windows 取不到该常量时为 0，无副作用。
 _NO_WIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # ---- 熔断 / 降权 / 引擎缓存 / 模型表（原 webui_server 全局，随引擎层迁入，webui 经 re-export 共享同一对象） ----
+import paths as _paths   # v1.4.80 数据目录外置
 HERE = os.path.dirname(os.path.abspath(__file__))
 _EDGE_RETRY = 3
 _EDGE_RETRY_SLEEP = 1.2
@@ -45,9 +46,13 @@ _COSYVOICE = {'model': None, 'loading': False, 'error': '', 'voice': '中文女'
 # 仍会逐句起子进程重载 9GB 模型（实测 ~100s/句），一次 edge 抖动就能把整条
 # 解说拖进百秒一句的慢坑。用户显式选 cosyvoice 不走这个守卫。
 _COSY_IN_FALLBACK_CHAIN = True
-COSYVOICE_REPO_DIR = os.path.join(HERE, 'CosyVoice')
-COSYVOICE_MODEL_DIR = os.path.join(HERE, 'models', 'cosyvoice', 'CosyVoice2-0.5B')
-COSYVOICE_VENV_PY = os.path.join(HERE, '.venv_cosyvoice', 'Scripts', 'python.exe')
+# v1.4.80 数据目录外置：cosyvoice 仓库/权重/venv 全部落数据根（打包态
+# %LOCALAPPDATA%\FrameCut，源码态=仓库根）。venv 内记绝对路径，迁移时不搬、
+# 由安装器重建（与 tts2/venv 同一策略）。
+_DATA_ROOT = _paths.data_root(HERE)
+COSYVOICE_REPO_DIR = os.path.join(_DATA_ROOT, 'CosyVoice')
+COSYVOICE_MODEL_DIR = os.path.join(_DATA_ROOT, 'models', 'cosyvoice', 'CosyVoice2-0.5B')
+COSYVOICE_VENV_PY = os.path.join(_DATA_ROOT, '.venv_cosyvoice', 'Scripts', 'python.exe')
 SHERPA_TTS_MODELS = {
     'melo-zh': {
         'name': 'vits-melo-tts-zh_en',
@@ -270,7 +275,7 @@ def edge_tts_reset():
 
 def _chattts_venv_python():
     """返回 ChatTTS venv 的 Python 路径（Python 3.11 + CUDA torch），不存在返回 None。"""
-    p = os.path.join(HERE, '.venv_tts', 'Scripts', 'python.exe')
+    p = os.path.join(_paths.data_root(HERE), '.venv_tts', 'Scripts', 'python.exe')
     return p if os.path.exists(p) else None
 
 def chattts_available():
@@ -386,7 +391,7 @@ def _find_cosyvoice_python():
         r'C:\Python312\python.exe',
     ]
     # 也从ChatTTS venv反查
-    chattts_venv = os.path.join(HERE, '.venv_tts', 'Scripts', 'python.exe')
+    chattts_venv = os.path.join(_paths.data_root(HERE), '.venv_tts', 'Scripts', 'python.exe')
     if os.path.exists(chattts_venv):
         try:
             r = subprocess.run([chattts_venv, '-c', 'import sys; print(sys.base_prefix)'],
@@ -594,7 +599,7 @@ def _cosy_serve_synth(txt, out_path, ref_wav, prompt_text='', timeout=300):
 def _cosyvoice_ref_wav():
     """按配置音色名找参考音频（zero-shot 克隆的音色来源）；找不到返回 None。"""
     _cv = tts_local_cfg().get('cosy_voice') or _COSYVOICE['voice']
-    _ref_dir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+    _ref_dir = os.path.join(_paths.data_root(HERE), 'models', 'cosyvoice', 'voices')
     for cand in (_cv + '.wav', _cv + '.mp3', '中文女.wav', '中文女.mp3'):
         p = os.path.join(_ref_dir, cand)
         if os.path.exists(p):
@@ -632,9 +637,9 @@ def _cosyvoice_prompt_text(ref_wav):
         # 转出「這如我輕輕地來…雲菜」级别的乱码稿），large-v3 同一段转得干净准确。
         # 优先本机 large-v3（ASR 同款、CPU int8，短参考音加载+识别约 20s、
         # 结果缓存为侧车文件只算一次），机器上没有再退 tiny。
-        wdir = os.path.join(HERE, 'models', 'whisper', 'large-v3')
+        wdir = os.path.join(_paths.data_root(HERE), 'models', 'whisper', 'large-v3')
         if not os.path.isdir(wdir):
-            wdir = os.path.join(HERE, 'models', 'whisper', 'tiny')
+            wdir = os.path.join(_paths.data_root(HERE), 'models', 'whisper', 'tiny')
         if not os.path.isdir(wdir):
             return ''
         if _COSY_ASR['model'] is None or _COSY_ASR.get('dir') != wdir:
@@ -1258,8 +1263,9 @@ def local_tts_speak(text, out_path):
     return False, None, out_path
 
 def tts_models_dir():
-    """离线配音模型目录：models/tts（与 models/whisper 并列，方便用户自行查看/替换）。"""
-    return os.path.join(HERE, 'models', 'tts')
+    """离线配音模型目录：数据根 models/tts（v1.4.80 外置，打包态落
+    %LOCALAPPDATA%\\FrameCut；与 models/whisper 并列，方便用户查看/替换）。"""
+    return os.path.join(_paths.data_root(HERE), 'models', 'tts')
 
 def _sherpa_ready(key):
     """指定模型是否已下载到 models/tts/<name>/（判据：onnx 权重 + tokens.txt）。"""

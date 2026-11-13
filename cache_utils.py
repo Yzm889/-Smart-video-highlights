@@ -5,7 +5,11 @@ import os, json, time, shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-WORKDIR = os.path.join(HERE, 'webui_workspace')
+# v1.4.80 数据目录外置：工作区（上传缓存/分析缓存/抽帧缓存）落到数据根下。
+# 打包态 = %LOCALAPPDATA%\FrameCut\webui_workspace，源码态 = HERE/webui_workspace
+# （与改动前逐字一致）。见 paths.py。
+import paths as _paths
+WORKDIR = os.path.join(_paths.data_root(HERE), 'webui_workspace')
 
 ANALYSIS_VERSION = 1        # 分析逻辑变更时 +1，旧缓存自动全部失效
 

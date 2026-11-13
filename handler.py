@@ -2651,6 +2651,19 @@ def _autoclean_on_boot(delay=8.0, log=None):
 
 
 def start_server(port=8765, open_browser=True):
+    # v1.4.80 数据目录外置：打包态首启时，若用户目录下还没有数据、而程序目录
+    # 旁留着旧数据（老版本 _internal\webui_output 等），自动搬过去——此后升级
+    # 只需换 exe。源码态是空操作（数据根=HERE）。必须在建目录之前跑，否则
+    # makedirs 会先造出空数据根目录，导致「需要迁移」的判断失真。
+    try:
+        import paths as _paths
+        _mv, _nt = _paths.auto_migrate_if_needed(_w.HERE)
+        if _mv:
+            print('[数据迁移] 已把旧数据搬到用户目录：%s' % '、'.join(_mv))
+        for _n in _nt:
+            print('[数据迁移] %s' % _n)
+    except Exception as _e:
+        print('[数据迁移] 跳过（不阻断启动）：%s' % str(_e)[:200])
     os.makedirs(_w.WORKDIR, exist_ok=True)
     os.makedirs(_w.OUTDIR, exist_ok=True)
     _w.ensure_default_images()

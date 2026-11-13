@@ -185,28 +185,39 @@ class DesktopApi:
         return {'path': res[0]}
 
     def has_config(self):
-        """新包是否已有配置（首次启动的旧版本导入横幅据此显示）。"""
+        """新包是否已有配置（首次启动的旧版本导入横幅据此显示）。
+
+        v1.4.80：配置已随数据目录外置，判据改为**数据根**（打包态
+        %LOCALAPPDATA%\\FrameCut），不再是程序目录。"""
         try:
             import webui_server
-            return {'ok': True, 'has': os.path.isfile(os.path.join(webui_server.HERE, 'ai_config.json'))}
+            return {'ok': True,
+                    'has': os.path.isfile(os.path.join(webui_server.DATA_ROOT,
+                                                       'ai_config.json'))}
         except Exception as e:
             return {'ok': False, 'error': str(e)[:120]}
 
     def migrate_from(self, old_root):
         """从旧版本安装目录导入：配置 / 历史 / 成片 / 工作区 / 素材与音乐库，
         models 按情况重建 junction（旧侧是指向别处的 junction）或整体移动（实体目录）。
-        在 EXE 里由「升级导入横幅」触发，运行于服务已就绪之后。返回摘要 dict。"""
+        在 EXE 里由「升级导入横幅」触发，运行于服务已就绪之后。返回摘要 dict。
+
+        v1.4.80：目标从「程序目录」改为**数据根**（打包态 %LOCALAPPDATA%\\FrameCut），
+        与数据外置一致——迁进来的数据此后跟着用户目录走，换 exe 不再丢。"""
         import shutil, subprocess as _sp, json
         import webui_server
-        new_here = webui_server.HERE
+        new_here = webui_server.DATA_ROOT
         old_root = str(old_root or '').strip()
         old_int = os.path.join(old_root, '_internal')
         if not os.path.isdir(old_int):
             if os.path.basename(os.path.normpath(old_root)) == '_internal' and os.path.isdir(old_root):
                 old_int = old_root
+            elif os.path.isfile(os.path.join(old_root, 'FrameCut.exe')):
+                old_int = old_root      # 用户直接选了外置后的新式目录（数据就在这层）
             else:
                 return {'ok': False, 'error': '所选目录下没有 _internal——请选择旧版 FrameCut 安装目录（含 FrameCut.exe 的那层）'}
         moved, notes = [], []
+        os.makedirs(new_here, exist_ok=True)
         # 1) 配置覆盖导入；历史**合并**（2026-11-07 教训：测试时覆盖过真实 history.json
         #    导致索引全丢——历史索引按 file 键去重合并，两侧成片都在时一条不丢）
         src_cfg = os.path.join(old_int, 'ai_config.json')
@@ -261,29 +272,37 @@ class DesktopApi:
                 shutil.copytree(src, dst)
                 moved.append(dn)
         # 3) models：junction → 重建；实体目录 → 移动/复制（大，同卷改名瞬间完成）
+        # v1.4.80 修已知缺口：旧逻辑「新侧 models 已存在就整段跳过」——用户先点过
+        # 一次模型下载就会生成 dst_models，此后 models 永不再迁（GB 级权重白丢）。
+        # 改为：新侧不存在→移动/junction（快）；已存在→按文件合并（只补缺不覆盖）。
         src_models = os.path.join(old_int, 'models')
         dst_models = os.path.join(new_here, 'models')
-        if os.path.isdir(src_models) and not os.path.exists(dst_models):
-            target = None
-            try:
-                target = os.readlink(src_models)   # junction 可读；实体目录抛 OSError
-            except OSError:
-                target = None
-            if target:
-                _sp.run(['cmd', '/c', 'mklink', '/J', dst_models, target],
-                        capture_output=True, text=True)
-                if os.path.isdir(dst_models):
-                    moved.append('models（junction → %s）' % target)
-                else:
-                    notes.append('models junction 重建失败，请手动 mklink /J')
+        if os.path.isdir(src_models):
+            if os.path.exists(dst_models):
+                cnt = _merge_tree(src_models, dst_models)
+                if cnt:
+                    moved.append('models（并入 %d 项，未覆盖同名）' % cnt)
             else:
+                target = None
                 try:
-                    os.rename(src_models, dst_models)
-                    moved.append('models（整体移动）')
-                    notes.append('旧版目录的 models 已移至新版；旧版再打开需重新下载模型')
+                    target = os.readlink(src_models)   # junction 可读；实体目录抛 OSError
                 except OSError:
-                    shutil.copytree(src_models, dst_models)
-                    moved.append('models（跨盘复制，GB 级需等待）')
+                    target = None
+                if target:
+                    _sp.run(['cmd', '/c', 'mklink', '/J', dst_models, target],
+                            capture_output=True, text=True)
+                    if os.path.isdir(dst_models):
+                        moved.append('models（junction → %s）' % target)
+                    else:
+                        notes.append('models junction 重建失败，请手动 mklink /J')
+                else:
+                    try:
+                        os.rename(src_models, dst_models)
+                        moved.append('models（整体移动）')
+                        notes.append('旧版目录的 models 已移至新版；旧版再打开需重新下载模型')
+                    except OSError:
+                        shutil.copytree(src_models, dst_models)
+                        moved.append('models（跨盘复制，GB 级需等待）')
         return {'ok': True, 'moved': moved, 'notes': notes}
 
 

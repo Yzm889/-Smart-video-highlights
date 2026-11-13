@@ -129,8 +129,11 @@ if not logging.getLogger('framecut').handlers:
 #                       任务并发闸门与排队（_max_concurrent_tasks() 决定），
 #                       全部经 _TASK_QUEUE_LOCK 或信号量本体保护，勿裸改。
 #   目录常量（conftest 测试隔离的改写面，改名=测试写真实目录）
-#     OUTDIR/PROGRESS_FILE/HISTORY_PATH/UPLOAD_DIR/MATERIAL_DIR/STATIC_DIR/
+#     DATA_ROOT/PROGRESS_FILE/HISTORY_PATH/UPLOAD_DIR/MATERIAL_DIR/STATIC_DIR/
 #     MUSIC_DIR/BILI_DIR/WORKDIR(cache_utils)
+#     v1.4.80：DATA_ROOT 是数据目录根（打包态=%LOCALAPPDATA%\FrameCut，
+#     源码态=HERE）；OUTDIR 等全部经它派生。STATIC_DIR/FONT_DIR 仍是 HERE 派生的
+#     只读资源，不随数据根移动。
 #   后台下载/安装状态（后台线程写、HTTP 状态页读；单键原子，无锁）
 #     WHISPER_DL/VLM_PULL/LOCAL_PULL/BILI_PULL/TTS_SETUP
 #   字体（_FONT_LOCK 保护 _FONT_CACHE / _font_cache_by_size）
@@ -145,7 +148,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DESKTOP_TOKEN = ''     # 桌面版启动器生成的会话令牌：本地路径形态的请求必须携带
 PLANS = {}             # runid -> 人机协同「规划方案」（分析结果，等待用户确认/微调后再渲染）
 import threading as _threading
-OUTDIR = os.path.join(HERE, 'webui_output')
+# v1.4.80 数据目录外置：运行时数据（成片/素材/音乐/历史/工作区/配置/模型）的根。
+# 打包态 = %LOCALAPPDATA%\FrameCut（与既有 tts2\ 平级），源码态 = HERE（与改动前
+# 逐字一致）。详见 paths.py。**必须在所有数据目录常量之前算出来**——下面
+# _ACTIVE_TASK_FILE / PROGRESS_FILE 等在 import 期就从 OUTDIR 派生。
+import paths as _paths
+DATA_ROOT = _paths.data_root(HERE)
+OUTDIR = os.path.join(DATA_ROOT, 'webui_output')
 import bili_downloader  # noqa: E402  (B站搜索/下载；公共符号已回注宿主)
 import beat_analysis  # noqa: E402  (分镜/卡点分析引擎；公共符号已回注宿主)
 import movie_narrator  # noqa: E402  (电影解说模块；公共符号已回注宿主)
@@ -450,7 +459,7 @@ from font_setup import (  # noqa: F401,E402
 
 
 FONT_PATH = ''   # 由 _resolve_cjk_font() 惰性填充；保留名字仅为向后兼容
-HISTORY_PATH = os.path.join(HERE, 'history.json')
+HISTORY_PATH = os.path.join(DATA_ROOT, 'history.json')
 STATIC_DIR = os.path.join(HERE, 'static')
 _LAST_TTS_ERR = ''
 
@@ -2275,7 +2284,7 @@ def _cover_render(video_path, ts, title, sub, style, out_path, w_cap=1920):
 # 上传（小文件 base64 / 大文件复用分片协议）、从成片目录存入（如 B 站下载的视频）、
 # 删除；任务请求里 video/item 传 {name, mlib} 即可直接使用库内素材（copy 进 run_dir）。
 # ---------------------------------------------------------------------------
-MATERIAL_DIR = os.path.join(HERE, 'material_library')
+MATERIAL_DIR = os.path.join(DATA_ROOT, 'material_library')
 _MATERIAL_META_FILE = os.path.join(MATERIAL_DIR, '.metadata.json')
 
 
@@ -4267,7 +4276,7 @@ def plan_beat_durations(item_durs, beats, fade, step=1):
 # 内置免费踩点音乐曲库（Incompetech / CC.BY，可商用，署名即可）
 # bpm/duration 为估算值，音频来自逐轨真实下载。
 # ---------------------------------------------------------------------------
-MUSIC_DIR = os.path.join(HERE, 'music_library')
+MUSIC_DIR = os.path.join(DATA_ROOT, 'music_library')
 
 MUSIC_CATALOG = [
     {'id': 'rising-game',    'title': 'Rising Game',      'genre': '电子/律动', 'bpm': 128, 'license': 'CC.BY 4.0', 'attri': 'Kevin MacLeod (incompetech.com)', 'licenseUrl': 'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Rising%20Game.mp3'},
@@ -4714,7 +4723,7 @@ def cosyvoice_install_async():
                 TTS_SETUP.update(ok=False, pct=3, msg='❌ 未找到Python 3.11/3.12。请先安装Python 3.11（推荐uv或官网）', running=False)
                 return
             TTS_SETUP.update(pct=5, msg='创建 Python 虚拟环境（基于 %s）…' % os.path.basename(os.path.dirname(base_py)))
-            venv_dir = os.path.join(HERE, '.venv_cosyvoice')
+            venv_dir = os.path.join(_paths.data_root(HERE), '.venv_cosyvoice')
             # 检查已有venv的Python版本，如果是3.13+（不兼容PyTorch）则删除重建
             if os.path.exists(COSYVOICE_VENV_PY):
                 try:
@@ -4892,7 +4901,7 @@ def cosyvoice_install_async():
                 _dl_hb = _th.Thread(target=_dl_heartbeat, args=(_stop_dl, 65), daemon=True)
                 _dl_hb.start()
                 TTS_SETUP.update(pct=65, msg='下载 CosyVoice2-0.5B 模型（约9GB，国内镜像，需10-20分钟）…')
-                dl_script = os.path.join(HERE, '_cosyvoice_dl.py')
+                dl_script = os.path.join(_paths.data_root(HERE), '_cosyvoice_dl.py')
                 with open(dl_script, 'w', encoding='utf-8') as f:
                     f.write('''from modelscope import snapshot_download
 snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
@@ -4915,7 +4924,7 @@ snapshot_download("iic/CosyVoice2-0.5B", local_dir=r"%s")
             # 安装链原本没人负责这一步——装完一开口就报「参考音频不存在，请重新安装」，
             # 而重装并不会补上它（2026-11-06 实测缺口）。
             try:
-                _vdir = os.path.join(HERE, 'models', 'cosyvoice', 'voices')
+                _vdir = os.path.join(DATA_ROOT, 'models', 'cosyvoice', 'voices')
                 os.makedirs(_vdir, exist_ok=True)
                 _default_ref = os.path.join(_vdir, '中文女.wav')
                 if not os.path.exists(_default_ref):
@@ -5131,7 +5140,7 @@ def tts_install_chattts_async():
 
     def _run():
         try:
-            venv_py = os.path.join(HERE, '.venv_tts', 'Scripts', 'python.exe')
+            venv_py = os.path.join(DATA_ROOT, '.venv_tts', 'Scripts', 'python.exe')
             if not os.path.exists(venv_py):
                 TTS_SETUP.update(pct=10, msg='创建 Python 3.11 虚拟环境…')
                 subprocess.run(['uv', 'venv', '--python', '3.11', '.venv_tts'],

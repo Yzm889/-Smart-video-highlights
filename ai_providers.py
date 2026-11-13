@@ -6,7 +6,12 @@ from cache_utils import HERE, WORKDIR
 from ffmpeg_utils import AbortError, PROGRESS, _TLS, ffmpeg_run, probe_duration, _NO_WIN
 
 # 本来在 webui 模块级、仅供本模块使用的常量（随迁移）；webui 侧通过 re-export 保持旧命名空间
-AI_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_config.json')
+# v1.4.80 数据目录外置：配置落到数据根（打包态=%LOCALAPPDATA%\FrameCut，
+# 源码态=仓库根，与改动前一致）。conftest「以 webui 入口为事实来源」的 patch
+# 语义不变——测试仍同时改写本模块与 webui_server 两份绑定。
+import paths as _paths
+AI_CONFIG_PATH = os.path.join(
+    _paths.data_root(os.path.dirname(os.path.abspath(__file__))), 'ai_config.json')
 _WHISPER_MODELS = {}
 
 _WHISPER_KNOWN = {
@@ -1746,8 +1751,9 @@ def whisper_language():
     return lang
 
 def whisper_models_dir():
-    """faster-whisper 模型权重统一缓存到项目 models/whisper，方便引导用户管理/查看。"""
-    return os.path.join(HERE, 'models', 'whisper')
+    """faster-whisper 模型权重缓存到数据根 models/whisper（v1.4.80 外置：
+    打包态落 %LOCALAPPDATA%\\FrameCut，升级换 exe 不再重下几 GB 权重）。"""
+    return os.path.join(_paths.data_root(HERE), 'models', 'whisper')
 
 refresh_whisper_models()
 
