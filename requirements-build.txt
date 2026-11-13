@@ -1,9 +1,19 @@
-# 构建依赖锁定（release-windows 专用）：本组版本 = 2026-11-13 CI 实测可用组合
-# （Release v1.4.75 的 EXE 由这组版本构建，真机启动验证通过）。
-# 升级任何一行前必须：改版本 → 重新打 tag → 真机验证窗口能开（pythonnet 的
-# netfx 加载对版本/环境敏感，v1.4.75-b 有踩坑记录，见 AI_CHANGELOG）。
+# 构建依赖锁定（release-windows 专用）：本组版本 = 2026-11-13 实测与 CI 的
+# Python 3.11 兼容（release.yml 用 setup-python 3.11）。
+#
+# ⚠️ 版本纪律（踩过的坑，别重犯）：
+#   v1.4.75 首次锁定时把 numpy 钉成 2.5.4 —— 它 requires_python >=3.12，而 CI
+#   是 3.11 → v1.4.80 发版时 release-windows 直接失败在安装步骤（pip 报
+#   "No matching distribution found for numpy==2.5.4"）。**加/改任何一行前，
+#   必须确认新版本在 3.11 下可装**（pip install --dry-run 或查 PyPI
+#   requires_python）；改完必须重新打 tag + 真机验证窗口能开（pythonnet 的
+#   netfx 加载对版本/环境敏感，v1.4.75-b 有踩坑记录，见 AI_CHANGELOG）。
+#
+# 本清单 = requirements.txt 去掉 torch/torchaudio（桌面 EXE 不打包 torch：
+# CosyVoice/ChatTTS/IndexTTS2/Qwen3-TTS 都走各自的独立 venv 子进程）。
+# 与 requirements.txt 的差集只剩 torch/torchaudio，是刻意的。
 # CI 的 pytest 回归（ci.yml）不受本文件影响，仍走 requirements.txt + requirements-dev.txt。
-numpy==2.5.4
+numpy==2.4.6
 Pillow==13.0.0
 psutil==7.2.2
 soundfile==0.14.0
@@ -14,5 +24,7 @@ sherpa-onnx==2.0.1
 tokenizers==0.23.3
 huggingface-hub==2.4.0
 requests==2.34.2
+librosa==0.11.0
+yt-dlp==2025.10.22
 pywebview==6.2.1
 pyinstaller==6.22.3
