@@ -203,6 +203,33 @@ def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None)
         added += need - have
         cursor = cur
 
+    # —— v1.4.85 超长段裁剪：画面段远长于配音时不许 3~4 倍快进 ——
+    # 画面去适配声音的压缩没有上限：30.6s 的整场戏被压进 7.9s（3.85 倍快进），
+    # 观感就是「解说词对不上画面」（2026-11-14 主人实测），且直接违反主人红线
+    # 「不定格、不加速」（v1.4.44 拍板）。配音比段短得多时，把组内画面收缩到
+    # ±15% 微变速窗口内（从组锚点保留场景开头，尾巴整段裁掉）——与已接受的
+    # 微变速机制一致。念完保证不受影响：收缩后的组总长 ≥ 配音时长。
+    # 只对「没拉伸过」的组生效：拉伸组（have<need）已经按 need 对齐。
+    _CAP = 1.15
+    trimmed = 0
+    for g, idxs in plan:
+        v = float((voice_durs or {}).get(g) or 0.0)
+        if v <= 0:
+            continue
+        need = v + tail
+        have = sum(out[j][1] - out[j][0] for j in idxs)
+        cap_len = max(v * _CAP, need)     # 极短句保底气口：不小于 v+tail
+        if have <= cap_len + 1e-6:
+            continue
+        k = cap_len / have
+        base = out[idxs[0]][0]
+        cur = base
+        for j in idxs:
+            ln = (out[j][1] - out[j][0]) * k
+            out[j] = [cur, cur + ln]
+            cur += ln
+        trimmed += 1
+
     # —— 第二遍（v1.4.44）：片尾装不下 → 紧凑回排/顺排，绝不制造重叠 ——
     overflow = 0.0
     if limit and plan and out[plan[-1][1][-1]][1] > limit + 1e-6:
@@ -227,7 +254,8 @@ def _fit_spans_to_voice(spans, voice_durs, src_dur=None, tail=0.35, groups=None)
                     out[j] = [cur, cur + seg_ln]
                     cur += seg_ln
     return [(round(a, 3), round(b, 3)) for a, b in out], {
-        'grew': grew, 'added': round(added, 2), 'overflow': round(overflow, 2)}
+        'grew': grew, 'added': round(added, 2), 'overflow': round(overflow, 2),
+        'trimmed': trimmed}
 
 
 def attach_importance(params, progress, segs):

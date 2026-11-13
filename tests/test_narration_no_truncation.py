@@ -40,10 +40,25 @@ def test_short_span_grows_to_fit_voice():
 
 
 def test_long_enough_span_untouched():
-    """画面本来就有 9 秒、配音 5 秒 → 留白已经够，不许再拉长。"""
-    got, st = V._fit_spans_to_voice([(10.0, 19.0)], {0: 5.0}, src_dur=100.0, tail=0.5)
-    assert got[0] == (10.0, 19.0)
-    assert st['grew'] == 0
+    """画面 5.5 秒、配音 5 秒（1.1 倍，在 ±15% 微变速窗内）→ 留白适度，不动。"""
+    got, st = V._fit_spans_to_voice([(10.0, 15.5)], {0: 5.0}, src_dur=100.0, tail=0.5)
+    assert got[0] == (10.0, 15.5)
+    assert st['grew'] == 0 and st.get('trimmed', 0) == 0
+
+
+def test_overlong_span_trimmed_to_microspeed_window():
+    """v1.4.85：画面远长于配音（30.6s 段配 7.9s 配音=3.85 倍快进）→ 裁到
+    ±15% 微变速窗口（从组锚点保留场景开头，尾巴裁掉），绝不快进。
+
+    主人红线（v1.4.44 拍板）：不定格、不加速。渲染端「画面去适配声音」的
+    压缩此前没有上限，长段被 3~4 倍快进塞进短配音里，观感是解说词对不上画面。
+    念完保证不受影响：裁完的组总长仍 ≥ 配音时长。"""
+    got, st = V._fit_spans_to_voice([(84.5, 115.1)], {0: 7.9}, src_dur=1200.0, tail=0.5)
+    ln = got[0][1] - got[0][0]
+    assert ln <= 7.9 * 1.15 + 1e-6, '裁后段长 %.2f 超出微变速窗' % ln
+    assert got[0][0] == 84.5, '必须从组锚点（场景开头）保留'
+    assert ln >= 7.9, '念完保证：裁完仍要装得下配音'
+    assert st.get('trimmed', 0) == 1
 
 
 def test_spans_stay_ordered_and_disjoint():
