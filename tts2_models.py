@@ -409,6 +409,15 @@ def _install_qwen_env():
             return '%s失败：%s' % (what, err or '超时')
         return '%s失败：%s' % (what, err or '未知原因')
 
+    # 【v1.4.82 修，事故：2026-11-14 配音 48/48 全灭】环境已就绪 → 立即返回，
+    # 绝不往下走。本函数此前的逻辑只看「venv 的 Python 版本号是 3.13」就
+    # rmtree 重建——主人原来的 3.13 venv（torch+全套依赖）本来能用，被误删；
+    # 重建后依赖步骤中断，留下只有 torch 的残缺 venv，worker 起不来。
+    # 教训：「看起来版本不对」≠「环境坏了」——删任何环境前必须先证明它是坏的
+    # （这里用与末步自检同一把尺子：qwen_env_ready = 解释器+torch+qwen_tts 三件套）。
+    if qwen_env_ready():
+        return True, '✅ 运行环境已就绪，无需安装'
+
     # ① 找 Python 3.11/3.12（PyTorch cu121 不支持 3.13+）
     with _LOCK:
         _STATE.update(pct=3, msg='查找 Python 3.11 / 3.12…')

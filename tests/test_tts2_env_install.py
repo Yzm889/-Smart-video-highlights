@@ -372,3 +372,26 @@ console.log(JSON.stringify(out));
 };
 main();
 '''
+
+
+def test_install_never_touches_ready_env(monkeypatch, tmp_path):
+    """环境已就绪 → 直接返回，绝不跑任何安装步骤。
+
+    2026-11-14 事故钉：安装器只看「venv 是 3.13」就 rmtree 重建了主人
+    能用的环境（torch+全套依赖），重建后依赖中断 → 配音 48/48 全灭。
+    钦定契约：env_ready=True 时一步都不许跑（venv/pip 全跳过）。"""
+    _stub_venv_paths(monkeypatch, tmp_path)
+    monkeypatch.setitem(M.CATALOG['qwen3tts'], 'weights_ok', lambda: True)
+    monkeypatch.setattr(M, 'qwen_env_ready', lambda: True)
+    touched = []
+
+    def fake_step(cmd, pct0, pct1, est, label, timeout):
+        touched.append(label)
+        return 0, ''
+    monkeypatch.setattr(M, '_run_step', fake_step)
+    ok, _msg = M.install_async('qwen3tts')
+    assert ok is True
+    _wait_done()
+    assert M._STATE['ok'] is True
+    assert '已就绪' in M._STATE['msg'], M._STATE['msg']
+    assert touched == [], '环境就绪时任何安装步骤都不许跑: %s' % touched
