@@ -358,6 +358,57 @@ def _calc_window_geometry(screen_w, screen_h, screen_x=0, screen_y=0):
     return width, height, x, y
 
 
+def _fix_webview2_runtime():
+    """v1.4.81：WebView2 目录自愈——注册表版本与本机实际目录不符时自动纠正。
+
+    【为什么需要】2026-11-13 真机实测：注册表 `EdgeUpdate\\Clients\\{F3017226…}` 的
+    `pv` 写 156.0.4314.50，但 Application 目录下只有 157.0.4341.42（156 已被清掉）。
+    WebView2 加载器按注册表找 156 → 「Couldn't find a compatible Webview2 Runtime」→
+    窗口起不来（**但服务线程照常跑、8765 照样监听，所以看起来像"启动成功"**）。
+    这类错配常由清理软件/更新中断造成，改注册表要管理员权限、用户不一定给。
+
+    【修法】pywebview 支持 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 环境变量直接指定
+    运行时目录（已实测能绕过注册表错配让窗口正常起）。这里在**当前进程内**探测
+    Application 下实际存在的最高版本目录并设置该变量——不改系统、不要权限。
+    取不到目录（WebView2 真没装）就什么都不做，让 pywebview 走它自己的错误路径。
+    """
+    if os.environ.get('WEBVIEW2_BROWSER_EXECUTABLE_FOLDER'):
+        return ''                     # 用户/上层已指定，尊重
+    roots = [
+        os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+                     'Microsoft', 'EdgeWebView', 'Application'),
+        os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
+                     'Microsoft', 'EdgeWebView', 'Application'),
+    ]
+    best, best_key = '', None
+    for root in roots:
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for n in names:
+            # 只认「纯数字点分」版本目录，且必须真有 msedgewebview2.exe
+            parts = n.split('.')
+            if len(parts) < 3 or not all(p.isdigit() for p in parts[:3]):
+                continue
+            exe = os.path.join(root, n, 'msedgewebview2.exe')
+            if not os.path.isfile(exe):
+                continue
+            try:
+                key = tuple(int(p) for p in parts[:4])
+            except ValueError:
+                continue
+            if best_key is None or key > best_key:
+                best, best_key = os.path.join(root, n), key
+    if best:
+        os.environ['WEBVIEW2_BROWSER_EXECUTABLE_FOLDER'] = best
+        print('[WebView2] 使用运行时目录：%s' % best, flush=True)
+    else:
+        # 找不到也如实说（排障时需要知道探测扫了哪些根、有没有目录）
+        print('[WebView2] 未找到可用运行时（搜索根：%s）' % ' | '.join(roots), flush=True)
+    return best
+
+
 def _run_desktop_window(url):
     """原生桌面窗口（pywebview，Windows 用 Edge WebView2 渲染）。
     关闭窗口 = 退出程序。返回 True=正常走完；False=环境不支持，调用方回退。"""
@@ -366,6 +417,8 @@ def _run_desktop_window(url):
     except Exception as e:
         print('pywebview 不可用（%s），回退浏览器。' % e)
         return False
+    # v1.4.81：WebView2 运行时目录已在 main() 入口统一设好（覆盖所有启动路径），
+    # 此处不再重复调用。
     # 【曾犯的错】这里曾写死网页版根地址 '/'——EXE 打开的是网页版而非桌面 UI
     # （主人实测抓到）。必须加载调用方传入的桌面 UI 地址。
     # 【必须挂 js_api】DesktopApi 从 1c2ed6b 引入那天起就只定义了类、从未挂到窗口，
@@ -407,6 +460,14 @@ def _run_desktop_window(url):
 def main():
     if '--selftest' in sys.argv:
         _selftest()
+    # 【v1.4.81】WebView2 运行时目录统一在入口设置，覆盖所有启动路径（含浏览器回退）。
+    # os.environ 在进程内对 ucrtbase 的 getenv 立即生效，无需外部预先 export。
+    # 注意：pythonnet 的 CLR 加载失败与本变量无关，其根因见 AI_CHANGELOG v1.4.80-b
+    # （打包依赖 librosa 拖入 numba/llvmlite 原生 DLL、CI 3.11 收集不全）。
+    try:
+        _fix_webview2_runtime()
+    except Exception as _e:
+        print('[WebView2] 运行时探测跳过：%s' % str(_e)[:120], flush=True)
     import webui_server as S   # 打包入口：导入即初始化全部引擎层
     S.set_desktop_token(_TOKEN)   # 本地路径直连的会话凭证（网页模式无此令牌）
 
