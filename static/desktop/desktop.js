@@ -2500,19 +2500,26 @@ $('btnWhisperDl').addEventListener('click', async () => {
     const out = await r.json();
     if(!out.ok && !/开始|已存在/.test(out.message || out.error || '')) throw new Error(out.error || out.message || '失败');
     stEl.textContent = out.message || '已开始下载';
+    // 点击即亮进度条，不等第一次轮询（后端状态在线程里才置位，有首帧 idle 竞态）
+    _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', true, 0);
+    let ticks = 0;
     pollRun(model, {
       url: '/api/whisper/status', interval: 2000,
       isError: () => false,                       // 状态接口没有 error 语义
+      // 【修】/api/whisper/status 返回扁平字段；以前读 s2.download || {} 恒为空对象，
+      // 于是进度条被藏、文案被清空、isDone 首帧即真、onDone 也不刷新下拉。
       onTick: s2 => {
-        const d = s2.download || {};
-        _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta', d.downloading, d.download_pct, d.dl_mb_done, d.dl_mb_total, d.dl_speed);
-        stEl.textContent = d.downloading ? ('下载中 ' + (d.download_pct || 0) + '%')
-          : (d.download_ok ? '✅ ' + (d.download_msg || '完成') : (d.download_msg || ''));
+        _pullBar('whisperPullWrap', 'whisperPullFill', 'whisperPullMeta',
+                 s2.downloading, s2.download_pct, s2.dl_mb_done, s2.dl_mb_total, s2.dl_speed);
+        stEl.textContent = s2.downloading ? ('下载中 ' + (s2.download_pct || 0) + '%')
+          : (s2.download_ok === true ? '✅ ' + (s2.download_msg || '完成')
+             : (s2.download_ok === false ? '❌ ' + (s2.download_msg || '失败')
+                : (s2.download_msg || '准备中…')));
       },
-      isDone: s2 => !((s2.download || {}).downloading),
+      // 至少轮询 2 次才允许结束，挡住首帧 idle 竞态
+      isDone: s2 => (++ticks >= 2 && !s2.downloading),
       onDone: async s2 => {
-        const d = s2.download || {};
-        if(!d.download_ok) return;
+        if(s2.download_ok !== true) return;
         await renderWhisperOptions();
         // 刚装完的模型只认英文：立刻提示，别等用户剪完一条片才发现台词全是英文
         if(_wspEnOnly[model]){
@@ -2699,11 +2706,24 @@ function _renderTts2ModelCards(S){
 }
 function _pollTts2Model(){
   if(_tts2DlHandle) _tts2DlHandle.stop();
+  let ticks = 0;
   _tts2DlHandle = pollRun('tts2dl', {
     url: '/api/tts2/model/status', interval: 2000,
     isError: () => false,
-    isDone: p => !p.running,
-    onTick: S => _renderTts2ModelCards(S),
+    // 至少轮询 2 次才允许结束：首帧后端状态可能还是 idle，否则进度条一闪而过
+    isDone: p => (++ticks >= 2 && !p.running),
+    onTick: S => {
+      _renderTts2ModelCards(S);
+      // 前两帧别把刚点亮的进度条又藏回去
+      if(ticks < 2){
+        const bw = $('tts2PullWrap');
+        if(bw && bw.style.display === 'none'){
+          bw.style.display = '';
+          $('tts2PullFill').style.width = '0%';
+          $('tts2PullMeta').textContent = '正在启动…';
+        }
+      }
+    },
     onDone: async S => {
       _tts2DlHandle = null;
       if(S.ok === true){
@@ -2739,6 +2759,13 @@ $('secTts2Models').addEventListener('click', async ev => {
     body: JSON.stringify({engine: eng})}).then(x => x.json()).catch(() => null);
   if(r && r.ok){
     toast(r.message || '已开始', 'ok');
+    // 点击即亮进度条，别让用户只看到一句「开始下载」却不知道有没有在跑
+    const bw = $('tts2PullWrap');
+    if(bw){
+      bw.style.display = '';
+      $('tts2PullFill').style.width = '0%';
+      $('tts2PullMeta').textContent = r.message || '正在启动…';
+    }
     _pollTts2Model();
   } else {
     toast('发起失败：' + ((r && (r.error || r.message)) || '未知'), 'bad');

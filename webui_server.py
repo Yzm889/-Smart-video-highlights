@@ -1053,6 +1053,12 @@ def whisper_download_async(model=None):
     if WHISPER_DL['running']:
         return False, '已有下载任务进行中（%s）' % WHISPER_DL['model']
     WHISPER_DL['model'] = m
+    # 同步置位：以前只在线程体里置 running，POST 返回后前端立刻轮询会读到 idle，
+    # 表现为「提示已开始下载但进度条从不出现」。线程体里重复置位无害。
+    WHISPER_DL['running'] = True
+    WHISPER_DL['ok'] = None
+    WHISPER_DL['msg'] = '下载中…'
+    WHISPER_DL['pct'] = 0
     threading.Thread(target=_whisper_download_thread, args=(m,), daemon=True).start()
     return True, '已开始下载 %s（可在状态中查看进度）' % m
 
