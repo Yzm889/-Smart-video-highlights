@@ -1617,6 +1617,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
                        'application/json')
 
+    def _post_tts2_env_install(self):
+        """v1.4.79 一键安装：权重缺先下载，再装 Qwen3-TTS 运行环境。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length) if length else b'{}'
+            data = json.loads(raw.decode('utf-8') or '{}')
+            ok, msg = __import__('tts2_models').install_async(
+                str(data.get('engine') or '').strip())
+            self._send(200, json.dumps({'ok': ok, 'message': msg}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'),
+                       'application/json')
+
     def _post_tts2_model_cancel(self):
         try:
             ok, msg = __import__('tts2_models').cancel()
@@ -2575,6 +2589,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/tts/model/uninstall': '_post_tts_model_uninstall',
         '/api/tts2/model/download': '_post_tts2_model_download',
         '/api/tts2/model/cancel': '_post_tts2_model_cancel',
+        '/api/tts2/env/install': '_post_tts2_env_install',
         '/api/tts/test': '_post_tts_test',
         '/api/tts_regen_all': '_post_tts_regen_all',
         '/api/regen_segment': '_post_regen_segment',

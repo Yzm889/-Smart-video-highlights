@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=54">
+<link rel="stylesheet" href="desktop.css?v=55">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -540,7 +540,7 @@
           <div class="hint warn-hint" id="whisperLangHint" style="display:none"></div>
         </div>
         <div class="set-sec" id="secTts2Models">
-          <div class="set-h">配音模型权重（离线语音 · 大文件下载）<span class="set-tag">v1.4.78</span></div>
+          <div class="set-h">配音模型权重与环境（一键安装）<span class="set-tag">v1.4.79</span></div>
           <div class="set-row" data-tts2-eng="qwen3tts">
             <span class="env-badge" id="tts2BadgeQwen">检测中</span>
             <span class="hint" style="flex:1" id="tts2LabelQwen">Qwen3-TTS · VoiceDesign（约 5.3 GB）</span>
@@ -555,7 +555,7 @@
             <div class="pbar slim"><i id="tts2PullFill"></i></div>
             <div class="pbar-meta" id="tts2PullMeta"></div>
           </div>
-          <div class="hint" id="tts2DlHint">下载走国内镜像直连、支持断点续传；下载中可点「取消」。权重只是模型本体——首次运行还需要 venv 运行环境（装好权重后这里会如实显示「环境未就绪」与下一步指引）。</div>
+          <div class="hint" id="tts2DlHint">下载走国内镜像直连、支持断点续传，下载/安装中可点「⏹ 取消」。<b>Qwen3-TTS 支持「一键安装」</b>——权重与 venv 运行环境（Python 3.11/3.12 + PyTorch cu121）一次装好，不用自己动手；IndexTTS-2 权重可下载，运行环境依赖较重，请按 README 手动装。</div>
         </div>
         <div class="set-sec">
           <div class="set-h">本地服务地址（一般不用改）</div>
@@ -696,6 +696,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=54"></script>
+<script src="desktop.js?v=55"></script>
 </body>
 </html>

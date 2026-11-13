@@ -25,8 +25,9 @@ JS = os.path.join(ROOT, 'static', 'desktop', 'desktop.js')
 
 
 def setup_function(fn):
-    M._STATE.update(running=False, engine='', pct=0, mb_done=0, mb_total=0,
+    M._STATE.update(running=False, engine='', op='', pct=0, mb_done=0, mb_total=0,
                     speed_mb_s=0.0, msg='', ok=None, cancel=False)
+    M._CUR_PROC['p'] = None
 
 
 def _dst(eng, i):

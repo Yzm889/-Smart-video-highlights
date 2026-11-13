@@ -2639,7 +2639,10 @@ async function fillModelCenter(){
   } catch(e){ /* 静默，下次刷新 */ }
 }
 
-/* ── v1.4.78 模型中心·配音权重下载：两卡（IndexTTS2 / Qwen3-TTS）+ 进度 + 取消 ── */
+/* ── v1.4.78 模型中心·配音权重下载 / v1.4.79 一键安装 ──
+   两卡（IndexTTS2 / Qwen3-TTS）：四态徽标 + 进度 + 取消。
+   Qwen3-TTS 环境可一键安装（缺权重会先下载再装环境）；IndexTTS-2 权重可下、
+   环境按 README 手动（依赖面重，不收编），按钮如实分步。 */
 let _tts2DlHandle = null;
 function _renderTts2ModelCards(S){
   const map = {qwen3tts: ['tts2BadgeQwen', 'tts2LabelQwen', 'btnTts2DlQwen'],
@@ -2649,36 +2652,49 @@ function _renderTts2ModelCards(S){
     const st = (S.engines || {})[eng] || {};
     const badge = $(map[eng][0]), label = $(map[eng][1]), btn = $(map[eng][2]);
     if(!badge || !label || !btn) return;
-    let badgeCls, badgeText, btnText, btnOn = true;
+    let badgeCls, badgeText, btnText, btnOn = true, act = 'download';
+    const installing = st.env_installable;
     if(running && S.engine === eng){
-      badgeCls = 'wait'; badgeText = '下载中'; btnText = '⏹ 取消';
+      badgeCls = 'wait';
+      badgeText = (S.op === 'install') ? '安装中' : '下载中';
+      btnText = '⏹ 取消'; act = 'cancel';
     } else if(st.ready){
       badgeCls = 'ok'; badgeText = '已就绪'; btnText = '✅ 已就绪'; btnOn = false;
     } else if(st.weights){
       badgeCls = 'wait'; badgeText = '权重已下载';
-      btnText = '⬇ 重新下载';
+      if(installing){
+        btnText = '⚙ 安装运行环境'; act = 'install';
+      } else {
+        btnText = '⚙ 需手动装环境'; btnOn = false; act = 'manual';
+      }
     } else {
-      badgeCls = 'bad'; badgeText = '未下载'; btnText = '⬇ 下载权重';
+      badgeCls = 'bad'; badgeText = '未下载';
+      btnText = installing ? '⬇ 一键安装（权重+环境）' : '⬇ 下载权重';
+      act = installing ? 'install' : 'download';
     }
     badge.textContent = badgeText;
     badge.className = 'env-badge ' + badgeCls;
     btn.textContent = btnText;
     btn.disabled = !btnOn || (running && S.engine !== eng);
     btn.dataset.eng = eng;
-    label.textContent = (st.label || '') + '（' + (st.size_hint || '') + '）'
-      + (st.ready ? '' : (st.weights
-        ? ' · 权重已在，运行环境未就绪（首次需按 README 装 venv + PyTorch）' : ''));
+    btn.dataset.act = act;
+    let suffix = '';
+    if(!st.ready && st.weights){
+      suffix = installing ? ' · 权重已在，点右侧「安装运行环境」即可（venv+PyTorch，约 2.6GB）'
+                          : ' · 权重已在；运行环境较重，请按 README 手动安装（uv）';
+    }
+    label.textContent = (st.label || '') + '（' + (st.size_hint || '') + '）' + suffix;
   });
   const barWrap = $('tts2PullWrap');
   if(barWrap){
     barWrap.style.display = running ? '' : 'none';
     if(running){
       $('tts2PullFill').style.width = Math.min(100, S.pct || 0) + '%';
-      $('tts2PullMeta').textContent = (S.msg || '下载中…')
-        + '（取消：点对应卡的「⏹ 取消」，已下载部分保留）';
+      $('tts2PullMeta').textContent = (S.msg || '处理中…')
+        + '（取消：点对应卡的「⏹ 取消」；已下载/已装的部分保留）';
     }
   }
-  // 设置页开着时发现有人在下载 → 自动接上轮询（关掉再开不丢进度）
+  // 设置页开着时发现任务在跑 → 自动接上轮询（关掉再开不丢进度）
   if(running && !_tts2DlHandle) _pollTts2Model();
 }
 function _pollTts2Model(){
@@ -2691,10 +2707,13 @@ function _pollTts2Model(){
     onDone: async S => {
       _tts2DlHandle = null;
       if(S.ok === true){
-        toast('✅ 配音权重下载完成' + (S.engine === 'qwen3tts'
-          ? '（运行环境 venv 首次仍需按 README 安装）' : ''), 'ok');
+        // 一键安装与仅下权重的成功语义不同，提示必须分开（别让用户以为装好了环境）
+        toast(S.op === 'install'
+          ? '✅ 安装完成：权重与运行环境都就绪，可回配音页试听'
+          : ('✅ 权重下载完成' + (S.engine === 'qwen3tts'
+            ? '（点「⚙ 安装运行环境」补齐 venv + PyTorch）' : '')), 'ok');
       } else {
-        toast(S.msg || '下载未完成', 'bad');
+        toast(S.msg || '任务未完成', 'bad');
       }
       fillModelCenter(); fillTtsSettings();
     }
@@ -2704,24 +2723,25 @@ $('secTts2Models').addEventListener('click', async ev => {
   const b = ev.target.closest('.mini-btn');
   if(!b || !b.dataset.eng) return;
   const eng = b.dataset.eng;
-  const S = await fetch('/api/tts2/model/status', {cache: 'no-store'})
-    .then(x => x.json()).catch(() => null);
-  if(S && S.running && S.engine === eng){
+  const act = b.dataset.act || 'download';
+  if(act === 'manual') return;              // 手动指引按钮不动作
+  if(act === 'cancel'){
     const r = await fetch('/api/tts2/model/cancel', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: '{}'})
       .then(x => x.json()).catch(() => null);
-    toast(r && r.ok ? '已请求取消（几秒内生效，已下载部分保留）'
+    toast(r && r.ok ? '已请求取消（几秒内生效，已完成的部分保留）'
                     : ((r && (r.error || r.message)) || '取消失败'), 'bad');
     return;
   }
-  const r = await fetch('/api/tts2/model/download', {method: 'POST',
+  const url = (act === 'install') ? '/api/tts2/env/install' : '/api/tts2/model/download';
+  const r = await fetch(url, {method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({engine: eng})}).then(x => x.json()).catch(() => null);
   if(r && r.ok){
-    toast(r.message || '开始下载', 'ok');
+    toast(r.message || '已开始', 'ok');
     _pollTts2Model();
   } else {
-    toast('下载失败：' + ((r && (r.error || r.message)) || '未知'), 'bad');
+    toast('发起失败：' + ((r && (r.error || r.message)) || '未知'), 'bad');
   }
   fillModelCenter();
 });
@@ -2893,8 +2913,9 @@ function renderTtsInstalls(v){
       + '</div>').join('')
     + _vramRow(st)
     + '<div class="hint">引擎资产在 ' + _esc(st.dir || '本机用户数据目录')
-    + '，升级成品不会丢失。显示「未装」缺的是权重或运行环境：权重可到「模型中心」'
-    + '在线下载（断点续传、可取消）；运行环境（venv + PyTorch）首次需按 README 安装。</div>';
+    + '，升级成品不会丢失。显示「未装」缺的是权重或运行环境：到「模型中心」的'
+    + '「配音模型权重与环境」区，Qwen3-TTS 可一键安装（权重 + 运行环境），'
+    + 'IndexTTS-2 权重可下载、运行环境请按 README 手动装。</div>';
 }
 /* 引导闭环：voice 页「未装」徽标 → 一键跳到模型中心的配音权重区（v1.4.78） */
 $('ttsInstalls').addEventListener('click', ev => {
