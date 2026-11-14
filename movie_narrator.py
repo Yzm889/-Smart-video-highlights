@@ -4521,7 +4521,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         # （主人成片实测 match 率 19% 的根源）。事件描述写入 scene_story，
         # 供全篇对齐器/DP 的「事件对事件」匹配使用。POC：同是楼顶，午餐段
         # 「拿着食物准备吃」 vs 互助会段「走向公告栏取物」——可区分。
-        if scene_descs and not _fast:
+        if scene_descs and not (os.environ.get('NARRATE_FAST') == '1') and not bool(params.get('fast', params.get('fast_mode', params.get('fastMode')))):
             try:
                 _ev = _vlm_event_windows(video_path, scene_descs, asr, run_dir, progress)
                 _n_ev = 0
@@ -4928,11 +4928,6 @@ def _verify_final_alignment(final_path, segs, progress=None):
     绝不影响成片交付）。"""
     import tempfile
     import shutil
-    try:
-        from ffmpeg_utils import ffmpeg_exe as _ff
-        ff = _ff()
-    except Exception:
-        ff = 'ffmpeg'
     vdir = tempfile.mkdtemp(prefix='fcv_')
     report, n = [], {'match': 0, 'related': 0, 'wrong': 0}
     total = 0
@@ -5004,7 +4999,6 @@ def _auto_verify_alignment(run_dir, final_path, progress=None, params=None):
             return
     except Exception:
         return
-    import threading
 
     def _job():
         try:

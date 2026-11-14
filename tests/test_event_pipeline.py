@@ -17,7 +17,6 @@ if ROOT not in sys.path:
 import webui_server as S  # noqa: E402,F401
 import movie_narrator as M  # noqa: E402
 import vlm_index as VI  # noqa: E402
-import narration_align as NA  # noqa: E402
 
 
 SCENES = [{'start': 0.0 + i * 100.0, 'end': 50.0 + i * 100.0} for i in range(4)]
