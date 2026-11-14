@@ -931,23 +931,62 @@ def _detect_quote_slots(narr, segs, asr, progress=None, params=None,
     return slots
 
 
-def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15):
-    """v1.4.86 句级事件锚点：画面窗口从「这句解说描述的事件时刻」开始。
+_PUNCT_STRIP_RE = re.compile(r'[\s，。？！、“”：；…\-—（）·\']')
 
-    此前窗口=整场戏从头起播：解说到工地砸墙时，画面还在演前一场的勒人
-    （2026-11-14 主人实测「解说词都对不上画面」的收尾一块）。DP 只保证
-    句子↔场景段对应，段内的具体时刻由本函数定：在段内找「与这句解说文本
-    最匹配的字幕台词 cue」（字幕是地面真值），窗口从那条台词的时刻起播——
-    解说提到狙击收尾，画面就从狙击那一刻演。
 
-    窗口长度 = 配音×cap（cap=1.15 与 ±15% 微变速窗一致）+ 气口余量由既有
-    补长遍兜底。无 cue/无匹配/无配音的段保持原窗口起点；相邻窗口重叠时
-    按顺序右移；锚点贴近段尾时窗口向前收（保留段尾的事件时刻）。
+def _bigrams_cn(text):
+    """按标点切段、段内切相邻二字集（全局锚定的匹配原子）。
 
-    segs: [(start, end)] 场景段（源片时间轴）；narr: 每段解说词；
-    asr: 字幕台词段（地面真值）；voice_durs: {句序号: 配音秒数}。
-    返回新的 segs（不原地改）。任何异常由调用方兜底沿用 fit 结果。
+    标点必须切段再切 bigram：整串清标点会让「不错，柯蒂斯」产出「错柯」
+    这类跨标点假命中。"""
+    out = set()
+    for seg in _PUNCT_STRIP_RE.split(str(text or '')):
+        if len(seg) >= 2:
+            out.update(seg[i:i + 2] for i in range(len(seg) - 1))
+    return out
+
+
+def _lcs_contig(a, b):
+    """最长公共连续子串长度（专名/短语整段命中的度量）。"""
+    a, b = _PUNCT_STRIP_RE.sub('', str(a or '')), _PUNCT_STRIP_RE.sub('', str(b or ''))
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for ca in a:
+        cur = [0] * (len(b) + 1)
+        for j, cb in enumerate(b):
+            if ca == cb:
+                cur[j + 1] = prev[j] + 1
+                if cur[j + 1] > best:
+                    best = cur[j + 1]
+        prev = cur
+    return best
+
+
+def _global_subtitle_anchors(segs, narr, asr, voice_durs, beat_kinds=None):
+    """v1.4.87 全局字幕锚定：每句解说带着文本到【整条字幕时间轴】上找画面锚点。
+
+    背景（主人实测）：DP 对齐的跳跃上限（_effective_jump_cap≈vdur/n）保证单调，
+    但把「解说叙事大幅推进」后的场景变成不可达——稿子讲到 1154s 的互助会时
+    DP 只能就近分到 784s 的工地午餐（错位 370s）。段内锚点（v1.4.86）救不了
+    分错段的句子。本函数分三步：
+      1. IDF 加权 bigram 命中（主角名等高频词降权、稀有词/专名升权）
+         + 最长公共子串奖励（≥3 字整段命中才计）；
+      2. 窗口聚合：cue 时刻 t 的得分 = 本条 + [t+4, t+30] 内次强 cue×0.5
+         （场景对话是多条 cue，聚合让场景级证据汇聚、孤立短 cue 噪音被稀释；
+         聚合还天然偏向「解说最先讲到的内容」——叙事顺序在前的 cue 先得分）；
+      3. 门槛 0.5 取候选，LIS 单调链（链长优先、总分次之）保与输出顺序一致。
+
+    只对具象句锚定（hook/quote/blank/transition 不描述具体画面，语义吸附只会
+    乱吸——与 _allocate_script_spans 的句类原则一致）。返回 {句序号: 锚点时刻}。
     """
+    n = len(narr or [])
+    if n == 0 or not asr:
+        return {}
+    import movie_narrator as _MN
+    kinds = list(beat_kinds) if beat_kinds else []
+    kinds = (kinds + [_MN.KIND_CONCRETE] * n)[:n]
     cues = []
     for s in (asr or []):
         try:
@@ -958,16 +997,169 @@ def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15):
             continue
         if ct and ce > cs:
             cues.append((cs, ce, ct))
+    if not cues:
+        return {}
+    N = len(cues)
+    starts = [c[0] for c in cues]
+    cue_bgs = [_bigrams_cn(c[2]) for c in cues]
+    df = {}
+    for bg in cue_bgs:
+        for g in bg:
+            df[g] = df.get(g, 0) + 1
+    idf = {g: math.log(1 + N / (1 + d)) for g, d in df.items()}
+    # 主角名惩罚：在多数解说句里都出现的 bigram（主角名/口头禅）几乎不携带
+    # 「选哪段画面」的信息——解说提「弗兰克」时，画面不能因为这三个字被吸到
+    # 随便哪段有弗兰克的场景（主人的原话：不是看见墙就放砸墙的解说）。
+    sent_df = {}
+    for t in (narr or []):
+        for g in _bigrams_cn(t):
+            sent_df[g] = sent_df.get(g, 0) + 1
+    _major = max(3, int(n * 0.4))
+
+    def _score(txt, k):
+        s_bg = _bigrams_cn(txt)
+        c_bg = cue_bgs[k]
+        den = sum(idf[g] for g in c_bg)
+        if not s_bg or den <= 0:
+            return 0.0
+        hit = s_bg & c_bg
+        base = sum(idf[g] for g in hit) / den
+        if hit:
+            common = sum(1 for g in hit if sent_df.get(g, 0) >= _major)
+            if common:
+                # 命中里「全民词」占比越高，这条匹配越不可信
+                base *= 1.0 - 0.8 * float(common) / len(hit)
+        # LCS ≥3 字整段命中加成：专名/台词短语（柯蒂斯/彼特卡斯帝欧尼/冷静兄弟）。
+        # IDF+主角名惩罚+聚合+LIS 四件套协同抗噪（真实 216 条语料验证）。
+        l = _lcs_contig(txt, cues[k][2])
+        return base + (min(l, 10) / 20.0 if l >= 3 else 0.0)
+
+    cand = {}
+    for i in range(n):
+        if kinds[i] != _MN.KIND_CONCRETE:
+            continue
+        txt = str(narr[i] or '')
+        if not txt.strip() or not float((voice_durs or {}).get(i) or 0.0):
+            continue
+        raw = [_score(txt, k) for k in range(N)]
+        best_agg, best_k = -1.0, -1
+        for k in range(N):
+            later = 0.0
+            sk = starts[k]
+            for j in range(k + 1, N):
+                gap = starts[j] - sk
+                if gap > 30.0:
+                    break
+                if gap >= 4.0 and raw[j] > later:
+                    later = raw[j]
+            agg = raw[k] + 0.5 * later
+            if agg > best_agg:
+                best_agg, best_k = agg, k
+        if best_k >= 0 and best_agg >= 0.5:
+            cand[i] = (starts[best_k], best_agg)
+    if not cand:
+        return {}
+    # LIS 单调链：句序递增时锚点时刻必须递增（与画面拼接顺序一致）。
+    items = sorted(cand.items())
+    m = len(items)
+    dp = [(1, items[j][1][1]) for j in range(m)]
+    par = [-1] * m
+    for j in range(m):
+        for k2 in range(j):
+            if items[k2][1][0] < items[j][1][0]:
+                alt = (dp[k2][0] + 1, dp[k2][1] + items[j][1][1])
+                if alt > dp[j]:
+                    dp[j], par[j] = alt, k2
+    end = max(range(m), key=lambda x: dp[x])
+    out = {}
+    while end >= 0:
+        out[items[end][0]] = items[end][1][0]
+        end = par[end]
+    return out
+
+
+def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15, beat_kinds=None):
+    """v1.4.86/v1.4.87 句级事件锚点：画面窗口从「这句解说描述的事件时刻」开始。
+
+    此前窗口=整场戏从头起播：解说到工地砸墙时，画面还在演前一场的勒人
+    （2026-11-14 主人实测「解说词都对不上画面」）。DP 只保证句子↔场景段对应，
+    段内具体时刻、以及 DP 跳跃上限造成的整块错位，由本函数分两层修正：
+
+    1. 【v1.4.87 全局锚定】每句解说到全片字幕 cue 里找证据锚点
+       （_global_subtitle_anchors），锚句窗口直接钉在锚点时刻——稿子讲到
+       1154s 的互助会，画面就从 1154s 演起（DP 只能把它分到 784s 的工地）。
+       锚点被片尾空间挤出窗外过半时降级不锚（保顺序与念完红线）。
+    2. 【v1.4.86 段内锚定】未锚定的句子沿用段内最佳 cue 起播。
+
+    窗口长度 = 配音×cap（cap=1.15 与 ±15% 微变速窗一致）+ 气口余量由既有
+    补长遍兜底。quote/留白（无配音）窗口原样——它们是引用检测的成果
+    （台词时刻精确）；输出仍按句序拼接（源轴倒跳=有意闪回）。无 cue/无匹配/
+    无配音的段保持原窗口起点；相邻窗口重叠时按顺序右移。
+
+    segs: [(start, end)] 场景段（源片时间轴）；narr: 每段解说词；
+    asr: 字幕台词段（地面真值）；voice_durs: {句序号: 配音秒数}；
+    beat_kinds: 可选句类标签（缺省内部补 concrete）。
+    返回新的 segs（不原地改）。任何异常由调用方兜底沿用 fit 结果。
+    """
+    seg_list = list(segs or [])
+    n = len(seg_list)
+    if n == 0:
+        return []
+    import movie_narrator as _MN
+    kinds = list(beat_kinds) if beat_kinds else []
+    kinds = (kinds + [_MN.KIND_CONCRETE] * n)[:n]
+    try:
+        anchors = _global_subtitle_anchors(seg_list, narr, asr, voice_durs, kinds)
+    except Exception as _ga:
+        _log.info('[DIAG] 全局字幕锚定失败，仅用段内锚点: %s' % str(_ga)[:120])
+        anchors = {}
+    cues = []
+    for s in (asr or []):
+        try:
+            cs = float(s.get('start', 0) or 0)
+            ce = float(s.get('end', 0) or 0)
+            ct = str(s.get('text', '') or '')
+        except Exception:
+            continue
+        if ct and ce > cs:
+            cues.append((cs, ce, ct))
+    if not cues:
+        return [(float(a), float(b)) for a, b in seg_list]
+    # 片尾空间约束：每句窗尾不得越过「片尾 - 其后各句最小需求」，
+    # 否则锚点把后面的句子挤进片尾黑场（念完红线）。
+    vdur_end = max(b for _, b in seg_list)
+    need_after = [0.0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        v = float((voice_durs or {}).get(i) or 0.0)
+        need_after[i] = need_after[i + 1] + ((v + tail) if v > 0 else 0.5)
+    latest = {i: vdur_end - need_after[i + 1] for i in range(n)}
     out = []
     prev_end = 0.0
-    for i, (a, b) in enumerate(list(segs or [])):
+    for i, (a, b) in enumerate(seg_list):
         a, b = float(a), float(b)
         v = float((voice_durs or {}).get(i) or 0.0)
         txt = str((narr or [''])[i] or '') if i < len(narr or []) else ''
-        if v <= 0 or not txt.strip() or not cues:
+        # quote/留白（无配音）：原窗不动（引用检测已对准台词时刻）
+        if v <= 0 or not txt.strip() or kinds[i] in (_MN.KIND_QUOTE, _MN.KIND_BLANK):
             out.append((a, b))
             prev_end = max(prev_end, b)
             continue
+        win = max(v * cap, v + 0.1)
+        at = anchors.get(i)
+        if at is not None:
+            # 全局锚句：窗尾尽量贴「锚点+窗长」，越界则压到片尾允许线。
+            # 降级判据=锚距窗尾超过 30% 窗长（画面已不在锚所在场景附近，
+            # 贴锚无意义）；锚贴片尾时窗内仍盖住锚，不算被挤出。
+            endw = min(at + win, max(latest[i], 0.0))
+            start = endw - win
+            if start <= at <= endw + win * 0.3:
+                start = max(start, prev_end)
+                if start <= at:          # prev_end 也没把窗顶过锚
+                    end = min(start + win, vdur_end)
+                    out.append((round(start, 3), round(end, 3)))
+                    prev_end = max(prev_end, end)
+                    continue
+            # 锚被挤出窗外（前文挤压/片尾空间不足）→ 降级不锚，走段内锚定
         # 段内候选台词：与本句解说文本最像的那条（_literal_score 即 DP 同款打分）
         best_start, best_s = None, 0.0
         for cs, ce, ct in cues:
@@ -976,7 +1168,6 @@ def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15):
             s = _literal_score(txt, ct)
             if s > best_s:
                 best_s, best_start = s, cs
-        win = max(v * cap, v + 0.1)
         start = a
         if best_start is not None and best_s >= 0.12:
             start = min(max(best_start, a), max(a, b - 0.5))

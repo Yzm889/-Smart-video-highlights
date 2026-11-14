@@ -2858,6 +2858,207 @@ def _parse_alignment_obj(obj, scenes):
     return alignment
 
 
+def _llm_align_full_script(texts, scenes, scene_story, asr, movie_name='',
+                           progress=None, timeout=300):
+    """v1.4.88 全篇一次 LLM 对齐：整篇稿子 + 全部场景（画面+剧情含义+台词）喂给
+    模型，让它【理解全篇之后】为每句解说选定画面段。
+
+    为什么重做这一层（主人 2026-11-14 拍板「质量最好路线、不惜时间」）：
+    - 旧分批对齐（_llm_align_batched）每批 6 句独立回答、批与批位置互相打架
+      （中段漂移 +250s），当年因此被弃用——错的不是「LLM 对齐」，是「分批无上下文」。
+    - DP 对齐（_algo_align_beats_to_scenes）是文本相似度：解说提「大锤」就吸附到
+      有大锤的场景——片中 10 分钟一个大锤、20 分钟又一个大锤时会重复错配
+      （主人的原话：「他不是看见墙就把砸墙的解说放这，是知道这段在演拿大锤砸墙」）。
+    - 全篇一次推理让模型带着完整叙事（谁在推进、时间是否跳跃、指代是「他/当晚」）
+      选段，再由程序做单调校验——理解归模型、秩序归代码。
+
+    输入 texts=解说句列表（按稿序）；scenes=场景段（scene_descs）；scene_story=
+    剧情理解层产物；asr=字幕台词。
+    返回 {句号: [场景段号]}（与 DP 对齐同构，可直接并入 scene_alignment）；
+    模型不可用/输出不可解析/全篇失败返回 {}，调用方回退 DP。
+    """
+    import movie_narrator as _MN  # noqa: F401  测试 patch 面（_llm_light 经宿主晚绑定）
+    n, m = len(texts or []), len(scenes or [])
+    if n <= 0 or m <= 0:
+        return {}
+    try:
+        if not _local_model_available():
+            return {}
+    except Exception:
+        return {}
+    kinds = _classify_sentences(texts)
+
+    def _fmt(x):
+        try:
+            mm, ss = divmod(int(float(x) or 0), 60)
+        except (TypeError, ValueError):
+            return '--:--'
+        return '%02d:%02d' % (mm, ss)
+
+    # 场景表：画面 + 剧情含义 + 窗内台词——LLM 判断的全部证据
+    scene_lines = []
+    for j, sc in enumerate(scenes):
+        st = (scene_story or {}).get(j) or {}
+        parts = ['场景%d [%s-%s] 画面：%s' % (j, _fmt(sc.get('start')), _fmt(sc.get('end')),
+                                             _scene_describe(sc))]
+        if st.get('story'):
+            parts.append('剧情含义：%s' % st['story'])
+        if st.get('who'):
+            parts.append('人物：%s' % st['who'])
+        if st.get('act'):
+            parts.append('作用：%s' % st['act'])
+        if st.get('keywords'):
+            parts.append('关键词：%s' % '、'.join(str(k) for k in st['keywords']))
+        dlg = _scene_dialogue_of(sc, asr)
+        if dlg:
+            parts.append('台词：%s' % dlg)
+        scene_lines.append('；'.join(p for p in parts if p))
+
+    script_lines = []
+    for i, t in enumerate(texts):
+        tag = ''
+        if kinds[i] in (KIND_QUOTE, KIND_BLANK):
+            tag = '（%s：不配解说画面）' % ('引用' if kinds[i] == KIND_QUOTE else '留白')
+        script_lines.append('解说%d%s：%s' % (i, tag, str(t or '').strip()))
+
+    head = (
+        '你是影视解说剪辑师。下面给你【完整解说稿】（按顺序编号）和【影片场景表】'
+        '（按时间顺序，每段含画面内容、剧情含义、窗内台词）。\n'
+        '任务：通读全篇之后，为每一句解说选定「画面应该演哪一段场景」。\n'
+        '核心要求：对齐靠【事件】，不靠【名词】。解说句描述的是一件正在发生的事，\n'
+        '画面就必须正在演这件事——解说「拿大锤砸墙」，画面就得在砸墙；\n'
+        '片中可能出现多个「大锤」「墙」的画面，要选「正在做这件事」的那一段。\n'
+        '具体规则：\n'
+        '1) 先通读解说稿理清叙事线（概述/省略/时间跳跃都合法），再对照场景表的\n'
+        '   剧情含义与台词找事件对应；\n'
+        '2) 相邻解说句的画面总体随稿序推进；解说跳时间（如「当晚」「六个月后」）\n'
+        '   时画面跟着跳到对应场景；\n'
+        '3) 标了「引用/留白」的句与议论总结句（没有具体事件）输出 "s": -1；\n'
+        '4) 一句解说可以跨多段连续场景：输出 "s": [段号, 段号]；\n'
+        '5) 找不到对应画面就 -1，绝不硬凑——错配比留白更伤成片；\n'
+        '6) cue 字段：该场景窗内与这句解说最对应的【一句原片台词】（没有就空串）。\n'
+        '只输出 JSON 数组（每句一条，按解说顺序）：\n'
+        '[{"i": 句号, "s": 段号或段号数组或-1, "cue": "台词或空串", "why": "一句话依据"}]\n')
+    if movie_name:
+        head = '影片：《%s》\n' % movie_name + head
+    prompt = (head + '\n【完整解说稿】\n' + '\n'.join(script_lines)
+              + '\n\n【影片场景表】\n' + '\n'.join(scene_lines))
+    if progress:
+        progress['phase'] = '全篇对齐（模型通读稿子与场景…）'
+    try:
+        resp = _llm_light(prompt, '你是影视解说剪辑师，擅长按事件（而非名词）把解说词对到画面。'
+                          '输出严格 JSON。', timeout=max(120, int(timeout)))
+    except Exception:
+        resp = None
+    if not resp:
+        return {}
+    # 解析：_try_parse_json 只认 dict 对象，这里要的是 JSON 数组——自己解析。
+    import json as _json
+    import re as _re
+    arr = None
+    try:
+        v = _json.loads(resp)
+        if isinstance(v, list):
+            arr = v
+        elif isinstance(v, dict):
+            arr = v.get('align') or v.get('items') or []
+    except Exception:
+        pass
+    if arr is None:
+        # 模型输出前后带说明文字时：提取第一个平衡的 JSON 数组
+        for mt in _re.finditer(r'\[', resp):
+            depth, in_str, esc, start = 0, False, False, mt.start()
+            for i2 in range(start, len(resp)):
+                ch = resp[i2]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == '\\':
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                v = _json.loads(resp[start:i2 + 1])
+                                if isinstance(v, list):
+                                    arr = v
+                            except Exception:
+                                pass
+                            break
+            if arr is not None:
+                break
+    if not isinstance(arr, list):
+        return {}
+
+    # —— 程序校验：理解归模型，秩序归代码 ——
+    out = {}
+    for it in arr:
+        if not isinstance(it, dict):
+            continue
+        try:
+            i = int(it.get('i'))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= i < n):
+            continue
+        if kinds[i] in (KIND_QUOTE, KIND_BLANK):
+            continue
+        raw = it.get('s')
+        if raw is None:
+            continue
+        if isinstance(raw, list):
+            sids = []
+            for x in raw:
+                try:
+                    v = int(float(x))
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= v < m:
+                    sids.append(v)
+        else:
+            try:
+                v = int(float(raw))
+            except (TypeError, ValueError):
+                continue
+            sids = [v] if 0 <= v < m else []
+        if sids:
+            out[i] = sids
+    if not out:
+        return {}
+    # LIS 单调修正：具象句的画面段必须总体随稿序推进；LLM 局部倒序时
+    # 取最长递增链，被丢的句回退 DP（不让模型的胡话破坏时间秩序）。
+    order = sorted(out.keys())
+    seq = [(i, out[i][0]) for i in order]
+    best_len = [1] * len(seq)
+    best_par = [-1] * len(seq)
+    for j in range(len(seq)):
+        for k in range(j):
+            if seq[k][1] <= seq[j][1] and best_len[k] + 1 > best_len[j]:
+                best_len[j], best_par[j] = best_len[k] + 1, k
+    if best_len and max(best_len) < len(seq):
+        keep = set()
+        e = max(range(len(seq)), key=lambda x: best_len[x])
+        while e >= 0:
+            keep.add(seq[e][0])
+            e = best_par[e]
+        for i in order:
+            if i not in keep:
+                del out[i]
+        _log.info('[DIAG] 全篇对齐单调修正: 丢弃倒序句 %d 个' % (len(seq) - len(keep)))
+    for i in list(out.keys()):
+        out[i] = [x for x in out[i] if 0 <= x < m]
+        if not out[i]:
+            del out[i]
+    return out
+
+
 def _llm_align_beats_to_scenes(beats, scenes, movie_name='', scene_story=None):
     """用LLM把解说词和场景做语义对齐，返回 {beat_idx: [scene_idx, ...]}，失败返回 {}。
     scene_story（剧情理解层产物）存在时，场景侧展示的是『这段在讲什么』的剧情含义，
@@ -4441,12 +4642,34 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         up('快速出片（仅算法对齐，不调模型）', 46)
         _log.info('[DIAG] 快速模式：跳过 LLM 语义对齐/润色（算法对齐与剧情理解仍生效）')
     elif _has_user_script:
-        # 用户稿子路线：只用 DP 全局对齐，不再调 LLM 批次对齐。
-        # 实测 LLM 各批独立回答、批与批之间位置互相打架（顺序纠正要动 10 句），
-        # 累积出的漂移比 DP 差一个量级（中段 +250 秒）；而 DP 拿着同一份
-        # scene_story 做全局最优，真机 29 句实测平均误差 33 秒。少调 5 轮模型还更快。
-        up('解说词-场景对齐（DP）', 49)
-        _log.info('[DIAG] 用户稿子：跳过 LLM 批次对齐，直接用 DP 全局对齐')
+        # 用户稿子路线（v1.4.88 升级）：先试「全篇一次 LLM 对齐」——旧分批对齐
+        # 批与批位置打架（中段 +250s）而弃用的教训是「分批无上下文」，不是 LLM
+        # 不能对齐；全篇一次推理 + LIS 单调校验，失败回退 DP 全局对齐（保底不变）。
+        # DP 已在上方公共段算好（scene_alignment），全篇对齐成功则整表覆盖。
+        _full = {}
+        if not _fast and scene_descs:
+            try:
+                if _local_model_available():
+                    up('解说词-场景全篇对齐（模型通读稿子与场景）', 49)
+                    _full = _llm_align_full_script(
+                        texts, scene_descs, scene_story, asr, movie_name=movie_name,
+                        progress=progress,
+                        timeout=int(params.get('fullAlignTimeout') or 300))
+                else:
+                    _log.info('[DIAG] 全篇对齐跳过：本地模型不可用')
+            except AbortError:
+                raise
+            except Exception as e:
+                _log.info('[DIAG] 全篇对齐异常(回退 DP): %s' % str(e)[:120])
+        if _full:
+            _algo_base = dict(scene_alignment)   # DP 结果保留给跳跃闸/覆盖率兜底
+            scene_alignment = _full
+            _log.info('[DIAG] 全篇 LLM 对齐: %d/%d 句（DP 兜底 %d 句）'
+                      % (len(_full), len(texts), len(_algo_base)))
+        else:
+            up('解说词-场景对齐（DP）', 49)
+            _log.info('[DIAG] 用户稿子：全篇对齐不可用，用 DP 全局对齐（%d/%d 句）'
+                      % (len(scene_alignment), len(texts)))
     else:
         # ② 剧情理解层已在写稿之前跑完（见上方「顺序修正」），这里直接复用 scene_story。
         # ③ 分批语义对齐：每批 6 句，LLM 成功则覆盖算法结果，失败保留算法结果
@@ -5412,6 +5635,7 @@ from narration_align import (  # noqa: F401,E402  v1.4.42 拆出
     _scene_info_pen, _beat_info_pen, _default_jump_cap, _JUMP_CAP_RATIO,
     _effective_jump_cap, _algo_align_beats_to_scenes, _isotonic,
     _sanitize_alignment, _allocate_script_spans, _event_anchored_spans,
+    _global_subtitle_anchors, _bigrams_cn, _lcs_contig,
     _QUOTE_RE, _SPEAK_RE, _quote_is_dialogue, _quote_texts, _norm_cn,
     _literal_score, _score_block, _pick_quote_span, _detect_quote_slots)
 
