@@ -5282,6 +5282,16 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         up('按分镜剪辑画面', 54)
         if _vdur:
             _tail = _voice_tail(params)
+            # 【v1.4.86 句级事件锚点】画面窗口对到「这句解说描述的事件时刻」：
+            # 此前窗口=整场戏从头起播，解说到工地砸墙时画面还在演前一场的勒人。
+            # 锚定后的窗口长 = 配音×1.15（微变速窗内），补长/裁剪遍在其上工作。
+            try:
+                segs = _event_anchored_spans(segs, narr, asr, _vdur, tail=_tail)
+                _log.info('[DIAG] 事件锚点: 31 句画面窗口已对到各句描述的事件时刻'
+                          if len(segs) == len(narr) else
+                          '[DIAG] 事件锚点: %d 个窗口已锚定' % len(segs))
+            except Exception as _ea:
+                _log.info('[DIAG] 事件锚点失败（沿用 fit 结果）: %s' % str(_ea)[:120])
             segs, _fit = _fit_spans_to_voice(segs, _vdur, cut_info['src_dur'], tail=_tail)
             if _fit['grew']:
                 _log.info('[DIAG] 画面补长 %d 段 / +%.1fs（让每句念完再切，留 %.2fs 气口）'
@@ -5401,7 +5411,7 @@ from vlm_index import (  # noqa: F401,E402  v1.4.41 拆出
 from narration_align import (  # noqa: F401,E402  v1.4.42 拆出
     _scene_info_pen, _beat_info_pen, _default_jump_cap, _JUMP_CAP_RATIO,
     _effective_jump_cap, _algo_align_beats_to_scenes, _isotonic,
-    _sanitize_alignment, _allocate_script_spans,
+    _sanitize_alignment, _allocate_script_spans, _event_anchored_spans,
     _QUOTE_RE, _SPEAK_RE, _quote_is_dialogue, _quote_texts, _norm_cn,
     _literal_score, _score_block, _pick_quote_span, _detect_quote_slots)
 

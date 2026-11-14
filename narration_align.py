@@ -929,3 +929,67 @@ def _detect_quote_slots(narr, segs, asr, progress=None, params=None,
         progress['quote_slots'] = slots
         progress['phase'] = '引用台词转原声 %d 处' % len(slots)
     return slots
+
+
+def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15):
+    """v1.4.86 句级事件锚点：画面窗口从「这句解说描述的事件时刻」开始。
+
+    此前窗口=整场戏从头起播：解说到工地砸墙时，画面还在演前一场的勒人
+    （2026-11-14 主人实测「解说词都对不上画面」的收尾一块）。DP 只保证
+    句子↔场景段对应，段内的具体时刻由本函数定：在段内找「与这句解说文本
+    最匹配的字幕台词 cue」（字幕是地面真值），窗口从那条台词的时刻起播——
+    解说提到狙击收尾，画面就从狙击那一刻演。
+
+    窗口长度 = 配音×cap（cap=1.15 与 ±15% 微变速窗一致）+ 气口余量由既有
+    补长遍兜底。无 cue/无匹配/无配音的段保持原窗口起点；相邻窗口重叠时
+    按顺序右移；锚点贴近段尾时窗口向前收（保留段尾的事件时刻）。
+
+    segs: [(start, end)] 场景段（源片时间轴）；narr: 每段解说词；
+    asr: 字幕台词段（地面真值）；voice_durs: {句序号: 配音秒数}。
+    返回新的 segs（不原地改）。任何异常由调用方兜底沿用 fit 结果。
+    """
+    cues = []
+    for s in (asr or []):
+        try:
+            cs = float(s.get('start', 0) or 0)
+            ce = float(s.get('end', 0) or 0)
+            ct = str(s.get('text', '') or '')
+        except Exception:
+            continue
+        if ct and ce > cs:
+            cues.append((cs, ce, ct))
+    out = []
+    prev_end = 0.0
+    for i, (a, b) in enumerate(list(segs or [])):
+        a, b = float(a), float(b)
+        v = float((voice_durs or {}).get(i) or 0.0)
+        txt = str((narr or [''])[i] or '') if i < len(narr or []) else ''
+        if v <= 0 or not txt.strip() or not cues:
+            out.append((a, b))
+            prev_end = max(prev_end, b)
+            continue
+        # 段内候选台词：与本句解说文本最像的那条（_literal_score 即 DP 同款打分）
+        best_start, best_s = None, 0.0
+        for cs, ce, ct in cues:
+            if cs < a - 0.5 or cs >= b:
+                continue
+            s = _literal_score(txt, ct)
+            if s > best_s:
+                best_s, best_start = s, cs
+        win = max(v * cap, v + 0.1)
+        start = a
+        if best_start is not None and best_s >= 0.12:
+            start = min(max(best_start, a), max(a, b - 0.5))
+        end = start + win
+        # 相邻窗口重叠：按顺序右移（打乱即重叠，重叠=两句叠声）
+        if start < prev_end:
+            start = prev_end
+            end = start + win
+        # 锚点贴近段尾：窗口向前收，保留段尾的事件时刻
+        if end > b and b - a >= win:
+            start, end = b - win, b
+        elif end > b:
+            end = min(b, start + max(0.5, v))
+        out.append((round(start, 3), round(end, 3)))
+        prev_end = end
+    return out
