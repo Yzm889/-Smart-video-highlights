@@ -822,6 +822,7 @@ class Handler(BaseHTTPRequestHandler):
                 'queued_at': p.get('queued_at', ''),
                 'queued': bool(p.get('queued')),
                 'tts_failures': p.get('tts_failures', []),   # [2.2] 失败段对前端可见
+                'align_summary': p.get('align_summary') or None,   # [v1.4.90] 成片对齐率
             })
         # 运行中的排前面，然后按时间倒序
         tasks.sort(key=lambda t: (t['done'], t['runid']), reverse=False)

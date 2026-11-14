@@ -4329,6 +4329,15 @@ def _unify_names_with_dialog(texts, asr, movie_name=''):
                    if str(k).strip() and str(v).strip()
                    and str(k).strip() != str(v).strip()
                    and str(v).strip() in _dlg}
+        # 【v1.4.90 防互换】双向映射（A→B 且 B→A 同时存在）=同一人的两个身份
+        # （本名/化名），不是译名差异——整稿互换会破坏叙事（e2e 实锤：稿子
+        # 「弗兰克化名皮特」被换成「彼特化名弗兰克」、「彼特·卡索还活着」
+        # 被换成「弗兰克·卡索还活着」——化名与本名的语义被抹掉）。
+        _swap = {k for k in mapping if k in mapping.get(mapping[k], '')}
+        if _swap:
+            mapping = {k: v for k, v in mapping.items() if k not in _swap}
+            _log.info('[DIAG] 译名归一丢弃双向映射（本名/化名，非译名）: %s'
+                      % '、'.join(sorted(_swap)))
         if not mapping:
             return texts, {}
         new_texts = list(texts)
@@ -4963,11 +4972,20 @@ def _verify_final_alignment(final_path, segs, progress=None):
         if descs:
             try:
                 import re as _re
+                _kind_note = ''
+                # 议论/抒情句（e2e wrong 的一半）：钩子/过渡 + 总结句式——
+                # 画面是「情绪引子」就 related，苛判 wrong 会污染刻度。
+                _abstract = bool(re.match(r'^(所以|其实|可以说|归根结底|这就是|等于)', narr))                     or bool(re.search(r'不是.{2,14}[，,].{0,6}而是', narr))
+                _kinds = _classify_sentences([narr])
+                if (_kinds and _kinds[0] in (KIND_HOOK, KIND_TRANS)) or _abstract:
+                    _kind_note = ('\n注意：这句是开场钩子/过渡句，本身不描述具体事件——'
+                                  '画面只要是情绪或主题相符的引子/承接画面就判 related 或 match，'
+                                  '不要因为「画面没有具象动作」判 wrong。')
                 prompt = ('【解说词】' + narr + '\n\n【画面事件描述】' + ' / '.join(descs) + '\n\n'
                           '判断：画面正在演的事，与这句解说描述的事，是否是同一件事？\n'
                           '输出 JSON：{"verdict": "match|related|wrong", "why": "一句话"}\n'
                           'match=同一事件（同一动作/同一时刻）；related=沾边但不是同一动作或时刻；'
-                          'wrong=完全无关。严格按画面证据判断。')
+                          'wrong=完全无关。严格按画面证据判断。' + _kind_note)
                 r = _w.vlm_text(prompt, system='你是剪辑对齐质检员，只输出 JSON。', timeout=120) or ''
                 m = _re.search(r'\{[^}]*\}', r, _re.S)
                 if m:

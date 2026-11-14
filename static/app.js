@@ -2370,6 +2370,14 @@ function loadTasks(){
       if(isFailed && t.error){
         phaseText = '错误：' + String(t.error).slice(0,100);
       }
+      // [v1.4.90] 成片对齐率对前端可见：出片后自动逐句验证的「画面在演解说说的事」比例
+      if(t.align_summary && t.align_summary.total){
+        const a = t.align_summary;
+        const rate = Math.round(100*a.match/a.total);
+        const color = rate >= 50 ? '#4caf50' : (rate >= 30 ? '#ff9800' : '#f44336');
+        phaseText = (phaseText ? phaseText+'｜' : '') + '对齐验证：'+a.match+'/'+a.total+' 句同一事件（'+rate+'%）';
+        t._alignColor = color;
+      }
       // [2.2] 配音失败段对前端可见：任务卡展示「第X段配音失败，已用Y替换/该段静音」，杜绝静默丢段
       if(Array.isArray(t.tts_failures) && t.tts_failures.length){
         const notes = t.tts_failures.map(f=>{
@@ -2382,6 +2390,9 @@ function loadTasks(){
         + '<div class="task-head">'
         + '<span class="task-id">'+t.runid+'</span>'
         + '<span class="task-status">'+statusText+'</span>'
+        + (t.align_summary && t.align_summary.total
+            ? '<span style="margin-left:8px;font-size:12px;color:'+(t._alignColor||'#999')+'">🎯 对齐 '+Math.round(100*t.align_summary.match/t.align_summary.total)+'%</span>'
+            : '')
         + '</div>'
         + '<div class="task-phase">'+phaseText+'</div>'
         + '<div class="task-bar"><div class="task-fill" style="width:'+pct+'%"></div></div>'
