@@ -4328,7 +4328,16 @@ def _unify_names_with_dialog(texts, asr, movie_name=''):
         mapping = {str(k).strip(): str(v).strip() for k, v in mapping.items()
                    if str(k).strip() and str(v).strip()
                    and str(k).strip() != str(v).strip()
-                   and str(v).strip() in _dlg}
+                   and str(v).strip() in _dlg
+                   # 【v1.4.90 源侧守卫】源译名若在字幕里也出现，说明两边都用这个
+                   # 叫法（如「弗兰克」在稿子和字幕都出现）——不是译名差异。
+                   # e2e 实锤：LLM 把稿子的「弗兰克」映射到字幕的「彼特」（化名
+                   # 身份的叫法），整稿替换后「弗兰克化名皮特」变成「彼特化名皮特」。
+                   and str(k).strip() not in _dlg
+                   # 【子串守卫】目标是源的扩展（卡斯帝欧尼→彼特卡斯帝欧尼）会产出
+                   # 「彼特·彼特卡斯帝欧尼」叠字灾难，丢弃。
+                   and str(k).strip() not in str(v).strip()
+                   and str(v).strip() not in str(k).strip()}
         # 【v1.4.90 防互换】双向映射（A→B 且 B→A 同时存在）=同一人的两个身份
         # （本名/化名），不是译名差异——整稿互换会破坏叙事（e2e 实锤：稿子
         # 「弗兰克化名皮特」被换成「彼特化名弗兰克」、「彼特·卡索还活着」

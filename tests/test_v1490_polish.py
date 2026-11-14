@@ -33,6 +33,22 @@ def test_name_unify_drops_bidirectional_swap(monkeypatch):
     assert new_texts[0] == '彼特化名弗兰克，与科提斯对话。' or '柯蒂斯' not in new_texts[0], new_texts
 
 
+def test_name_unify_drops_source_present_and_substring(monkeypatch):
+    """e2e-1490 实锤两条新守卫：源译名在字幕也出现→不映射（弗兰克两边都有）；
+    目标包含源（卡斯帝欧尼→彼特卡斯帝欧尼）→叠字灾难，丢弃。"""
+    resp = json.dumps({'mapping': {'弗兰克': '彼特', '卡斯帝欧尼': '彼特卡斯帝欧尼',
+                                   '柯蒂斯': '科提斯'}})
+    monkeypatch.setattr(M, 'local_llm_chat', lambda *a, **k: resp)
+    texts = ['弗兰克·卡斯帝欧尼与柯蒂斯对话。']
+    asr = [{'text': '科提斯：彼特卡斯帝欧尼，你这家伙。'},
+           {'text': '弗兰克，站起来。彼特·卡斯帝欧尼还活着。'}]
+    new_texts, mapping = M._unify_names_with_dialog(texts, asr, movie_name='测试')
+    assert '弗兰克' not in mapping, '源在字幕出现→必须丢弃: %s' % mapping
+    assert '卡斯帝欧尼' not in mapping, '子串包含→必须丢弃: %s' % mapping
+    assert mapping.get('柯蒂斯') == '科提斯'
+    assert new_texts[0].count('彼特') == 0, new_texts
+
+
 def test_name_unify_swap_guard_source_pin():
     """源码钉：防互换守卫必须存在。"""
     src = open(os.path.join(ROOT, 'movie_narrator.py'), encoding='utf-8').read()
