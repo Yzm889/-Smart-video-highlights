@@ -38,7 +38,10 @@ def _cfg(instruct=''):
 def test_auto_prefers_clone_over_per_sentence_design():
     order = T._auto_order()
     assert order[0] == 'indextts2', '逐句 VoiceDesign 会每句换一个人，不能再排第一'
-    assert 'qwen3tts' in order, 'Qwen3 仍要留着造音色/兜底'
+    # 【v1.4.91 变更】Qwen3 移出 auto 兜底（主人实测「每句都像喊出来」，模型层
+    # 问题修不掉）——音色样本仍由 Qwen3 的 voice_ref 造一次并缓存（T2.voice_ref），
+    # 但合成链不再经过它。
+    assert 'qwen3tts' not in order
 
 
 def test_explicitly_chosen_qwen3_also_clones(tmp_path, monkeypatch):

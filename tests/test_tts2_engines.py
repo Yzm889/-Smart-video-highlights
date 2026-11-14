@@ -23,9 +23,10 @@ SPEC = os.path.join(ROOT, 'FrameCut.spec')
 def test_auto_order_is_only_new_engines():
     # v1.4.20：克隆优先。qwen3tts 逐句 VoiceDesign 会每句换一个发音人
     # （F0 离散 16.8%），只留作“造一次音色样本”和克隆故障时的兜底。
-    assert T._auto_order() == ['indextts2', 'qwen3tts']
-    for legacy in ('edge', 'sapi', 'sherpa', 'chattts', 'cosyvoice'):
-        assert legacy not in T._auto_order(), '旧引擎 %s 不该回默认链' % legacy
+    # 【v1.4.91 变更】主人实测 Qwen3 兜底「每句都像喊出来」且音色漂移是模型层
+    # 问题——Qwen3 移出 auto 链（IndexTTS2 失败直接落 edge），显式选 qwen3tts 仍可用。
+    assert T._auto_order() == ['indextts2', 'edge', 'chattts', 'sherpa', 'sapi']
+    assert 'qwen3tts' not in T._auto_order(), 'Qwen3 不再作为 auto 兜底（喊叫+音色漂移）'
 
 
 def test_prosody_marks_reach_new_engines():

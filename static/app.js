@@ -3205,6 +3205,13 @@ async function buildNarrate(){
                          bitrate: ($('exportBitrate')||{}).value || '',
                          qualityTier: ($('exportQualityTier')||{}).value || 'balanced',
                          transition: ($('exportTransition')||{}).value || 'hard'} };
+  // 【v1.4.91 只配字幕模式】未勾「生成配音」→ 弹窗确认（确定=快速出片无旁白；取消=留在设置页）
+  const genVoice = !($('narGenVoice') && !$('narGenVoice').checked);
+  if(!genVoice){
+    const ok = window.confirm('你没有勾选「生成解说配音」：\n成片只有画面+烧字幕+原片声音，没有解说旁白。\n（配音生成耗时较长，每句约 15-30 秒）\n\n确定这样生成吗？');
+    if(!ok) { go.disabled = false; return; }   // 取消 → 留在当前设置界面
+  }
+  body.params.skipTts = !genVoice;
   if(userScript){ body.script = userScript; }  // 用户稿子：后端跳过写稿/润色，直接按句切
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
   // 导入的字幕：后端会落成与视频同名的 .srt，让「字幕优先于 ASR」的既有链路接管，

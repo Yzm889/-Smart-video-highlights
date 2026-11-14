@@ -456,9 +456,10 @@ def _auto_order():
     听感就是「一句一个人」。用户 2026-11-09 实跑「惩罚者前二十分钟」当场指出。
 
     现在反过来：IndexTTS2 拿**一条固定的参考音**做零样本克隆（离散 1.4%），
-    参考音由 Qwen3 按用户的音色描述造一次并缓存（见 T2.voice_ref）。两个引擎都
-    不可用时 local_tts_speak 会明确失败，由前端提示安装。"""
-    return ['indextts2', 'qwen3tts']
+    参考音由 Qwen3 按用户的音色描述造一次并缓存（见 T2.voice_ref）。
+    【v1.4.91 Qwen3 移出 auto 兜底链】主人实测 Qwen3 逐句 VoiceDesign「每句都像
+    喊出来」且音色漂移是模型层问题——IndexTTS2 失败直接落 edge-tts。"""
+    return ['indextts2', 'edge', 'chattts', 'sherpa', 'sapi']
 
 
 def _first_available_engine(order):
@@ -1042,7 +1043,11 @@ def _engine_order_for(eng_set):
         # （离散 1.4%），Qwen3 退到第二位，只在 IndexTTS2 不可用时才逐句兜底。
         order = ['indextts2', 'qwen3tts']
     elif eng_set == 'indextts2':
-        order = ['indextts2', 'qwen3tts']
+        # 【v1.4.91 Qwen3 移出兜底链】主人 2026-11-15 实测：Qwen3 逐句兜底的
+        # VoiceDesign「每句都像喊出来」，且音色逐句漂移是模型层问题修不掉。
+        # IndexTTS2 失败 → 直接落 edge-tts（稳定自然），不再经过 Qwen3。
+        # 显式选 qwen3tts 的用户仍可用（尊重选择），但它不再作为任何链的兜底。
+        order = ['indextts2', 'edge', 'chattts', 'sherpa', 'sapi']
     elif eng_set == 'edge':
         order = ['edge'] + _cosy_fb + ['chattts', 'sherpa', 'sapi']
     elif eng_set == 'cosyvoice':

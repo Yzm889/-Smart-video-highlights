@@ -4689,14 +4689,16 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         _full = {}
         if not _fast and scene_descs:
             try:
-                if _local_model_available():
-                    up('解说词-场景全篇对齐（模型通读稿子与场景）', 49)
-                    _full = _llm_align_full_script(
-                        texts, scene_descs, scene_story, asr, movie_name=movie_name,
-                        progress=progress,
-                        timeout=int(params.get('fullAlignTimeout') or 300))
-                else:
-                    _log.info('[DIAG] 全篇对齐跳过：本地模型不可用')
+                # 不做 _local_model_available 预判：剧情理解层刚用同一个 LLM 跑完
+                # （可用性已被证明）；且 TTS 并行启动会占 GPU，二次探测容易超时
+                # 误判不可用 → 全篇对齐被跳过 → DP 跳跃上限的整块错位复发
+                # （主人实测「解说说柯蒂斯、画面在工地」的直接根因）。
+                # 直接调用，失败由函数内部返回 {} 回退 DP。
+                up('解说词-场景全篇对齐（模型通读稿子与场景）', 49)
+                _full = _llm_align_full_script(
+                    texts, scene_descs, scene_story, asr, movie_name=movie_name,
+                    progress=progress,
+                    timeout=int(params.get('fullAlignTimeout') or 300))
             except AbortError:
                 raise
             except Exception as e:
@@ -5532,11 +5534,19 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
 
     # === 两步走模式：先生成配音，等用户确认后再合成 ===
     if tts_only:
-        up('逐段生成配音', 55)
-        # 引用让位的句子不配音（原声直接播原片）
-        _qslots = (progress or {}).get('quote_slots') or {}
-        tts_results = _generate_all_tts(narr, run_dir, progress=progress,
-                                        skip_idx=set(_qslots))
+        # 【v1.4.91 只配字幕模式】params.skipTts=true → 不生成配音，直接出
+        # 画面+烧字幕+原声的快速成片（配音每句 15-30s，26 句约 10 分钟；
+        # 前端复选框控制并在未勾时弹窗确认）。引用让位段照常工作（无需 TTS）。
+        if params.get('skipTts'):
+            up('跳过配音（只配字幕快速模式）', 55)
+            _log.info('[DIAG] skipTts=true：跳过配音生成（只配字幕快速模式）')
+            tts_results = []
+        else:
+            up('逐段生成配音', 55)
+            # 引用让位的句子不配音（原声直接播原片）
+            _qslots = (progress or {}).get('quote_slots') or {}
+            tts_results = _generate_all_tts(narr, run_dir, progress=progress,
+                                            skip_idx=set(_qslots))
         tts_state = {
             'video_path': os.path.abspath(video_path),
             'segs': [[float(s), float(e)] for s, e in segs],
@@ -5637,9 +5647,12 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                     progress['phase'] = f'逐段配音（并行）{i+1}/{len(narr)}'
         except Exception as e:
             _tts_error[0] = e
-    _tts_thread = _th_tts.Thread(target=_tts_worker, daemon=True, name='tts-worker')
-    _tts_thread.start()
-    _log.info('[DIAG] TTS配音已启动（与裁剪并行）')
+    if params.get('skipTts'):
+        _log.info('[DIAG] skipTts=true：跳过配音生成（只配字幕快速模式）')
+    else:
+        _tts_thread = _th_tts.Thread(target=_tts_worker, daemon=True, name='tts-worker')
+        _tts_thread.start()
+        _log.info('[DIAG] TTS配音已启动（与裁剪并行）')
 
     up('逐段配音+裁剪（并行）', 58)
     # 先聚合：同属一个beat的多个seg合并成一个时间范围（用原始segs，不依赖裁剪后数量）
