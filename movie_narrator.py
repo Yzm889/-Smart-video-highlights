@@ -2909,6 +2909,8 @@ def _llm_align_full_script(texts, scenes, scene_story, asr, movie_name='',
             parts.append('作用：%s' % st['act'])
         if st.get('keywords'):
             parts.append('关键词：%s' % '、'.join(str(k) for k in st['keywords']))
+        if st.get('event_chain'):
+            parts.append('事件：%s' % st['event_chain'])
         dlg = _scene_dialogue_of(sc, asr)
         if dlg:
             parts.append('台词：%s' % dlg)
@@ -4498,7 +4500,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         # 剧情理解结果缓存：这一层是 LLM 批量推断，两次跑结果不一样，
         # 直接影响对齐质量（真机实测两轮跑出的对齐差 90 秒）。缓存住
         # 既省 100 秒，又保证同一视频的解说产出可复现。
-        _story_cache_key = _video_cache_key(video_path, 'scene_story_v1')
+        _story_cache_key = _video_cache_key(video_path, 'scene_story_v2')
         _cached_story = _cache_load(_story_cache_key)
         if _cached_story:
             scene_story = _cached_story
@@ -4515,6 +4517,26 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
             except Exception as e:
                 _log.info('[DIAG] 剧情理解层失败(不影响出片): %s' % e)
                 scene_story = {}
+        # 【v1.4.89 层 1 素材升级】镜头段连续帧→事件链：单帧截图感知不了动作链
+        # （主人成片实测 match 率 19% 的根源）。事件描述写入 scene_story，
+        # 供全篇对齐器/DP 的「事件对事件」匹配使用。POC：同是楼顶，午餐段
+        # 「拿着食物准备吃」 vs 互助会段「走向公告栏取物」——可区分。
+        if scene_descs and not _fast:
+            try:
+                _ev = _vlm_event_windows(video_path, scene_descs, asr, run_dir, progress)
+                _n_ev = 0
+                for _j, _e in (_ev or {}).items():
+                    if _e:
+                        scene_story.setdefault(int(_j), {})['event_chain'] = str(_e)
+                        _n_ev += 1
+                if _n_ev:
+                    _log.info('[DIAG] 镜头事件链: %d/%d 段并入 scene_story' % (_n_ev, len(scene_descs)))
+                    if scene_story:
+                        _cache_save(_story_cache_key, scene_story)
+            except AbortError:
+                raise
+            except Exception as e:
+                _log.info('[DIAG] 镜头事件链失败(不影响出片): %s' % str(e)[:120])
         # 分幕 + 故事线：这是「解说讲剧情而不是描述画面」的关键一步。
         # 用户自带稿子时不需要——那是给写稿用的素材，稿子已经有了。
         if scene_story and not _has_user_script:
@@ -4894,6 +4916,122 @@ def _voice_tail(params):
     except Exception:
         v = 0.5
     return max(0.0, min(2.0, v))
+
+
+def _verify_final_alignment(final_path, segs, progress=None):
+    """v1.4.89 出片后自动逐句验证对齐——主人不再当测试器。
+
+    对每句解说（有配音的）：从成片的输出窗口抽 2 帧 → VLM 描述「画面正在演的
+    事件」→ 与解说句比对（match=同一事件 / related=场景沾边 / wrong=完全无关）。
+    刻度基线（run-065419 实测）：match 19% / related 85% / wrong 4 句——
+    升级目标 match 50%+、wrong 清零。任何失败都静默跳过（验证是附赠物，
+    绝不影响成片交付）。"""
+    import tempfile
+    import shutil
+    try:
+        from ffmpeg_utils import ffmpeg_exe as _ff
+        ff = _ff()
+    except Exception:
+        ff = 'ffmpeg'
+    vdir = tempfile.mkdtemp(prefix='fcv_')
+    report, n = [], {'match': 0, 'related': 0, 'wrong': 0}
+    total = 0
+    for s_ in segs:
+        i = int(s_.get('index', 0))
+        narr = str(s_.get('text') or '').strip()
+        if not narr or not float(s_.get('duration') or 0):
+            continue   # 引用/留白（无配音）不验证
+        total += 1
+        o0, o1 = float(s_.get('out_start') or 0), float(s_.get('out_end') or 0)
+        frames = []
+        for k, frac in (('m', 0.5), ('l', 0.8)):
+            fp = os.path.join(vdir, 'v_%d_%s.jpg' % (i, k))
+            try:
+                _w.ffmpeg_run(['-y', '-ss', '%.2f' % (o0 + (o1 - o0) * frac),
+                               '-i', final_path, '-frames:v', '1',
+                               '-vf', 'scale=768:-2', '-q:v', '4', '-an', fp])
+                if os.path.exists(fp) and os.path.getsize(fp) > 1000:
+                    frames.append(fp)
+            except Exception:
+                pass
+        descs = []
+        for fp in frames:
+            try:
+                d = (_w.vlm_chat(fp, '一句话描述这段画面里正在发生的事件（谁、做什么、动作与结果）。',
+                                 timeout=120, keep_alive='30m') or '').strip()
+                if d:
+                    descs.append(d[:120])
+            except Exception:
+                pass
+        verdict = 'unknown'
+        why = ''
+        if descs:
+            try:
+                import re as _re
+                prompt = ('【解说词】' + narr + '\n\n【画面事件描述】' + ' / '.join(descs) + '\n\n'
+                          '判断：画面正在演的事，与这句解说描述的事，是否是同一件事？\n'
+                          '输出 JSON：{"verdict": "match|related|wrong", "why": "一句话"}\n'
+                          'match=同一事件（同一动作/同一时刻）；related=沾边但不是同一动作或时刻；'
+                          'wrong=完全无关。严格按画面证据判断。')
+                r = _w.vlm_text(prompt, system='你是剪辑对齐质检员，只输出 JSON。', timeout=120) or ''
+                m = _re.search(r'\{[^}]*\}', r, _re.S)
+                if m:
+                    j = json.loads(m.group(0))
+                    verdict = j.get('verdict', 'unknown')
+                    why = str(j.get('why', ''))[:100]
+            except Exception:
+                verdict = 'unknown'
+        if verdict in n:
+            n[verdict] += 1
+        report.append({'index': i, 'out': [round(o0, 1), round(o1, 1)], 'verdict': verdict,
+                       'why': why, 'desc': descs, 'narr': narr[:50]})
+        if progress:
+            progress['phase'] = '成片对齐验证 %d 句…' % total
+    shutil.rmtree(vdir, ignore_errors=True)
+    n['total'] = total
+    return report, n
+
+
+def _auto_verify_alignment(run_dir, final_path, progress=None, params=None):
+    """出片后自动起后台线程跑逐句验证（不阻塞交付）。产物：
+    run 目录 align_report.json + progress['align_summary']（前端可显示对齐率）。
+    默认开启（params.autoVerify=false 关）；VLM 未启用时静默跳过。"""
+    if not (params or {}).get('autoVerify', True):
+        return
+    try:
+        if not _w.vlm_enabled():
+            _log.info('[DIAG] 对齐验证跳过：VLM 未启用')
+            return
+    except Exception:
+        return
+    import threading
+
+    def _job():
+        try:
+            with open(os.path.join(run_dir, 'composed_plan.json'), encoding='utf-8') as f:
+                segs = (json.load(f) or {}).get('segments') or []
+            if not segs:
+                return
+            report, n = _verify_final_alignment(final_path, segs, progress=progress)
+            _atomic_json_dump(os.path.join(run_dir, 'align_report.json'),
+                              {'summary': n, 'report': report})
+            if progress is not None:
+                try:
+                    mt = n.get('total') or 0
+                    progress['align_summary'] = {
+                        'match': n.get('match', 0), 'related': n.get('related', 0),
+                        'wrong': n.get('wrong', 0), 'total': mt,
+                        'rate': round(100.0 * n.get('match', 0) / mt, 0) if mt else 0.0}
+                except Exception:
+                    pass
+            _log.info('[DIAG] 成片对齐验证: match=%d related=%d wrong=%d / %d 句 '
+                      '(align_report.json 已落 run 目录)'
+                      % (n.get('match', 0), n.get('related', 0), n.get('wrong', 0),
+                         n.get('total', 0)))
+        except Exception as e:
+            _log.info('[DIAG] 对齐验证异常(不影响成片): %s' % str(e)[:120])
+
+    threading.Thread(target=_job, daemon=True, name='align-verify').start()
 
 
 def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_items=None, skip=None, user_params=None):
@@ -5334,6 +5472,11 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
             _log.info('[DIAG] 成片时间轴已落盘 composed_plan.json（%d 段）' % len(_rows))
     except Exception as _e:
         _log.info('[DIAG] composed_plan 落盘失败（不阻断）: %s' % _e)
+    if final:
+        try:
+            _auto_verify_alignment(run_dir, final, progress=progress, params=user_params)
+        except Exception as _ve:
+            _log.info('[DIAG] 对齐验证启动失败(不阻断): %s' % _ve)
     if progress:
         progress['done'] = True; progress['pct'] = 100
         progress['file'] = os.path.relpath(final, _w.OUTDIR).replace('\\', '/') if final else ''
@@ -5630,7 +5773,7 @@ from tts_orchestration import (  # noqa: F401,E402  v1.4.40 拆出
 from vlm_index import (  # noqa: F401,E402  v1.4.41 拆出
     _dialogue_anchor_times, NARR_TIERS, NARR_TIER_DEFAULT, NARR_TIER_ORDER,
     narr_tier, _tier_field_spec, _detect_opening,
-    _vlm_sample_timeline, _vlm_sample_captions)
+    _vlm_sample_timeline, _vlm_sample_captions, _vlm_event_windows)
 from narration_align import (  # noqa: F401,E402  v1.4.42 拆出
     _scene_info_pen, _beat_info_pen, _default_jump_cap, _JUMP_CAP_RATIO,
     _effective_jump_cap, _algo_align_beats_to_scenes, _isotonic,

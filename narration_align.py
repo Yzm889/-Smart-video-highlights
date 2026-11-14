@@ -177,6 +177,8 @@ def _algo_align_beats_to_scenes(beats, scenes, asr=None, scene_story=None,
         st = (scene_story or {}).get(j) or {}
         if st.get('story'):
             parts.append(str(st['story']))
+        if st.get('event_chain'):
+            parts.append(str(st['event_chain']))   # v1.4.89 镜头事件链：DP 兜底也吃事件证据
         if st.get('keywords'):
             parts.append(''.join(str(k) for k in st['keywords']))
         if asr:

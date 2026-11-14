@@ -1,6 +1,6 @@
 # FrameCut · 一帧成片
 
-[中文文档](README.md) · v1.4.29
+[中文文档](README.md) · v1.4.89
 
 A local-first AI movie-commentary, live-clip and short-video editor for Windows. Give it a film and a plot summary (or your own script), and it writes the narration, voices every line, picks shots by content, cuts only after each line finishes, and renders the final video.
 

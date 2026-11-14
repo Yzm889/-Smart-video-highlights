@@ -685,6 +685,102 @@ def _vlm_sample_timeline(video_path, vdur, asr, run_dir, progress=None, interval
     return results
 
 
+def _vlm_event_windows(video_path, scenes, asr=None, run_dir=None, progress=None,
+                       max_windows=150, per_window=3):
+    """v1.4.89 层 1 素材升级：逐镜头段看【连续帧】，产出「事件链」描述。
+
+    此前的画面索引是抽样点上的【单帧】描述——20 分钟片只有几十张截图，
+    「拿大锤砸墙」这类动作链单帧根本感知不到（主人成片实测 match 率 19% 的
+    根源）。本函数对每个场景段抽 per_window 张连续帧，让 VLM 按【时间顺序】
+    描述「这段画面里连续发生的事件（谁、做什么、动作如何推进）」。
+    POC 实测（2026-11-14）：同是楼顶，午餐段描述出「拿着食物准备吃」、
+    互助会段描述出「走向公告栏取物」——相似场景可区分；事件描述喂给
+    LLM 做句-段匹配 5/5 全中。
+
+    返回 {scene_idx: 事件描述}；VLM 未启用/探活失败返回 {}。
+    段数封顶 max_windows（超长片按时长均匀抽取，防 VLM 拖死）；
+    结果缓存（键=视频指纹+模型），重跑不重复花钱。
+    """
+    import movie_narrator as _MN
+    if not scenes:
+        return {}
+    try:
+        if not _w.vlm_enabled():
+            return {}
+        if not _w.vlm_ping()[0]:
+            return {}
+    except Exception:
+        return {}
+
+    try:
+        vlm_model = _MN.vlm_cfg().get('model', 'default')
+    except Exception:
+        vlm_model = 'default'
+    cache_key = _MN._video_cache_key(video_path, f'event_windows_{vlm_model}')
+    cached = _MN._cache_load(cache_key)
+    if cached:
+        _log.info('[DIAG] 镜头事件链命中缓存: %d 段' % len(cached))
+        return cached
+
+    # 段过滤与封顶：太短的段没有事件可看；超长片按时长均匀抽（长段优先保留）
+    cand = [(i, sc) for i, sc in enumerate(scenes)
+            if float(sc.get('end', 0) or 0) - float(sc.get('start', 0) or 0) >= 2.0]
+    if len(cand) > max_windows:
+        step = len(cand) / float(max_windows)
+        cand = [cand[int(k * step)] for k in range(max_windows)]
+
+    frame_dir = os.path.join(run_dir or '.', 'event_frames')
+    os.makedirs(frame_dir, exist_ok=True)
+
+    def up(ph, pct):
+        if progress:
+            progress['phase'] = ph
+            progress['pct'] = pct
+
+    out = {}
+    total = len(cand)
+    for k, (i, sc) in enumerate(cand):
+        if _MN._aborted():
+            raise _MN.AbortError('用户取消了任务')
+        a, b = float(sc.get('start', 0) or 0), float(sc.get('end', 0) or 0)
+        up('镜头事件理解 %d/%d（连续帧看动作链）' % (k + 1, total), 44)
+        frames = []
+        for k2, frac in enumerate((0.1, 0.5, 0.9)[:per_window]):
+            fp = os.path.join(frame_dir, 'ev_%04d_%d.jpg' % (i, k2))
+            if not (os.path.exists(fp) and os.path.getsize(fp) > 1000):
+                try:
+                    _MN.ffmpeg_run(['-y', '-ss', '%.3f' % (a + (b - a) * frac),
+                                    '-i', video_path, '-frames:v', '1',
+                                    '-vf', 'scale=min(iw\\,768):-2', '-q:v', '4', '-an', fp])
+                except Exception:
+                    pass
+            if os.path.exists(fp) and os.path.getsize(fp) > 1000:
+                frames.append(fp)
+        if len(frames) < 2:
+            continue   # 抽帧不足：宁可空缺不硬凑
+        prompt = ('这是同一段连续画面的 %d 帧（按时间先后）。请描述这段画面里'
+                  '【连续发生的事件】：谁、在做什么、动作如何推进、结果如何。'
+                  '只写事件本身，2-3 句话，不要评价画面质量、不要罗列风格。' % len(frames))
+        try:
+            r = _w.vlm_chat_multi(frames, prompt,
+                                  system='你是影视画面理解器。描述正在发生的事件，不要罗列名词。',
+                                  timeout=180, keep_alive='30m', max_tokens=400)
+        except Exception:
+            continue
+        r = (r or '').strip().replace('\n', ' ')
+        if len(r) >= 8:
+            out[i] = r[:300]
+    # 卸载常驻权重（批量结束，显存还给 TTS/渲染）
+    try:
+        _w.vlm_unload()
+    except Exception:
+        pass
+    _log.info('[DIAG] 镜头事件链: %d/%d 段拿到事件描述' % (len(out), total))
+    if len(out) == total and total:
+        _MN._cache_save(cache_key, out)
+    return out
+
+
 def _vlm_sample_captions(video_path, vdur, run_dir, n_samples=24, progress=None):
     """均匀采样全片 N 帧，VLM 描述画面内容，返回 [(time_sec, caption), ...]。
 
