@@ -5016,6 +5016,37 @@ def _verify_final_alignment(final_path, segs, progress=None):
     return report, n
 
 
+def _build_fix_items(state, idx, src_start, src_end):
+    """v1.4.92 句级换画面：从 tts_state 构造 adjusted_items（复用重渲通道）。
+
+    返回 (items, skip, error)。items = 全部句的 {index, text, audio}，
+    目标句额外带 video_start/video_end（compose 的现成窗口覆盖通道）；
+    引用让位段进 skip（compose 按原声引用处理，不支持换画面）。"""
+    narr = state.get('narr') or []
+    if not (0 <= idx < len(narr)):
+        return None, None, '句号越界'
+    audio_by_idx = {}
+    for it in (state.get('tts_results') or []):
+        try:
+            audio_by_idx[int(it[0])] = it[1]
+        except Exception:
+            continue
+    quote_slots = state.get('quote_slots') or {}
+    skip = sorted(int(k) for k in quote_slots.keys())
+    if idx in skip:
+        return None, None, '该句是引用让位段（原声引用），不支持换画面'
+    items = []
+    for i, txt in enumerate(narr):
+        it = {'index': i, 'text': str(txt or '')}
+        if i in audio_by_idx:
+            it['audio'] = audio_by_idx[i]
+        if i == idx:
+            it['video_start'] = float(src_start)
+            it['video_end'] = float(src_end)
+        items.append(it)
+    return items, skip, None
+
+
 def _auto_verify_alignment(run_dir, final_path, progress=None, params=None):
     """出片后自动起后台线程跑逐句验证（不阻塞交付）。产物：
     run 目录 align_report.json + progress['align_summary']（前端可显示对齐率）。
@@ -5845,7 +5876,7 @@ for _sym in (
     'llm_movie_full_script', 'llm_movie_script',
     'align_script_to_segments',
     '_narrate_by_plot', '_generate_all_tts', '_edge_probe_recover',
-    'compose_movie_from_tts', 'narrate_movie',
+    'compose_movie_from_tts', 'narrate_movie', '_build_fix_items',
     '_IMP_ORDER', 'NAR_BEAT_MIN', 'NAR_BEAT_MAX', 'NAR_SCRIPT_CPS',
     'NAR_SEG_TARGET', 'SCRIPT_STYLE_MOVIE', '_SEMANTIC_ACT_VALUES',
 ):

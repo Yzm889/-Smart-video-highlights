@@ -3361,6 +3361,7 @@ function pollNarrate(runid){
           const nDone = $('narDoneTitle'); if(nDone) nDone.textContent='✅ 解说完成';
           $('narResult').style.display='block';
           $('narPlayer').src='/media/'+p.file+'?t='+Date.now();
+          if(p.run_dir) setTimeout(()=>loadAlignPanel(p.run_dir), 800);   // [v1.4.92] 逐句对齐面板
           setModeBadge('narBadge', p.mode);
           gPreview(p.file, '电影解说');
           $('narDl').href='/media/'+p.file;
@@ -7891,3 +7892,128 @@ loadHardware = function(){
 
 // 页面加载时自动检测
 window.addEventListener('load', function(){ setTimeout(loadHardware, 800); });
+
+
+// ==================== [v1.4.92] 句级画面修正闭环 ====================
+// 逐句对齐面板：验证结果（match/related/wrong）逐句展示；
+// wrong/related 句可「🔀 换画面」：从场景段（事件描述）中选新画面 →
+// POST /api/fix_segment → dispatch_movie_compose 重渲（约 3-5 分钟）。
+
+const ALIGN_VERDICT = {
+  match:   {icon:'✅', text:'同一事件', color:'#4caf50'},
+  related: {icon:'〰️', text:'沾边',   color:'#ff9800'},
+  wrong:   {icon:'❌', text:'错位',   color:'#f44336'},
+  unknown: {icon:'⏳', text:'未判定', color:'#94a3b8'},
+};
+
+function loadAlignPanel(run){
+  const box = document.getElementById('narAlignPanel');
+  if(!box || !run) return;
+  box.style.display = 'block';
+  box.innerHTML = '⏳ 对齐验证加载中…';
+  fetch('/api/align_detail?run='+encodeURIComponent(run))
+    .then(r=>r.json())
+    .then(d=>{
+      if(!d.ok || !d.segments || !d.segments.length){
+        box.innerHTML = '对齐数据不可用（'+(d.error||'无 composed_plan')+'）';
+        return;
+      }
+      const rep = d.report || [];
+      const vmap = {};
+      rep.forEach(r2=>{ vmap[r2.index] = r2; });
+      const sum = d.summary || null;
+      let head = '<b>🎯 逐句对齐验证</b>';
+      if(sum && sum.total){
+        const rate = Math.round(100*sum.match/sum.total);
+        head += '　<span style="color:'+(rate>=50?'#4caf50':(rate>=30?'#ff9800':'#f44336'))+';font-weight:bold;">'
+              + '同一事件 '+sum.match+'/'+sum.total+'（'+rate+'%）</span>'
+              + '　<span style="color:#64748b;">沾边 '+sum.related+' · 错位 '+sum.wrong+'</span>';
+      } else {
+        head += '　<span style="color:#64748b;">验证报告未生成（出片后自动跑约 4 分钟；重进本页刷新）</span>';
+      }
+      head += '　<button class="btn mini ghost" onclick="loadAlignPanel(\''+run+'\')">🔄 刷新</button>';
+      let rows = '<div style="margin-top:8px;max-height:320px;overflow-y:auto;">';
+      d.segments.forEach(seg=>{
+        const v = vmap[seg.index] || {};
+        const vinfo = ALIGN_VERDICT[v.verdict || 'unknown'] || ALIGN_VERDICT.unknown;
+        const isQuote = !seg.duration;
+        const fixable = (v.verdict === 'wrong' || v.verdict === 'related') && !isQuote;
+        rows += '<div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-top:1px solid var(--border);">'
+          + '<span style="flex:none;font-size:13px;" title="'+(v.why||'')+'">'+vinfo.icon+' '+vinfo.text+'</span>'
+          + '<span style="flex:1;font-size:13px;">'+(seg.text||'').slice(0,46)+(seg.text&&seg.text.length>46?'…':'')
+          + '<span style="color:#64748b;font-size:12px;">　['+fmtT(seg.src_start)+'-'+fmtT(seg.src_end)+']</span></span>'
+          + (fixable
+              ? '<button class="btn mini ghost" style="flex:none;" onclick="showAlignFix('+seg.index+',\''+run+'\')">🔀 换画面</button>'
+              : (isQuote ? '<span style="flex:none;color:#64748b;font-size:12px;">原声引用</span>' : ''))
+          + '</div>';
+      });
+      rows += '</div>';
+      box.innerHTML = head + rows;
+    })
+    .catch(e=>{ box.innerHTML = '对齐数据加载失败：'+(e.message||e); });
+}
+
+function fmtT(t){
+  t = Number(t)||0;
+  const m = Math.floor(t/60), s = Math.round(t%60);
+  return m+':'+(s<10?'0':'')+s;
+}
+
+let _alignFixCtx = null;
+
+function showAlignFix(index, run){
+  _alignFixCtx = {index:index, run:run};
+  fetch('/api/align_detail?run='+encodeURIComponent(run))
+    .then(r=>r.json())
+    .then(d=>{
+      if(!d.ok){ toast('对齐数据不可用：'+(d.error||''), 'error'); return; }
+      const seg = (d.segments||[]).find(s=>s.index===index);
+      const layer = document.getElementById('narAlignFix');
+      if(!layer) return;
+      let opts = '<div style="max-height:380px;overflow-y:auto;margin-top:8px;">';
+      (d.scenes||[]).forEach(sc=>{
+        const cur = seg && sc.start >= seg.src_start - 1 && sc.start <= seg.src_end;
+        opts += '<div style="display:flex;gap:8px;padding:6px 8px;border-top:1px solid var(--border);align-items:flex-start;'
+              + (cur ? 'background:rgba(76,175,80,.12);' : '')
+              + '"><span style="flex:none;font-size:12px;color:#64748b;width:92px;">段'+sc.i+'　'
+              + fmtT(sc.start)+'-'+fmtT(sc.end)+'</span>'
+              + '<span style="flex:1;font-size:13px;">'+(sc.loc?'【'+sc.loc+'】':'')+(sc.event||'（无描述）')+'</span>'
+              + (cur ? '<span style="flex:none;color:#4caf50;font-size:12px;">当前</span>'
+                     : '<button class="btn mini" style="flex:none;" onclick="doAlignFix('+sc.i+','+sc.start+','+sc.end+')">选这段</button>')
+              + '</div>';
+      });
+      opts += '</div>';
+      layer.innerHTML = '<div style="background:var(--panel,#1e2530);color:#e5e7eb;border:1px solid var(--border);'
+        + 'border-radius:12px;max-width:720px;width:92%;max-height:80vh;overflow-y:auto;padding:14px 16px;">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;">'
+        + '<b>🔀 为第 '+(index+1)+' 句换画面</b>'
+        + '<button class="btn mini ghost" onclick="closeAlignFix()">✕ 关闭</button></div>'
+        + '<div class="hint" style="margin-top:6px;">按【事件描述】选段（不是按名词）：解说提到的事在哪段发生，就选哪段。'
+        + '选中后整片重渲（约 3-5 分钟），当前句画面替换为你选的段。</div>'
+        + (seg ? '<div class="hint" style="margin-top:4px;color:#ff9800;">本句当前画面：'+fmtT(seg.src_start)+'-'+fmtT(seg.src_end)+'</div>' : '')
+        + opts + '</div>';
+      layer.style.display = 'flex';
+    })
+    .catch(e=>toast('加载失败：'+(e.message||e), 'error'));
+}
+
+function closeAlignFix(){
+  const layer = document.getElementById('narAlignFix');
+  if(layer) layer.style.display = 'none';
+  _alignFixCtx = null;
+}
+
+function doAlignFix(scIdx, srcStart, srcEnd){
+  if(!_alignFixCtx) return;
+  const {index, run} = _alignFixCtx;
+  if(!window.confirm('确定把第 '+(index+1)+' 句的画面换到 段'+scIdx+'（'+fmtT(srcStart)+'-'+fmtT(srcEnd)+'）？\n整片将重渲（约 3-5 分钟），完成后到本页刷新查看。')) return;
+  fetch('/api/fix_segment', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({run:run, index:index, src_start:srcStart, src_end:srcEnd})})
+    .then(r=>r.json())
+    .then(out=>{
+      if(!out.ok){ toast('换画面失败：'+(out.error||''), 'error'); return; }
+      closeAlignFix();
+      toast('✅ 已提交重渲（约 3-5 分钟）——在任务列表查看进度，完成后刷新本页看新画面', 'success');
+    })
+    .catch(e=>toast('提交失败：'+(e.message||e), 'error'));
+}

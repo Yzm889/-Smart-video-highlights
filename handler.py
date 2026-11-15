@@ -2076,6 +2076,91 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(200, json.dumps({'ok': False, 'error': str(e)}).encode('utf-8'), 'application/json')
 
+    def _get_align_detail(self):
+        """v1.4.92 句级画面修正闭环（1/2）：逐句验证结果+计划窗口+候选场景段。
+
+        前端「逐句对齐」面板的数据源：每句解说 [判定徽标/文本/时间] +
+        wrong/related 句可「换画面」（候选=scene_descs 的场景段，事件描述选段）。"""
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        run = (q.get('run') or [''])[0]
+        if not run:
+            self._send(200, json.dumps({'ok': False, 'error': '缺少 run'}).encode('utf-8'),
+                       'application/json')
+            return
+        try:
+            run_dir = self._safe_dir(_w.OUTDIR, run)
+        except Exception:
+            self._send(200, json.dumps({'ok': False, 'error': '非法 run'}).encode('utf-8'),
+                       'application/json')
+            return
+
+        def _load(name):
+            fp = os.path.join(run_dir, name)
+            if not os.path.isfile(fp):
+                return None
+            try:
+                with open(fp, encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return None
+
+        rep = _load('align_report.json')
+        plan = _load('composed_plan.json') or {}
+        scenes = _load('scene_descs.json') or []
+        segs = []
+        for it in (plan.get('segments') or []):
+            segs.append({'index': it.get('index'),
+                         'out_start': it.get('out_start'), 'out_end': it.get('out_end'),
+                         'src_start': it.get('src_start'), 'src_end': it.get('src_end'),
+                         'text': str(it.get('text') or '')[:80],
+                         'duration': it.get('duration')})
+        cand = [{'i': k, 'start': round(float(sc.get('start', 0) or 0), 1),
+                 'end': round(float(sc.get('end', 0) or 0), 1),
+                 'loc': str(sc.get('location') or '')[:20],
+                 'event': str(sc.get('event') or '')[:60]}
+                for k, sc in enumerate(scenes)]
+        self._send(200, json.dumps({'ok': True, 'run': run,
+                                    'report': (rep or {}).get('report'),
+                                    'summary': (rep or {}).get('summary'),
+                                    'segments': segs, 'scenes': cand}).encode('utf-8'),
+                   'application/json')
+
+    def _post_fix_segment(self):
+        """v1.4.92 句级画面修正闭环（2/2）：用户为某句选定新画面 → 重渲。
+
+        构造 adjusted_items（全部句的 text/audio，目标句覆盖 video_start/end），
+        复用 dispatch_movie_compose 的现成重渲通道——不新增渲染代码。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length).decode('utf-8') or '{}') if length else {}
+            run = str(body.get('run') or '')
+            idx = int(body.get('index', -1))
+            vs = float(body.get('src_start', 0) or 0)
+            ve = float(body.get('src_end', 0) or 0)
+            if not run or idx < 0 or ve <= vs:
+                self._send(200, json.dumps({'ok': False,
+                                            'error': '缺少 run/index/src_start/src_end'}).encode('utf-8'),
+                           'application/json')
+                return
+            run_dir = self._safe_dir(_w.OUTDIR, run)
+            st = json.load(open(os.path.join(run_dir, 'tts_state.json'), encoding='utf-8'))
+            items, skip, err = _w._build_fix_items(st, idx, vs, ve)
+            if err:
+                self._send(200, json.dumps({'ok': False, 'error': err}).encode('utf-8'),
+                           'application/json')
+                return
+            req = {'run_dir': run,
+                   'items': items,
+                   'skip': skip,
+                   'params': st.get('params') or {}}
+            runid = self._spawn(_w.dispatch_movie_compose, req)
+            self._send(200, json.dumps({'ok': True, 'runid': runid}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'),
+                       'application/json')
+
     def _post_movie_tts(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -2574,7 +2659,9 @@ class Handler(BaseHTTPRequestHandler):
         '/api/live_clip_timeline': '_post_live_clip_timeline',
         '/api/live_clip_timeline/export': '_post_live_clip_timeline_export',
         '/api/live_clip/summary': '_post_live_clip_summary',
+        '/api/align_detail': '_get_align_detail',
         '/api/narrate': '_post_narrate',
+        '/api/fix_segment': '_post_fix_segment',
         '/api/narrate/align': '_post_narrate_align',
         '/api/narrate_movie': '_post_narrate_movie',
         '/api/plan': '_post_plan',

@@ -77,3 +77,28 @@ def test_frontend_voice_checkbox_and_confirm():
     js = open(os.path.join(ROOT, 'static', 'app.js'), encoding='utf-8').read()
     assert 'window.confirm' in js and 'skipTts' in js, '未勾配音必须弹窗确认并传 skipTts'
     assert 'narGenVoice' in js
+
+
+def test_build_fix_items_constructs_override():
+    """句级换画面：items 构造（audio 跟随、目标句窗口覆盖、引用段 skip、越界报错）。"""
+    st = {'narr': ['a', 'b', 'c'], 'tts_results': [[0, 'n0.wav'], [2, 'n2.wav']],
+          'quote_slots': {'1': {}}}
+    items, skip, err = M._build_fix_items(st, 2, 100.0, 110.0)
+    assert err is None and len(items) == 3
+    assert items[2]['video_start'] == 100.0 and items[2]['video_end'] == 110.0
+    assert items[0]['audio'] == 'n0.wav' and 'audio' not in items[1]
+    assert skip == [1]
+    _, _, err2 = M._build_fix_items(st, 1, 0, 1)
+    assert err2 and '引用' in err2
+    _, _, err3 = M._build_fix_items(st, 9, 0, 1)
+    assert err3 and '越界' in err3
+
+
+def test_align_fix_routes_registered():
+    """路由与前端面板钉：句级修正闭环的数据通道必须注册。"""
+    src = open(os.path.join(ROOT, 'handler.py'), encoding='utf-8').read()
+    assert "'/api/align_detail'" in src and "'/api/fix_segment'" in src
+    js = open(os.path.join(ROOT, 'static', 'app.js'), encoding='utf-8').read()
+    assert 'loadAlignPanel' in js and 'showAlignFix' in js and 'doAlignFix' in js
+    html = open(os.path.join(ROOT, 'static', 'index.html'), encoding='utf-8').read()
+    assert 'narAlignPanel' in html
