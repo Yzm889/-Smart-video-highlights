@@ -93,16 +93,20 @@ def detect_shots(video_path, threshold=0.30, min_len=1.5, max_shots=220):
 
 
 # ---------------------------------------------------------------------------
-# L1 镜头卡（VLM 看层：每镜头 3 连续帧，只描述动作推进）
+# L1 镜头卡（VLM 看层：每镜头 5 连续帧，三段式结构化理解——动作链/因果/细节）
 # ---------------------------------------------------------------------------
 
-_SHOT_PROMPT = ('这是同一段连续镜头的 3 帧（按时间先后）。请按时间顺序描述这个镜头里'
-                '【连续发生的动作】：谁、在做什么、动作如何推进、结果如何。只写画面里'
-                '确实发生的事，2-3 句话；不要猜剧情、不要评价画面质量。')
+_SHOT_PROMPT = (
+    '这是同一段连续镜头的 {n} 帧（按时间先后）。请输出三段式镜头卡：\n'
+    '1.【动作链】镜头里连续发生的动作（谁、做什么、怎么推进、结果），尽可能详细；\n'
+    '2.【因果推断】结合画面细节推断这段镜头在剧情里的作用（人物在做什么/为什么做）；\n'
+    '3.【关键细节】值得注意的物件、表情、环境线索（有助于后续与解说词对齐）。\n'
+    '不限长度，尽可能充分。不要评价画面质量。')
 
 
-def shot_cards(video_path, shots, run_dir, progress=None, per_shot=3, max_cards=200):
-    """每镜头抽首/中/尾帧 → VLM 描述 → {shot_idx: 镜头卡文本}。"""
+def shot_cards(video_path, shots, run_dir, progress=None, per_shot=5, max_cards=200):
+    """每镜头抽 5 帧（Phase 1 测绘定稿：1280px/1500 tokens/三段式结构化）→
+    VLM 镜头卡 → {shot_idx: 镜头卡文本}。时序上下文：卡尾串入下一镜头的 prompt。"""
     cfg = {}
     try:
         cfg = _w.vlm_cfg()
@@ -114,7 +118,7 @@ def shot_cards(video_path, shots, run_dir, progress=None, per_shot=3, max_cards=
         vlm_model = cfg.get('model', 'default')
     except Exception:
         vlm_model = 'default'
-    cache_key = _w._video_cache_key(video_path, f'shot_cards_{vlm_model}')
+    cache_key = _w._video_cache_key(video_path, f'shot_cards_v2_{vlm_model}')
     cached = _w._cache_load(cache_key)
     if cached:
         _log.info('[DIAG] L1 镜头卡命中缓存: %d 个' % len(cached))
@@ -124,34 +128,39 @@ def shot_cards(video_path, shots, run_dir, progress=None, per_shot=3, max_cards=
     os.makedirs(frame_dir, exist_ok=True)
     use = shots[:max_cards]
     out = {}
+    _prev_card_tail = ''   # 时序上下文：前一镜头卡的结尾
     for k, (a, b) in enumerate(use):
         if _MN_ABORTED():
             raise RuntimeError('用户取消了任务')
         if progress:
             progress['phase'] = 'L1 镜头卡 %d/%d（看每个镜头的动作）' % (k + 1, len(use))
         frames = []
-        for k2, frac in enumerate((0.12, 0.5, 0.88)[:per_shot]):
+        for k2, frac in enumerate((0.1, 0.3, 0.5, 0.7, 0.9)[:per_shot]):
             fp = os.path.join(frame_dir, 'shot_%04d_%d.jpg' % (k, k2))
             if not (os.path.isfile(fp) and os.path.getsize(fp) > 1000):
                 try:
                     _w.ffmpeg_run(['-y', '-ss', '%.3f' % (a + (b - a) * frac),
                                    '-i', video_path, '-frames:v', '1',
-                                   '-vf', 'scale=min(iw\\,768):-2', '-q:v', '4', '-an', fp])
+                                   '-vf', 'scale=min(iw\\,1280):-2', '-q:v', '4', '-an', fp])
                 except Exception:
                     pass
             if os.path.isfile(fp) and os.path.getsize(fp) > 1000:
                 frames.append(fp)
         if len(frames) < 2:
             continue
+        _prompt = _SHOT_PROMPT.format(n=len(frames))
+        if _prev_card_tail:
+            _prompt = '【上一镜头结尾】' + _prev_card_tail + '\n' + _prompt
         try:
-            r = _w.vlm_chat_multi(frames, _SHOT_PROMPT,
-                                  system='你是影视镜头理解器。只描述画面里确实发生的动作，不要猜剧情。',
-                                  timeout=180, keep_alive='30m', max_tokens=300)
+            r = _w.vlm_chat_multi(frames, _prompt,
+                                  system='你是影视镜头理解器。输出三段式镜头卡：动作链/因果推断/关键细节。',
+                                  timeout=300, keep_alive='30m', max_tokens=1500)
         except Exception:
             continue
         r = (r or '').strip().replace('\n', ' ')
         if len(r) >= 8:
-            out[k] = r[:280]
+            out[k] = r[:900]
+            _prev_card_tail = r[-80:]
     try:
         _w.vlm_unload()
     except Exception:
