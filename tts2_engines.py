@@ -34,6 +34,28 @@ QWEN_WORKER = os.path.join(_HERE, 'qwen3tts_worker.py')
 IDX_REPO = _p('indextts2', 'repo')
 IDX_CKPT = _p('indextts2', 'checkpoints_2')
 IDX_PY = os.path.join(IDX_REPO, '.venv', 'Scripts', 'python.exe')
+# 【v1.4.93 IndexTTS-2.5】tts2/indextts25/（repo+checkpoints）就绪时优先用 2.5
+# （RTF 快 2.28 倍、同自然度——主人实测配音太慢的解法）；否则回滚 indextts2。
+# 旧环境永远保留作回滚（v1.4.84-b 教训：删环境前必须证明它坏）。
+def _pick_idx_dir():
+    _new = _p('indextts25', 'repo')
+    _old = _p('indextts2', 'repo')
+    try:
+        _new_py = os.path.join(_new, '.venv', 'Scripts', 'python.exe')
+        _new_ckpt = _p('indextts25', 'checkpoints')
+        _need = ('config.yaml', 'gpt.pth', 'codec.pth')
+        if (os.path.isfile(_new_py) and os.path.isdir(_new_ckpt)
+                and all(os.path.getsize(os.path.join(_new_ckpt, f)) > 1024
+                        for f in _need)):
+            return _new, _new_ckpt
+    except Exception:
+        pass
+    return _old, _p('indextts2', 'checkpoints_2')
+
+
+IDX_DIR, IDX_CKPT = _pick_idx_dir()
+IDX_REPO = IDX_DIR
+IDX_PY = os.path.join(IDX_REPO, '.venv', 'Scripts', 'python.exe')
 IDX_WORKER = os.path.join(_HERE, 'indextts2_worker.py')
 
 BIN_DIR = _p('bin')

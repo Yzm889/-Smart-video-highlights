@@ -56,14 +56,32 @@ def main():
     sys.path.insert(0, repo_dir)
     t0 = time.time()
     try:
-        from indextts.infer_v2 import IndexTTS2
-        tts = IndexTTS2(
-            cfg_path=os.path.join(ckpt_dir, 'config.yaml'),
-            model_dir=ckpt_dir,
-            use_fp16=True,           # 3060 12GB 必须半精度，否则显存踩线
-            use_cuda_kernel=False,
-            use_deepspeed=False,
-        )
+        # 【v1.4.93 IndexTTS-2.5】入口三层：v2_5（2.5 正式）→ v2（2.0）→ infer（最老）
+        _IS_V25 = False
+        try:
+            from indextts.infer_v2_5 import IndexTTS2
+            _IS_V25 = True
+        except ImportError:
+            try:
+                from indextts.infer_v2 import IndexTTS2
+            except ImportError:
+                from indextts.infer import IndexTTS as IndexTTS2
+        if _IS_V25:
+            tts = IndexTTS2(
+                cfg_path=os.path.join(ckpt_dir, 'config.yaml'),
+                model_dir=ckpt_dir,
+                use_bf16=True,       # 2.5 只认 bf16（3060 半精度）
+                use_cuda_kernel=False,
+                use_deepspeed=False,
+            )
+        else:
+            tts = IndexTTS2(
+                cfg_path=os.path.join(ckpt_dir, 'config.yaml'),
+                model_dir=ckpt_dir,
+                use_fp16=True,       # 3060 12GB 必须半精度，否则显存踩线
+                use_cuda_kernel=False,
+                use_deepspeed=False,
+            )
     except Exception as e:
         import traceback
         traceback.print_exc(file=sys.stderr)
@@ -87,6 +105,9 @@ def main():
             spk = req.get('spk') or default_spk
             kw = dict(spk_audio_prompt=spk, text=text,
                       output_path=out, use_random=False, verbose=False)
+            if _IS_V25:
+                kw['lang'] = (req.get('lang') or 'ZH')   # 2.5 必填（语言→BPE 前缀）
+                kw['duration_factor'] = float(req.get('duration_factor') or 1.0)
             if req.get('emo_vector'):
                 kw['emo_vector'] = [float(x) for x in req['emo_vector']]
             if req.get('emo_text'):
