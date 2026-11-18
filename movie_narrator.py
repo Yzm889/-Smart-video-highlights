@@ -4540,21 +4540,45 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         # 供全篇对齐器/DP 的「事件对事件」匹配使用。POC：同是楼顶，午餐段
         # 「拿着食物准备吃」 vs 互助会段「走向公告栏取物」——可区分。
         if scene_descs and not (os.environ.get('NARRATE_FAST') == '1') and not bool(params.get('fast', params.get('fast_mode', params.get('fastMode')))):
+            # 【v1.4.93 画面理解流水线】L0 ffmpeg 镜头切分（零 AI）→ L1 镜头卡
+            # （VLM 只描述动作推进）→ L2 场景聚合（文本 LLM 写有因果的叙述）——
+            # 四层专业分工替代「一个引擎既看又猜」。失败逐层退回旧通道。
+            _n_ev = 0
             try:
-                _ev = _vlm_event_windows(video_path, scene_descs, asr, run_dir, progress)
-                _n_ev = 0
-                for _j, _e in (_ev or {}).items():
-                    if _e:
-                        scene_story.setdefault(int(_j), {})['event_chain'] = str(_e)
-                        _n_ev += 1
-                if _n_ev:
-                    _log.info('[DIAG] 镜头事件链: %d/%d 段并入 scene_story' % (_n_ev, len(scene_descs)))
-                    if scene_story:
-                        _cache_save(_story_cache_key, scene_story)
+                _narrs = build_pipeline(video_path, asr, run_dir, progress=progress)
             except AbortError:
                 raise
             except Exception as e:
-                _log.info('[DIAG] 镜头事件链失败(不影响出片): %s' % str(e)[:120])
+                _log.info('[DIAG] 画面流水线失败，退回旧事件链: %s' % str(e)[:120])
+                _narrs = []
+            if _narrs:
+                # 场景叙述按重叠覆盖到 scene_descs 段的 event_chain
+                for _j, sc in enumerate(scene_descs):
+                    a0, b0 = float(sc.get('start', 0) or 0), float(sc.get('end', 0) or 0)
+                    best, best_ov = None, 0.0
+                    for (a1, b1, txt) in _narrs:
+                        ov = min(b0, b1) - max(a0, a1)
+                        if ov > best_ov:
+                            best_ov, best = ov, txt
+                    if best:
+                        scene_story.setdefault(_j, {})['event_chain'] = best
+                        _n_ev += 1
+                _log.info('[DIAG] 画面流水线: %d 段叙述并入 scene_story（覆盖 %d 段）'
+                          % (len(_narrs), _n_ev))
+            else:
+                try:
+                    _ev = _vlm_event_windows(video_path, scene_descs, asr, run_dir, progress)
+                    for _j, _e in (_ev or {}).items():
+                        if _e:
+                            scene_story.setdefault(int(_j), {})['event_chain'] = str(_e)
+                            _n_ev += 1
+                    _log.info('[DIAG] 旧事件链退回: %d 段' % _n_ev)
+                except AbortError:
+                    raise
+                except Exception as e:
+                    _log.info('[DIAG] 镜头事件链失败(不影响出片): %s' % str(e)[:120])
+            if _n_ev and scene_story:
+                _cache_save(_story_cache_key, scene_story)
         # 分幕 + 故事线：这是「解说讲剧情而不是描述画面」的关键一步。
         # 用户自带稿子时不需要——那是给写稿用的素材，稿子已经有了。
         if scene_story and not _has_user_script:
@@ -5839,6 +5863,7 @@ from vlm_index import (  # noqa: F401,E402  v1.4.41 拆出
     _dialogue_anchor_times, NARR_TIERS, NARR_TIER_DEFAULT, NARR_TIER_ORDER,
     narr_tier, _tier_field_spec, _detect_opening,
     _vlm_sample_timeline, _vlm_sample_captions, _vlm_event_windows)
+from event_pipeline import build_pipeline  # noqa: F401,E402  v1.4.93 画面理解流水线
 from narration_align import (  # noqa: F401,E402  v1.4.42 拆出
     _scene_info_pen, _beat_info_pen, _default_jump_cap, _JUMP_CAP_RATIO,
     _effective_jump_cap, _algo_align_beats_to_scenes, _isotonic,
