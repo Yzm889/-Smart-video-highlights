@@ -92,10 +92,11 @@ def test_build_pipeline_fallback_chain(monkeypatch, tmp_path):
     monkeypatch.setattr(EP, 'shot_cards',
                         lambda p, sh, rd, progress=None, **k: {0: '卡A', 1: '卡B'})
     monkeypatch.setattr(EP, 'scene_narratives', lambda *a, **k: [])   # L2 失败
-    narrs = EP.build_pipeline('no.mp4', None, str(tmp_path))
+    shots_out, cards, narrs = EP.build_pipeline('no.mp4', None, str(tmp_path))
     assert [(a, b, t) for a, b, t in narrs] == [(0.0, 10.0, '卡A'), (10.0, 20.0, '卡B')], narrs
+    assert cards == {0: '卡A', 1: '卡B'} and shots_out == shots, '三元组返回'
     monkeypatch.setattr(EP, 'detect_shots', lambda p, **k: [])
-    assert EP.build_pipeline('no.mp4', None, str(tmp_path)) == []
+    assert EP.build_pipeline('no.mp4', None, str(tmp_path)) == ([], {}, [])
 
 
 def test_wired_into_narrate_movie_with_fallback():

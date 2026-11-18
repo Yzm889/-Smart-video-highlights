@@ -3221,33 +3221,30 @@ let _setupTimer = null;
 // 【2026-11-10】qwen3tts 这一项原来标「VoiceDesign（文字造音色）」——修完 P1-3 后
 // 它也是克隆（Qwen3 只负责按描述造那一条参考音，逐句合成由 IndexTTS2 克隆完成），
 // 标签再写「文字造音色」会让人以为还是逐句现造。按实际行为改。
-const TTS_ENGINES = [['auto','自动（IndexTTS2 克隆优先）'],
-  ['qwen3tts','Qwen3 按文字描述造音色 → IndexTTS2 克隆（无需录音）'],
-  ['indextts2','IndexTTS2（情感 / 时长可控）']];
+const TTS_ENGINES = [['auto','自动（IndexTTS 2.5 克隆优先）'],
+  ['qwen3tts','Qwen3 按文字描述造音色 → IndexTTS 克隆（无需录音）'],
+  ['indextts2','IndexTTS 2.5（情感 / 时长 / 语速可控）']];
 /* ── v1.4.84 引导随实际状态走 ── 主人实测抓的引导矛盾：IndexTTS2 未装时，
    状态区写「未装」、下拉却写「自动（IndexTTS2 克隆优先）」——用户没法判断
    现在会用谁、要不要装。三个纯函数把文案变成实际就绪状态的函数。 */
 function _autoEngineLabel(st){
   st = st || {};
-  if (st.indextts2) return '自动（IndexTTS2 克隆优先）';
-  if (st.qwen3tts) return '自动（IndexTTS2 未装 · 当前用 Qwen3-TTS 配音）';
-  return '自动（配音模型未装 · 到模型中心一键安装）';
+  // 【v1.4.91 Qwen3 移出链】indextts2 不可用 → edge-tts 兜底（不再落 Qwen3）
+  if (st.indextts2) return '自动（IndexTTS 2.5 克隆优先）';
+  return '自动（IndexTTS 未装 · 当前用 edge-tts 兜底）';
 }
 function _qwenEngineLabel(st){
   st = st || {};
   return st.indextts2
-    ? 'Qwen3 按文字描述造音色 → IndexTTS2 克隆（无需录音）'
-    : 'Qwen3-TTS · VoiceDesign（IndexTTS2 未装时由它直接配音）';
+    ? 'Qwen3 按文字描述造音色 → IndexTTS 2.5 克隆（无需录音）'
+    : 'Qwen3-TTS · VoiceDesign（显式选中时使用，不在自动链内）';
 }
 function _autoEngineHint(st){
   st = st || {};
-  if (st.indextts2 && st.qwen3tts)
-    return '保持「自动」即可：优先 IndexTTS2 克隆音色（整片同一把嗓子），Qwen3-TTS 负责造参考音、并在克隆失败时兜底。试听只合成一句，不跑全片。';
-  if (st.qwen3tts)
-    return '现在就能跑：IndexTTS2 未装，「自动」会直接用 Qwen3-TTS 配音；到模型中心装好 IndexTTS2 后无需任何设置，自动恢复「克隆优先」。';
   if (st.indextts2)
-    return 'Qwen3-TTS 未装：「自动」会用 IndexTTS2（自带示例音色）配音。';
-  return '两个配音模型都未装：到下方「模型中心」装 Qwen3-TTS（可一键装权重+运行环境）后即可配音。';
+    return '保持「自动」即可：IndexTTS 2.5 克隆音色（整片同一把嗓子，快 2 倍）。试听只合成一句，不跑全片。';
+  // 【v1.4.91】indextts2 未装：auto 落 edge-tts 兜底（Qwen3 已移出链）
+  return 'IndexTTS 未装：当前「自动」用 edge-tts 兜底（免费稳定，音色固定）。到模型中心装好 IndexTTS 2.5 后自动恢复克隆优先（更快更自然）。';
 }
 async function fillTtsSettings(){
   try {

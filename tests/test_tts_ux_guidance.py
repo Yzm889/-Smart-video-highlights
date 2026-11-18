@@ -117,14 +117,17 @@ def test_engine_guidance_follows_real_state():
     assert p.returncode == 0, "harness rc=%s err=%s" % (p.returncode, (p.stderr or "")[-900:])
     out = json.loads(p.stdout.strip().splitlines()[-1])
     # 双装：克隆优先
-    assert "IndexTTS2 克隆优先" in out["both"]["autoText"], out["both"]
+    assert "IndexTTS 2.5 克隆优先" in out["both"]["autoText"], out["both"]
     assert "克隆" in out["both"]["qwenText"]
     # 只装 Qwen3-TTS（主人现状）：自动标签必须说清「当前用谁」
-    assert "IndexTTS2 未装" in out["qwenOnly"]["autoText"], out["qwenOnly"]
-    assert "当前用 Qwen3-TTS 配音" in out["qwenOnly"]["autoText"]
-    assert "现在就能跑" in out["qwenOnly"]["hint"], out["qwenOnly"]["hint"]
-    # 都没装：引导去模型中心
-    assert "模型中心" in out["none"]["autoText"] and "一键安装" in out["none"]["autoText"], out["none"]
+    # 【v1.4.91 Qwen3 移出链】indextts2 未装 → edge 兜底（不再落 Qwen3）
+    assert "IndexTTS 未装" in out["qwenOnly"]["autoText"], out["qwenOnly"]
+    assert "edge-tts 兜底" in out["qwenOnly"]["autoText"], out["qwenOnly"]
+    assert "edge-tts 兜底" in out["qwenOnly"]["hint"], out["qwenOnly"]["hint"]
+    # 【v1.4.91】indextts2 未装 → edge 兜底（edge 内置永可用，「都未装」态不复存在）；
+    # 引导提示去模型中心装 IndexTTS 2.5（恢复克隆优先）
+    assert "edge-tts 兜底" in out["none"]["autoText"], out["none"]
+    assert "模型中心" in out["none"]["hint"], out["none"]
 
 
 def test_guidance_source_pins():

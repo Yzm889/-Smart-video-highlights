@@ -175,6 +175,48 @@ def shot_cards(video_path, shots, run_dir, progress=None, per_shot=5, max_cards=
 # L2 场景聚合（LLM 懂层：镜头卡+台词 → 场景叙述）
 # ---------------------------------------------------------------------------
 
+def segment_anchor_with_shots(text, seg, shots, cards, cues):
+    """【v1.4.94 镜头级精修】段内三层证据融合，返回 (start, end, evidence)。
+
+    1. 镜头卡匹配：解说句 vs 段内镜头卡（n-gram 命中）→ 最佳镜头 → 窗口=镜头边界；
+    2. 字幕锚精修：段内台词 cue 的时刻落在最佳镜头内 → 起播=台词时刻（双证据）；
+       台词不在最佳镜头内 → 起播=镜头开始（镜头卡证据优先于孤立台词）；
+    3. 无镜头卡/无匹配 → (None, None, '') 调用方退回旧 cue 锚定。
+    evidence 返回匹配依据（日志与面板展示用）。"""
+    a, b = float(seg[0]), float(seg[1])
+    # 段内镜头
+    inner = []
+    for k, (sa, sb) in enumerate(shots or []):
+        if sb > a and sa < b:
+            card = (cards or {}).get(k, '')
+            if card:
+                inner.append((max(sa, a), min(sb, b), card, k))
+    if not inner:
+        return None, None, ''
+    # 镜头卡匹配（n-gram 命中）
+    def _bg(t):
+        t = re.sub(r'[\s，。？！、“”：；…\-—（）\']', '', str(t or ''))
+        return set(t[i:i + 2] for i in range(len(t) - 1))
+    sbg = _bg(text)
+    best, best_hit = None, 0
+    for sa, sb, card, k in inner:
+        hit = len(sbg & _bg(card))
+        if hit > best_hit:
+            best_hit, best = hit, (sa, sb, card, k)
+    if best is None or best_hit < 2:
+        return None, None, ''
+    sa, sb, card, k = best
+    # 字幕锚精修：台词时刻落在最佳镜头内 → 起播=台词时刻
+    cue_t = None
+    for cs, ce, ct in (cues or []):
+        if cs >= sa and cs < sb:
+            cue_t = cs
+            break
+    if cue_t is not None and cue_t >= sa:
+        return sa, sb, 'shot%d+cue%.1f' % (k, cue_t)
+    return sa, sb, 'shot%d' % k
+
+
 def scene_narratives(shots, cards, asr, run_dir, progress=None, window=10, max_narr=80):
     """相邻镜头卡 + 窗内台词 → 文本 LLM 写「场景叙述」。
 
@@ -250,24 +292,27 @@ def _asr_in(asr, a, b):
 # ---------------------------------------------------------------------------
 
 def build_pipeline(video_path, asr, run_dir, progress=None):
-    """L0→L1→L2 全跑。返回 [(start, end, 叙述)]；任何一层失败返回 []。
-    调用方（narrate_movie）把它按重叠覆盖到 scene_descs 段的 event_chain。"""
+    """L0→L1→L2 全跑。返回 (shots, cards, narrs)：
+    - shots: [(start, end)] 真实镜头边界（镜头级对齐的画面分辨率来源）
+    - cards: {shot_idx: 镜头卡}（动作链/因果/细节三段式）
+    - narrs: [(start, end, 场景叙述)]
+    任何一层失败返回 ([], {}, [])，调用方退回旧通道。"""
     try:
         if not _w.vlm_enabled():
-            return []
+            return [], {}, []
     except Exception:
-        return []
+        return [], {}, []
     shots = detect_shots(video_path)
     if not shots:
         _log.info('[DIAG] 流水线 L0 失败，退回旧抽样段')
-        return []
+        return [], {}, []
     cards = shot_cards(video_path, shots, run_dir, progress=progress)
     if not cards:
         _log.info('[DIAG] 流水线 L1 失败，退回旧抽样段')
-        return []
+        return [], {}, []
     narrs = scene_narratives(shots, cards, asr, run_dir, progress=progress)
     if not narrs:
         _log.info('[DIAG] 流水线 L2 失败，镜头卡直通为叙述')
         narrs = [(a, b, cards.get(k, '')) for k, (a, b) in enumerate(shots)
                  if cards.get(k)]
-    return narrs
+    return shots, cards, narrs

@@ -1080,7 +1080,8 @@ def _global_subtitle_anchors(segs, narr, asr, voice_durs, beat_kinds=None):
     return out
 
 
-def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15, beat_kinds=None):
+def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15, beat_kinds=None,
+                          shots=None, cards=None):
     """v1.4.86/v1.4.87 句级事件锚点：画面窗口从「这句解说描述的事件时刻」开始。
 
     此前窗口=整场戏从头起播：解说到工地砸墙时，画面还在演前一场的勒人
@@ -1147,6 +1148,25 @@ def _event_anchored_spans(segs, narr, asr, voice_durs, tail=0.35, cap=1.15, beat
             prev_end = max(prev_end, b)
             continue
         win = max(v * cap, v + 0.1)
+        # 【v1.4.94 镜头级精修】段内镜头卡匹配（L0 镜头边界 + L1 镜头卡）：
+        # 解说句 vs 段内镜头卡 → 最佳镜头 → 窗口=镜头边界；字幕锚（台词时刻）
+        # 落在镜头内则精修起播点（双证据）。无镜头卡/无匹配退回旧 cue 锚定。
+        if shots and cards:
+            try:
+                from event_pipeline import segment_anchor_with_shots
+                _sa, _sb, _ev = segment_anchor_with_shots(
+                    txt, (a, b), shots, cards, cues)
+                if _sa is not None:
+                    _ln = _sb - _sa
+                    if _ln >= v * 0.9:   # 镜头至少装得下 90% 配音（念完优先）
+                        _start = max(_sa, prev_end)
+                        _end = min(_start + max(_ln, v), vdur_end)
+                        if _end > _start:
+                            out.append((round(_start, 3), round(_end, 3)))
+                            prev_end = max(prev_end, _end)
+                            continue
+            except Exception as _se:
+                _log.info('[DIAG] 镜头级精修失败（退回 cue 锚定）: %s' % str(_se)[:100])
         at = anchors.get(i)
         if at is not None:
             # 全局锚句：窗尾尽量贴「锚点+窗长」，越界则压到片尾允许线。

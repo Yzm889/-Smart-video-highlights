@@ -4544,13 +4544,18 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
             # （VLM 只描述动作推进）→ L2 场景聚合（文本 LLM 写有因果的叙述）——
             # 四层专业分工替代「一个引擎既看又猜」。失败逐层退回旧通道。
             _n_ev = 0
+            _shots, _cards = [], {}
             try:
-                _narrs = build_pipeline(video_path, asr, run_dir, progress=progress)
+                _shots, _cards, _narrs = build_pipeline(video_path, asr, run_dir, progress=progress)
             except AbortError:
                 raise
             except Exception as e:
                 _log.info('[DIAG] 画面流水线失败，退回旧事件链: %s' % str(e)[:120])
                 _narrs = []
+            if progress is not None and (_shots or _cards):
+                # 【v1.4.94 镜头级对齐】镜头边界+镜头卡传给锚定层（段内镜头级精修）
+                progress['shots'] = [[float(a), float(b)] for a, b in (_shots or [])]
+                progress['shot_cards'] = {str(k): v for k, v in (_cards or {}).items()}
             if _narrs:
                 # 场景叙述按重叠覆盖到 scene_descs 段的 event_chain
                 for _j, sc in enumerate(scene_descs):
@@ -5724,9 +5729,11 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     # 主线程等 TTS 完成后才裁剪：剪辑要按「真实配音时长」补画面，否则配音尾音
     # 会被段长硬切（用户实测「话没说完就切镜头」）。代价是串行，但实测 43 段
     # 剪辑只要 12 秒，相对整条链路的配音耗时可以忽略。
-    _tts_thread.join()
-    if _tts_error[0]:
-        raise _tts_error[0]
+    # 【v1.4.93 skipTts】无配音模式：线程未启动，等待与失败检查一并跳过。
+    if not params.get('skipTts'):
+        _tts_thread.join()
+        if _tts_error[0]:
+            raise _tts_error[0]
     # 用真实配音时长补长画面段，再交给剪辑端做 ±15% 微变速贴合
     _vdur = {}
     for _ti, _clip in _tts_results:
@@ -5741,7 +5748,10 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             # 此前窗口=整场戏从头起播，解说到工地砸墙时画面还在演前一场的勒人。
             # 锚定后的窗口长 = 配音×1.15（微变速窗内），补长/裁剪遍在其上工作。
             try:
-                segs = _event_anchored_spans(segs, narr, asr, _vdur, tail=_tail)
+                _shots_l = [(float(a), float(b)) for a, b in (progress.get('shots') or [])]
+                _cards_l = {int(k): v for k, v in (progress.get('shot_cards') or {}).items()}
+                segs = _event_anchored_spans(segs, narr, asr, _vdur, tail=_tail,
+                                             shots=_shots_l, cards=_cards_l)
                 _log.info('[DIAG] 事件锚点: 31 句画面窗口已对到各句描述的事件时刻'
                           if len(segs) == len(narr) else
                           '[DIAG] 事件锚点: %d 个窗口已锚定' % len(segs))
