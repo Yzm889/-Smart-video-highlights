@@ -46,6 +46,8 @@ def test_label_reports_new_engine(monkeypatch):
                         lambda: {'tts_local': {'engine': 'auto'}})
     monkeypatch.setattr(T, '_cloud_tts_ready', lambda: False)
     # 【v1.4.91 变更】Qwen3 移出 auto 链——indextts2 不可用时落 edge-tts 兜底
+    # 【CI 稳定】mock edge 可用（CI 无网络，edge 探测含服务端可达检查会 False）
+    monkeypatch.setattr(T, 'edge_tts_available', lambda: True)
     assert 'edge-tts' in T.local_tts_label(),         'indextts2 不可用时 auto 应落 edge 兜底（Qwen3 已移出链）'
     monkeypatch.setattr(T2, 'qwen3tts_ready', lambda: False)
     monkeypatch.setattr(T, 'edge_tts_available', lambda: False)
