@@ -3214,7 +3214,7 @@ async function buildNarrate(){
   // 【v1.4.91 只配字幕模式】未勾「生成配音」→ 弹窗确认（确定=快速出片无旁白；取消=留在设置页）
   const genVoice = !($('narGenVoice') && !$('narGenVoice').checked);
   if(!genVoice){
-    const ok = window.confirm('你没有勾选「生成解说配音」：\n成片只有画面+烧字幕+原片声音，没有解说旁白。\n（配音生成耗时较长，每句约 15-30 秒）\n\n确定这样生成吗？');
+    const ok = window.confirm('你没有勾选「生成解说配音」：\n成片只有画面+烧字幕+原片声音，没有解说旁白。\n（配音生成耗时较长，IndexTTS 2.5 约每句 10 秒、二十多句约 5 分钟）\n\n确定这样生成吗？');
     if(!ok) { go.disabled = false; return; }   // 取消 → 留在当前设置界面
   }
   body.params.skipTts = !genVoice;
