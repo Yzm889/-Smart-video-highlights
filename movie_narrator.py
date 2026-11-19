@@ -5749,7 +5749,8 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             # 锚定后的窗口长 = 配音×1.15（微变速窗内），补长/裁剪遍在其上工作。
             try:
                 # 【v1.4.94 回滚】镜头级精修第一版窗口错乱（实测句 7 错位到片头），停用；
-# 保留 v1.4.93 锚定（字幕锚+段内 cue，实测 48%）。镜头级方案需重新设计后再上。
+                # 保留 v1.4.93 锚定（字幕锚+段内 cue）。镜头级方案需重新设计后再上。
+                # 注：回滚依据的「48%」出自未修的判官（见 BASELINE.md 陷阱⑦），不可信，勿再引用。
                 segs = _event_anchored_spans(segs, narr, asr, _vdur, tail=_tail)
                 _log.info('[DIAG] 事件锚点: 31 句画面窗口已对到各句描述的事件时刻'
                           if len(segs) == len(narr) else

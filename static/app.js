@@ -2510,6 +2510,12 @@ function bindQuickSubmit(inputId, btnId){
 }
 document.addEventListener('DOMContentLoaded', () => {
   bindQuickSubmit('narPlot', 'narGo');              // 剧情驱动剪辑：Ctrl+Enter 生成配音
+  // 【v1.4.93】按钮文案随「生成配音」复选框联动（无配音模式按钮不再是「生成配音」）
+  const _narGenVoiceCb = $('narGenVoice');
+  if(_narGenVoiceCb) _narGenVoiceCb.addEventListener('change', function(){
+    const btn = $('narGo'); if(!btn) return;
+    btn.textContent = this.checked ? '🎙 生成配音并调整' : '⚡ 生成字幕成片（无配音）';
+  });
   bindQuickSubmit('moviePlot', 'movieGo');          // 联网解说：Ctrl+Enter 生成
   if(typeof loadPresetList === 'function') loadPresetList();
   if(typeof loadNarrPrefs === 'function') loadNarrPrefs();
@@ -3212,6 +3218,17 @@ async function buildNarrate(){
     if(!ok) { go.disabled = false; return; }   // 取消 → 留在当前设置界面
   }
   body.params.skipTts = !genVoice;
+  // 【v1.4.93 联动】无配音时「双轨分层/单独导出解说音轨」无意义——自动改回单轨
+  if(!genVoice){
+    const al = $('audioLayers');
+    if(al && al.value !== '0'){ al.value = '0'; updateAudioHint(); toast('无配音模式：成片音轨已切回「单轨混音」（纯解说轨无意义）', 'warning'); }
+    const ev = $('exportVoice');
+    if(ev && ev.checked){ ev.checked = false; updateAudioHint(); }
+  }
+  // 【v1.4.93】勾了配乐但没选音乐 → 明确提示而不是静默无配乐
+  if($('narBgm').checked && !MUSIC){
+    toast('勾了「加配乐」但上方没有选中背景音乐——本次生成将没有配乐。要配乐请先在 🎵 音乐库选一首再开始。', 'warning');
+  }
   if(userScript){ body.script = userScript; }  // 用户稿子：后端跳过写稿/润色，直接按句切
   if(plot){ body.movie=''; body.plot=plot; }   // 剧情驱动：走 /api/movie_tts（两步走）
   // 导入的字幕：后端会落成与视频同名的 .srt，让「字幕优先于 ASR」的既有链路接管，
