@@ -2881,11 +2881,10 @@ def _llm_align_full_script(texts, scenes, scene_story, asr, movie_name='',
     n, m = len(texts or []), len(scenes or [])
     if n <= 0 or m <= 0:
         return {}
-    try:
-        if not _local_model_available():
-            return {}
-    except Exception:
-        return {}
+    # 【v1.4.94 删内部预判】_local_model_available 的探测在 TTS/VLM 占 GPU 时会
+    # 超时误判（skipTts 轮实测：探测 False → 全篇对齐被跳过 → DP 机械分配散架）。
+    # 剧情理解层刚用同一个 LLM 跑完就是可用性证明——直接调用，真失败由
+    # _llm_light 超时/异常自然回退 {}（DP 兜底）。
     kinds = _classify_sentences(texts)
 
     def _fmt(x):
@@ -5742,7 +5741,15 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
             _vdur[_ti] = _d
     if params.get('autoCut', True):
         up('按分镜剪辑画面', 54)
-        if _vdur:
+        # 【v1.4.94 修 skipTts 锚定失效】无配音模式 _vdur 为空 → 锚定+窗口分配整块
+        # 被跳过 → 窗口退化为 DP 机械分配（实测散架）。skipTts 时按解说文本长度
+        # 估时（~4.5 字/秒）驱动锚定与窗口分配——无配音成片的窗口=解说估时窗。
+        if not _vdur and params.get('skipTts'):
+            import re as _re_est
+            _vdur = {i: max(2.0, len(_re_est.sub(r'[^\w]', '', str(t or ''))) / 4.5)
+                     for i, t in enumerate(narr) if str(t or '').strip()}
+            _log.info('[DIAG] skipTts 估时窗口: %d 句（文本长度/4.5 字每秒）' % len(_vdur))
+        if True:
             _tail = _voice_tail(params)
             # 【v1.4.86 句级事件锚点】画面窗口对到「这句解说描述的事件时刻」：
             # 此前窗口=整场戏从头起播，解说到工地砸墙时画面还在演前一场的勒人。
