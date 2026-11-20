@@ -1146,7 +1146,8 @@ const LOCAL_MODEL_CATALOG = [
   {tag:'qwen2.5:14b',      label:'qwen2.5:14b', desc:'稳定基准·**需 ≥16GB 显存（与看图模型共存）**', size:'权重≈8.4GB', minVram:16},
 ];
 const VLM_MODEL_CATALOG = [
-  {tag:'minicpm-v4.5', label:'⭐ MiniCPM-V 4.5', desc:'视频理解专项·96x压缩·同显存多看10倍帧', size:'≈6.1GB', minVram:8},
+  {tag:'qwen3.5:9b', label:'⭐ Qwen3.5-9B（原生多模态·推荐）', desc:'新一代原生视觉·动作因果理解强·VLM+文本一个模型双角色', size:'≈6.6GB', minVram:8},
+  {tag:'minicpm-v4.5', label:'MiniCPM-V 4.5', desc:'视频理解专项·96x压缩·同显存多看10倍帧', size:'≈6.1GB', minVram:8},
   {tag:'qwen3-vl:8b',      label:'qwen3-vl:8b', desc:'新一代视觉·综合强·剧情理解好', size:'≈6.1GB', minVram:8},
   {tag:'qwen3-vl:4b',      label:'qwen3-vl:4b', desc:'轻量视觉·与 3B/7B 文字模型共存更稳', size:'≈3.5GB', minVram:4},
   {tag:'qwen2.5vl:latest', label:'qwen2.5vl', desc:'稳定基准（回退选）', size:'≈5.6GB', minVram:8},

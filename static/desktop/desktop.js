@@ -2776,7 +2776,8 @@ const LOCAL_MODEL_CATALOG = [
   {tag: 'qwen2.5:14b',       label: 'qwen2.5:14b',   size: '≈8.4GB'}
 ];
 const VLM_MODEL_CATALOG = [
-  {tag: 'minicpm-v4.5',  label: '⭐ MiniCPM-V 4.5', size: '≈6.1GB'},
+  {tag: 'qwen3.5:9b',    label: '⭐ Qwen3.5-9B（原生多模态·推荐）', size: '≈6.6GB'},
+  {tag: 'minicpm-v4.5',  label: 'MiniCPM-V 4.5', size: '≈6.1GB'},
   {tag: 'qwen3-vl:8b',   label: 'qwen3-vl:8b',     size: '≈6.1GB'}
 ];
 function _fillModelPick(sel, catalog, current, installed, pulling){
