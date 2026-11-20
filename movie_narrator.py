@@ -5571,6 +5571,16 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
+    # 【v1.4.95 资源守护】跨进程任务互斥：同一数据根同时只跑一个解说任务
+    # （17 进程堆积实测根因）。锁文件 OUTDIR/.narrate_lock，全程持有。
+    import resource_guard as _RG
+    _task_lock_cm = _RG.narrate_task_lock(
+        os.path.join(_w.OUTDIR, run_dir if os.path.isabs(run_dir) else
+                     os.path.join(_w.OUTDIR, run_dir)) if run_dir else None)
+    try:
+        _task_lock_cm.__enter__()
+    except _RG.TaskLockBusy as _tb:
+        raise RuntimeError(str(_tb))
     up('联网搜索剧情', 4)
     if not plot:
         hits = web_search((movie_name or '') + ' 剧情 简介 豆瓣 梗概 分幕')
