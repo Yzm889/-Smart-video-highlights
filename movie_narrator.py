@@ -5283,11 +5283,16 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                     vs = float(it.get('video_start', 0))
                     ve = float(it.get('video_end', 0))
                     if ve > vs:
+                        # 【v1.4.94 轴换算】quote_spans 必须存「输出轴位置」：
+                        # 前面各窗的时长累计 = 本窗在成片里的起点（窗长不变）。
+                        # 源轴 vs/ve 直接当输出位置会让混音的音量窗永不命中
+                        # （源时刻可能远超成片总长——skipTts 实测静音）。
+                        _acc_out = sum(_b - _a for (_a, _b) in new_segs)
                         new_segs.append((vs, ve))
                         new_narr.append('')  # B-roll/原声引用无解说词
                         if it.get('quote'):
-                            quote_spans.append((vs, ve))
-                            _log.info('[DIAG] 原声引用段插入: %.1f-%.1f秒（原声全量保留）' % (vs, ve))
+                            quote_spans.append((_acc_out, _acc_out + (ve - vs)))
+                            _log.info('[DIAG] 原声引用段插入: 输出 %.1f-%.1f秒（原声全量保留）' % (_acc_out, _acc_out + (ve - vs)))
                         else:
                             _log.info('[DIAG] B-roll段插入: %.1f-%.1f秒' % (vs, ve))
                 else:
@@ -5512,14 +5517,25 @@ def compose_movie_from_tts(run_dir, progress=None, music_path=None, adjusted_ite
                 else _clean_caption(strip_tts_markup(t)) for t in narr]
     # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
     params = attach_importance(params, progress, segs)
+    # 【v1.4.94 轴换算】segs 的窗是源轴（trim 的坐标），混音的 between 用的是
+    # 成片输出轴——源窗直接当输出窗用会让引用原声的音量窗永不命中
+    # （skipTts 实测：句 10/11 引用段静音，源时刻 612.9 远超成片 97s）。
+    # 换算：输出轴位置 = 前面各窗时长的累计（窗在输出轴连续拼接）。
+    _out_pos = []
+    _acc = 0.0
+    for (_sa, _sb) in segs:
+        _len = max(0.0, float(_sb) - float(_sa))
+        _out_pos.append((_acc, _acc + _len))
+        _acc += _len
     # 留白段（nar稿里写「（留白）」）必须原声全量：它不是"没有解说"，而是
     # 特意把话筒交回给画面。混音默认在解说缝隙只留 0.5 音量，这里显式抬到 1.0。
-    _white_spans = [(float(s), float(e)) for i, (s, e) in enumerate(segs)
+    _white_spans = [(float(_out_pos[i][0]), float(_out_pos[i][1]))
+                    for i, (s, e) in enumerate(segs)
                     if i < len(narr) and is_white_line(narr[i])]
     # 引用让位段同样要原声 1.0：这一段就是让原片自己说话
     for _qi in _qslots:
         if 0 <= _qi < len(segs):
-            _white_spans.append((float(segs[_qi][0]), float(segs[_qi][1])))
+            _white_spans.append((float(_out_pos[_qi][0]), float(_out_pos[_qi][1])))
     if _white_spans:
         _log.info('[DIAG] 原声全量段 %d 处（留白+引用让位）' % len(_white_spans))
     final = _compose_narration_video(src_video, segs, narr_srt, tts_paths, run_dir, params,

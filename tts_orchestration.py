@@ -112,6 +112,17 @@ def _generate_all_tts(narr, run_dir, progress=None, skip_idx=None):
     # 转成绝对路径（基于 _w.OUTDIR）避免 TTS 文件写到项目根目录导致"有日志无文件"。
     if run_dir and not os.path.isabs(run_dir):
         run_dir = os.path.join(_w.OUTDIR, run_dir)
+    # 【v1.4.95 TTS 前腾显存】文本 LLM（qwen3:8b）在剧情理解/全篇对齐后驻留
+    # 显存 5-7GB——IndexTTS2 的 6.6GB 装不进 12GB 卡 → 整片降级 sapi（主人
+    # 实测 28 句全 sapi）。TTS 引擎启动前显式卸载 ollama 全部驻留模型。
+    try:
+        import resource_guard as _RG
+        _n_unloaded = _RG.ollama_unload_all()
+        if _n_unloaded:
+            _log.info('[DIAG] TTS 前已卸载 ollama 驻留模型 %d 个（腾显存给配音引擎）' % _n_unloaded)
+            _time.sleep(2.0)   # 显存释放的生效延迟
+    except Exception:
+        pass
     results = []
     _tcfg = _MN.load_ai_config().get('tts') or {}
     use_mimo = bool(_tcfg.get('api_key')) and bool(_tcfg.get('model'))

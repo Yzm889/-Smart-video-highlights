@@ -264,7 +264,7 @@ def test_quote_segment_plumbing():
     js = _read(JS_PATH)
     # compose 插入：quote 项与 B-roll 同轨（无解说画面段）
     assert "it.get('isBroll') or it.get('quote')" in mn, 'compose 未按 B-roll 轨道插入原声引用段'
-    assert 'quote_spans.append((vs, ve))' in mn, '未收集原声引用的时间范围'
+    assert '_acc_out + (ve - vs)' in mn and 'quote_spans.append' in mn,         '未收集原声引用的时间范围（输出轴换算版）'
     # tts 索引重建必须排除 quote 段（它们没有配音）
     assert "not it.get('isBroll') and not it.get('quote')" in mn, 'tts 索引重建未排除引用段'
     # 两个合成调用点都传 quote_spans

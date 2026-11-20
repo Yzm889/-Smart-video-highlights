@@ -141,6 +141,41 @@ def ollama_unload_model(base_url, model, timeout=30):
         return False
 
 
+def ollama_unload_all(base_url='http://127.0.0.1:11434', timeout=30):
+    """卸载 ollama 全部驻留模型（keep_alive=0 逐个发送）——TTS/渲染前腾显存。
+
+    主人实测（2026-11-21 run-1-20261121-042111）：文本 LLM（qwen3:8b）在剧情
+    理解/全篇对齐后驻留显存 5-7GB，IndexTTS2 的 6.6GB 装不进 12GB 卡 →
+    整片配音降级 sapi（音质差）。TTS 启动前调用本函数腾干净显存。
+    返回卸载的模型数。"""
+    n = 0
+    try:
+        import urllib.request
+        base = (base_url or 'http://127.0.0.1:11434').rstrip('/')
+        req = urllib.request.Request(base + '/api/ps')
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            d = json.loads(resp.read().decode('utf-8'))
+        for m in d.get('models', []):
+            name = m.get('name') or m.get('model')
+            if not name:
+                continue
+            try:
+                ureq = urllib.request.Request(
+                    base + '/api/generate',
+                    data=json.dumps({'model': name, 'keep_alive': 0,
+                                     'prompt': '', 'stream': False}).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'})
+                with urllib.request.urlopen(ureq, timeout=timeout) as resp2:
+                    resp2.read()
+                n += 1
+                _log.info('[资源守护] ollama 模型已卸载: %s' % name)
+            except Exception as e:
+                _log.info('[DIAG] ollama 卸载 %s 失败（继续）: %s' % (name, str(e)[:80]))
+    except Exception as e:
+        _log.info('[DIAG] ollama 驻留查询失败: %s' % str(e)[:100])
+    return n
+
+
 def ollama_mem_used_mb(base_url='http://127.0.0.1:11434', timeout=10):
     """当前 ollama 驻留模型占用的显存 MB（/api/ps 汇总）。失败返回 0。"""
     try:
