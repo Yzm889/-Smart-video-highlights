@@ -323,6 +323,19 @@ def build_pipeline(video_path, asr, run_dir, progress=None):
     if not shots:
         _log.info('[DIAG] 流水线 L0 失败，退回旧抽样段')
         return [], {}, []
+    # 【v1.4.96 废镜头筛除】信号处理打质量分（清晰度/亮度/对比度）——
+    # 模糊/黑场/纯转场镜头不进镜头卡（烂镜头的描述会误导对齐）且不浪费
+    # 5 帧 VLM 推理。评分失败保守保留（宁滥勿缺）。
+    try:
+        import shot_quality as _SQ
+        import movie_narrator as _MN
+        shots, _rej_stats = _SQ.filter_good_shots(
+            video_path, shots,
+            ffmpeg_run_fn=lambda args: _MN.ffmpeg_run(args),
+            quality_min=25.0, progress=progress)
+        _log.info('[DIAG] 废镜头筛除后剩余 %d 镜头' % len(shots))
+    except Exception as _sqe:
+        _log.info('[DIAG] 废镜头筛除失败（全部保留）: %s' % str(_sqe)[:100])
     cards = shot_cards(video_path, shots, run_dir, progress=progress)
     if not cards:
         _log.info('[DIAG] 流水线 L1 失败，退回旧抽样段')
