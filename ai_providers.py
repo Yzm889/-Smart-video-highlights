@@ -933,6 +933,11 @@ def asr_segments(video_path, progress=None, pct_range=None, language=None,
         _note_progress_warning('台词来源：同目录外挂字幕文件（%d 条，比语音识别更准）' % len(_ext))
         _report_subtitle_sync(_ext, video_path)
         return _ext
+    # 【v1.4.96-fix 字幕缺失一等提醒】台词轨是引用让位/台词对齐/剧情理解的地基；
+    # 没字幕时外语片识别出的是外语台词——稿子里引用的中文台词匹配不上（退化
+    # 语义档）、成片字幕烧成外语。warnings 是结果页小字没人看，这里挂 notices
+    # 主动弹窗，引导用户先补字幕（前端 desktop.js 按 code 渲染+给「导入字幕」按钮）。
+    _note_progress_notice('subtitle_missing', 'warn')
     try:
         from faster_whisper import WhisperModel
     except Exception:

@@ -117,6 +117,7 @@ function _fcNoticePump(){
   _fcNoticeOn = true;
   if(n.code === 'asr_model_en_only') _fcRenderAsrModelNotice(n, el);
   else if(n.code === 'asr_model_broken') _fcRenderModelIssueNotice(n, el);
+  else if(n.code === 'subtitle_missing') _fcRenderSubtitleMissingNotice(n, el);
   else { _fcNoticeOn = false; _fcNoticePump(); return; }   // 未知 code 不弹，别拦路
   el.style.display = 'block';
 }
@@ -125,6 +126,22 @@ function _fcNoticeHide(){
   if(el) el.style.display = 'none';
   _fcNoticeOn = false;
   setTimeout(_fcNoticePump, 160);
+}
+function _fcRenderSubtitleMissingNotice(n, el){
+  document.getElementById('fcNoticeTitle').textContent = '没有找到字幕，台词将用语音识别';
+  document.getElementById('fcNoticeBody').innerHTML =
+      '字幕是<b>命脉</b>：引用原声、台词对齐、剧情理解全靠它。<br>'
+    + '没有字幕时外语片识别出的是<b>外语台词</b>——稿子里引用的中文台词匹配不上'
+    + '（引用原声退化）、成片字幕也会烧成外语。<br>'
+    + '建议：把 <b>.srt 字幕文件和视频放同一目录</b>后重新添加视频，'
+    + '或现在点「导入字幕」选字幕文件。';
+  const fix = document.getElementById('fcNoticeFix');
+  fix.style.display = '';
+  fix.className = 'mini-btn primary';
+  fix.textContent = '导入字幕';
+  fix.onclick = () => { _fcNoticeHide(); importSrt(); };
+  document.getElementById('fcNoticeMore').onclick = () => { _fcNoticeHide(); importSrt(); };
+  document.getElementById('fcNoticeClose').onclick = () => _fcNoticeHide();
 }
 function _fcRenderAsrModelNotice(n, el){
   const install = n.reason === 'install';       // 装完模型就提示 vs 跑到一半才发现
