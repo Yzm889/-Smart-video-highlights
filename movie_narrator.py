@@ -5720,9 +5720,18 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     use_mimo = bool(_tcfg2.get('api_key')) and bool(_tcfg2.get('model'))
     def _tts_worker():
         try:
+            # 【v1.4.96-fix】引用让位句不配音（原声直接播）——引用检测在开线程前
+            # 已完成，这里按 quote_slots 跳过；否则引用句会配出「转述版台词」
+            # 叠在原声台词上（一步直出路径的独有坑，两步流程走 skip_idx 已排除）。
+            try:
+                _qskip = {int(k) for k in ((progress or {}).get('quote_slots') or {})}
+            except Exception:
+                _qskip = set()
             for i, txt in enumerate(narr):
                 if _aborted():
                     return
+                if i in _qskip:
+                    continue
                 if not txt.strip():
                     continue
                 clip = None
@@ -5759,6 +5768,41 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                 beat_ranges.append((0.0, 0.0))
         segs = beat_ranges
         _log.info(f'[DIAG] 高密度聚合: {len(narr)}节 -> {len(segs)}个片段')
+    # 【v1.4.96-fix 引用让位接入一步直出】skipTts 内联路径此前漏了应用：
+    # 下方 quote_spans=[] 的注释声称「原声引用由上层路径处理」，但上层
+    # （compose_movie_from_tts）只在两步流程（先配音→用户确认→合成）走，
+    # 一步直出根本不经过——实测引用句画面没切到台词时刻（句 4/11 台词在
+    # 218.8s/612.9s，全不在 segs）、原声整段缺失。与 compose 同逻辑：
+    # segs 重定位到台词窗 + 字幕换台词原文；锚定/fit 对无配音句保持窗原样
+    # （设计如此），估时窗排除引用句，混音 quote_spans 取真窗。
+    _quote_idx = set()
+    try:
+        _qslots = {int(k): v for k, v in ((progress or {}).get('quote_slots') or {}).items()}
+    except Exception:
+        _qslots = {}
+    if _qslots:
+        _applied = 0
+        for _i, _info in sorted(_qslots.items()):
+            try:
+                _qs = float(_info.get('start'))
+                _qe = float(_info.get('end'))
+            except Exception:
+                continue
+            if _qe <= _qs or not (0 <= _i < len(segs)):
+                continue
+            # 保序：台词镜头若落在上一段中间，把上一段收口到这里
+            _prev = _i - 1
+            if _prev >= 0 and segs[_prev][1] > _qs > segs[_prev][0] + 1.0:
+                segs[_prev] = (segs[_prev][0], _qs)
+            segs[_i] = (round(_qs, 3), round(_qe, 3))
+            _t = str(_info.get('text') or '').strip()
+            if _t and _i < len(narr):
+                narr[_i] = _t
+            _quote_idx.add(_i)
+            _applied += 1
+        if _applied:
+            _log.info('[DIAG] 引用让位(一步直出) %d 句：画面切原片台词、字幕换台词、原声 1.0'
+                      % _applied)
     # 主线程等 TTS 完成后才裁剪：剪辑要按「真实配音时长」补画面，否则配音尾音
     # 会被段长硬切（用户实测「话没说完就切镜头」）。代价是串行，但实测 43 段
     # 剪辑只要 12 秒，相对整条链路的配音耗时可以忽略。
@@ -5781,8 +5825,10 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         if not _vdur and params.get('skipTts'):
             import re as _re_est
             _vdur = {i: max(2.0, len(_re_est.sub(r'[^\w]', '', str(t or ''))) / 4.5)
-                     for i, t in enumerate(narr) if str(t or '').strip()}
-            _log.info('[DIAG] skipTts 估时窗口: %d 句（文本长度/4.5 字每秒）' % len(_vdur))
+                     for i, t in enumerate(narr)
+                     if str(t or '').strip() and i not in _quote_idx}
+            _log.info('[DIAG] skipTts 估时窗口: %d 句（文本长度/4.5 字每秒，引用让位 %d 句除外）'
+                      % (len(_vdur), len(_quote_idx)))
         if True:
             _tail = _voice_tail(params)
             # 【v1.4.86 句级事件锚点】画面窗口对到「这句解说描述的事件时刻」：
@@ -5831,7 +5877,13 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
                 else _clean_caption(strip_tts_markup(t)) for t in narr]
     # [P0-2] 配乐情绪包络：把第一步算好的剧情重要度带进混音阶段。
     params = attach_importance(params, progress, segs)
-    quote_spans = []   # 本路径（一步直出）无用户调整段，原声引用由上层路径处理
+    # 【v1.4.96-fix】引用句的原声全量窗：segs 此处已是剪辑后输出轴（窗连续拼接，
+    # state.json 的 segs 和即成片时长），直接取引用句窗即混音 1.0 音量窗。
+    # 此前恒 []（声称「上层路径处理」——上层只在两步流程走）→ 引用原声被 0.5 闪避。
+    quote_spans = [(float(s), float(e)) for i, (s, e) in enumerate(segs)
+                   if i in _quote_idx]
+    if quote_spans:
+        _log.info('[DIAG] 原声引用窗 %d 处（原声全量保留）' % len(quote_spans))
     # 留白段（nar稿里写「（留白）」）必须原声全量：它不是"没有解说"，而是
     # 特意把话筒交回给画面。混音默认在解说缝隙只留 0.5 音量，这里显式抬到 1.0。
     _white_spans = [(float(s), float(e)) for i, (s, e) in enumerate(segs)
