@@ -203,7 +203,7 @@ WHITELIST_HINT = ('写入被 Windows 杀软拦截（PermissionError）。请在 
 
 
 def safe_makedirs(path, retries=2, delay=1.0):
-    """带杀软拦截兜底的目录创建（PermissionError 时重试+明确提示）。
+    r"""带杀软拦截兜底的目录创建（PermissionError 时重试+明确提示）。
 
     主人实测（2026-11-20）：Python 在 %LOCALAPPDATA%\FrameCut 下建目录被
     杀软拦截（PermissionError WinError 5），而 bash 可写——杀软按进程画像

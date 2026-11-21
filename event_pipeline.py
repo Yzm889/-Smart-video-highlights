@@ -329,11 +329,12 @@ def build_pipeline(video_path, asr, run_dir, progress=None):
     try:
         import shot_quality as _SQ
         import movie_narrator as _MN
-        shots, _rej_stats = _SQ.filter_good_shots(
+        shots, _rejected, _rej_stats = _SQ.filter_good_shots(
             video_path, shots,
             ffmpeg_run_fn=lambda args: _MN.ffmpeg_run(args),
             quality_min=25.0, progress=progress)
-        _log.info('[DIAG] 废镜头筛除后剩余 %d 镜头' % len(shots))
+        _log.info('[DIAG] 废镜头筛除后剩余 %d 镜头（废 %d）'
+                  % (len(shots), len(_rejected)))
     except Exception as _sqe:
         _log.info('[DIAG] 废镜头筛除失败（全部保留）: %s' % str(_sqe)[:100])
     cards = shot_cards(video_path, shots, run_dir, progress=progress)
