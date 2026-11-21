@@ -4406,23 +4406,58 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
         _w._warmup_wait(video_path)
     except Exception:
         pass
-    # ASR缓存：同视频同模型不重复转写
-    whisper_model = whisper_model_name()
-    # 缓存键必须带上「识别语言」与版本：旧键只有模型名，改了语言策略后仍会命中
-    # 之前用错误语言转写出来的脏台词（实测：默认 zh 时代把英文片转成中文乱码，
-    # 修好语言后依然命中旧缓存，等于修复不生效）。asr2 = 转写策略版本号。
-    _asr_lang = whisper_language()
-    asr_cache_key = _video_cache_key(video_path, f'asr2_{whisper_model}_{_asr_lang}')
-    asr = _cache_load(asr_cache_key)
-    if asr:
-        _log.info(f'[DIAG] ASR命中缓存: {len(asr)}段台词')
-        if progress:
-            progress['phase'] = '台词识别（缓存命中）'
-            progress['pct'] = 40
+    # 【v1.4.96-fix 字幕优先于缓存】字幕源（内嵌轨/外挂 srt）是人工校对的地面真值，
+    # 必须先于 ASR 缓存检查——否则第一轮无字幕时缓存了 whisper 结果，用户之后补
+    # 上字幕重跑会永远命中旧缓存（桌面版实测：run-1 的 whisper 英文稿缓存被 run-2
+    # 命中，src.srt 落盘了都没用上）。字幕命中即直用、不进缓存（确定性零成本，
+    # 缓存只该记忆 whisper 结果）。来源提示与 asr_segments 内部保持同一文案。
+    _subs_direct = None
+    try:
+        from ai_providers import (_subtitle_segments as _emb_subs_fn,
+                                  _external_subtitle_segments as _ext_subs_fn,
+                                  _report_subtitle_sync as _sub_sync)
+        try:
+            _subs_direct = _emb_subs_fn(video_path)
+            _subs_src = '视频内嵌字幕轨'
+        except Exception:
+            _subs_direct = None
+        if not _subs_direct:
+            try:
+                _subs_direct = _ext_subs_fn(video_path)
+                _subs_src = '同目录外挂字幕文件'
+            except Exception:
+                _subs_direct = None
+        if _subs_direct:
+            _note_progress_warning('台词来源：%s（%d 条，比语音识别更准）'
+                                   % (_subs_src, len(_subs_direct)))
+            try:
+                _sub_sync(_subs_direct, video_path)
+            except Exception:
+                pass
+            _log.info('[DIAG] 台词走字幕（%s，%d 条），优先于 ASR 缓存/识别'
+                      % (_subs_src, len(_subs_direct)))
+    except Exception:
+        _subs_direct = None
+    if _subs_direct:
+        asr = _subs_direct
     else:
-        asr = asr_segments(video_path, progress=progress, pct_range=(32, 42))
+        # ASR缓存：同视频同模型不重复转写
+        whisper_model = whisper_model_name()
+        # 缓存键必须带上「识别语言」与版本：旧键只有模型名，改了语言策略后仍会命中
+        # 之前用错误语言转写出来的脏台词（实测：默认 zh 时代把英文片转成中文乱码，
+        # 修好语言后依然命中旧缓存，等于修复不生效）。asr2 = 转写策略版本号。
+        _asr_lang = whisper_language()
+        asr_cache_key = _video_cache_key(video_path, f'asr2_{whisper_model}_{_asr_lang}')
+        asr = _cache_load(asr_cache_key)
         if asr:
-            _cache_save(asr_cache_key, asr)
+            _log.info(f'[DIAG] ASR命中缓存: {len(asr)}段台词')
+            if progress:
+                progress['phase'] = '台词识别（缓存命中）'
+                progress['pct'] = 40
+        else:
+            asr = asr_segments(video_path, progress=progress, pct_range=(32, 42))
+            if asr:
+                _cache_save(asr_cache_key, asr)
     if _aborted():
         raise AbortError('用户取消了任务')
 
