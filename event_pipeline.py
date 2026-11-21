@@ -18,6 +18,7 @@
 
 所有层独立缓存，任何一层失败退回上一层产出，绝不阻断出片。
 """
+import json
 import logging
 import os
 import re
@@ -128,6 +129,15 @@ def shot_cards(video_path, shots, run_dir, progress=None, per_shot=5, max_cards=
     os.makedirs(frame_dir, exist_ok=True)
     use = shots[:max_cards]
     out = {}
+    _partial_fp = os.path.join(frame_dir, 'cards_partial.json')
+    if os.path.isfile(_partial_fp):
+        try:
+            with open(_partial_fp, encoding='utf-8') as f:
+                _part = json.load(f)
+            out.update({int(k): v for k, v in _part.items()})
+            _log.info('[DIAG] L1 断点续跑: 跳过已完成的 %d 个镜头卡' % len(_part))
+        except Exception:
+            pass
     _prev_card_tail = ''   # 时序上下文：前一镜头卡的结尾
     for k, (a, b) in enumerate(use):
         if _MN_ABORTED():
@@ -161,6 +171,13 @@ def shot_cards(video_path, shots, run_dir, progress=None, per_shot=5, max_cards=
         if len(r) >= 8:
             out[k] = r[:900]
             _prev_card_tail = r[-80:]
+            # 【断点续跑】每张卡即存 partial（挂掉不丢进度）
+            try:
+                with open(_partial_fp, 'w', encoding='utf-8') as f:
+                    json.dump({str(kk): vv for kk, vv in out.items()}, f,
+                              ensure_ascii=False)
+            except Exception:
+                pass
     try:
         _w.vlm_unload()
     except Exception:

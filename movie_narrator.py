@@ -2423,6 +2423,14 @@ def _atomic_json_dump(path, obj):
     try:
         os.makedirs(d, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix='.tmp_', suffix='.json', dir=d)
+    except PermissionError:
+        # 【v1.4.96】杀软拦 Python 写数据根（主人实测 LOCALAPPDATA 下建目录
+        # 被拦而 bash 可写）——给出加白名单的可操作提示
+        import logging as _lg
+        _lg.getLogger('framecut.narrator').warning(
+            '[资源守护] 写入被杀软拦截: %s | 请在 Windows 安全中心 → 病毒防护 '
+            '→ 排除项 添加 FrameCut 目录（或 python.exe）后重试', path)
+        return False
     except OSError:
         return False
     try:

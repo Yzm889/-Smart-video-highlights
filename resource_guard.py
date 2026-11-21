@@ -197,6 +197,33 @@ def ollama_mem_used_mb(base_url='http://127.0.0.1:11434', timeout=10):
 # 3. PermissionError 兜底（杀软拦截的明确提示）
 # ---------------------------------------------------------------------------
 
+WHITELIST_HINT = ('写入被 Windows 杀软拦截（PermissionError）。请在 '
+                  'Windows 安全中心 → 病毒防护 → 排除项 中添加 FrameCut 目录'
+                  '（或 python.exe）后重试。')
+
+
+def safe_makedirs(path, retries=2, delay=1.0):
+    """带杀软拦截兜底的目录创建（PermissionError 时重试+明确提示）。
+
+    主人实测（2026-11-20）：Python 在 %LOCALAPPDATA%\FrameCut 下建目录被
+    杀软拦截（PermissionError WinError 5），而 bash 可写——杀软按进程画像
+    拦截。重试失败后返回 False 并给出加白名单提示。"""
+    import time as _time
+    for attempt in range(retries + 1):
+        try:
+            os.makedirs(path, exist_ok=True)
+            return True
+        except PermissionError:
+            if attempt < retries:
+                _time.sleep(delay)
+                continue
+            _log.warning('[资源守护] 建目录被杀软拦截: %s | %s', path, WHITELIST_HINT)
+            return False
+        except Exception:
+            return False
+    return False
+
+
 def safe_json_dump(path, data, retries=2, delay=1.0):
     """带杀软拦截兜底的 JSON 写入。
 
