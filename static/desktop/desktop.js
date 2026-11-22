@@ -2444,6 +2444,21 @@ function showSettingsPane(name){
     p.style.display = (p.dataset.setPane === name) ? '' : 'none');
   try{ localStorage.setItem('framecut_set_tab', name); }catch(e){}
 }
+/* ── 【v1.4.98 主题切换】四主题即时生效 + localStorage 记忆 ── */
+function applyTheme(t){
+  if(['teal','indigo','amber','light'].indexOf(t) < 0) t = 'teal';
+  document.documentElement.dataset.theme = t;
+  try{ localStorage.setItem('fcTheme', t); }catch(e){}
+  const el = $('setTheme');
+  if(el) el.value = t;
+}
+(function initTheme(){
+  let t = 'teal';
+  try{ t = localStorage.getItem('fcTheme') || 'teal'; }catch(e){}
+  applyTheme(t);
+  const el = $('setTheme');
+  if(el) el.addEventListener('change', () => applyTheme(el.value));
+})();
 (function initSettingsTabs(){
   const tabs = document.querySelectorAll('[data-set-tab]');
   if(!tabs.length) return;
