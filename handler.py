@@ -1071,6 +1071,20 @@ class Handler(BaseHTTPRequestHandler):
             if ch.get('api_key'):
                 ch['api_key'] = ('*' * 6) + ch['api_key'][-4:]
             return ch
+        def mask_cloud(c):
+            # cloud 节：主 key 与 roles.*.api_key 都打码（工具栏一键切换/云端页
+            # 靠它读 enabled/api_key 存在性——漏了这节就是「存得进读不出」老坑重演）
+            c = dict(c or {})
+            if c.get('api_key'):
+                c['api_key'] = ('*' * 6) + c['api_key'][-4:]
+            roles = {}
+            for rk, rv in (c.get('roles') or {}).items():
+                rv = dict(rv or {})
+                if rv.get('api_key'):
+                    rv['api_key'] = ('*' * 6) + rv['api_key'][-4:]
+                roles[rk] = rv
+            c['roles'] = roles
+            return c
         self._send(200, json.dumps({
             'ok': True,
             'config': {'vision': mask(cfg.get('vision')), 'tts': mask(cfg.get('tts')),
@@ -1082,7 +1096,8 @@ class Handler(BaseHTTPRequestHandler):
                        'video': dict(cfg.get('video') or {}),
                        # v1.4.68：读接口是白名单，漏一个就「存进去了但界面读不到」——
                        # whisper.model 就是这么坑过一次，这里一并补上 storage
-                       'storage': dict(cfg.get('storage') or {})},
+                       'storage': dict(cfg.get('storage') or {}),
+                       'cloud': mask_cloud(cfg.get('cloud'))},
             'vision_available': _w._vision_available(),
             'tts_available': _w._tts_available(),
             'local_enabled': _w.local_llm_enabled(),

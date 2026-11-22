@@ -2516,6 +2516,7 @@ async function showCloudPage(from){
   $('cloudPgApply').style.display = on ? 'none' : '';
   $('cloudPgDisable').style.display = on ? '' : 'none';
   $('cloudPgState').textContent = on ? '当前：☁ 云端管线' : '当前：💻 本地管线';
+  refreshModeSw();   // 页面加载即同步工具栏（修：启用后返回开关不转）
 }
 function _cloudReady2(c){
   const m = (c || {}).models || {};
@@ -2654,6 +2655,7 @@ $('cloudPgDisable').addEventListener('click', async () => {
 });
 $('cloudPgBack').addEventListener('click', () => {
   $('cloudPage').style.display = 'none';
+  refreshModeSw();   // 返回时同步工具栏 💻/☁ 高亮（启用/停用后不看旧状态）
 });
 
 /* ── 【v1.4.98 主题切换】四主题即时生效 + localStorage 记忆 ── */
