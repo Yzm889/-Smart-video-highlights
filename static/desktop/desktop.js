@@ -2742,42 +2742,7 @@ const _CLOUD_PRESETS = {
     hint: '任意 OpenAI 兼容端点：填地址与各角色模型名；缺的角色自动回落本地。'
   }
 };
-function _cloudFillProvider(p){
-  const pr = _CLOUD_PRESETS[p] || _CLOUD_PRESETS.custom;
-  // 切换服务商 = 整组覆盖（缺的角色清空 → 后端自动回落本地，见 hint）
-  if(pr.base) $('setCloudBase').value = pr.base;
-  $('setCloudLlm').value = pr.llm;
-  $('setCloudVlm').value = pr.vlm;
-  $('setCloudTts').value = pr.tts;
-  $('setCloudVoice').value = pr.voice;
-  $('setCloudProviderHint').textContent = pr.hint || '';
-}
-$('setCloudProvider').addEventListener('change', () => _cloudFillProvider($('setCloudProvider').value));
-/* ── 【v1.4.98 云端模式】单角色连通性测试 ── */
-async function cloudTest(role, label){
-  const out = $('cloudTestOut');
-  out.textContent = label + ' 测试中…';
-  try{
-    const r = await fetch('/api/cloud/test', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({role})});
-    const d = await r.json();
-    out.textContent = (d.ok ? '✅ ' : '❌ ') + label + '：' + (d.detail || '');
-    toast((d.ok ? '✅ ' : '❌ ') + label + (d.ok ? ' 连通' : ' 失败'), d.ok ? 'ok' : 'bad');
-  }catch(e){
-    out.textContent = '❌ ' + label + '：' + e.message;
-  }
-}
-$('cloudTestLlm').addEventListener('click', () => cloudTest('llm', '文本模型'));
-$('cloudTestVlm').addEventListener('click', () => cloudTest('vlm', '视觉模型'));
-$('cloudTestTts').addEventListener('click', () => cloudTest('tts', '语音模型'));
-// key 输入框的占位提示：读当前配置判断是否已有 key
-(async () => {
-  try{
-    const d = await fetch('/api/ai/config').then(r => r.json());
-    const has = !!((d.config || {}).cloud || {}).api_key;
-    if(has) $('setCloudKeyHint').textContent = '已配置 API key（不改请留空）';
-  }catch(e){ /* 尽力 */ }
-})();
+/* 设置页旧云端控件已迁至独立云端页（cloudPage）——此处只保留预设表供页面复用 */
 
 /* ── 进度数字通用格式化（Whisper / 配音共用，v1.4.81-ux） ──
    主人原话：「进度也不知道，速度也不知道，就干等」。所有长任务至少给出
