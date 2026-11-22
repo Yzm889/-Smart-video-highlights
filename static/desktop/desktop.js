@@ -2444,6 +2444,49 @@ function showSettingsPane(name){
     p.style.display = (p.dataset.setPane === name) ? '' : 'none');
   try{ localStorage.setItem('framecut_set_tab', name); }catch(e){}
 }
+/* ── 【v1.4.98 云端一键切换】工具栏 💻本地 / ☁云端 分段开关 ──
+   云端 = 同一条解说管线换模型后端（写稿/画面理解/配音走云，台词识别留本地）。
+   已配置 key → 单击即切换；未配置 → 跳云端配置页引导（配一次，此后一键）。 */
+async function _cloudReady(){
+  try{
+    const d = await fetch('/api/ai/config').then(r => r.json());
+    const cl = (d.config || {}).cloud || {};
+    const m = cl.models || {};
+    return { enabled: !!cl.enabled,
+             ready: !!cl.api_key && !!(m.llm || m.vlm || m.tts) };
+  }catch(e){ return { enabled: false, ready: false }; }
+}
+async function refreshModeSw(){
+  const st = await _cloudReady();
+  const sw = $('modeSw');
+  const on = st.enabled && st.ready;
+  $('modeCloud').classList.toggle('on', on);
+  $('modeLocal').classList.toggle('on', !on);
+  sw.dataset.state = st.ready ? (on ? 'cloud' : 'local') : 'unset';
+  sw.title = !st.ready ? '云端未配置：点「☁ 云端」去配置页填 key（一次即可，此后一键切换）'
+           : on ? '当前 ☁ 云端管线：写稿/画面理解/配音走云（点本地切回）'
+                : '当前 💻 本地管线：全免费、占本机显存（点云端切换）';
+}
+$('modeSw').addEventListener('click', async () => {
+  const st = await _cloudReady();
+  if(!st.ready){
+    openSettings('secCloud');
+    toast('先把「☁ 云端模式」页的 API Key 和模型配好（选服务商一键预填），此后这里一键切换', 'warn');
+    return;
+  }
+  const toCloud = !st.enabled;
+  try{
+    const r = await fetch('/api/ai/config', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cloud:{enabled: toCloud}})}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '保存失败');
+    toast(toCloud ? '☁ 已切到云端管线：写稿/画面理解/配音走云，本机显存解放'
+                  : '💻 已切回本地管线：全流程免费离线', 'ok');
+  }catch(e){ toast('切换失败：' + e.message, 'bad'); }
+  refreshModeSw();
+});
+refreshModeSw();
+
 /* ── 【v1.4.98 主题切换】四主题即时生效 + localStorage 记忆 ── */
 function applyTheme(t){
   if(['teal','indigo','amber','light'].indexOf(t) < 0) t = 'teal';

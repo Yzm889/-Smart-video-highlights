@@ -156,6 +156,16 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
 .tb-btn.active{background:var(--acc-dim);border-color:var(--acc-line);color:var(--acc-tint);font-weight:600}
 .tb-btn.primary:active:not(:disabled),.btn.primary:active:not(:disabled){transform:translateY(1px)}
 
+/* ── 管线切换开关：💻本地 / ☁云端（v1.4.98 一键切换） ── */
+.mode-sw{display:flex;gap:2px;border:1px solid var(--line2);border-radius:999px;
+  padding:2.5px;background:var(--panel2);flex:none}
+.mode-sw button{padding:5.5px 14px;border-radius:999px;font-size:12px;color:var(--muted);
+  background:transparent;border:none}
+.mode-sw button:hover{color:var(--txt)}
+.mode-sw button.on{background:var(--acc-dim);color:var(--acc-tint);font-weight:700;
+  box-shadow:inset 0 0 0 1px var(--acc-line-soft)}
+.mode-sw[data-state=unset] #modeCloud{color:var(--warn);font-weight:600}
+
 /* ── 主工作区：桌面行为——外框永不滚动，内栏各自滚 ── */
 .work{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
 .newproj{position:absolute;inset:0;display:flex;z-index:10;overflow:hidden;

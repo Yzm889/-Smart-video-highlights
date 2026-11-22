@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=76">
+<link rel="stylesheet" href="desktop.css?v=77">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -83,6 +83,11 @@
   <button class="tb-btn" id="tbMusicLib" title="免费踩点音乐库（离线可用）"><svg class="ic"><use href="#i-search"/></svg>曲库</button>
   <button class="tb-btn tgl on" id="tbNarr" title="整条解说配音轨开关"><svg class="ic"><use href="#i-mic"/></svg>解说轨</button>
   <button class="tb-btn tgl on" id="tbOrig" title="整条原片声音轨开关"><svg class="ic"><use href="#i-volume"/></svg>原声轨</button>
+  <span class="tb-sep"></span>
+  <div class="mode-sw" id="modeSw" title="解说管线：本地模型（免费·占本机显存）或云端模型（不占显存·按量计费）">
+    <button type="button" id="modeLocal" class="on">💻 本地</button>
+    <button type="button" id="modeCloud">☁ 云端</button>
+  </div>
   <button class="tb-btn" id="tbSettings" title="AI 配置：Key / 模型 / 配音音色 / Whisper 下载"><svg class="ic"><use href="#i-settings"/></svg>设置</button>
 </div>
 
@@ -815,6 +820,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=76"></script>
+<script src="desktop.js?v=77"></script>
 </body>
 </html>
