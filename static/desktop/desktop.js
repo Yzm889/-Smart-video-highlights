@@ -2657,6 +2657,15 @@ $('cloudPgBack').addEventListener('click', () => {
   setModeActive('local');   // 回解说视图 → 💻 亮
 });
 
+$('modeLocal').addEventListener('click', () => {
+  // 💻 本地 = 回解说工作台；编辑中不打断（与顶栏「解说」同语义）
+  if($('editor') && $('editor').style.display !== 'none') return;
+  if($('cloudPage')) $('cloudPage').style.display = 'none';
+  showNewProj();
+});
+$('modeCloud').addEventListener('click', () => showCloudPage());
+$('modeCfg').addEventListener('click', () => showCloudPage());
+
 /* ── 【v1.4.98 主题切换】四主题即时生效 + localStorage 记忆 ── */
 function applyTheme(t){
   if(['teal','indigo','amber','light'].indexOf(t) < 0) t = 'teal';
