@@ -1131,18 +1131,49 @@ def cloud_cfg():
     }
 
 
+def cloud_role_cfg(role):
+    """角色级云端配置（v1.4.98 逐角色混搭）：roles[role] 有独立 provider/key/model
+    时用它（可混搭：文本 DeepSeek + 视觉智谱 + 配音本地）；否则回落主配置
+    （一把 key 全包的一键路径）。返回 None = 该角色不走云端（回落本地引擎）。
+
+    角色 key 留空但填了 model → key 跟随主配置（同一家多角色免重复填）。"""
+    cfg = load_ai_config().get('cloud') or {}
+    if not cfg.get('enabled'):
+        return None
+    main_key = str(cfg.get('api_key') or '').strip()
+    if not main_key:
+        return None
+    base = str(cfg.get('base_url') or 'https://api.siliconflow.cn/v1').rstrip('/')
+    models = cfg.get('models') or {}
+    role_cfg = (cfg.get('roles') or {}).get(role) or {}
+    r_key = str(role_cfg.get('api_key') or '').strip()
+    r_model = str(role_cfg.get('model') or '').strip()
+    r_prov = str(role_cfg.get('provider') or '').strip()
+    r_base = str(role_cfg.get('base_url') or '').strip()
+    # 角色覆盖成立条件：有自己的 key 或（跟主 key 同家且填了模型）
+    if r_key and r_prov:
+        return {'provider': r_prov.lower(), 'base_url': (r_base or base).rstrip('/'),
+                'api_key': r_key, 'model': r_model}
+    # 跟随主配置：模型取角色覆盖值（留空则用主 models[role]）
+    model = r_model or str(models.get(role) or '').strip()
+    if not model:
+        return None
+    prov = (cfg.get('provider') or 'siliconflow').lower()
+    return {'provider': prov, 'base_url': base, 'api_key': main_key, 'model': model}
+
+
 def local_llm_cfg():
     """读取本地模型(Ollama 等 OpenAI 兼容端点)配置；未配置时给 Ollama 默认值。
     enabled 默认 False：未显式开启本地模型时绝不尝试连 localhost:11434（避免无服务时拖慢省流解说、
     或误回显 prompt 污染解说稿）。"""
     cfg = load_ai_config().get('local') or {}
     # 【v1.4.98 云端路线】云端启用且配了 LLM → 整段接管（OpenAI 兼容端点，远程不加锁）
-    _cc = cloud_cfg()
-    if _cc and _cc.get('llm'):
+    _cc = cloud_role_cfg('llm')
+    if _cc:
         return {
             'enabled': True,
             'base_url': _cc['base_url'],
-            'model': _cc['llm'],
+            'model': _cc['model'],
             'api_key': _cc['api_key'],
         }
     return {
@@ -1541,11 +1572,11 @@ def local_llm_light_cfg():
     cfg = load_ai_config().get('local') or {}
     lm = (cfg.get('light_model') or '').strip()
     # 【v1.4.98 云端路线】云端启用时轻量辅助任务也走云端 LLM（同一个端点，不再配两套）
-    _cc = cloud_cfg()
-    if _cc and _cc.get('llm'):
+    _cc = cloud_role_cfg('llm')
+    if _cc:
         return {
             'base_url': _cc['base_url'],
-            'model': _cc['llm'],
+            'model': _cc['model'],
             'api_key': _cc['api_key'],
         }
     if not lm:
@@ -1625,14 +1656,14 @@ def vlm_cfg():
     # 【v1.4.98 云端路线】云端启用且配了 VLM → 整段接管（openai 多模态通道）。
     # 云端 base_url 约定带 /v1（与 LLM/TTS 同一根），这里剥掉 /v1——openai 分支
     # 自己拼 '/v1/chat/completions'。
-    _cc = cloud_cfg()
-    if _cc and _cc.get('vlm'):
+    _cc = cloud_role_cfg('vlm')
+    if _cc:
         _cbase = _cc['base_url']
         if _cbase.endswith('/v1'):
             _cbase = _cbase[:-3]
         return {
             'enabled': True, 'mode': 'openai',
-            'base_url': _cbase, 'model': _cc['vlm'], 'api_key': _cc['api_key'],
+            'base_url': _cbase, 'model': _cc['model'], 'api_key': _cc['api_key'],
         }
     return {
         'enabled': bool(cfg.get('enabled', False)),

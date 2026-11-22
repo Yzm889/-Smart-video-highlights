@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=79">
+<link rel="stylesheet" href="desktop.css?v=80">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -234,6 +234,7 @@
       <div class="clp-sub">不装任何模型——一把 API key 跑全部：<b>写稿、剧情理解、画面理解、配音</b>走云端大模型，本机显存解放；<b>台词识别仍在本地</b>（免费、带时间戳、音频不出机器）。开启即表示理解：视频抽帧与文案会发送给你选择的云服务商。</div>
       <div class="clp-provs" id="cloudProvs"></div>
       <div class="hint" id="cloudProvHint" style="margin:8px 0 4px"></div>
+      <div class="clp-guide" id="cloudGuide"></div>
       <div class="clp-grid">
         <div class="field"><label>API Key <a id="cloudKeyLink" href="https://www.siliconflow.cn/pricing" target="_blank" style="color:var(--acc)">获取 key ↗</a></label>
           <input type="password" id="cloudPgKey" placeholder="sk-…（注册送额度，已配置则留空）"></div>
@@ -243,6 +244,62 @@
         <div class="field"><label>语音模型（配音）</label><input type="text" id="cloudPgTts"></div>
         <div class="field"><label>配音音色</label><input type="text" id="cloudPgVoice"></div>
       </div>
+      <details class="clp-roles" id="cloudRoles">
+        <summary>高级：三个角色分别用不同的服务商（混搭）——默认全部跟随上面的卡片</summary>
+        <div class="clp-role" data-role="llm">
+          <div class="clp-role-h"><b>📝 文本模型</b><span>写稿 / 剧情理解 / 对齐</span></div>
+          <div class="clp-grid">
+            <div class="field"><label>服务商（不动 = 跟随卡片）</label>
+              <select class="clp-role-prov" data-role="llm">
+                <option value="">跟随上面的卡片</option>
+                <option value="siliconflow">硅基流动</option><option value="dashscope">阿里百炼</option>
+                <option value="zhipu">智谱 GLM</option><option value="deepseek">DeepSeek 官方</option>
+                <option value="openrouter">OpenRouter</option><option value="custom">自定义</option>
+              </select></div>
+            <div class="field"><label>模型名</label><input type="text" class="clp-role-model" data-role="llm"></div>
+            <div class="field"><label>该角色专用 Key（留空 = 用主 key）</label>
+              <input type="password" class="clp-role-key" data-role="llm" placeholder="留空 = 跟随主 key"></div>
+            <div class="field"><label>API 地址（自定义时填）</label><input type="text" class="clp-role-base" data-role="llm"></div>
+          </div>
+          <div class="clp-role-act"><button class="mini-btn" data-roletest="llm">测这个角色</button>
+            <span class="hint" data-roleout="llm" style="flex:1;margin:0"></span></div>
+        </div>
+        <div class="clp-role" data-role="vlm">
+          <div class="clp-role-h"><b>👁 视觉模型</b><span>画面理解 / 镜头卡</span></div>
+          <div class="clp-grid">
+            <div class="field"><label>服务商（不动 = 跟随卡片）</label>
+              <select class="clp-role-prov" data-role="vlm">
+                <option value="">跟随上面的卡片</option>
+                <option value="siliconflow">硅基流动</option><option value="dashscope">阿里百炼</option>
+                <option value="zhipu">智谱 GLM</option><option value="deepseek">DeepSeek 官方</option>
+                <option value="openrouter">OpenRouter</option><option value="custom">自定义</option>
+              </select></div>
+            <div class="field"><label>模型名</label><input type="text" class="clp-role-model" data-role="vlm"></div>
+            <div class="field"><label>该角色专用 Key（留空 = 用主 key）</label>
+              <input type="password" class="clp-role-key" data-role="vlm" placeholder="留空 = 跟随主 key"></div>
+            <div class="field"><label>API 地址（自定义时填）</label><input type="text" class="clp-role-base" data-role="vlm"></div>
+          </div>
+          <div class="clp-role-act"><button class="mini-btn" data-roletest="vlm">测这个角色</button>
+            <span class="hint" data-roleout="vlm" style="flex:1;margin:0"></span></div>
+        </div>
+        <div class="clp-role" data-role="tts">
+          <div class="clp-role-h"><b>🎙 语音模型</b><span>配音</span></div>
+          <div class="clp-grid">
+            <div class="field"><label>服务商（不动 = 跟随卡片；不想要云配音就清空模型名）</label>
+              <select class="clp-role-prov" data-role="tts">
+                <option value="">跟随上面的卡片</option>
+                <option value="siliconflow">硅基流动</option><option value="dashscope">阿里百炼</option>
+                <option value="custom">自定义</option>
+              </select></div>
+            <div class="field"><label>模型名</label><input type="text" class="clp-role-model" data-role="tts"></div>
+            <div class="field"><label>该角色专用 Key（留空 = 用主 key）</label>
+              <input type="password" class="clp-role-key" data-role="tts" placeholder="留空 = 跟随主 key"></div>
+            <div class="field"><label>API 地址（自定义时填）</label><input type="text" class="clp-role-base" data-role="tts"></div>
+          </div>
+          <div class="clp-role-act"><button class="mini-btn" data-roletest="tts">测这个角色</button>
+            <span class="hint" data-roleout="tts" style="flex:1;margin:0"></span></div>
+        </div>
+      </details>
       <div class="clp-tests">
         <button class="mini-btn" id="cloudPgTestLlm">测文本</button>
         <button class="mini-btn" id="cloudPgTestVlm">测视觉</button>
@@ -807,6 +864,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=79"></script>
+<script src="desktop.js?v=80"></script>
 </body>
 </html>

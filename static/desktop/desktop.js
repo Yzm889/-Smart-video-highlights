@@ -2511,6 +2511,7 @@ async function showCloudPage(from){
   $('cloudPgVoice').value = c.voice || '';
   $('cloudPgTestOut').textContent = '';
   _cloudPgRenderProvs();
+  _cloudPgLoadRoles();
   const on = !!c.enabled && _cloudReady2(c);
   $('cloudPgApply').style.display = on ? 'none' : '';
   $('cloudPgDisable').style.display = on ? '' : 'none';
@@ -2531,6 +2532,7 @@ function _cloudPgRenderProvs(){
       + '" data-prov="' + k + '"><b>' + (names[k] || k) + '</b><span>' + cov + '</span></button>';
   }).join('');
   $('cloudProvHint').textContent = (_CLOUD_PRESETS[_cloudPgProv] || {}).hint || '';
+  _cloudGuideRender();
 }
 $('cloudProvs').addEventListener('click', e => {
   const b = e.target.closest('[data-prov]');
@@ -2554,8 +2556,67 @@ function _cloudPgCollect(){
   };
   const key = $('cloudPgKey').value.trim() || (_cloudPgSaved.api_key || '');
   cfg.api_key = key;
+  // 逐角色覆盖（混搭）：provider 选了「跟随」或 key 留空 → 不发该角色的 roles 项
+  const roles = {};
+  ['llm','vlm','tts'].forEach(rk => {
+    const prov = document.querySelector('.clp-role-prov[data-role="' + rk + '"]').value;
+    if(!prov) return;
+    roles[rk] = {
+      provider: prov,
+      base_url: document.querySelector('.clp-role-base[data-role="' + rk + '"]').value.trim(),
+      api_key: document.querySelector('.clp-role-key[data-role="' + rk + '"]').value.trim()
+               || cfg.api_key,
+      model: document.querySelector('.clp-role-model[data-role="' + rk + '"]').value.trim()
+    };
+  });
+  cfg.roles = roles;
   return cfg;
 }
+function _cloudPgLoadRoles(){
+  const saved = (_cloudPgSaved.roles || {});
+  ['llm','vlm','tts'].forEach(rk => {
+    const rv = saved[rk] || {};
+    document.querySelector('.clp-role-prov[data-role="' + rk + '"]').value = rv.provider || '';
+    document.querySelector('.clp-role-model[data-role="' + rk + '"]').value = rv.model || '';
+    document.querySelector('.clp-role-key[data-role="' + rk + '"]').value = '';
+    const kp = document.querySelector('.clp-role-key[data-role="' + rk + '"]');
+    kp.placeholder = rv.api_key ? '已配置（不改请留空）' : '留空 = 跟随主 key';
+    document.querySelector('.clp-role-base[data-role="' + rk + '"]').value = rv.base_url || '';
+  });
+}
+document.querySelectorAll('.clp-role-prov').forEach(sel => {
+  sel.addEventListener('change', () => {
+    const prov = sel.value, rk = sel.dataset.role;
+    const pr = _CLOUD_PRESETS[prov];
+    const modelEl = document.querySelector('.clp-role-model[data-role="' + rk + '"]');
+    if(prov && pr) modelEl.value = pr[rk === 'llm' ? 'llm' : rk] || '';
+    const baseEl = document.querySelector('.clp-role-base[data-role="' + rk + '"]');
+    if(prov && pr && pr.base) baseEl.value = pr.base;
+  });
+});
+document.querySelectorAll('[data-roletest]').forEach(b => {
+  b.addEventListener('click', async () => {
+    const rk = b.dataset.roletest, label = {llm:'文本',vlm:'视觉',tts:'语音'}[rk];
+    const out = document.querySelector('[data-roleout="' + rk + '"]');
+    const prov = document.querySelector('.clp-role-prov[data-role="' + rk + '"]').value;
+    const cfg = _cloudPgCollect();
+    const useMain = !prov;
+    const override = useMain
+      ? { provider: cfg.provider, base_url: cfg.base_url, api_key: cfg.api_key,
+          model: cfg.models[rk], voice: cfg.voice }
+      : cfg.roles[rk];
+    if(!override.api_key){ out.textContent = '❌ 先填 key（该角色的或主 key）'; return; }
+    if(useMain && !override.model){ out.textContent = '❌ 上面卡片没配' + label + '模型'; return; }
+    if(!useMain && !override.model){ out.textContent = '❌ 填该角色的模型名'; return; }
+    out.textContent = label + ' 测试中…';
+    try{
+      const r = await fetch('/api/cloud/test', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({role: rk, cloud: override})}).then(x => x.json());
+      out.textContent = (r.ok ? '✅ ' : '❌ ') + (r.detail || '');
+    }catch(e){ out.textContent = '❌ ' + e.message; }
+  });
+});
 async function cloudPgTest(role, label){
   const out = $('cloudPgTestOut');
   out.textContent = label + ' 测试中…';
@@ -2743,6 +2804,54 @@ const _CLOUD_PRESETS = {
   }
 };
 /* 设置页旧云端控件已迁至独立云端页（cloudPage）——此处只保留预设表供页面复用 */
+
+/* 分步操作引导（按所选服务商变化）：去哪注册、在哪建 key、控制台直达 */
+const _CLOUD_GUIDES = {
+  siliconflow: {
+    link: 'https://cloud.siliconflow.cn/account/ak', linkLabel: '打开硅基流动控制台（API 密钥页）↗',
+    steps: ['① 打开控制台链接，注册/登录（手机号或微信，注册送额度）',
+            '② 左侧「API 密钥」→ 新建 API 密钥 → 复制',
+            '③ 粘贴到下面 Key 框 → 点「测文本/测视觉/测语音」全绿',
+            '④ 点「保存并启用云端管线」。费用按量计费，13 句稿一轮约 ¥0.1~0.3']
+  },
+  dashscope: {
+    link: 'https://bailian.console.aliyun.com/?apiKey=1#/api-key', linkLabel: '打开百炼控制台（API-KEY 管理）↗',
+    steps: ['① 打开百炼控制台，用支付宝/淘宝账号登录并开通「模型服务百炼」（有免费额度）',
+            '② API-KEY 管理 → 创建 API-KEY → 复制',
+            '③ 粘贴 → 测试。配音走百炼 CosyVoice（音色名如 longxiaochun）']
+  },
+  zhipu: {
+    link: 'https://open.bigmodel.cn/usercenter/apikeys', linkLabel: '打开智谱 API Keys 页 ↗',
+    steps: ['① 打开链接注册/登录智谱开放平台（新用户送 tokens）',
+            '② 用户中心 → API Keys → 创建并复制',
+            '③ 粘贴 → 测文本/测视觉。智谱无 TTS：配音自动回落本地引擎']
+  },
+  deepseek: {
+    link: 'https://platform.deepseek.com/api_keys', linkLabel: '打开 DeepSeek API Keys 页 ↗',
+    steps: ['① 打开链接注册（需充值，文本价格很低）',
+            '② API Keys → 创建并复制',
+            '③ 粘贴 → 测文本。DeepSeek 无视觉/配音：那两个角色自动回落本地']
+  },
+  openrouter: {
+    link: 'https://openrouter.ai/keys', linkLabel: '打开 OpenRouter Keys 页 ↗',
+    steps: ['① 打开链接注册（需外币卡充值）',
+            '② Keys → Create Key → 复制',
+            '③ 粘贴 → 测试。模型名用 官方/模型名 格式（如 deepseek/deepseek-chat）']
+  },
+  custom: {
+    link: '', linkLabel: '',
+    steps: ['填任意 OpenAI 兼容端点的地址与 key；每个角色也可以在下方「高级」里分别配置不同服务商。']
+  }
+};
+function _cloudGuideRender(){
+  const g = _CLOUD_GUIDES[_cloudPgProv] || _CLOUD_GUIDES.custom;
+  const el = $('cloudGuide');
+  el.innerHTML = '<div class="clp-guide-h">怎么操作（' +
+    ({siliconflow:'硅基流动',dashscope:'阿里百炼',zhipu:'智谱 GLM',deepseek:'DeepSeek',
+      openrouter:'OpenRouter',custom:'自定义'}[_cloudPgProv] || '') + '）</div>'
+    + g.steps.map(x => '<div class="clp-guide-s">' + x + '</div>').join('')
+    + (g.link ? '<a class="clp-guide-link" href="' + g.link + '" target="_blank">' + g.linkLabel + '</a>' : '');
+}
 
 /* ── 进度数字通用格式化（Whisper / 配音共用，v1.4.81-ux） ──
    主人原话：「进度也不知道，速度也不知道，就干等」。所有长任务至少给出

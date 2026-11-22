@@ -4413,12 +4413,13 @@ def cloud_test_role(role, override=None):
     from ai_providers import cloud_cfg
     if isinstance(override, dict) and override.get('api_key'):
         _m = override.get('models') or {}
+        _om = str(override.get('model') or '').strip()   # 角色级 override 直带 model
         cc = {'provider': str(override.get('provider') or 'siliconflow').lower(),
               'base_url': str(override.get('base_url') or '').rstrip('/'),
               'api_key': str(override.get('api_key')).strip(),
-              'llm': str(_m.get('llm') or '').strip(),
-              'vlm': str(_m.get('vlm') or '').strip(),
-              'tts': str(_m.get('tts') or '').strip(),
+              'llm': str(_m.get('llm') or _om or '').strip(),
+              'vlm': str(_m.get('vlm') or _om or '').strip(),
+              'tts': str(_m.get('tts') or _om or '').strip(),
               'voice': str(override.get('voice') or '').strip()}
         if not cc['base_url']:
             return False, '未填 API 地址'
@@ -4493,25 +4494,27 @@ def ai_tts(text, out_path, voice=None):
     cfg = (load_ai_config().get('tts') or {})
     # 【v1.4.98 云端路线】云端启用且配了 TTS → 整段接管（OpenAI 兼容 /audio/speech）
     try:
-        from ai_providers import cloud_cfg as _cloud_cfg
-        _cc = _cloud_cfg()
+        from ai_providers import cloud_role_cfg as _cloud_role, load_ai_config as _lac
+        _cc = _cloud_role('tts')
+        if _cc:
+            _cc['voice'] = ((_lac().get('cloud') or {}).get('voice') or '')
     except Exception:
         _cc = None
-    if _cc and _cc.get('tts'):
+    if _cc:
         if _cc.get('provider') == 'dashscope':
             # 【v1.4.98 云端路线】百炼的 TTS 是私有 /text2audio 端点（已有分支），
             # 模型/音色沿用 DashScope 命名（cosyvoice-v1 / longxiaochun 等）
             cfg = {'provider': 'dashscope',
                    'base_url': 'https://dashscope.aliyuncs.com/api/v1',
                    'api_key': _cc['api_key'],
-                   'model': _cc['tts'],
+                   'model': _cc['model'],
                    'voice': (_cc.get('voice') or 'longxiaochun')}
         else:
             # 其余（硅基流动/OpenRouter/自定义）走 OpenAI 兼容 /audio/speech
             cfg = {'provider': 'openai',
                    'base_url': _cc['base_url'],
                    'api_key': _cc['api_key'],
-                   'model': _cc['tts'],
+                   'model': _cc['model'],
                    'voice': (_cc.get('voice') or cfg.get('voice') or '')}
     api_key = cfg.get('api_key')
     model = cfg.get('model')

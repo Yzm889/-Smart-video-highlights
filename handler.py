@@ -1383,6 +1383,20 @@ class Handler(BaseHTTPRequestHandler):
                         elif k in _cm:
                             del _cm[k]
                     cur['models'] = _cm
+                # 【v1.4.98 逐角色混搭】roles.{llm,vlm,tts} 独立覆盖
+                # （{provider,base_url,api_key,model}；无 key/无 provider 的角色删除=跟随主配置）
+                _r = inc.get('roles')
+                if isinstance(_r, dict):
+                    _cr = {}
+                    for rk in ('llm', 'vlm', 'tts'):
+                        rv = _r.get(rk)
+                        if not isinstance(rv, dict):
+                            continue
+                        _rr = {k: str(rv.get(k) or '').strip()
+                               for k in ('provider', 'base_url', 'api_key', 'model')}
+                        if _rr.get('api_key') and (_rr.get('provider') or _rr.get('base_url')):
+                            _cr[rk] = _rr
+                    cur['roles'] = _cr
                 cfg['cloud'] = cur
             if isinstance(data.get('tts_local'), dict):
                 # 本地免费配音：engine(auto|qwen3tts|indextts2|edge|cosyvoice|chattts|sherpa|sapi)
