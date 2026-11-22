@@ -2444,68 +2444,28 @@ function showSettingsPane(name){
     p.style.display = (p.dataset.setPane === name) ? '' : 'none');
   try{ localStorage.setItem('framecut_set_tab', name); }catch(e){}
 }
-/* ── 【v1.4.98 云端一键切换】工具栏 💻本地 / ☁云端 分段开关 ──
-   云端 = 同一条解说管线换模型后端（写稿/画面理解/配音走云，台词识别留本地）。
-   已配置 key → 单击即切换；未配置 → 跳云端配置页引导（配一次，此后一键）。 */
-async function _cloudReady(){
+/* ── 【v1.4.98 管线开关=视图指示灯】💻本地=解说工作台 ☁云端=云端页 ──
+   主人定夺：点谁亮谁（和环境检查同语义）——高亮表达「我现在在哪个页面」，
+   不表达「管线启用没启用」；启用/停用状态由云端页内的当前管线行表达。
+   管线的一键切换也在云端页里（启用/停用大按钮），同样一步到位。 */
+function setModeActive(which){
+  $('modeLocal').classList.toggle('on', which === 'local');
+  $('modeCloud').classList.toggle('on', which === 'cloud');
+}
+async function showCloudPage(from){
+  _cloudPgFrom = from || null;
+  const pg = $('cloudPage');
+  if(pg) pg.style.display = 'flex';
+  setModeActive('cloud');
   try{
     const d = await fetch('/api/ai/config').then(r => r.json());
-    const cl = (d.config || {}).cloud || {};
-    const m = cl.models || {};
-    const roles = cl.roles || {};
-    // 任意组合：主配置完整 或 任一角色覆盖完整（只配音/只文本/任二都算就绪）
-    const roleOk = ['llm', 'vlm', 'tts'].some(
-      rk => roles[rk] && roles[rk].api_key && roles[rk].model);
-    return { enabled: !!cl.enabled,
-             ready: (!!cl.api_key && !!(m.llm || m.vlm || m.tts)) || roleOk };
-  }catch(e){ return { enabled: false, ready: false }; }
-}
-async function refreshModeSw(){
-  const st = await _cloudReady();
-  const sw = $('modeSw');
-  const on = st.enabled && st.ready;
-  $('modeCloud').classList.toggle('on', on);
-  $('modeLocal').classList.toggle('on', !on);
-  sw.dataset.state = st.ready ? (on ? 'cloud' : 'local') : 'unset';
-  // 未配置时把话说明白：按钮直接写「云端·未配置」，不再让人猜琥珀色是什么意思
-  $('modeCloud').textContent = st.ready ? '☁ 云端' : '☁ 云端·未配置';
-  $('modeLocal').textContent = '💻 本地';
-  sw.title = !st.ready ? '云端还没配 key：点「☁ 云端·未配置」去引导页，配一次此后一键切换'
-           : on ? '当前 ☁ 云端管线：写稿/画面理解/配音走云（点本地切回）'
-                : '当前 💻 本地管线：全免费、占本机显存（点云端切换）';
-}
-$('modeSw').addEventListener('click', async () => {
-  const st = await _cloudReady();
-  if(!st.ready){
-    showCloudPage();
-    return;
-  }
-  const toCloud = !st.enabled;
-  try{
-    const r = await fetch('/api/ai/config', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({cloud:{enabled: toCloud}})}).then(x => x.json());
-    if(!r.ok) throw new Error(r.error || '保存失败');
-    toast(toCloud ? '☁ 已切到云端管线：写稿/画面理解/配音走云，本机显存解放'
-                  : '💻 已切回本地管线：全流程免费离线', 'ok');
-  }catch(e){ toast('切换失败：' + e.message, 'bad'); }
-  refreshModeSw();
-});
-$('modeCfg').addEventListener('click', () => showCloudPage());
-refreshModeSw();
+    _cloudPgSaved = (d.config || {}).cloud || {};
+  }catch(e){ _cloudPgSaved = {}; }
 
 /* ── 【v1.4.98 云端页】独立全页：服务商卡片 → key → 测试 → 一键启用 ── */
 let _cloudPgProv = 'siliconflow';
 let _cloudPgFrom = null;
 let _cloudPgSaved = {};
-async function showCloudPage(from){
-  _cloudPgFrom = from || null;
-  const pg = $('cloudPage');
-  if(pg) pg.style.display = 'flex';
-  try{
-    const d = await fetch('/api/ai/config').then(r => r.json());
-    _cloudPgSaved = (d.config || {}).cloud || {};
-  }catch(e){ _cloudPgSaved = {}; }
   const c = _cloudPgSaved;
   _cloudPgProv = c.provider || 'siliconflow';
   const m = c.models || {};
@@ -2532,7 +2492,6 @@ async function showCloudPage(from){
   $('cloudPgApply').style.display = on ? 'none' : '';
   $('cloudPgDisable').style.display = on ? '' : 'none';
   $('cloudPgState').textContent = on ? '当前：☁ 云端管线' : '当前：💻 本地管线';
-  refreshModeSw();   // 页面加载即同步工具栏（修：启用后返回开关不转）
 }
 function _cloudReady2(c){
   const m = (c || {}).models || {};
@@ -2682,7 +2641,6 @@ $('cloudPgApply').addEventListener('click', async () => {
       body: JSON.stringify({cloud: Object.assign({enabled: true}, cfg)})}).then(x => x.json());
     if(!r.ok) throw new Error(r.error || '保存失败');
     toast('☁ 云端管线已启用：写稿/画面理解/配音走云', 'ok');
-    refreshModeSw();
     showCloudPage(_cloudPgFrom);
   }catch(e){ toast('启用失败：' + e.message, 'bad'); }
 });
@@ -2691,13 +2649,12 @@ $('cloudPgDisable').addEventListener('click', async () => {
     await fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({cloud:{enabled: false}})});
     toast('💻 已停用云端，回到本地管线', 'ok');
-    refreshModeSw();
     showCloudPage(_cloudPgFrom);
   }catch(e){ toast('停用失败：' + e.message, 'bad'); }
 });
 $('cloudPgBack').addEventListener('click', () => {
   $('cloudPage').style.display = 'none';
-  refreshModeSw();   // 返回时同步工具栏 💻/☁ 高亮（启用/停用后不看旧状态）
+  setModeActive('local');   // 回解说视图 → 💻 亮
 });
 
 /* ── 【v1.4.98 主题切换】四主题即时生效 + localStorage 记忆 ── */
@@ -2708,6 +2665,7 @@ function applyTheme(t){
   const el = $('setTheme');
   if(el) el.value = t;
 }
+setModeActive('local');
 (function initTheme(){
   let t = 'teal';
   try{ t = localStorage.getItem('fcTheme') || 'teal'; }catch(e){}
@@ -4368,6 +4326,7 @@ function showLiveClip(on){
   const lc = $('liveClip'), np = $('newProj'), ed = $('editor');
   if(on) _lcFromEditor = !!(ed && ed.style.display !== 'none');
   if(lc) lc.style.display = on ? 'flex' : 'none';
+  setModeActive(on ? null : 'local');
   if(on){
     if(np) np.style.display = 'none';
     if(ed) ed.style.display = 'none';
@@ -4904,6 +4863,7 @@ function _setEntryActive(id){
 }
 
 function showNewProj(){
+  setModeActive('local');
   const lc = $('liveClip'), np = $('newProj');
   if(lc) lc.style.display = 'none';
   if(np) np.style.display = 'flex';

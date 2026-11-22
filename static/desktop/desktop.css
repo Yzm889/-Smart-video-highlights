@@ -225,7 +225,6 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
 .mode-sw button:hover{color:var(--txt)}
 .mode-sw button.on{background:var(--acc-dim);color:var(--acc-tint);font-weight:700;
   box-shadow:inset 0 0 0 1px var(--acc-line-soft)}
-.mode-sw[data-state=unset] #modeCloud{color:var(--warn);font-weight:600}
 
 /* ── 主工作区：桌面行为——外框永不滚动，内栏各自滚 ── */
 .work{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
