@@ -2475,6 +2475,7 @@ async function showCloudPage(from){
   $('cloudPgLlm').value = m.llm || '';
   $('cloudPgVlm').value = m.vlm || '';
   $('cloudPgTts').value = m.tts || '';
+  // select 的选中态在拉取填充时同步（此处先按存量值显示）
   $('cloudPgVoice').value = c.voice || '';
   $('cloudPgTestOut').textContent = '';
   _cloudPgRenderProvs();
@@ -2573,29 +2574,45 @@ async function cloudPgPullModels(silent){
       const ra = fams.findIndex(f => f.test(a)), rb = fams.findIndex(f => f.test(b));
       return (ra < 0 ? 99 : ra) - (rb < 0 ? 99 : rb);
     });
-    const _fill = (dl, pool) => {
-      const el = $(dl); if(!el) return;
-      el.innerHTML = (pool.length ? pool : _cloudPgModelIds)
-        .map(x => '<option value="' + x + '"></option>').join('');
-    };
     const textPool = _rank(_cloudPgModelIds.filter(_isText),
                            [/qwen/i, /deepseek/i, /glm/i, /kimi|moonshot/i]);
     const vlPool = _rank(_cloudPgModelIds.filter(_isVision),
                          [/qwen.*vl/i, /glm/i, /internvl/i, /minicpm/i]);
     const ttsPool = _cloudPgModelIds.filter(_isTts);
-    _fill('dlLlm', textPool);
-    _fill('dlVlm', vlPool);
-    _fill('dlTts', ttsPool);
-    // 失效默认自动纠正：当前值不在列表里 → 从对应池挑排序最优
-    const fix = (id, pool) => {
-      const el = $(id);
-      if(!el || !pool.length) return;
-      if(_cloudPgModelIds.length && !_cloudPgModelIds.includes(el.value.trim())){
-        el.value = pool[0];
-      }
+    // 【真下拉】select 从模型池填充 + 「✎ 其他（手动输入）」自定义项；
+    // 隐藏文本框仍承载实际值（collect/启用/高级块共用，契约不变）
+    const _bindSel = (selId, txtId, pool, fallback) => {
+      const sel = $(selId), txt = $(txtId);
+      if(!sel || !txt) return;
+      const cur = txt.value.trim();
+      const use = (pool.length ? pool : _cloudPgModelIds).slice();
+      if(cur && !use.includes(cur)) use.unshift(cur + '（当前）');
+      use.push('__custom__');
+      sel.innerHTML = use.map(x => '<option value="' + x + '">'
+        + (x === '__custom__' ? '✎ 其他（手动输入）' : x) + '</option>').join('');
+      sel.value = cur && use.includes(cur) ? cur : (fallback && fallback.value ? fallback.value : (use[0] || ''));
+      if(sel.value === '__custom__'){ txt.style.display = ''; }
+      else { txt.value = sel.value; txt.style.display = 'none'; }
     };
-    fix('cloudPgVlm', vlPool);
-    fix('cloudPgTts', ttsPool);
+    _bindSel('cloudPgLlmSel', 'cloudPgLlm', textPool, {value: (_CLOUD_PRESETS[_cloudPgProv] || {}).llm});
+    _bindSel('cloudPgVlmSel', 'cloudPgVlm', vlPool, {value: (_CLOUD_PRESETS[_cloudPgProv] || {}).vlm});
+    _bindSel('cloudPgTtsSel', 'cloudPgTts', ttsPool, {value: (_CLOUD_PRESETS[_cloudPgProv] || {}).tts});
+    ['cloudPgLlmSel', 'cloudPgVlmSel', 'cloudPgTtsSel'].forEach(sid => {
+      const sel = $(sid);
+      const txt = $(sid.replace('Sel', ''));
+      if(!sel || !txt) return;
+      if(!sel.dataset.bound){
+        sel.dataset.bound = '1';
+        sel.addEventListener('change', () => {
+          if(sel.value === '__custom__'){
+            txt.style.display = ''; txt.focus();
+          } else {
+            txt.style.display = 'none'; txt.value = sel.value;
+          }
+          _cloudPgRouteRender();
+        });
+      }
+    });
     if(meta) meta.textContent = '✅ 可用模型 ' + _cloudPgModelIds.length + ' 个——三个模型框的下拉已更新';
   }catch(e){
     if(out) out.textContent = '❌ 拉取失败：' + e.message;
