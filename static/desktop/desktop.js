@@ -2474,6 +2474,7 @@ function openSettings(sec){
     const _cl = c.cloud || {};
     $('setCloudEnabled').checked = !!_cl.enabled;
     $('setCloudProvider').value = _cl.provider || 'siliconflow';
+    $('setCloudProviderHint').textContent = (_CLOUD_PRESETS[_cl.provider || 'siliconflow'] || {}).hint || '';
     $('setCloudBase').value = _cl.base_url || 'https://api.siliconflow.cn/v1';
     const _cm = _cl.models || {};
     $('setCloudLlm').value = _cm.llm || '';
@@ -2569,6 +2570,51 @@ $('settingsSave').addEventListener('click', async () => {
   } catch(e){ toast('保存失败：' + e.message, 'bad'); }
 });
 
+/* ── 【v1.4.98 云端模式】服务商预填表：切哪家，地址/三角色模型/音色一键到位。
+   某家缺的角色留空 → 后端该角色自动回落本地（cloud_cfg 只接管配了模型的）。 ── */
+const _CLOUD_PRESETS = {
+  siliconflow: {
+    base: 'https://api.siliconflow.cn/v1',
+    llm: 'Qwen/Qwen3.5-9B', vlm: 'Qwen/Qwen2.5-VL-32B-Instruct',
+    tts: 'FunAudioLLM/CosyVoice2-0.5B', voice: 'FunAudioLLM/CosyVoice2-0.5B:alex',
+    hint: '一把 key 覆盖全部角色。注册送额度、支付宝充值：Qwen3.5-9B ¥0.5/M、VL-32B ¥1.89/M、CosyVoice2 ¥0.05/千字符（13 句稿配音≈2分钱）。'
+  },
+  dashscope: {
+    base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    llm: 'qwen-max', vlm: 'qwen-vl-max', tts: 'cosyvoice-v1', voice: 'longxiaochun',
+    hint: '阿里云百炼：通义全系列全包，支付宝充值。TTS 走百炼私有端点（已适配）。'
+  },
+  zhipu: {
+    base: 'https://open.bigmodel.cn/api/paas/v4',
+    llm: 'glm-4.6', vlm: 'glm-4.5v', tts: '', voice: '',
+    hint: '智谱 GLM：文本+视觉强，平台无 TTS——配音自动回落本地引擎（IndexTTS2/Qwen3-TTS）。'
+  },
+  deepseek: {
+    base: 'https://api.deepseek.com/v1',
+    llm: 'deepseek-chat', vlm: '', tts: '', voice: '',
+    hint: 'DeepSeek 官方：文本最实惠，无视觉/配音——画面理解与配音回落本地。'
+  },
+  openrouter: {
+    base: 'https://openrouter.ai/api/v1',
+    llm: 'deepseek/deepseek-chat', vlm: 'qwen/qwen2.5-vl-72b-instruct', tts: '', voice: '',
+    hint: '国际聚合站：几百个模型一个 key，需外币支付；无 TTS，配音回落本地。'
+  },
+  custom: {
+    base: '', llm: '', vlm: '', tts: '', voice: '',
+    hint: '任意 OpenAI 兼容端点：填地址与各角色模型名；缺的角色自动回落本地。'
+  }
+};
+function _cloudFillProvider(p){
+  const pr = _CLOUD_PRESETS[p] || _CLOUD_PRESETS.custom;
+  // 切换服务商 = 整组覆盖（缺的角色清空 → 后端自动回落本地，见 hint）
+  if(pr.base) $('setCloudBase').value = pr.base;
+  $('setCloudLlm').value = pr.llm;
+  $('setCloudVlm').value = pr.vlm;
+  $('setCloudTts').value = pr.tts;
+  $('setCloudVoice').value = pr.voice;
+  $('setCloudProviderHint').textContent = pr.hint || '';
+}
+$('setCloudProvider').addEventListener('change', () => _cloudFillProvider($('setCloudProvider').value));
 /* ── 【v1.4.98 云端模式】单角色连通性测试 ── */
 async function cloudTest(role, label){
   const out = $('cloudTestOut');

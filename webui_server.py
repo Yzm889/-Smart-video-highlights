@@ -4452,11 +4452,19 @@ def cloud_test_role(role):
             model = cc.get('tts')
             if not model:
                 return False, '未配置云端语音模型'
+            if cc.get('provider') == 'dashscope':
+                # 百炼 TTS 私有端点（与 ai_tts 的 dashscope 分支同源）
+                url = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text2audio/tts'
+                payload = {'model': model, 'input': {'text': '测试一下声音。'},
+                           'voice': cc.get('voice') or 'longxiaochun',
+                           'parameters': {'format': 'mp3', 'sample_rate': 48000}}
+            else:
+                url = base + '/audio/speech'
+                payload = {'model': model, 'input': '测试一下声音。',
+                           'voice': cc.get('voice') or 'FunAudioLLM/CosyVoice2-0.5B:alex',
+                           'response_format': 'mp3'}
             req = urllib.request.Request(
-                base + '/audio/speech',
-                data=json.dumps({'model': model, 'input': '测试一下声音。',
-                                 'voice': cc.get('voice') or 'FunAudioLLM/CosyVoice2-0.5B:alex',
-                                 'response_format': 'mp3'}).encode('utf-8'),
+                url, data=json.dumps(payload).encode('utf-8'),
                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = r.read()
@@ -4476,11 +4484,21 @@ def ai_tts(text, out_path, voice=None):
     except Exception:
         _cc = None
     if _cc and _cc.get('tts'):
-        cfg = {'provider': 'openai',
-               'base_url': _cc['base_url'],
-               'api_key': _cc['api_key'],
-               'model': _cc['tts'],
-               'voice': (_cc.get('voice') or cfg.get('voice') or '')}
+        if _cc.get('provider') == 'dashscope':
+            # 【v1.4.98 云端路线】百炼的 TTS 是私有 /text2audio 端点（已有分支），
+            # 模型/音色沿用 DashScope 命名（cosyvoice-v1 / longxiaochun 等）
+            cfg = {'provider': 'dashscope',
+                   'base_url': 'https://dashscope.aliyuncs.com/api/v1',
+                   'api_key': _cc['api_key'],
+                   'model': _cc['tts'],
+                   'voice': (_cc.get('voice') or 'longxiaochun')}
+        else:
+            # 其余（硅基流动/OpenRouter/自定义）走 OpenAI 兼容 /audio/speech
+            cfg = {'provider': 'openai',
+                   'base_url': _cc['base_url'],
+                   'api_key': _cc['api_key'],
+                   'model': _cc['tts'],
+                   'voice': (_cc.get('voice') or cfg.get('voice') or '')}
     api_key = cfg.get('api_key')
     model = cfg.get('model')
     if not (api_key and model):

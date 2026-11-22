@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=67">
+<link rel="stylesheet" href="desktop.css?v=68">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -612,9 +612,14 @@
           </label>
           <label>服务商</label>
           <select id="setCloudProvider">
-            <option value="siliconflow">硅基流动 SiliconFlow（推荐 · 支付宝）</option>
-            <option value="custom">自定义（OpenAI 兼容）</option>
+            <option value="siliconflow">硅基流动 SiliconFlow（推荐 · 一把 key 全包 · 支付宝）</option>
+            <option value="dashscope">阿里百炼 DashScope（通义/Qwen-VL/CosyVoice 全包）</option>
+            <option value="zhipu">智谱 BigModel（GLM 系列 · 文本+视觉，配音走本地）</option>
+            <option value="deepseek">DeepSeek 官方（超值文本 · 无视觉/配音）</option>
+            <option value="openrouter">OpenRouter（国际聚合 · 需外币卡）</option>
+            <option value="custom">自定义（任意 OpenAI 兼容端点）</option>
           </select>
+          <div class="hint" id="setCloudProviderHint" style="margin-top:-2px"></div>
           <label>API Key</label>
           <input type="password" id="setCloudKey" placeholder="已配置则留空">
           <div class="hint" id="setCloudKeyHint" style="margin-top:-2px"></div>
@@ -784,6 +789,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=67"></script>
+<script src="desktop.js?v=68"></script>
 </body>
 </html>
