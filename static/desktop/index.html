@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=81">
+<link rel="stylesheet" href="desktop.css?v=85">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -245,7 +245,7 @@
         <div class="field"><label>配音音色</label><input type="text" id="cloudPgVoice"></div>
       </div>
       <details class="clp-roles" id="cloudRoles">
-        <summary>高级：三个角色分别用不同的服务商（混搭）——默认全部跟随上面的卡片</summary>
+        <summary>高级：任意组合都能跑——只配音 / 只文本 / 任二 / 三个全自定义，没配的角色自动走本地引擎</summary>
         <div class="clp-role" data-role="llm">
           <div class="clp-role-h"><b>📝 文本模型</b><span>写稿 / 剧情理解 / 对齐</span></div>
           <div class="clp-grid">
@@ -300,6 +300,7 @@
             <span class="hint" data-roleout="tts" style="flex:1;margin:0"></span></div>
         </div>
       </details>
+      <div class="clp-route" id="cloudPgRoute"></div>
       <div class="clp-tests">
         <button class="mini-btn" id="cloudPgTestLlm">测文本</button>
         <button class="mini-btn" id="cloudPgTestVlm">测视觉</button>
@@ -864,6 +865,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=84"></script>
+<script src="desktop.js?v=85"></script>
 </body>
 </html>

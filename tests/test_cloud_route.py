@@ -104,3 +104,31 @@ def test_ai_tts_takes_cloud_config(monkeypatch):
     body = json.loads(captured.get('body', '{}'))
     assert body['model'] == 'FunAudioLLM/CosyVoice2-0.5B'
     assert body['voice'] == 'FunAudioLLM/CosyVoice2-0.5B:alex'
+
+
+def test_role_only_subset(monkeypatch):
+    """任意组合：只配音走云（无主 key）→ 文本/视觉回落本地。"""
+    _patch_cfg(monkeypatch, {'cloud': {
+        'enabled': True, 'provider': 'siliconflow',
+        'base_url': 'https://api.siliconflow.cn/v1',
+        'roles': {'tts': {'provider': 'siliconflow',
+                          'api_key': 'sk-tts', 'model': 'FunAudioLLM/CosyVoice2-0.5B'}}}})
+    tts = AP.cloud_role_cfg('tts')
+    assert tts and tts['api_key'] == 'sk-tts'
+    assert tts['model'] == 'FunAudioLLM/CosyVoice2-0.5B'
+    assert AP.cloud_role_cfg('llm') is None   # 没配 → 本地
+    assert AP.cloud_role_cfg('vlm') is None
+
+
+def test_role_own_key_same_provider(monkeypatch):
+    """同一家、某角色用独立 key（provider 缺省跟随主配置）。"""
+    _patch_cfg(monkeypatch, {'cloud': {
+        'enabled': True, 'provider': 'siliconflow',
+        'base_url': 'https://api.siliconflow.cn/v1', 'api_key': 'sk-main',
+        'models': {'llm': 'Qwen/Qwen3.5-9B'},
+        'roles': {'llm': {'api_key': 'sk-other', 'model': 'other/model'}}}})
+    llm = AP.cloud_role_cfg('llm')
+    assert llm['api_key'] == 'sk-other'
+    assert llm['model'] == 'other/model'
+    assert llm['provider'] == 'siliconflow'   # provider 缺省跟随主配置
+    assert llm['base_url'] == 'https://api.siliconflow.cn/v1'

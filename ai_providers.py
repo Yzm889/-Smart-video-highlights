@@ -1141,8 +1141,6 @@ def cloud_role_cfg(role):
     if not cfg.get('enabled'):
         return None
     main_key = str(cfg.get('api_key') or '').strip()
-    if not main_key:
-        return None
     base = str(cfg.get('base_url') or 'https://api.siliconflow.cn/v1').rstrip('/')
     models = cfg.get('models') or {}
     role_cfg = (cfg.get('roles') or {}).get(role) or {}
@@ -1150,13 +1148,15 @@ def cloud_role_cfg(role):
     r_model = str(role_cfg.get('model') or '').strip()
     r_prov = str(role_cfg.get('provider') or '').strip()
     r_base = str(role_cfg.get('base_url') or '').strip()
-    # 角色覆盖成立条件：有自己的 key 或（跟主 key 同家且填了模型）
-    if r_key and r_prov:
-        return {'provider': r_prov.lower(), 'base_url': (r_base or base).rstrip('/'),
+    # 【任意组合】角色级覆盖独立成立：自己的 key+model 即可（provider/base 缺省
+    # 跟随主配置）——只配音/只文本/任二/全配都能跑，没配的角色回落本地
+    if r_key and r_model:
+        return {'provider': (r_prov or (cfg.get('provider') or 'siliconflow').lower()),
+                'base_url': (r_base or base).rstrip('/'),
                 'api_key': r_key, 'model': r_model}
     # 跟随主配置：模型取角色覆盖值（留空则用主 models[role]）
     model = r_model or str(models.get(role) or '').strip()
-    if not model:
+    if not main_key or not model:
         return None
     prov = (cfg.get('provider') or 'siliconflow').lower()
     return {'provider': prov, 'base_url': base, 'api_key': main_key, 'model': model}

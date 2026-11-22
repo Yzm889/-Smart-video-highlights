@@ -2452,8 +2452,12 @@ async function _cloudReady(){
     const d = await fetch('/api/ai/config').then(r => r.json());
     const cl = (d.config || {}).cloud || {};
     const m = cl.models || {};
+    const roles = cl.roles || {};
+    // 任意组合：主配置完整 或 任一角色覆盖完整（只配音/只文本/任二都算就绪）
+    const roleOk = ['llm', 'vlm', 'tts'].some(
+      rk => roles[rk] && roles[rk].api_key && roles[rk].model);
     return { enabled: !!cl.enabled,
-             ready: !!cl.api_key && !!(m.llm || m.vlm || m.tts) };
+             ready: (!!cl.api_key && !!(m.llm || m.vlm || m.tts)) || roleOk };
   }catch(e){ return { enabled: false, ready: false }; }
 }
 async function refreshModeSw(){
@@ -2515,6 +2519,7 @@ async function showCloudPage(from){
   $('cloudPgTestOut').textContent = '';
   _cloudPgRenderProvs();
   _cloudPgLoadRoles();
+  _cloudPgRouteRender();
   // 【自动预填】本地没存过模型时，按当前服务商的推荐直接填上——
   // 主人实测：填了 key 还被要求手填模型名=被卡在第二步
   const _pr = _CLOUD_PRESETS[_cloudPgProv] || _CLOUD_PRESETS.custom;
@@ -2584,6 +2589,25 @@ function _cloudPgCollect(){
   cfg.roles = roles;
   return cfg;
 }
+function _cloudPgRouteRender(){
+  const el = $('cloudPgRoute');
+  if(!el) return;
+  const cfg = _cloudPgCollect();
+  const provName = pv => ({siliconflow:'硅基流动', dashscope:'百炼', zhipu:'智谱',
+    deepseek:'DeepSeek', openrouter:'OpenRouter', custom:'自定义'}[pv] || '自定义');
+  const rows = ['llm', 'vlm', 'tts'].map(rk => {
+    const nm = {llm:'📝 文本', vlm:'👁 视觉', tts:'🎙 配音'}[rk];
+    const ro = (cfg.roles || {})[rk];
+    if(ro && ro.api_key && ro.model) return nm + '：☁ ' + provName(ro.provider);
+    if(cfg.api_key && cfg.models[rk]) return nm + '：☁ ' + provName(cfg.provider);
+    return nm + '：💻 本地';
+  });
+  el.textContent = '生效路线 → ' + rows.join(' · ');
+}
+['cloudPgKey','cloudPgBase','cloudPgLlm','cloudPgVlm','cloudPgTts','cloudPgVoice']
+  .forEach(id => { const el = $(id); if(el) el.addEventListener('input', _cloudPgRouteRender); });
+document.querySelectorAll('.clp-role-prov,.clp-role-key,.clp-role-model,.clp-role-base')
+  .forEach(el => el.addEventListener('input', _cloudPgRouteRender));
 function _cloudPgLoadRoles(){
   const saved = (_cloudPgSaved.roles || {});
   ['llm','vlm','tts'].forEach(rk => {
@@ -2644,7 +2668,14 @@ $('cloudPgTestVlm').addEventListener('click', () => cloudPgTest('vlm', '视觉�
 $('cloudPgTestTts').addEventListener('click', () => cloudPgTest('tts', '语音模型'));
 $('cloudPgApply').addEventListener('click', async () => {
   const cfg = _cloudPgCollect();
-  if(!cfg.api_key){ toast('先填 API key（注册服务商获取）', 'warn'); return; }
+  // 【任意组合】主配置 或 任一角色覆盖，至少一个成立即可启用
+  const m = cfg.models;
+  const mainOk = cfg.api_key && (m.llm || m.vlm || m.tts);
+  const roleOk = Object.values(cfg.roles || {}).some(r => r.api_key && r.model);
+  if(!mainOk && !roleOk){
+    toast('至少配一个角色：填主 key+模型，或在「高级」里配任一角色的服务商与 key', 'warn');
+    return;
+  }
   try{
     const r = await fetch('/api/ai/config', {method:'POST',
       headers:{'Content-Type':'application/json'},

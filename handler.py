@@ -1409,7 +1409,7 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         _rr = {k: str(rv.get(k) or '').strip()
                                for k in ('provider', 'base_url', 'api_key', 'model')}
-                        if _rr.get('api_key') and (_rr.get('provider') or _rr.get('base_url')):
+                        if _rr.get('api_key') and _rr.get('model'):
                             _cr[rk] = _rr
                     cur['roles'] = _cr
                 cfg['cloud'] = cur
