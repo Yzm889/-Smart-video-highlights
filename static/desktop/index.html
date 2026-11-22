@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=69">
+<link rel="stylesheet" href="desktop.css?v=70">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -88,69 +88,81 @@
 
 <!-- 主工作区 -->
 <div class="work">
-  <!-- 新建项目（无项目时显示） -->
+  <!-- 新建项目（无项目时显示）：左品牌区 + 右操作台（v1.4.98 重设计） -->
   <div class="newproj" id="newProj">
-    <div class="np-card">
-      <div class="migrate-banner" id="migBanner" style="display:none">
-        <div class="mb-txt">📦 检测到全新环境——可从旧版本导入：配置、成片、历史、模型</div>
-        <div class="mig-acts">
-          <button class="mini-btn" id="migGo">选择旧版本目录导入</button>
-          <button class="mini-btn" id="migSkip">跳过</button>
+    <div class="np-wrap">
+      <aside class="np-hero">
+        <div class="np-hero-logo">🎬</div>
+        <h1 class="np-hero-t">一帧成片<span>FRAMECUT · AI 解说工作台</span></h1>
+        <p class="np-hero-sub">选择一段本地视频，写下剧情——AI 按剧情挑画面、写解说、配音，全程本地免费。</p>
+        <div class="np-steps">
+          <div class="np-step"><i>1</i><div><b>导入视频与字幕</b><span>本地文件不上传；字幕让台词对齐零偏差</span></div></div>
+          <div class="np-step"><i>2</i><div><b>写下剧情</b><span>开头 → 冲突 → 结局，或直接贴解说稿</span></div></div>
+          <div class="np-step"><i>3</i><div><b>生成成片</b><span>挑画面 · 写解说 · 配音 · 字幕一条龙</span></div></div>
         </div>
-      </div>
-      <div class="np-logo">🎬</div>
-      <div class="np-title">新建解说项目</div>
-      <div class="np-sub">选择一段本地视频，写下剧情——AI 按剧情挑画面、写解说、配音，全程本地免费</div>
-      <div class="env-card" id="envCard" style="display:none">
-        <div class="env-head"><span>环境检查（缺什么，去设置里装）</span>
-          <span style="display:flex;gap:6px">
-            <button class="mini-btn" id="envRefresh">刷新</button>
-            <button class="mini-btn" id="envHide">收起</button>
-          </span>
+        <div class="np-feats">
+          <span class="np-feat">🔒 全程本地免费</span>
+          <span class="np-feat">🎬 台词引用原声</span>
+          <span class="np-feat">☁ 可选云端加速</span>
         </div>
-        <div class="env-rows" id="envRows"><div class="ins-empty">检查中…</div></div>
-      </div>
-      <div class="env-card" id="recentCard" style="display:none">
-        <div class="env-head"><span>🕘 最近项目（点击继续调整或合成）</span><button class="mini-btn" id="recentRefresh">刷新</button></div>
-        <div class="recent-list" id="recentList"></div>
-      </div>
-      <button class="np-pick" id="npPick">
-        <svg class="ic ic-big"><use href="#i-folder"/></svg>
-        <span id="npPickLabel">从电脑选择视频</span>
-      </button>
-      <button class="np-srt" id="npSrt">
-        <svg class="ic ic-big"><use href="#i-subtitle"/></svg>
-        <span id="npSrtLabel">导入字幕（SRT / ASS / VTT）——靠台词找画面，成片质量的命脉</span>
-      </button>
-      <div id="npLastMedia" style="margin-bottom:8px"></div>
-      <div class="field">
-        <label>片名 / 主题（用于搜剧情，可留空）</label>
-        <div class="np-name-row">
-          <input type="text" id="npName" placeholder="例如：惩罚者 第一季第一集">
-          <button class="mini-btn" id="npPlotLookup" title="按片名用 AI 检索剧情梗概，填入下方剧情框"><svg class="ic"><use href="#i-search"/></svg>查剧情</button>
+        <div class="env-card np-hero-env" id="envCard" style="display:none">
+          <div class="env-head"><span>环境检查（缺什么，去设置里装）</span>
+            <span style="display:flex;gap:6px">
+              <button class="mini-btn" id="envRefresh">刷新</button>
+              <button class="mini-btn" id="envHide">收起</button>
+            </span>
+          </div>
+          <div class="env-rows" id="envRows"><div class="ins-empty">检查中…</div></div>
         </div>
-      </div>
-      <div class="field">
-        <label>剧情（开头 → 冲突 → 结局）或粘贴完整解说稿</label>
-        <textarea id="npPlot" rows="7" placeholder="例如：深夜的港口，一艘货船悄悄离岸……"></textarea>
-      </div>
-      <div class="np-opts">
-        <label class="chk"><input type="checkbox" id="npScript"> 这是写好的完整解说稿（AI 不改一字）</label>
-        <label class="chk"><input type="checkbox" id="npCut" checked> 剧情精剪（保留高光，剪掉填充——成片约 10 分钟）</label>
-        <div class="hint" style="margin-top:-4px">两种都出完整成片，区别在画面：勾上=只保留解说覆盖的画面，其余剪掉，成片长度跟着解说走（20 分钟原片 → 约 3~10 分钟）；不勾=原片整长一秒不剪，解说与字幕叠在原位、配音偏长会自动加速——适合只加解说音轨、不动原片画面的用法。</div>
-        <label class="chk"><input type="checkbox" id="npBgm"> 加背景音乐（解说时自动闪避）</label>
-      </div>
-      <div class="field" style="margin-top:8px">
-        <label>画面理解档位（决定「没台词的高光镜头」保不保得住）</label>
-        <select id="npTier">
-          <option value="speed">极速 ·画面索引 10 秒·无台词画面会丢（调文案用）</option>
-          <option value="balanced" selected>平衡 ·画面索引 1 分钟·全片覆盖，打戏吻戏都保留（推荐）</option>
-          <option value="quality">质量 ·画面索引 3 分钟·更密抽样，动作快的片子选它</option>
-          <option value="ultra">极致 ·画面索引 8 分钟·每 5 秒一帧，动作匹配权重加倍</option>
-        </select>
-        <div class="hint" id="npTierHint">平衡档：全片每 12 秒看一帧，没有台词的打斗/对视/吻戏也会进候选池。实测（20 分钟素材）：画面索引 1 分钟，整条流水线约 11 分钟——配音 7 分钟是共同地板。</div>
-      </div>
-      <button class="np-adv-toggle" id="npAdvToggle">⚙ 高级设置（时长 · 字幕 · 导出交付）<span class="adv-arrow" id="npAdvArrow">展开 ▾</span></button>
+      </aside>
+      <main class="np-main">
+        <div class="np-card">
+          <div class="migrate-banner" id="migBanner" style="display:none">
+            <div class="mb-txt">📦 检测到全新环境——可从旧版本导入：配置、成片、历史、模型</div>
+            <div class="mig-acts">
+              <button class="mini-btn" id="migGo">选择旧版本目录导入</button>
+              <button class="mini-btn" id="migSkip">跳过</button>
+            </div>
+          </div>
+          <div class="np-drop2">
+            <button class="np-pick" id="npPick">
+              <svg class="ic ic-big"><use href="#i-folder"/></svg>
+              <span id="npPickLabel">从电脑选择视频</span>
+            </button>
+            <button class="np-srt" id="npSrt">
+              <svg class="ic ic-big"><use href="#i-subtitle"/></svg>
+              <span id="npSrtLabel">导入字幕（SRT / ASS / VTT）——靠台词找画面，成片质量的命脉</span>
+            </button>
+          </div>
+          <div id="npLastMedia" style="margin-bottom:8px"></div>
+          <div class="field">
+            <label>片名 / 主题（用于搜剧情，可留空）</label>
+            <div class="np-name-row">
+              <input type="text" id="npName" placeholder="例如：惩罚者 第一季第一集">
+              <button class="mini-btn" id="npPlotLookup" title="按片名用 AI 检索剧情梗概，填入下方剧情框"><svg class="ic"><use href="#i-search"/></svg>查剧情</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>剧情（开头 → 冲突 → 结局）或粘贴完整解说稿</label>
+            <textarea id="npPlot" rows="7" placeholder="例如：深夜的港口，一艘货船悄悄离岸……"></textarea>
+          </div>
+          <div class="np-opts">
+            <label class="chk"><input type="checkbox" id="npScript"> 这是写好的完整解说稿（AI 不改一字）</label>
+            <label class="chk"><input type="checkbox" id="npCut" checked> 剧情精剪（保留高光，剪掉填充——成片约 10 分钟）</label>
+            <div class="hint" style="margin-top:-4px">两种都出完整成片，区别在画面：勾上=只保留解说覆盖的画面，其余剪掉，成片长度跟着解说走（20 分钟原片 → 约 3~10 分钟）；不勾=原片整长一秒不剪，解说与字幕叠在原位、配音偏长会自动加速——适合只加解说音轨、不动原片画面的用法。</div>
+            <label class="chk"><input type="checkbox" id="npBgm"> 加背景音乐（解说时自动闪避）</label>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label>画面理解档位（决定「没台词的高光镜头」保不保得住）</label>
+            <select id="npTier">
+              <option value="speed">极速 ·画面索引 10 秒·无台词画面会丢（调文案用）</option>
+              <option value="balanced" selected>平衡 ·画面索引 1 分钟·全片覆盖，打戏吻戏都保留（推荐）</option>
+              <option value="quality">质量 ·画面索引 3 分钟·更密抽样，动作快的片子选它</option>
+              <option value="ultra">极致 ·画面索引 8 分钟·每 5 秒一帧，动作匹配权重加倍</option>
+            </select>
+            <div class="hint" id="npTierHint">平衡档：全片每 12 秒看一帧，没有台词的打斗/对视/吻戏也会进候选池。实测（20 分钟素材）：画面索引 1 分钟，整条流水线约 11 分钟——配音 7 分钟是共同地板。</div>
+          </div>
+          <button class="np-adv-toggle" id="npAdvToggle">⚙ 高级设置（时长 · 字幕 · 导出交付）<span class="adv-arrow" id="npAdvArrow">展开 ▾</span></button>
       <div class="adv-body" id="npAdvBody" style="display:none">
         <div class="preset-bar">
           <span class="preset-label">参数预设</span>
@@ -192,9 +204,15 @@
         <div class="hint">改完自动记忆，下次生成直接用</div>
       </div>
       <button class="btn primary big" id="npGo" disabled>🎙 开始生成</button>
-      <div class="np-hint" id="npHint">选择视频并填写剧情后开始</div>
-    </div>
+        <div class="np-hint" id="npHint">选择视频并填写剧情后开始</div>
+      </div>
+      <div class="env-card np-recent" id="recentCard" style="display:none">
+        <div class="env-head"><span>🕘 最近项目（点击继续调整或合成）</span><button class="mini-btn" id="recentRefresh">刷新</button></div>
+        <div class="recent-list" id="recentList"></div>
+      </div>
+    </main>
   </div>
+</div>
 
   <!-- 直播切片（方案 A：本地录像 → 自动高光 → N 条原声独立 mp4） -->
   <div class="newproj" id="liveClip" style="display:none">
