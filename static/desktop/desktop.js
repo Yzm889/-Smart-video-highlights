@@ -4685,6 +4685,7 @@ $('tbEnvCheck').addEventListener('click', () => {
     if($('editor').style.display !== 'none') showEditor(false);
     showNewProj();
     card.style.display = '';
+    try{ card.scrollIntoView({ block: 'nearest' }); }catch(e){}
     refreshEnv();
     _setEntryActive('tbEnvCheck');
   } else {
