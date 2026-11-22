@@ -1221,6 +1221,8 @@ $('npPlotLookup').addEventListener('click', async () => {
   b.disabled = false; b.textContent = '🔎 查剧情';
 });
 
+let _stageScriptOnly = false;   // 【审计修复 a】npGo 局部 const → 顶层（pollTTS 跨作用域引用）
+let _lastScriptBody = null;     // 「↻ 重出稿」复用（npGo 时写入）
 $('npGo').addEventListener('click', async () => {
   const btn = $('npGo');
   const plot = $('npPlot').value.trim();
@@ -1231,7 +1233,7 @@ $('npGo').addEventListener('click', async () => {
   $('projName').textContent = _projName;
   $('genMask').style.display = 'flex';
   // 【三步工作流】AI 稿第一步=只出稿不配音（审稿通过才烧配音钱）；自带稿=稿已审，直接配音
-  const _stageScriptOnly = !isScript;
+  _stageScriptOnly = !isScript;
   btn.textContent = _stageScriptOnly ? '① 出稿' : '② 生成配音与方案';
   $('gmTitle').textContent = _stageScriptOnly ? '① 出稿中（先审稿，不配音）…' : '② 生成配音与画面方案…';
   const body = {
@@ -1290,10 +1292,10 @@ function pollTTS(runid){
       $('genMask').style.display = 'none';
       await loadAdjustItems(_runDir);
       openEditor();
+      // 【审计修复 e】两种模式（AI 稿出稿 / 自带稿直接配音）都解锁 ②③ 链
+      const dub = $('tbDub'); if(dub) dub.disabled = false;
+      const rs = $('tbReScript'); if(rs) rs.style.display = '';
       if(_stageScriptOnly){
-        // ① 完成：稿子在调整页可改，配音/重出稿按钮解锁
-        const dub = $('tbDub'); if(dub) dub.disabled = false;
-        const rs = $('tbReScript'); if(rs) rs.style.display = '';
         toast('① 出稿完成——在调整页审稿/改稿，满意后点「② 配音」', 'ok');
       }
       // 【v1.4.52】完成提示带上失败汇总（宁可不静默：哪几段曾经失败，调整页有 ⚠ 标记）
@@ -1308,7 +1310,6 @@ function openEditor(){
   switchView('adjust');
 }
 /* ── 【三步工作流】↻ 重出稿：同片同参重跑①（换引擎/换模型后用） ── */
-let _lastScriptBody = null;
 $('tbReScript').addEventListener('click', async () => {
   if(!_lastScriptBody){ toast('重出稿需要本会话刚出过稿（从历史打开的项目请回新建页重跑）', 'warn'); return; }
   const btn = $('tbReScript');
@@ -1472,7 +1473,8 @@ async function loadAdjustItems(runDir){
   _proxyFile = ''; _stopProxyPoll();
   ensureProxy();
   $('capCount').textContent = '· ' + _items.length + ' 段';
-  $('tbCompose').disabled = false;
+  // 【审计修复 b】③ 只在有音频时解锁——skipTts 出稿后没配音不该能合成
+  $('tbCompose').disabled = !_items.some(x => (x.audio || '').trim());
   $('stEngine').textContent = _engineSummary();
 }
 
@@ -2306,6 +2308,11 @@ function openOutFolder(){
 }
 $('tbCompose').addEventListener('click', composeAll);
 $('tbGenerate').addEventListener('click', () => {
+  // 【审计修复 d】调整页里点①不重开生成（重出稿走「↻ 重出稿」，不丢改动）
+  if($('editor') && $('editor').style.display !== 'none'){
+    toast('正在编辑——重出稿请点「↻ 重出稿」，不会丢您改过的内容', 'warn');
+    return;
+  }
   if(!_video || !$('npPlot').value.trim()){ switchView('story'); return; }
   $('npGo').click();
 });
@@ -4303,6 +4310,10 @@ function _bindBurnAsk(){
 _bindBurnAsk();
 async function _composeAfterBurnChoice(){
   if(!_runDir || !_items.length){ toast('请先生成或打开一个项目', 'bad'); return; }
+  // 【审计修复 c】没有配音不许合成（引用/跳过段除外）——三步工作流的②是门槛
+  const _withAudio = _items.some(x => (x.audio || '').trim()
+                                      && !x._skip && !x.quote);
+  if(!_withAudio){ toast('还没有配音：先点「② 配音」，试听满意后再合成', 'warn'); return; }
   const btn = $('tbCompose');
   btn.disabled = true;
   const sc = $('sbCancel'); if(sc) sc.style.display = '';
