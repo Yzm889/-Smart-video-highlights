@@ -168,6 +168,8 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
 /* ── 环境检查独立视图：env-view 时只显示环境卡（解说表单/最近/品牌栏让位） ── */
 .newproj.env-view .np-hero,.newproj.env-view .np-main .np-card,
 .newproj.env-view .np-recent{display:none}
+/* hero 隐藏后 grid 不能空占 400px 首列——env-view 单列铺满 */
+.newproj.env-view .np-wrap{grid-template-columns:minmax(0,1fr)}
 .newproj.env-view .np-main{justify-content:center;overflow-y:auto}
 .newproj.env-view .np-main-env{width:100%;max-width:880px;margin:0 auto;flex:1;overflow-y:auto;
   padding:22px 26px;border-radius:18px}

@@ -3516,7 +3516,7 @@ async function loadRecent(){
   try {
     const r = await fetch('/api/tts_recent').then(x => x.json());
     const list = (r && r.list) || [];
-    card.style.display = list.length ? 'block' : 'none';
+    card.style.display = list.length ? '' : 'none';   // 空串=交回 CSS（内联 block 会压过 env-view 隐藏规则）
     $('recentList').innerHTML = list.slice(0, 6).map(t => {
       const name = (t.movie || '').trim() || t.run_dir;
       return '<div class="recent-row" data-run="' + _esc(t.run_dir) + '">'
