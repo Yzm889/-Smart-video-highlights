@@ -4521,8 +4521,14 @@ def cloud_test_role(role, override=None):
             model = cc.get('vlm')
             if not model:
                 return False, '未配置云端视觉模型'
-            # 1x1 红点 PNG：验证 image_url 多模态通道真的通
-            png = ('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+            # 64px 红色实底 PNG：验证 image_url 多模态通道真的通
+            # （1x1 图部分 VLM 直接 400「图片非法」——用过真图）
+            import io as _io
+            from PIL import Image as _PImage
+            _im = _PImage.new('RGB', (64, 64), (220, 40, 40))
+            _buf = _io.BytesIO()
+            _im.save(_buf, 'PNG')
+            png = _b64.b64encode(_buf.getvalue()).decode('ascii')
             d = _post(base + '/chat/completions',
                       {'model': model, 'stream': False, 'max_tokens': 16,
                        'messages': [{'role': 'user', 'content': [
@@ -4553,6 +4559,15 @@ def cloud_test_role(role, override=None):
                 data = r.read()
             return len(data) > 500, ('返回音频 %d 字节（%.1fs）' % (len(data), _time.time() - t0))
         return False, '未知角色 %s' % role
+    except urllib.error.HTTPError as e:
+        # 400/402/404 的响应体里有服务商的具体原因（模型不存在/图片非法/欠费）——
+        # 只透状态码等于让用户猜
+        body = ''
+        try:
+            body = e.read().decode('utf-8', 'replace')[:400]
+        except Exception:
+            pass
+        return False, 'HTTP %d: %s' % (e.code, body or str(e)[:200])
     except Exception as e:
         return False, '%s: %s' % (type(e).__name__, str(e)[:160])
 
