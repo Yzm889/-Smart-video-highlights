@@ -1260,6 +1260,8 @@ function pollTTS(runid){
     interval: 1200,
     onTick: p => {
       $('gmFill').style.width = Math.min(100, p.pct || 0) + '%';
+      // 【v1.4.98 ETA】后端线性外推+EMA 平滑的剩余时间（长阶段已逐项插值 pct）
+      const eta = p.eta_sec ? (' · 预计剩余 ' + _fmtDur(p.eta_sec)) : '';
       // 【v1.4.52 配音失败可见化】首轮失败段实时可见（tts_failures 已随 progress 下发）
       if(p.tts_failures && p.tts_failures.length){
         const badIdx = {};
@@ -1267,7 +1269,7 @@ function pollTTS(runid){
         $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%'
           + ' · ⚠ 首轮失败 ' + Object.keys(badIdx).length + ' 段（重试中，最终结果见调整页标记）';
       } else {
-        $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%';
+        $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%' + eta;
       }
     },
     onError: p => {
@@ -2456,6 +2458,7 @@ function openSettings(sec){
   $('settingsMask').style.display = 'flex';
   if(sec === 'secVoice') showSettingsPane('voice');
   else if(sec === 'secModelCenter') showSettingsPane('models');
+  else if(sec === 'secCloud') showSettingsPane('cloud');
   // v1.4.65：Whisper 台词模型也在「模型中心」那一栏，切过去才滚得到；
   // 否则弹窗停在「配音·音色」，用户点了「去设置」却看不到要改的那个下拉。
   else if(sec === 'secWhisper') showSettingsPane('models');
@@ -2467,6 +2470,18 @@ function openSettings(sec){
   }
   fetch('/api/ai/config').then(r => r.json()).then(d => {
     const c = d.config || {};
+    // 【v1.4.98 云端模式】回填（key 不回显，留空=不改）
+    const _cl = c.cloud || {};
+    $('setCloudEnabled').checked = !!_cl.enabled;
+    $('setCloudProvider').value = _cl.provider || 'siliconflow';
+    $('setCloudBase').value = _cl.base_url || 'https://api.siliconflow.cn/v1';
+    const _cm = _cl.models || {};
+    $('setCloudLlm').value = _cm.llm || '';
+    $('setCloudVlm').value = _cm.vlm || '';
+    $('setCloudTts').value = _cm.tts || '';
+    $('setCloudVoice').value = _cl.voice || '';
+    $('setCloudKey').value = '';
+    $('setCloudKey').placeholder = _cl.api_key ? '已配置（不改请留空）' : 'sk-…（注册送额度）';
     $('setVisBase').value = (c.vision || {}).base_url || '';
     // 【2026-11-10 修数据丢失】以前只读 c.vision.model，而运行时真正生效的是 c.vlm.model。
     // 主人真机上 vision.model="" 而 vlm.model 才是实际值 → 输入框显示空白 →
@@ -2527,6 +2542,20 @@ $('settingsSave').addEventListener('click', async () => {
   // 「下载哪个模型」的选择器。这就是「换了模型但识别结果没变」的根源。
   const _wm = (($('setWhisperModel') || {}).value || '').trim();
   if(_wm) payload.whisper = {model: _wm};
+  // 【v1.4.98 云端模式】cloud 节整段收进配置；key 留空 = 不修改
+  payload.cloud = {
+    enabled: $('setCloudEnabled').checked,
+    provider: $('setCloudProvider').value,
+    base_url: $('setCloudBase').value.trim() || 'https://api.siliconflow.cn/v1',
+    models: {
+      llm: $('setCloudLlm').value.trim(),
+      vlm: $('setCloudVlm').value.trim(),
+      tts: $('setCloudTts').value.trim()
+    },
+    voice: $('setCloudVoice').value.trim()
+  };
+  if($('setCloudKey').value.trim()) payload.cloud.api_key = $('setCloudKey').value.trim();
+  // 云端启用但没有 key 时不拦：可能已有 key 在配置里（本次没动），后端 cloud_cfg 自己判
   try {
     const r = await fetch('/api/ai/config', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
@@ -2539,6 +2568,32 @@ $('settingsSave').addEventListener('click', async () => {
     }
   } catch(e){ toast('保存失败：' + e.message, 'bad'); }
 });
+
+/* ── 【v1.4.98 云端模式】单角色连通性测试 ── */
+async function cloudTest(role, label){
+  const out = $('cloudTestOut');
+  out.textContent = label + ' 测试中…';
+  try{
+    const r = await fetch('/api/cloud/test', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({role})});
+    const d = await r.json();
+    out.textContent = (d.ok ? '✅ ' : '❌ ') + label + '：' + (d.detail || '');
+    toast((d.ok ? '✅ ' : '❌ ') + label + (d.ok ? ' 连通' : ' 失败'), d.ok ? 'ok' : 'bad');
+  }catch(e){
+    out.textContent = '❌ ' + label + '：' + e.message;
+  }
+}
+$('cloudTestLlm').addEventListener('click', () => cloudTest('llm', '文本模型'));
+$('cloudTestVlm').addEventListener('click', () => cloudTest('vlm', '视觉模型'));
+$('cloudTestTts').addEventListener('click', () => cloudTest('tts', '语音模型'));
+// key 输入框的占位提示：读当前配置判断是否已有 key
+(async () => {
+  try{
+    const d = await fetch('/api/ai/config').then(r => r.json());
+    const has = !!((d.config || {}).cloud || {}).api_key;
+    if(has) $('setCloudKeyHint').textContent = '已配置 API key（不改请留空）';
+  }catch(e){ /* 尽力 */ }
+})();
 
 /* ── 进度数字通用格式化（Whisper / 配音共用，v1.4.81-ux） ──
    主人原话：「进度也不知道，速度也不知道，就干等」。所有长任务至少给出
@@ -3788,6 +3843,30 @@ $('storeClean').addEventListener('click', async () => {
 /* ── 合成（含改词自动重配） ── */
 async function composeAll(){
   if(!_runDir || !_items.length){ toast('请先生成或打开一个项目', 'bad'); return; }
+  // 【v1.4.98 字幕确认】生成前弹窗：默认不烧硬字幕（另给 .srt）。记住选择后不再问。
+  const remembered = localStorage.getItem('fcBurnRemember');
+  if(remembered){
+    $('advBurn').value = remembered;          // 上次选择直接生效
+  } else {
+    $('burnAskRemember').checked = false;
+    $('burnAskMask').style.display = 'flex';
+    return;                                   // 弹窗按钮回调里继续合成
+  }
+  return _composeAfterBurnChoice();
+}
+function _bindBurnAsk(){
+  const go = (burn) => {
+    $('advBurn').value = burn ? '1' : '0';
+    if($('burnAskRemember').checked) localStorage.setItem('fcBurnRemember', burn ? '1' : '0');
+    $('burnAskMask').style.display = 'none';
+    _composeAfterBurnChoice();
+  };
+  $('burnAskNo').addEventListener('click', () => go(false));
+  $('burnAskYes').addEventListener('click', () => go(true));
+}
+_bindBurnAsk();
+async function _composeAfterBurnChoice(){
+  if(!_runDir || !_items.length){ toast('请先生成或打开一个项目', 'bad'); return; }
   const btn = $('tbCompose');
   btn.disabled = true;
   const sc = $('sbCancel'); if(sc) sc.style.display = '';
@@ -3854,6 +3933,9 @@ function pollCompose(runid){
     interval: 1200,
     onTick: p => {
       const c = $('sbCancel'); if(c) c.style.display = 'none';
+      // 【v1.4.98 ETA】合成进度也带阶段/百分比/剩余时间
+      const eta = p.eta_sec ? (' · 预计剩余 ' + _fmtDur(p.eta_sec)) : '';
+      setStatus((p.phase || '合成中') + ' · ' + (p.pct || 0) + '%' + eta);
     },
     onError: p => {
       setStatus('合成失败', 'bad');

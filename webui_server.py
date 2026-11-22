@@ -4403,9 +4403,84 @@ def fromPIL(path, max_side=512):
     return buf.getvalue()
 
 
+def cloud_test_role(role):
+    """云端单角色连通性测试（v1.4.98 云端路线）：llm/vlm/tts 各一发真实请求。
+
+    返回 (ok, detail)。vlm 用 1x1 PNG 验证 image_url 多模态通道；
+    tts 合成一句话量级（计费忽略不计）。"""
+    from ai_providers import cloud_cfg
+    cc = cloud_cfg()
+    if not cc:
+        return False, '云端模式未启用或未填 API key'
+    base, key = cc['base_url'], cc['api_key']
+    import urllib.request
+    import time as _time
+    t0 = _time.time()
+
+    def _post(url, payload, timeout=60):
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'),
+                                     headers={'Content-Type': 'application/json',
+                                              'Authorization': 'Bearer ' + key})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode('utf-8'))
+
+    try:
+        if role == 'llm':
+            model = cc.get('llm')
+            if not model:
+                return False, '未配置云端文本模型'
+            d = _post(base + '/chat/completions',
+                      {'model': model, 'stream': False, 'max_tokens': 16,
+                       'messages': [{'role': 'user', 'content': '回复两个字：就绪'}]})
+            out = str(((d.get('choices') or [{}])[0].get('message', {}) or {}).get('content', '')).strip()
+            return bool(out), ('回复：%s（%.1fs）' % (out[:20] or '(空)', _time.time() - t0))
+        if role == 'vlm':
+            model = cc.get('vlm')
+            if not model:
+                return False, '未配置云端视觉模型'
+            # 1x1 红点 PNG：验证 image_url 多模态通道真的通
+            png = ('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+            d = _post(base + '/chat/completions',
+                      {'model': model, 'stream': False, 'max_tokens': 16,
+                       'messages': [{'role': 'user', 'content': [
+                           {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + png}},
+                           {'type': 'text', 'text': '图里有色块吗？只回复有或没有'}]}]})
+            msg = ((d.get('choices') or [{}])[0].get('message', {}) or {})
+            out = str(msg.get('content') or '').strip()
+            return bool(out), ('回复：%s（%.1fs）' % (out[:20] or '(空)', _time.time() - t0))
+        if role == 'tts':
+            model = cc.get('tts')
+            if not model:
+                return False, '未配置云端语音模型'
+            req = urllib.request.Request(
+                base + '/audio/speech',
+                data=json.dumps({'model': model, 'input': '测试一下声音。',
+                                 'voice': cc.get('voice') or 'FunAudioLLM/CosyVoice2-0.5B:alex',
+                                 'response_format': 'mp3'}).encode('utf-8'),
+                headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+            return len(data) > 500, ('返回音频 %d 字节（%.1fs）' % (len(data), _time.time() - t0))
+        return False, '未知角色 %s' % role
+    except Exception as e:
+        return False, '%s: %s' % (type(e).__name__, str(e)[:160])
+
+
 def ai_tts(text, out_path, voice=None):
     """Synthesize Chinese narration via configured TTS provider (openai-openai兼容 / dashscope通义千问). """
     cfg = (load_ai_config().get('tts') or {})
+    # 【v1.4.98 云端路线】云端启用且配了 TTS → 整段接管（OpenAI 兼容 /audio/speech）
+    try:
+        from ai_providers import cloud_cfg as _cloud_cfg
+        _cc = _cloud_cfg()
+    except Exception:
+        _cc = None
+    if _cc and _cc.get('tts'):
+        cfg = {'provider': 'openai',
+               'base_url': _cc['base_url'],
+               'api_key': _cc['api_key'],
+               'model': _cc['tts'],
+               'voice': (_cc.get('voice') or cfg.get('voice') or '')}
     api_key = cfg.get('api_key')
     model = cfg.get('model')
     if not (api_key and model):

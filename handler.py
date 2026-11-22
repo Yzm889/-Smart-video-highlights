@@ -1362,6 +1362,28 @@ class Handler(BaseHTTPRequestHandler):
                 if 'enabled' in inc:
                     cur['enabled'] = bool(inc['enabled'])
                 cfg['vlm'] = cur
+            if isinstance(data.get('cloud'), dict):
+                # 【v1.4.98 云端路线】cloud 节：enabled/provider/base_url/api_key/voice
+                # + models{llm,vlm,tts}。api_key 不回显，留空 = 不修改（同 vision 约定）。
+                inc = data['cloud']
+                cur = dict(cfg.get('cloud') or {})
+                for k in ('provider', 'base_url', 'api_key', 'voice'):
+                    if inc.get(k) is not None:
+                        cur[k] = str(inc[k]).strip()
+                    elif k in cur:
+                        del cur[k]
+                if 'enabled' in inc:
+                    cur['enabled'] = bool(inc['enabled'])
+                _m = inc.get('models')
+                if isinstance(_m, dict):
+                    _cm = dict(cur.get('models') or {})
+                    for k in ('llm', 'vlm', 'tts'):
+                        if _m.get(k) is not None:
+                            _cm[k] = str(_m[k]).strip()
+                        elif k in _cm:
+                            del _cm[k]
+                    cur['models'] = _cm
+                cfg['cloud'] = cur
             if isinstance(data.get('tts_local'), dict):
                 # 本地免费配音：engine(auto|qwen3tts|indextts2|edge|cosyvoice|chattts|sherpa|sapi)
                 # + voice + cosy_voice + rate + instruct（音色描述）
@@ -2161,6 +2183,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'),
                        'application/json')
 
+    def _post_cloud_test(self):
+        """【v1.4.98 云端路线】单角色连通性测试：{role: llm|vlm|tts} → 真实请求一发。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=16 * 1024) or {}
+            role = str(req.get('role') or '')
+            ok, detail = _w.cloud_test_role(role)
+            self._send(200, json.dumps({'ok': bool(ok), 'detail': detail}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'detail': str(e)[:160]}).encode('utf-8'),
+                       'application/json')
+
     def _post_movie_tts(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -2652,6 +2687,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/mirror/scan': '_post_mirror_scan',
         '/api/model/remove': '_post_model_remove',
         '/api/movie_compose': '_post_movie_compose',
+        '/api/cloud/test': '_post_cloud_test',
         '/api/movie_tts': '_post_movie_tts',
         '/api/live_clip': '_post_live_clip',
         '/api/live_clip/export': '_post_live_clip_export',

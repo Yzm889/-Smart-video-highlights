@@ -1105,11 +1105,46 @@ def load_ai_config():
     except Exception:
         return {}
 
+def cloud_cfg():
+    """云端模式配置（v1.4.98 云端路线）：ai_config['cloud'] 启用时，LLM/VLM/TTS
+    三角色改走云端 OpenAI 兼容端点（本机不部署大模型，一把 API key 全包）。
+
+    台词识别（whisper）仍在本地：云端 ASR（SenseVoice 等）不返回带时间戳的
+    segments，而时间戳是台词对齐/引用让位的地基；且本地识别免费、音频不出机器。
+    返回 None = 未启用或没填 key（调用方走本地配置）。"""
+    cfg = load_ai_config().get('cloud') or {}
+    if not cfg.get('enabled'):
+        return None
+    key = str(cfg.get('api_key') or '').strip()
+    if not key:
+        return None
+    base = str(cfg.get('base_url') or 'https://api.siliconflow.cn/v1').rstrip('/')
+    models = cfg.get('models') or {}
+    return {
+        'provider': (cfg.get('provider') or 'siliconflow').lower(),
+        'base_url': base,
+        'api_key': key,
+        'llm': (models.get('llm') or '').strip(),
+        'vlm': (models.get('vlm') or '').strip(),
+        'tts': (models.get('tts') or '').strip(),
+        'voice': (cfg.get('voice') or '').strip(),
+    }
+
+
 def local_llm_cfg():
     """读取本地模型(Ollama 等 OpenAI 兼容端点)配置；未配置时给 Ollama 默认值。
     enabled 默认 False：未显式开启本地模型时绝不尝试连 localhost:11434（避免无服务时拖慢省流解说、
     或误回显 prompt 污染解说稿）。"""
     cfg = load_ai_config().get('local') or {}
+    # 【v1.4.98 云端路线】云端启用且配了 LLM → 整段接管（OpenAI 兼容端点，远程不加锁）
+    _cc = cloud_cfg()
+    if _cc and _cc.get('llm'):
+        return {
+            'enabled': True,
+            'base_url': _cc['base_url'],
+            'model': _cc['llm'],
+            'api_key': _cc['api_key'],
+        }
     return {
         'enabled': cfg.get('enabled', False),
         'base_url': (cfg.get('base_url') or 'http://localhost:11434/v1').rstrip('/'),
@@ -1505,6 +1540,14 @@ def local_llm_light_cfg():
     优先使用更小的模型，缩短独占 GPU 槽的推理时间；未配置返回 None，调用方回退主模型。"""
     cfg = load_ai_config().get('local') or {}
     lm = (cfg.get('light_model') or '').strip()
+    # 【v1.4.98 云端路线】云端启用时轻量辅助任务也走云端 LLM（同一个端点，不再配两套）
+    _cc = cloud_cfg()
+    if _cc and _cc.get('llm'):
+        return {
+            'base_url': _cc['base_url'],
+            'model': _cc['llm'],
+            'api_key': _cc['api_key'],
+        }
     if not lm:
         return None
     return {
@@ -1579,6 +1622,18 @@ def vlm_cfg():
     base = (cfg.get('base_url') or 'http://localhost:11434').rstrip('/')
     if base.endswith('/v1'):
         base = base[:-3]
+    # 【v1.4.98 云端路线】云端启用且配了 VLM → 整段接管（openai 多模态通道）。
+    # 云端 base_url 约定带 /v1（与 LLM/TTS 同一根），这里剥掉 /v1——openai 分支
+    # 自己拼 '/v1/chat/completions'。
+    _cc = cloud_cfg()
+    if _cc and _cc.get('vlm'):
+        _cbase = _cc['base_url']
+        if _cbase.endswith('/v1'):
+            _cbase = _cbase[:-3]
+        return {
+            'enabled': True, 'mode': 'openai',
+            'base_url': _cbase, 'model': _cc['vlm'], 'api_key': _cc['api_key'],
+        }
     return {
         'enabled': bool(cfg.get('enabled', False)),
         'mode': (cfg.get('mode') or 'ollama'),  # ollama(原生 /api/chat) | openai(/v1/chat/completions 多模态)

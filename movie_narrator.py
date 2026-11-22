@@ -4373,6 +4373,40 @@ def _unify_names_with_dialog(texts, asr, movie_name=''):
         return texts, {}
 
 
+def _eta_note(progress):
+    """估算剩余时间（秒）→ progress['eta_sec']，前端进度条旁展示「预计剩余 X 分」。
+
+    口径：ETA = 已用时长 × (100-pct)/pct（线性外推）。前提是 pct 连续推进——
+    长阶段（L1 镜头卡/剪辑/混音/TTS）必须逐项插值 pct，否则分母卡死 ETA 飙到天；
+    pct 回退（两段式管线/旧阶段值乱序）直接跳过更新，保单调，EMA 平滑防跳变。
+    任何异常静默不写——ETA 是装饰品，绝不影响主流程。"""
+    if not isinstance(progress, dict):
+        return
+    try:
+        pct = float(progress.get('pct') or 0)
+        if pct <= 0:
+            return
+        if pct >= 99:
+            progress.pop('eta_sec', None)
+            return
+        t0 = progress.get('_eta_t0')
+        if not t0:
+            progress['_eta_t0'] = time.time()
+            return
+        last = float(progress.get('_eta_last_pct') or 0)
+        if pct <= last:
+            return                    # 未推进/回退：保留旧 eta（单调性被破坏时防乱跳）
+        progress['_eta_last_pct'] = pct
+        elapsed = time.time() - float(t0)
+        eta = elapsed * (100.0 - pct) / max(pct, 1.0)
+        prev = progress.get('eta_sec')
+        if prev:
+            eta = 0.4 * eta + 0.6 * float(prev)   # EMA 平滑
+        progress['eta_sec'] = int(max(10, round(eta)))
+    except Exception:
+        pass
+
+
 def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_name='', events=None):
     """🎭 剧情驱动核心（解说驱动剪辑）：
         完整解说稿 → 按每句字数分配画面 → 返回「解说词与画面一一对应」的区间。
@@ -4389,6 +4423,7 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
+            _eta_note(progress)
 
     # 每个长阶段前检查取消：Whisper/LLM 都不走 ffmpeg，靠协作式中断响应「⏹ 停止」
     up('探测片长', 22)
@@ -4588,7 +4623,11 @@ def _narrate_by_plot(video_path, plot, params, run_dir, progress=None, movie_nam
             _n_ev = 0
             _shots, _cards = [], {}
             try:
-                _shots, _cards, _narrs = build_pipeline(video_path, asr, run_dir, progress=progress)
+                # 【v1.4.98 ETA】L1 占整轮 3/4 时间却从不推 pct → 传插值区间 46→49
+                # （46=抽样段末端，49=全篇对齐起点；中途 剧情理解 43 的既有回退由
+                # _eta_note 的单调守卫兜住）
+                _shots, _cards, _narrs = build_pipeline(video_path, asr, run_dir,
+                                                        progress=progress, pct_range=(46, 49))
             except AbortError:
                 raise
             except Exception as e:
@@ -5630,6 +5669,7 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
     def up(ph, pct):
         if progress:
             progress['phase'] = ph; progress['pct'] = pct
+            _eta_note(progress)
     # 【v1.4.95 资源守护】跨进程任务互斥：同一数据根同时只跑一个解说任务
     # （17 进程堆积实测根因）。锁文件 OUTDIR/.narrate_lock，全程持有。
     import resource_guard as _RG

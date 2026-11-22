@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=66">
+<link rel="stylesheet" href="desktop.css?v=67">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -171,7 +171,7 @@
           <div class="adv-item"><label>质量档位</label>
             <select id="advQual"><option value="balanced">均衡</option><option value="speed">速度优先</option><option value="quality">画质优先</option></select></div>
           <div class="adv-item"><label>字幕交付</label>
-            <select id="advBurn"><option value="1">烧进画面</option><option value="0">不烧录（另给 .srt）</option></select></div>
+            <select id="advBurn"><option value="0" selected>不烧录（另给 .srt）</option><option value="1">烧进画面</option></select></div>
           <div class="adv-item"><label>字幕字号</label>
             <input type="number" id="advFontSize" min="14" max="48" value="22"></div>
           <div class="adv-item"><label>文字颜色</label>
@@ -430,6 +430,7 @@
     <div class="set-tabs" id="setTabs">
       <button type="button" class="set-tab active" data-set-tab="voice">① 配音与音色</button>
       <button type="button" class="set-tab" data-set-tab="models">② 模型中心</button>
+      <button type="button" class="set-tab" data-set-tab="cloud">☁ 云端模式</button>
       <button type="button" class="set-tab" data-set-tab="advanced">③ 高级 · 可选</button>
     </div>
     <div class="set-panes">
@@ -596,6 +597,49 @@
         </div>
       </div>
 
+      <!-- ☁ 云端模式：一把 key 跑全部（v1.4.98） -->
+      <div class="set-pane" data-set-pane="cloud" style="display:none">
+        <div class="set-sec" id="secCloud">
+          <div class="set-h">☁ 云端模式 —— 本机不部署大模型，一把 API key 跑全部</div>
+          <div class="hint" style="line-height:1.7">
+            开启后<b>写稿、剧情理解、画面理解、配音</b>走云端大模型（写稿画面都不占本机显存）；
+            <b>台词识别仍在本地</b>（免费、带时间戳、视频音频不出机器）。推荐
+            <b>硅基流动</b>：注册送额度、支付宝充值，一家 key 覆盖全部角色，13 句稿子
+            一轮约 <b>¥0.1~0.3</b>。开启即表示理解：视频抽帧与文案会发送给你选择的云服务商处理。
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px">
+            <input type="checkbox" id="setCloudEnabled"> 启用云端模式（关闭 = 全部走本地）
+          </label>
+          <label>服务商</label>
+          <select id="setCloudProvider">
+            <option value="siliconflow">硅基流动 SiliconFlow（推荐 · 支付宝）</option>
+            <option value="custom">自定义（OpenAI 兼容）</option>
+          </select>
+          <label>API Key</label>
+          <input type="password" id="setCloudKey" placeholder="已配置则留空">
+          <div class="hint" id="setCloudKeyHint" style="margin-top:-2px"></div>
+          <label>API 地址（自定义服务商时改，默认硅基流动）</label>
+          <input type="text" id="setCloudBase" placeholder="https://api.siliconflow.cn/v1">
+          <label>文本模型（写稿 / 剧情理解 / 对齐）</label>
+          <input type="text" id="setCloudLlm" placeholder="Qwen/Qwen3.5-9B（¥0.5/M，与本地同款）">
+          <label>视觉模型（画面理解 / 镜头卡）</label>
+          <input type="text" id="setCloudVlm" placeholder="Qwen/Qwen2.5-VL-32B-Instruct（¥1.89/M）">
+          <label>语音模型（配音）</label>
+          <input type="text" id="setCloudTts" placeholder="FunAudioLLM/CosyVoice2-0.5B（¥0.05/千字符）">
+          <label>配音音色（CosyVoice 音色名）</label>
+          <input type="text" id="setCloudVoice" placeholder="FunAudioLLM/CosyVoice2-0.5B:alex（可改 :bella/:anna…）">
+          <div class="set-row wrap" style="margin-top:10px">
+            <button class="mini-btn" id="cloudTestLlm">测文本</button>
+            <button class="mini-btn" id="cloudTestVlm">测视觉</button>
+            <button class="mini-btn" id="cloudTestTts">测语音</button>
+            <span class="hint" id="cloudTestOut" style="flex:1;margin:0"></span>
+          </div>
+          <div class="hint" style="margin-top:8px">
+            开关在保存后立即生效；「不烧录字幕」成片模式与云端模式互相独立。
+            SiliconFlow 充值与模型价目：<a href="https://www.siliconflow.cn/pricing" target="_blank">官网价目页</a>
+          </div>
+        </div>
+      </div>
       <!-- ③ 高级：整页可跳过 -->
       <div class="set-pane" data-set-pane="advanced" style="display:none">
         <div class="set-sec">
@@ -683,6 +727,24 @@
 </div>
 
 <!-- 参数预设命名 / 确认：纯页面内模态，绕开 pywebview 原生对话框静默失败（v1.4.1 事故） -->
+<!-- 【v1.4.98】合成前字幕确认弹窗：默认不烧硬字幕（另给 .srt），每次合成前确认 -->
+<div class="modal-mask" id="burnAskMask" style="display:none">
+  <div class="modal">
+    <div class="modal-title" id="burnAskTitle">这次成片要不要把字幕烧进画面？</div>
+    <div style="font-size:12.5px;color:var(--txt);line-height:1.7;opacity:.9;margin-top:10px">
+      默认<b>不烧录</b>：成片是干净画面 + 附带 <b>.srt 字幕文件</b>，拿去剪映/PR 可以
+      随意调字体、位置、改文案。<br>
+      烧录则字幕永久压进画面，想改一个字都要整片重渲染（几分钟起步）。
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:12px;font-size:12px;color:var(--muted)">
+      <input type="checkbox" id="burnAskRemember">记住我的选择，下次不再问
+    </label>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button type="button" class="mini-btn" id="burnAskNo" style="background:var(--acc);color:#fff">不烧录，另给 .srt（推荐）</button>
+      <button type="button" class="mini-btn" id="burnAskYes">烧进画面</button>
+    </div>
+  </div>
+</div>
 <div class="modal-mask" id="presetMask" style="display:none">
   <div class="modal">
   <div class="modal-title" id="presetModalTitle">保存为预设</div>
@@ -722,6 +784,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=66"></script>
+<script src="desktop.js?v=67"></script>
 </body>
 </html>

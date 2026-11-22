@@ -105,7 +105,8 @@ _SHOT_PROMPT = (
     '不限长度，尽可能充分。不要评价画面质量。')
 
 
-def shot_cards(video_path, shots, run_dir, progress=None, per_shot=5, max_cards=200):
+def shot_cards(video_path, shots, run_dir, progress=None, per_shot=5, max_cards=200,
+               pct_range=None):
     """每镜头抽 5 帧（Phase 1 测绘定稿：1280px/1500 tokens/三段式结构化）→
     VLM 镜头卡 → {shot_idx: 镜头卡文本}。时序上下文：卡尾串入下一镜头的 prompt。"""
     cfg = {}
@@ -144,6 +145,16 @@ def shot_cards(video_path, shots, run_dir, progress=None, per_shot=5, max_cards=
             raise RuntimeError('用户取消了任务')
         if progress:
             progress['phase'] = 'L1 镜头卡 %d/%d（看每个镜头的动作）' % (k + 1, len(use))
+            # 【v1.4.98 ETA】L1 是最长的阶段（实测 8/10.6 分钟）却从不推进 pct——
+            # 分母卡死 → ETA 线性外推失效。逐卡插值 + eta 回写。
+            if pct_range:
+                _lo, _hi = pct_range
+                progress['pct'] = _lo + (_hi - _lo) * (k + 1) / max(1, len(use))
+            try:
+                import movie_narrator as _MN
+                _MN._eta_note(progress)
+            except Exception:
+                pass
         frames = []
         for k2, frac in enumerate((0.1, 0.3, 0.5, 0.7, 0.9)[:per_shot]):
             fp = os.path.join(frame_dir, 'shot_%04d_%d.jpg' % (k, k2))
@@ -308,7 +319,7 @@ def _asr_in(asr, a, b):
 # 入口：完整流水线 → 产出可并入 scene_story 的叙述列表
 # ---------------------------------------------------------------------------
 
-def build_pipeline(video_path, asr, run_dir, progress=None):
+def build_pipeline(video_path, asr, run_dir, progress=None, pct_range=None):
     """L0→L1→L2 全跑。返回 (shots, cards, narrs)：
     - shots: [(start, end)] 真实镜头边界（镜头级对齐的画面分辨率来源）
     - cards: {shot_idx: 镜头卡}（动作链/因果/细节三段式）
@@ -337,7 +348,7 @@ def build_pipeline(video_path, asr, run_dir, progress=None):
                   % (len(shots), len(_rejected)))
     except Exception as _sqe:
         _log.info('[DIAG] 废镜头筛除失败（全部保留）: %s' % str(_sqe)[:100])
-    cards = shot_cards(video_path, shots, run_dir, progress=progress)
+    cards = shot_cards(video_path, shots, run_dir, progress=progress, pct_range=pct_range)
     if not cards:
         _log.info('[DIAG] 流水线 L1 失败，退回旧抽样段')
         return [], {}, []
