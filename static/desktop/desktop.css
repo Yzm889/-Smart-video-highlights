@@ -497,7 +497,7 @@ html[data-theme=light] .modal-mask{background:rgba(40,50,65,.35)}
 .pbar i{display:block;height:100%;width:0;background:var(--grad-acc);transition:width .4s;
   box-shadow:0 0 8px var(--acc-line)}
 .modal-meta{margin-top:11px;font-size:12.5px;color:var(--muted)}
-.modal.settings{width:740px;max-height:86vh}
+.modal.settings{width:720px;max-height:86vh}
 /* ── 设置页 ── */
 .set-intro{background:var(--grad-acc-soft);
   border:1px solid var(--line);border-left:3px solid var(--acc);
