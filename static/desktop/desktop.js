@@ -2452,6 +2452,11 @@ function setModeActive(which){
   $('modeLocal').classList.toggle('on', which === 'local');
   $('modeCloud').classList.toggle('on', which === 'cloud');
 }
+/* ── 【v1.4.98 云端页】独立全页：服务商卡片 → key → 测试 → 一键启用 ── */
+let _cloudPgProv = 'siliconflow';
+let _cloudPgFrom = null;
+let _cloudPgSaved = {};
+
 async function showCloudPage(from){
   _cloudPgFrom = from || null;
   const pg = $('cloudPage');
@@ -2461,11 +2466,6 @@ async function showCloudPage(from){
     const d = await fetch('/api/ai/config').then(r => r.json());
     _cloudPgSaved = (d.config || {}).cloud || {};
   }catch(e){ _cloudPgSaved = {}; }
-
-/* ── 【v1.4.98 云端页】独立全页：服务商卡片 → key → 测试 → 一键启用 ── */
-let _cloudPgProv = 'siliconflow';
-let _cloudPgFrom = null;
-let _cloudPgSaved = {};
   const c = _cloudPgSaved;
   _cloudPgProv = c.provider || 'siliconflow';
   const m = c.models || {};
