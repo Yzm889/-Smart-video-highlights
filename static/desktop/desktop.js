@@ -2561,18 +2561,32 @@ async function cloudPgPullModels(silent){
       body: JSON.stringify({cloud: _cloudPgCollect()})}).then(x => x.json());
     if(!r.ok){ out.textContent = '❌ 拉取失败：' + (r.error || ''); return; }
     _cloudPgModelIds = r.models || [];
-    const fill = (dl, flt) => {
+    // 【选型过滤】OCR/嵌入/重排/识别类一律排除——PaddleOCR-VL 事故的修正
+    const _bad = /ocr|embed|rerank|whisper|sensevoice|asr|guard|embedding/i;
+    const _isVision = x => /(vl|vision|vlm|glm-\d+(\.\d+)?v(-\w+)?$|minicpm-v|internvl)/i.test(x)
+                           && !_bad.test(x);
+    const _isTts = x => /cosyvoice|tts|speech|voice/i.test(x)
+                        && !_bad.test(x);
+    const _isText = x => !_bad.test(x)
+                         && !/vl$|vlm|vision|cosyvoice|tts|speech|audio|asr/i.test(x);
+    const _rank = (pool, fams) => pool.slice().sort((a, b) => {
+      const ra = fams.findIndex(f => f.test(a)), rb = fams.findIndex(f => f.test(b));
+      return (ra < 0 ? 99 : ra) - (rb < 0 ? 99 : rb);
+    });
+    const _fill = (dl, pool) => {
       const el = $(dl); if(!el) return;
-      const pool = flt.length
-        ? _cloudPgModelIds.filter(x => flt.some(f => x.toLowerCase().includes(f)))
-        : _cloudPgModelIds;
       el.innerHTML = (pool.length ? pool : _cloudPgModelIds)
         .map(x => '<option value="' + x + '"></option>').join('');
     };
-    fill('dlLlm', []);
-    fill('dlVlm', ['-vl', 'vl', 'vision']);
-    fill('dlTts', ['cosyvoice', 'tts', 'voice', 'speech', 'audio']);
-    // 失效默认自动纠正：当前值不在列表里 → 从过滤池挑第一个
+    const textPool = _rank(_cloudPgModelIds.filter(_isText),
+                           [/qwen/i, /deepseek/i, /glm/i, /kimi|moonshot/i]);
+    const vlPool = _rank(_cloudPgModelIds.filter(_isVision),
+                         [/qwen.*vl/i, /glm/i, /internvl/i, /minicpm/i]);
+    const ttsPool = _cloudPgModelIds.filter(_isTts);
+    _fill('dlLlm', textPool);
+    _fill('dlVlm', vlPool);
+    _fill('dlTts', ttsPool);
+    // 失效默认自动纠正：当前值不在列表里 → 从对应池挑排序最优
     const fix = (id, pool) => {
       const el = $(id);
       if(!el || !pool.length) return;
@@ -2580,10 +2594,8 @@ async function cloudPgPullModels(silent){
         el.value = pool[0];
       }
     };
-    const vlPool = _cloudPgModelIds.filter(x => x.toLowerCase().includes('vl'));
-    fix('cloudPgVlm', vlPool.length ? vlPool : _cloudPgModelIds);
-    const ttsPool = _cloudPgModelIds.filter(x => /cosyvoice|tts|speech/i.test(x));
-    fix('cloudPgTts', ttsPool.length ? ttsPool : _cloudPgModelIds);
+    fix('cloudPgVlm', vlPool);
+    fix('cloudPgTts', ttsPool);
     if(meta) meta.textContent = '✅ 可用模型 ' + _cloudPgModelIds.length + ' 个——三个模型框的下拉已更新';
   }catch(e){
     if(out) out.textContent = '❌ 拉取失败：' + e.message;
@@ -2653,7 +2665,13 @@ document.querySelectorAll('[data-roletest]').forEach(b => {
       const r = await fetch('/api/cloud/test', {method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({role: rk, cloud: override})}).then(x => x.json());
-      out.textContent = (r.ok ? '✅ ' : '❌ ') + (r.detail || '');
+      let det = r.detail || '';
+      if(!r.ok){
+        if(/402|Payment Required/i.test(det)) det += ' —— 该模型需要付费余额：去服务商充值，或选免费/含额度的模型';
+        else if(/401|Unauthorized/i.test(det)) det += ' —— key 无效：重新复制完整 key';
+        else if(/404|not (found|exist)/i.test(det)) det += ' —— 模型不存在：换一个';
+      }
+      out.textContent = (r.ok ? '✅ ' : '❌ ') + det;
     }catch(e){ out.textContent = '❌ ' + e.message; }
   });
 });
@@ -2664,7 +2682,13 @@ async function cloudPgTest(role, label){
     const r = await fetch('/api/cloud/test', {method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({role, cloud: _cloudPgCollect()})}).then(x => x.json());
-    out.textContent = (r.ok ? '✅ ' : '❌ ') + label + '：' + (r.detail || '');
+    let det = r.detail || '';
+    if(!r.ok){
+      if(/402|Payment Required/i.test(det)) det += ' —— 该模型需要付费余额：去服务商充值，或从下拉里选一个免费/含额度的模型';
+      else if(/401|Unauthorized/i.test(det)) det += ' —— key 无效：重新复制完整的 key（sk- 开头），或检查账号是否已验证';
+      else if(/404|not (found|exist)/i.test(det)) det += ' —— 模型不存在：从下拉里选一个真实可用的';
+    }
+    out.textContent = (r.ok ? '✅ ' : '❌ ') + label + '：' + det;
   }catch(e){ out.textContent = '❌ ' + label + '：' + e.message; }
 }
 $('cloudPgTestLlm').addEventListener('click', () => cloudPgTest('llm', '文本模型'));
