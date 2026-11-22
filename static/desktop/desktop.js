@@ -1230,7 +1230,10 @@ $('npGo').addEventListener('click', async () => {
   _projName = ($('npName').value || _video.name).replace(/\.[^.]+$/, '');
   $('projName').textContent = _projName;
   $('genMask').style.display = 'flex';
-  $('gmTitle').textContent = '正在生成（首次加载模型较慢）…';
+  // 【三步工作流】AI 稿第一步=只出稿不配音（审稿通过才烧配音钱）；自带稿=稿已审，直接配音
+  const _stageScriptOnly = !isScript;
+  btn.textContent = _stageScriptOnly ? '① 出稿' : '② 生成配音与方案';
+  $('gmTitle').textContent = _stageScriptOnly ? '① 出稿中（先审稿，不配音）…' : '② 生成配音与画面方案…';
   const body = {
     video: (_video.upload_id ? {name: _video.name, upload_id: _video.upload_id}
                              : {name: _video.name, path: _video.path, desktop_token: _token}),
@@ -1238,6 +1241,7 @@ $('npGo').addEventListener('click', async () => {
     script: isScript ? plot : undefined,
     params: _advParams(),
   };
+  if(_stageScriptOnly) body.params.skipTts = true;
   if(_srt) body.subtitle_file = {name: _srt.name, text: _srt.text};
   if(_music && $('npBgm').checked) body.music = _musicPayload();
   try {
@@ -1245,6 +1249,7 @@ $('npGo').addEventListener('click', async () => {
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const out = await r.json();
     if(!out.ok) throw new Error(out.error || '提交失败');
+    btn.textContent = '① 出稿';   // 三步工作流：AI 稿第一步只出稿
     pollTTS(out.runid);
   } catch(e){
     $('genMask').style.display = 'none';
@@ -1277,13 +1282,18 @@ function pollTTS(runid){
       $('npGo').disabled = false;
       toast('生成失败：' + p.error, 'bad');
     },
-    isDone: p => !!(p.done && p.tts_list && p.tts_list.length),
+    isDone: p => !!(p.done && ((p.tts_list && p.tts_list.length) || _stageScriptOnly)),
     onDone: async p => {
       _runDir = p.run_dir || '';
       _videoFile = p.video_file || '';
       $('genMask').style.display = 'none';
       await loadAdjustItems(_runDir);
       openEditor();
+      if(_stageScriptOnly){
+        // ① 完成：稿子在调整页可改，配音按钮解锁
+        const dub = $('tbDub'); if(dub) dub.disabled = false;
+        toast('① 出稿完成——在调整页审稿/改稿，满意后点「② 配音」', 'ok');
+      }
       // 【v1.4.52】完成提示带上失败汇总（宁可不静默：哪几段曾经失败，调整页有 ⚠ 标记）
       const nf = (p.tts_failures || []).length;
       toast('✅ 已生成 ' + p.tts_list.length + ' 段配音与画面方案'
@@ -1295,6 +1305,37 @@ function openEditor(){
   showEditor(true);
   switchView('adjust');
 }
+/* ── 【三步工作流】② 批量配音：按调整页当前文本逐句生成（每句可试听/重配） ── */
+async function dubAll(){
+  if(!_runDir || !_items.length){ toast('请先①出稿', 'bad'); return; }
+  const btn = $('tbDub');
+  btn.disabled = true;
+  const segs = _items.filter(it => !it._skip && !it.quote && (it.text || '').trim());
+  let fail = 0;
+  for(let i = 0; i < segs.length; i++){
+    const it = segs[i];
+    setStatus('② 配音 ' + (i + 1) + '/' + segs.length + '…');
+    try{
+      const r = await fetch('/api/tts_single', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({text: it.text, run_dir: _runDir, index: it.index})}).then(x => x.json());
+      const res = await pollTask(r.runid);
+      if(res.error) throw new Error(res.error);
+      it.audio = res.audio;
+      it.audio_text = it.text;
+    }catch(e){
+      fail++;
+      toast('第 ' + (it.index + 1) + ' 段配音失败：' + e.message, 'bad');
+    }
+  }
+  btn.disabled = false;
+  const cmp = $('tbCompose'); if(cmp) cmp.disabled = false;
+  setStatus(fail ? '⚠ 配音完成（' + fail + ' 段失败，可重试）' : '✅ 配音完成——逐句试听，满意后点「③ 合成视频」',
+            fail ? 'warn' : 'ok');
+  if(!fail) toast('✅ 配音完成——逐句试听/单句重配，满意后点「③ 合成视频」', 'ok');
+}
+$('tbDub').addEventListener('click', () => dubAll());
+
 $('gmCancel').addEventListener('click', async () => {
   if(_pollRunId){
     try { await fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
