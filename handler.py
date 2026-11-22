@@ -1384,7 +1384,12 @@ class Handler(BaseHTTPRequestHandler):
                 cur = dict(cfg.get('cloud') or {})
                 for k in ('provider', 'base_url', 'api_key', 'voice'):
                     if inc.get(k) is not None:
-                        cur[k] = str(inc[k]).strip()
+                        _v = str(inc[k]).strip()
+                        # 【打码防护】前端拿到的回显 key 是 ****** 打码值——
+                        # 原样写回会把真 key 覆盖成星号（401 根因），视为不修改
+                        if k == 'api_key' and _v.startswith('******'):
+                            continue
+                        cur[k] = _v
                     elif k in cur:
                         del cur[k]
                 if 'enabled' in inc:
@@ -1407,8 +1412,12 @@ class Handler(BaseHTTPRequestHandler):
                         rv = _r.get(rk)
                         if not isinstance(rv, dict):
                             continue
-                        _rr = {k: str(rv.get(k) or '').strip()
-                               for k in ('provider', 'base_url', 'api_key', 'model')}
+                        _rr = {}
+                        for k in ('provider', 'base_url', 'api_key', 'model'):
+                            _v = str(rv.get(k) or '').strip()
+                            if k == 'api_key' and _v.startswith('******'):
+                                _v = ((cur.get('roles') or {}).get(rk) or {}).get('api_key', '')
+                            _rr[k] = _v
                         if _rr.get('api_key') and _rr.get('model'):
                             _cr[rk] = _rr
                     cur['roles'] = _cr

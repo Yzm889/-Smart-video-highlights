@@ -4411,6 +4411,18 @@ def cloud_test_role(role, override=None):
     返回 (ok, detail)。vlm 用 1x1 PNG 验证 image_url 多模态通道；
     tts 合成一句话量级（计费忽略不计）。"""
     from ai_providers import cloud_cfg
+    _saved = cloud_cfg()
+    if isinstance(override, dict):
+        # 【打码防护】前端回显的 key 是 ****** 打码值——空或打码时用已存真 key
+        _sv_key = ''
+        if override.get('role_key') and isinstance(_saved, dict):
+            _sv_key = str((_saved.get('roles') or {}).get(override['role_key'], {}).get('api_key') or '')
+        elif isinstance(_saved, dict):
+            _sv_key = str(_saved.get('api_key') or '')
+        _ov_key = str(override.get('api_key') or '').strip()
+        if (not _ov_key or _ov_key.startswith('******')) and _sv_key:
+            override = dict(override)
+            override['api_key'] = _sv_key
     if isinstance(override, dict) and override.get('api_key'):
         _m = override.get('models') or {}
         _om = str(override.get('model') or '').strip()   # 角色级 override 直带 model

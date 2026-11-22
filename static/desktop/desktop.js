@@ -2600,6 +2600,7 @@ document.querySelectorAll('[data-roletest]').forEach(b => {
       ? { provider: cfg.provider, base_url: cfg.base_url, api_key: cfg.api_key,
           model: cfg.models[rk], voice: cfg.voice }
       : cfg.roles[rk];
+    override.role_key = rk;   // 服务端据此取该角色的已存 key（打码回显场景）
     if(!override.api_key){ out.textContent = '❌ 先填 key（该角色的或主 key）'; return; }
     if(useMain && !override.model){ out.textContent = '❌ 上面卡片没配' + label + '模型'; return; }
     if(!useMain && !override.model){ out.textContent = '❌ 填该角色的模型名'; return; }
