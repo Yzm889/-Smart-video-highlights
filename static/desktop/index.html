@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=86">
+<link rel="stylesheet" href="desktop.css?v=90">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -239,11 +239,14 @@
         <div class="field"><label>API Key <a id="cloudKeyLink" href="https://www.siliconflow.cn/pricing" target="_blank" style="color:var(--acc)">获取 key ↗</a></label>
           <input type="password" id="cloudPgKey" placeholder="sk-…（注册送额度，已配置则留空）"></div>
         <div class="field"><label>API 地址</label><input type="text" id="cloudPgBase"></div>
-        <div class="field"><label>文本模型（写稿 / 剧情理解 / 对齐）</label><input type="text" id="cloudPgLlm"></div>
-        <div class="field"><label>视觉模型（画面理解 / 镜头卡）</label><input type="text" id="cloudPgVlm"></div>
-        <div class="field"><label>语音模型（配音）</label><input type="text" id="cloudPgTts"></div>
+        <div class="field"><label>文本模型（写稿 / 剧情理解 / 对齐）</label><input type="text" id="cloudPgLlm" list="dlLlm"></div>
+        <div class="field"><label>视觉模型（画面理解 / 镜头卡）</label><input type="text" id="cloudPgVlm" list="dlVlm"></div>
+        <div class="field"><label>语音模型（配音）</label><input type="text" id="cloudPgTts" list="dlTts"></div>
         <div class="field"><label>配音音色</label><input type="text" id="cloudPgVoice"></div>
       </div>
+      <div class="clp-pull"><button class="mini-btn" id="cloudPgPull">⟳ 拉取可用模型列表</button>
+        <span class="hint" id="cloudPgModelsMeta" style="flex:1;margin:0">填好 key 后点一下——下拉里只出现您的账号真实可用的模型</span></div>
+      <datalist id="dlLlm"></datalist><datalist id="dlVlm"></datalist><datalist id="dlTts"></datalist>
       <details class="clp-roles" id="cloudRoles">
         <summary>高级：任意组合都能跑——只配音 / 只文本 / 任二 / 三个全自定义，没配的角色自动走本地引擎</summary>
         <div class="clp-role" data-role="llm">
@@ -865,6 +868,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=89"></script>
+<script src="desktop.js?v=90"></script>
 </body>
 </html>

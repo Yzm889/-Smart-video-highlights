@@ -4403,6 +4403,70 @@ def fromPIL(path, max_side=512):
     return buf.getvalue()
 
 
+def _cloud_effective_cc(override=None, role_key=None):
+    """云端有效配置合成：override（云端页当前表单值，key 可能缺失/打码）
+    与已存配置合并出真实可用 cc——真 key 只在服务端合成，永不回传前端。
+    返回 (cc, err)：err 非 None 表示合成失败。"""
+    from ai_providers import cloud_cfg
+    saved = cloud_cfg()
+    if isinstance(override, dict):
+        override = dict(override)
+        _sv_key = ''
+        if role_key and isinstance(saved, dict):
+            _sv_key = str((saved.get('roles') or {}).get(role_key, {}).get('api_key') or '')
+        if not _sv_key and isinstance(saved, dict):
+            _sv_key = str(saved.get('api_key') or '')
+        _ov_key = str(override.get('api_key') or '').strip()
+        if not _ov_key or _ov_key.startswith('******'):
+            override['api_key'] = _sv_key
+        _m = override.get('models') or {}
+        _om = str(override.get('model') or '').strip()
+        cc = {'provider': str(override.get('provider') or 'siliconflow').lower(),
+              'base_url': str(override.get('base_url') or '').rstrip('/'),
+              'api_key': str(override.get('api_key') or '').strip(),
+              'llm': str(_m.get('llm') or _om or '').strip(),
+              'vlm': str(_m.get('vlm') or _om or '').strip(),
+              'tts': str(_m.get('tts') or _om or '').strip(),
+              'voice': str(override.get('voice') or '').strip()}
+        if not cc['api_key']:
+            return None, '未填 API key'
+        if not cc['base_url']:
+            return None, '未填 API 地址'
+        return cc, None
+    if not saved:
+        return None, '云端模式未启用或未填 API key'
+    return saved, None
+
+
+def cloud_models_list(override=None):
+    """拉取服务商可用模型 id 列表（OpenAI 兼容 /models）——云端页三角色
+    下拉的数据源。模型名从此不再硬编码猜，选真实存在的。"""
+    from ai_providers import cloud_cfg
+    saved = cloud_cfg()
+    override = dict(override or {})
+    # key 合并：override 缺失/打码 → 已存真 key
+    _sv_key = str((saved or {}).get('api_key') or '')
+    _ov_key = str(override.get('api_key') or '').strip()
+    if not _ov_key or _ov_key.startswith('******'):
+        override['api_key'] = _sv_key
+    override.setdefault('base_url', str((saved or {}).get('base_url') or ''))
+    cc, err = _cloud_effective_cc(override)
+    if err:
+        return None, err
+    import urllib.request
+    req = urllib.request.Request(
+        cc['base_url'] + '/models',
+        headers={'Authorization': 'Bearer ' + cc['api_key']})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode('utf-8'))
+        ids = sorted({str(m.get('id') or '').strip()
+                      for m in (data.get('data') or []) if m.get('id')})
+        return ids, None
+    except Exception as e:
+        return None, '%s: %s' % (type(e).__name__, str(e)[:160])
+
+
 def cloud_test_role(role, override=None):
     """云端单角色连通性测试：llm/vlm/tts 各一发真实请求。
 
@@ -4411,18 +4475,10 @@ def cloud_test_role(role, override=None):
     返回 (ok, detail)。vlm 用 1x1 PNG 验证 image_url 多模态通道；
     tts 合成一句话量级（计费忽略不计）。"""
     from ai_providers import cloud_cfg
-    _saved = cloud_cfg()
-    if isinstance(override, dict):
-        # 【打码防护】前端回显的 key 是 ****** 打码值——空或打码时用已存真 key
-        _sv_key = ''
-        if override.get('role_key') and isinstance(_saved, dict):
-            _sv_key = str((_saved.get('roles') or {}).get(override['role_key'], {}).get('api_key') or '')
-        elif isinstance(_saved, dict):
-            _sv_key = str(_saved.get('api_key') or '')
-        _ov_key = str(override.get('api_key') or '').strip()
-        if (not _ov_key or _ov_key.startswith('******')) and _sv_key:
-            override = dict(override)
-            override['api_key'] = _sv_key
+    cc, _merr = _cloud_effective_cc(override,
+                                    role_key=(override or {}).get('role_key'))
+    if _merr:
+        return False, _merr
     if isinstance(override, dict) and override.get('api_key'):
         _m = override.get('models') or {}
         _om = str(override.get('model') or '').strip()   # 角色级 override 直带 model

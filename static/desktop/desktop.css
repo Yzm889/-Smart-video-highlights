@@ -210,6 +210,7 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
 .clp-role .clp-grid{grid-template-columns:1fr 1fr;gap:8px 12px}
 .clp-role .field label{font-size:11px;color:var(--dim);margin-bottom:4px}
 .clp-role .clp-role-act{display:flex;align-items:center;gap:8px;margin-top:8px}
+.clp-pull{display:flex;align-items:center;gap:9px;margin-top:9px}
 .clp-route{font-size:12px;color:var(--acc-tint);background:var(--acc-dim);
   border:1px solid var(--acc-line-soft);border-radius:10px;padding:8px 13px;
   margin-top:10px;text-align:left;font-variant-numeric:tabular-nums}

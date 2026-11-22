@@ -2221,6 +2221,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': False, 'error': str(e)[:200]}).encode('utf-8'),
                        'application/json')
 
+    def _post_cloud_models(self):
+        """【v1.4.98 云端页】拉取服务商可用模型 id 列表（三角色下拉数据源）。"""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            req = self._read_json(length, max_len=64 * 1024) or {}
+            ids, err = _w.cloud_models_list(req.get('cloud'))
+            self._send(200, json.dumps({'ok': bool(ids), 'models': ids or [],
+                                        'error': err or ''}).encode('utf-8'),
+                       'application/json')
+        except Exception as e:
+            self._send(200, json.dumps({'ok': False, 'models': [],
+                                        'error': str(e)[:160]}).encode('utf-8'),
+                       'application/json')
+
     def _post_cloud_test(self):
         """【v1.4.98 云端路线】单角色连通性测试：{role: llm|vlm|tts} → 真实请求一发。"""
         try:
@@ -2726,6 +2740,7 @@ class Handler(BaseHTTPRequestHandler):
         '/api/model/remove': '_post_model_remove',
         '/api/movie_compose': '_post_movie_compose',
         '/api/cloud/test': '_post_cloud_test',
+        '/api/cloud/models': '_post_cloud_models',
         '/api/movie_tts': '_post_movie_tts',
         '/api/live_clip': '_post_live_clip',
         '/api/live_clip/export': '_post_live_clip_export',

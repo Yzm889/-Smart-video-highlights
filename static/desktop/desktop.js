@@ -2480,6 +2480,7 @@ async function showCloudPage(from){
   _cloudPgRenderProvs();
   _cloudPgLoadRoles();
   _cloudPgRouteRender();
+  if((c.api_key || '').trim()) cloudPgPullModels(true);
   // 【自动预填】本地没存过模型时，按当前服务商的推荐直接填上——
   // 主人实测：填了 key 还被要求手填模型名=被卡在第二步
   const _pr = _CLOUD_PRESETS[_cloudPgProv] || _CLOUD_PRESETS.custom;
@@ -2548,6 +2549,49 @@ function _cloudPgCollect(){
   cfg.roles = roles;
   return cfg;
 }
+let _cloudPgModelIds = [];
+async function cloudPgPullModels(silent){
+  const meta = $('cloudPgModelsMeta');
+  const out = (!silent && meta) ? meta : $('cloudPgTestOut');
+  const prev = out.textContent;
+  out.textContent = '拉取模型列表中…';
+  try{
+    const r = await fetch('/api/cloud/models', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cloud: _cloudPgCollect()})}).then(x => x.json());
+    if(!r.ok){ out.textContent = '❌ 拉取失败：' + (r.error || ''); return; }
+    _cloudPgModelIds = r.models || [];
+    const fill = (dl, flt) => {
+      const el = $(dl); if(!el) return;
+      const pool = flt.length
+        ? _cloudPgModelIds.filter(x => flt.some(f => x.toLowerCase().includes(f)))
+        : _cloudPgModelIds;
+      el.innerHTML = (pool.length ? pool : _cloudPgModelIds)
+        .map(x => '<option value="' + x + '"></option>').join('');
+    };
+    fill('dlLlm', []);
+    fill('dlVlm', ['-vl', 'vl', 'vision']);
+    fill('dlTts', ['cosyvoice', 'tts', 'voice', 'speech', 'audio']);
+    // 失效默认自动纠正：当前值不在列表里 → 从过滤池挑第一个
+    const fix = (id, pool) => {
+      const el = $(id);
+      if(!el || !pool.length) return;
+      if(_cloudPgModelIds.length && !_cloudPgModelIds.includes(el.value.trim())){
+        el.value = pool[0];
+      }
+    };
+    const vlPool = _cloudPgModelIds.filter(x => x.toLowerCase().includes('vl'));
+    fix('cloudPgVlm', vlPool.length ? vlPool : _cloudPgModelIds);
+    const ttsPool = _cloudPgModelIds.filter(x => /cosyvoice|tts|speech/i.test(x));
+    fix('cloudPgTts', ttsPool.length ? ttsPool : _cloudPgModelIds);
+    if(meta) meta.textContent = '✅ 可用模型 ' + _cloudPgModelIds.length + ' 个——三个模型框的下拉已更新';
+  }catch(e){
+    if(out) out.textContent = '❌ 拉取失败：' + e.message;
+  }
+}
+$('cloudPgPull').addEventListener('click', () => cloudPgPullModels(false));
+$('cloudPgKey').addEventListener('change', () => cloudPgPullModels(false));
+
 function _cloudPgRouteRender(){
   const el = $('cloudPgRoute');
   if(!el) return;
