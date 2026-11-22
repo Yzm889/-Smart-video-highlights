@@ -9,12 +9,16 @@
   --line:#252b34; --line2:#353d49;
   --txt:#eef1f9; --muted:#a4adc4; --dim:#6b7590; --dim2:#4d5871;
   --acc:#14d1b0; --acc-deep:#0d9c85; --acc2:#ffb454;
+  --on-acc:#08201b;
   --ok:#3fd6a6; --warn:#f7c95c; --bad:#ff7076;
   /* ── 派生令牌（基色变就整体变）── */
   --acc-dim:color-mix(in srgb,var(--acc) 13%,transparent);
   --acc-line:color-mix(in srgb,var(--acc) 45%,transparent);
   --acc-line-soft:color-mix(in srgb,var(--acc) 22%,transparent);
-  --acc-tint:color-mix(in srgb,var(--acc) 26%,var(--panel));
+  /* 高亮文字色：暗色主题往白里混出亮粉彩（贴深底可读）；浅色主题在
+     html[data-theme=light] 里把 --tint-base 换成深色重派生 */
+  --tint-base:#ffffff;
+  --acc-tint:color-mix(in srgb,var(--acc) 42%,var(--tint-base));
   --time:color-mix(in srgb,var(--acc) 55%,#fff);
   --sel:color-mix(in srgb,var(--acc) 32%,transparent);
   --glow-acc:0 4px 20px color-mix(in srgb,var(--acc) 32%,transparent);
@@ -47,6 +51,7 @@ html[data-theme=indigo]{
   --bg:#0a0c12; --panel:#10131c; --panel2:#171b28; --card:#141826;
   --line:#20263a; --line2:#2d3550;
   --acc:#6d8bff; --acc-deep:#5468f0; --acc2:#2fd6b5;
+  --on-acc:#ffffff;
 }
 /* ── 主题：琥珀暗夜（碳黑 + 暖橙） ── */
 html[data-theme=amber]{
@@ -54,6 +59,7 @@ html[data-theme=amber]{
   --bg:#121110; --panel:#191715; --panel2:#201d1a; --card:#1d1a17;
   --line:#2c2823; --line2:#3d372f;
   --acc:#ffab40; --acc-deep:#f08a1d; --acc2:#2fd6b5;
+  --on-acc:#2b1704;
 }
 /* ── 主题：白昼（浅色） ── */
 html[data-theme=light]{
@@ -62,7 +68,12 @@ html[data-theme=light]{
   --line:#dfe4ea; --line2:#c6cdd7;
   --txt:#1a1d24; --muted:#5a6472; --dim:#8a93a1; --dim2:#a8b0bd;
   --acc:#0b9e8a; --acc-deep:#087f6e; --acc2:#e08a1d;
+  --on-acc:#ffffff;
   --ok:#18a566; --warn:#c98a12; --bad:#e05260;
+  /* 浅色主题：高亮文字往深里混（贴白底可读） */
+  --tint-base:#15202b;
+  --acc-tint:color-mix(in srgb,var(--acc) 52%,var(--tint-base));
+  --time:color-mix(in srgb,var(--acc) 55%,#15202b);
   --glow-acc:0 4px 18px color-mix(in srgb,var(--acc) 25%,transparent);
   --shadow-1:0 2px 10px rgba(30,40,60,.12);
   --shadow-2:0 16px 44px rgba(30,40,60,.18),0 2px 8px rgba(30,40,60,.1);
@@ -135,14 +146,14 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
 .tb-btn:hover:not(:disabled){background:var(--panel2);border-color:var(--line2);color:var(--txt);
   transform:translateY(-1px)}
 .tb-btn:disabled{opacity:.35;cursor:not-allowed}
-.tb-btn.primary{background:var(--grad-acc);border-color:transparent;color:#fff;font-weight:700;
+.tb-btn.primary{background:var(--grad-acc);border-color:transparent;color:var(--on-acc);font-weight:700;
   box-shadow:var(--glow-acc)}
 .tb-btn.primary:hover:not(:disabled){filter:brightness(1.1);box-shadow:var(--glow-acc);color:#fff;
   transform:translateY(-1px)}
 .tb-btn.tgl{color:var(--muted);border-radius:999px;padding:6px 14px}
-.tb-btn.tgl.on{color:var(--acc-tint);border-color:var(--acc-line);background:var(--acc-dim);
+.tb-btn.tgl.on{color:var(--acc-tint);font-weight:600;border-color:var(--acc-line);background:var(--acc-dim);
   box-shadow:inset 0 0 0 1px var(--acc-line-soft)}
-.tb-btn.active{background:var(--acc-dim);border-color:var(--acc-line);color:var(--acc-tint)}
+.tb-btn.active{background:var(--acc-dim);border-color:var(--acc-line);color:var(--acc-tint);font-weight:600}
 .tb-btn.primary:active:not(:disabled),.btn.primary:active:not(:disabled){transform:translateY(1px)}
 
 /* ── 主工作区：桌面行为——外框永不滚动，内栏各自滚 ── */
@@ -172,7 +183,7 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
 .np-step{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:14px;
   background:var(--card);border:1px solid var(--line)}
 .np-step i{flex:none;width:27px;height:27px;border-radius:10px;display:flex;align-items:center;
-  justify-content:center;font-style:normal;font-weight:800;font-size:12.5px;color:#fff;
+  justify-content:center;font-style:normal;font-weight:800;font-size:12.5px;color:var(--on-acc);
   background:var(--grad-acc);box-shadow:0 2px 10px color-mix(in srgb,var(--acc) 35%,transparent)}
 .np-step b{display:block;font-size:13px;font-weight:700;color:var(--txt)}
 .np-step span{display:block;font-size:11.5px;color:var(--dim);margin-top:2px;line-height:1.5}
@@ -228,7 +239,7 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
 .chk input{accent-color:var(--acc);width:15px;height:15px}
 .btn{border-radius:11px;font-weight:700;
   transition:filter .16s var(--ease),box-shadow .16s var(--ease),transform .16s var(--ease)}
-.btn.primary{background:var(--grad-acc);border:none;color:#fff;box-shadow:var(--glow-acc)}
+.btn.primary{background:var(--grad-acc);border:none;color:var(--on-acc);box-shadow:var(--glow-acc)}
 .btn.primary:hover:not(:disabled){filter:brightness(1.1);box-shadow:var(--glow-acc);
   transform:translateY(-1px)}
 .btn.primary:disabled{background:var(--panel2);color:var(--dim);box-shadow:none;cursor:not-allowed}
@@ -500,7 +511,7 @@ html[data-theme=light] .modal-mask{background:rgba(40,50,65,.35)}
 .env-badge.bad{color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent);border:1px solid var(--bad)}
 .env-badge.wait{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border:1px solid var(--warn)}
 .env-btn{flex:none;padding:5px 13px;border-radius:8px;font-size:11.5px;
-  background:var(--grad-acc);color:#fff;font-weight:600}
+  background:var(--grad-acc);color:var(--on-acc);font-weight:600}
 .env-btn:hover{filter:brightness(1.1)}
 .env-btn.ghost{background:none;border:1px solid var(--line2);color:var(--muted)}
 
@@ -513,7 +524,7 @@ html[data-theme=light] .modal-mask{background:rgba(40,50,65,.35)}
   padding:6px 9px;font-size:11.5px;color-scheme:inherit}
 .preset-bar select:focus{outline:none;border-color:var(--acc)}
 .preset-btn{flex:none;padding:6px 11px;border-radius:8px;font-size:11.5px;
-  background:var(--grad-acc);color:#fff;cursor:pointer}
+  background:var(--grad-acc);color:var(--on-acc);cursor:pointer}
 .preset-btn:hover{filter:brightness(1.1)}
 .preset-del{background:none;border:1px solid var(--line2);color:var(--muted)}
 .preset-hint{font-size:11px;color:var(--muted);flex-basis:100%}
@@ -725,7 +736,7 @@ html[data-theme=light] .lcp-overlay{background:rgba(40,50,65,.4)}
 .fc-notice-a .mini-btn{padding:5px 11px;border-radius:8px;border:1px solid var(--line2);
   background:var(--panel2);color:var(--txt);font-size:12px}
 .fc-notice-a .mini-btn:hover{background:var(--card)}
-.fc-notice-a .mini-btn.primary{background:var(--grad-acc);border-color:transparent;color:#fff;font-weight:600}
+.fc-notice-a .mini-btn.primary{background:var(--grad-acc);border-color:transparent;color:var(--on-acc);font-weight:600}
 .fc-notice-a .mini-btn.primary:hover{filter:brightness(1.08)}
 .warn-hint{color:var(--warn);line-height:1.6}
 
