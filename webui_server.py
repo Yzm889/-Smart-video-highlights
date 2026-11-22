@@ -4497,6 +4497,7 @@ def cloud_test_role(role, override=None):
         return False, '云端模式未启用或未填 API key'
     base, key = cc['base_url'], cc['api_key']
     import urllib.request
+    import base64 as _b64
     import time as _time
     t0 = _time.time()
 
