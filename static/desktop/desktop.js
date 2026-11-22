@@ -1242,6 +1242,7 @@ $('npGo').addEventListener('click', async () => {
     params: _advParams(),
   };
   if(_stageScriptOnly) body.params.skipTts = true;
+  _lastScriptBody = body;   // 「↻ 重出稿」复用（同片同参，新开一轮对比）
   if(_srt) body.subtitle_file = {name: _srt.name, text: _srt.text};
   if(_music && $('npBgm').checked) body.music = _musicPayload();
   try {
@@ -1290,8 +1291,9 @@ function pollTTS(runid){
       await loadAdjustItems(_runDir);
       openEditor();
       if(_stageScriptOnly){
-        // ① 完成：稿子在调整页可改，配音按钮解锁
+        // ① 完成：稿子在调整页可改，配音/重出稿按钮解锁
         const dub = $('tbDub'); if(dub) dub.disabled = false;
+        const rs = $('tbReScript'); if(rs) rs.style.display = '';
         toast('① 出稿完成——在调整页审稿/改稿，满意后点「② 配音」', 'ok');
       }
       // 【v1.4.52】完成提示带上失败汇总（宁可不静默：哪几段曾经失败，调整页有 ⚠ 标记）
@@ -1305,6 +1307,44 @@ function openEditor(){
   showEditor(true);
   switchView('adjust');
 }
+/* ── 【三步工作流】↻ 重出稿：同片同参重跑①（换引擎/换模型后用） ── */
+let _lastScriptBody = null;
+$('tbReScript').addEventListener('click', async () => {
+  if(!_lastScriptBody){ toast('重出稿需要本会话刚出过稿（从历史打开的项目请回新建页重跑）', 'warn'); return; }
+  const btn = $('tbReScript');
+  btn.disabled = true;
+  $('genMask').style.display = 'flex';
+  $('gmTitle').textContent = '↻ 重新出稿中（不配音）…';
+  try{
+    const r = await fetch('/api/movie_tts', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(_lastScriptBody)});
+    const out = await r.json();
+    if(!out.ok) throw new Error(out.error || '提交失败');
+    stopHandle(_pollTimer);
+    _pollRunId = out.runid;
+    _pollTimer = pollRun(out.runid, {
+      interval: 1200,
+      onTick: p => { $('gmFill').style.width = Math.min(100, p.pct || 0) + '%';
+                     $('gmMeta').textContent = (p.phase || '处理中') + ' · ' + (p.pct || 0) + '%'; },
+      onError: p => { $('genMask').style.display = 'none'; btn.disabled = false;
+                      toast('重出稿失败：' + p.error, 'bad'); },
+      isDone: p => !!p.done,
+      onDone: async p => {
+        $('genMask').style.display = 'none';
+        btn.disabled = false;
+        _runDir = p.run_dir || _runDir;
+        await loadAdjustItems(_runDir);
+        openEditor();
+        toast('↻ 已按当前设置重出稿——与原稿对比后取舍', 'ok');
+      }
+    }).promise.catch(() => {});
+  }catch(e){
+    $('genMask').style.display = 'none';
+    btn.disabled = false;
+    toast('重出稿失败：' + e.message, 'bad');
+  }
+});
+
 /* ── 【三步工作流】② 批量配音：按调整页当前文本逐句生成（每句可试听/重配） ── */
 async function dubAll(){
   if(!_runDir || !_items.length){ toast('请先①出稿', 'bad'); return; }
