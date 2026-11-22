@@ -2463,7 +2463,10 @@ async function refreshModeSw(){
   $('modeCloud').classList.toggle('on', on);
   $('modeLocal').classList.toggle('on', !on);
   sw.dataset.state = st.ready ? (on ? 'cloud' : 'local') : 'unset';
-  sw.title = !st.ready ? '云端未配置：点「☁ 云端」去配置页填 key（一次即可，此后一键切换）'
+  // 未配置时把话说明白：按钮直接写「云端·未配置」，不再让人猜琥珀色是什么意思
+  $('modeCloud').textContent = st.ready ? '☁ 云端' : '☁ 云端·未配置';
+  $('modeLocal').textContent = '💻 本地';
+  sw.title = !st.ready ? '云端还没配 key：点「☁ 云端·未配置」去引导页，配一次此后一键切换'
            : on ? '当前 ☁ 云端管线：写稿/画面理解/配音走云（点本地切回）'
                 : '当前 💻 本地管线：全免费、占本机显存（点云端切换）';
 }
