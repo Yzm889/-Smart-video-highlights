@@ -4403,13 +4403,27 @@ def fromPIL(path, max_side=512):
     return buf.getvalue()
 
 
-def cloud_test_role(role):
-    """云端单角色连通性测试（v1.4.98 云端路线）：llm/vlm/tts 各一发真实请求。
+def cloud_test_role(role, override=None):
+    """云端单角色连通性测试：llm/vlm/tts 各一发真实请求。
 
+    override：云端页把「当前表单值（可能尚未保存）」直接发来测试——引导流
+    是先测后启用。无 override 时读已保存配置。
     返回 (ok, detail)。vlm 用 1x1 PNG 验证 image_url 多模态通道；
     tts 合成一句话量级（计费忽略不计）。"""
     from ai_providers import cloud_cfg
-    cc = cloud_cfg()
+    if isinstance(override, dict) and override.get('api_key'):
+        _m = override.get('models') or {}
+        cc = {'provider': str(override.get('provider') or 'siliconflow').lower(),
+              'base_url': str(override.get('base_url') or '').rstrip('/'),
+              'api_key': str(override.get('api_key')).strip(),
+              'llm': str(_m.get('llm') or '').strip(),
+              'vlm': str(_m.get('vlm') or '').strip(),
+              'tts': str(_m.get('tts') or '').strip(),
+              'voice': str(override.get('voice') or '').strip()}
+        if not cc['base_url']:
+            return False, '未填 API 地址'
+    else:
+        cc = cloud_cfg()
     if not cc:
         return False, '云端模式未启用或未填 API key'
     base, key = cc['base_url'], cc['api_key']

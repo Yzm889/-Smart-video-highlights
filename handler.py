@@ -2187,9 +2187,9 @@ class Handler(BaseHTTPRequestHandler):
         """【v1.4.98 云端路线】单角色连通性测试：{role: llm|vlm|tts} → 真实请求一发。"""
         try:
             length = int(self.headers.get('Content-Length', 0))
-            req = self._read_json(length, max_len=16 * 1024) or {}
+            req = self._read_json(length, max_len=64 * 1024) or {}
             role = str(req.get('role') or '')
-            ok, detail = _w.cloud_test_role(role)
+            ok, detail = _w.cloud_test_role(role, req.get('cloud'))
             self._send(200, json.dumps({'ok': bool(ok), 'detail': detail}).encode('utf-8'),
                        'application/json')
         except Exception as e:

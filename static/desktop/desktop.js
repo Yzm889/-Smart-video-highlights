@@ -2470,8 +2470,7 @@ async function refreshModeSw(){
 $('modeSw').addEventListener('click', async () => {
   const st = await _cloudReady();
   if(!st.ready){
-    openSettings('secCloud');
-    toast('先把「☁ 云端模式」页的 API Key 和模型配好（选服务商一键预填），此后这里一键切换', 'warn');
+    showCloudPage();
     return;
   }
   const toCloud = !st.enabled;
@@ -2485,7 +2484,116 @@ $('modeSw').addEventListener('click', async () => {
   }catch(e){ toast('切换失败：' + e.message, 'bad'); }
   refreshModeSw();
 });
+$('modeCfg').addEventListener('click', () => showCloudPage());
 refreshModeSw();
+
+/* ── 【v1.4.98 云端页】独立全页：服务商卡片 → key → 测试 → 一键启用 ── */
+let _cloudPgProv = 'siliconflow';
+let _cloudPgFrom = null;
+let _cloudPgSaved = {};
+async function showCloudPage(from){
+  _cloudPgFrom = from || null;
+  const pg = $('cloudPage');
+  if(pg) pg.style.display = 'flex';
+  try{
+    const d = await fetch('/api/ai/config').then(r => r.json());
+    _cloudPgSaved = (d.config || {}).cloud || {};
+  }catch(e){ _cloudPgSaved = {}; }
+  const c = _cloudPgSaved;
+  _cloudPgProv = c.provider || 'siliconflow';
+  const m = c.models || {};
+  $('cloudPgKey').value = '';
+  $('cloudPgKey').placeholder = c.api_key ? '已配置（不改请留空）' : 'sk-…（注册送额度）';
+  $('cloudPgBase').value = c.base_url || (_CLOUD_PRESETS[_cloudPgProv] || {}).base || '';
+  $('cloudPgLlm').value = m.llm || '';
+  $('cloudPgVlm').value = m.vlm || '';
+  $('cloudPgTts').value = m.tts || '';
+  $('cloudPgVoice').value = c.voice || '';
+  $('cloudPgTestOut').textContent = '';
+  _cloudPgRenderProvs();
+  const on = !!c.enabled && _cloudReady2(c);
+  $('cloudPgApply').style.display = on ? 'none' : '';
+  $('cloudPgDisable').style.display = on ? '' : 'none';
+  $('cloudPgState').textContent = on ? '当前：☁ 云端管线' : '当前：💻 本地管线';
+}
+function _cloudReady2(c){
+  const m = (c || {}).models || {};
+  return !!(c || {}).api_key && !!(m.llm || m.vlm || m.tts);
+}
+function _cloudPgRenderProvs(){
+  const wrap = $('cloudProvs');
+  wrap.innerHTML = Object.keys(_CLOUD_PRESETS).map(k => {
+    const pr = _CLOUD_PRESETS[k];
+    const names = {siliconflow:'硅基流动', dashscope:'阿里百炼', zhipu:'智谱 GLM',
+                   deepseek:'DeepSeek', openrouter:'OpenRouter', custom:'自定义'};
+    const cov = pr.tts ? '全角色' : '文本' + (pr.vlm ? '+视觉' : '') + '（配音走本地）';
+    return '<button type="button" class="clp-prov' + (k === _cloudPgProv ? ' on' : '')
+      + '" data-prov="' + k + '"><b>' + (names[k] || k) + '</b><span>' + cov + '</span></button>';
+  }).join('');
+  $('cloudProvHint').textContent = (_CLOUD_PRESETS[_cloudPgProv] || {}).hint || '';
+}
+$('cloudProvs').addEventListener('click', e => {
+  const b = e.target.closest('[data-prov]');
+  if(!b) return;
+  _cloudPgProv = b.dataset.prov;
+  _cloudPgRenderProvs();
+  const pr = _CLOUD_PRESETS[_cloudPgProv];
+  if(pr.base) $('cloudPgBase').value = pr.base;
+  $('cloudPgLlm').value = pr.llm;
+  $('cloudPgVlm').value = pr.vlm;
+  $('cloudPgTts').value = pr.tts;
+  $('cloudPgVoice').value = pr.voice;
+});
+function _cloudPgCollect(){
+  const cfg = {
+    provider: _cloudPgProv,
+    base_url: $('cloudPgBase').value.trim() || 'https://api.siliconflow.cn/v1',
+    models: { llm: $('cloudPgLlm').value.trim(), vlm: $('cloudPgVlm').value.trim(),
+              tts: $('cloudPgTts').value.trim() },
+    voice: $('cloudPgVoice').value.trim()
+  };
+  const key = $('cloudPgKey').value.trim() || (_cloudPgSaved.api_key || '');
+  cfg.api_key = key;
+  return cfg;
+}
+async function cloudPgTest(role, label){
+  const out = $('cloudPgTestOut');
+  out.textContent = label + ' 测试中…';
+  try{
+    const r = await fetch('/api/cloud/test', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({role, cloud: _cloudPgCollect()})}).then(x => x.json());
+    out.textContent = (r.ok ? '✅ ' : '❌ ') + label + '：' + (r.detail || '');
+  }catch(e){ out.textContent = '❌ ' + label + '：' + e.message; }
+}
+$('cloudPgTestLlm').addEventListener('click', () => cloudPgTest('llm', '文本模型'));
+$('cloudPgTestVlm').addEventListener('click', () => cloudPgTest('vlm', '视觉模型'));
+$('cloudPgTestTts').addEventListener('click', () => cloudPgTest('tts', '语音模型'));
+$('cloudPgApply').addEventListener('click', async () => {
+  const cfg = _cloudPgCollect();
+  if(!cfg.api_key){ toast('先填 API key（注册服务商获取）', 'warn'); return; }
+  try{
+    const r = await fetch('/api/ai/config', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cloud: Object.assign({enabled: true}, cfg)})}).then(x => x.json());
+    if(!r.ok) throw new Error(r.error || '保存失败');
+    toast('☁ 云端管线已启用：写稿/画面理解/配音走云', 'ok');
+    refreshModeSw();
+    showCloudPage(_cloudPgFrom);
+  }catch(e){ toast('启用失败：' + e.message, 'bad'); }
+});
+$('cloudPgDisable').addEventListener('click', async () => {
+  try{
+    await fetch('/api/ai/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cloud:{enabled: false}})});
+    toast('💻 已停用云端，回到本地管线', 'ok');
+    refreshModeSw();
+    showCloudPage(_cloudPgFrom);
+  }catch(e){ toast('停用失败：' + e.message, 'bad'); }
+});
+$('cloudPgBack').addEventListener('click', () => {
+  $('cloudPage').style.display = 'none';
+});
 
 /* ── 【v1.4.98 主题切换】四主题即时生效 + localStorage 记忆 ── */
 function applyTheme(t){
@@ -2516,7 +2624,6 @@ function openSettings(sec){
   $('settingsMask').style.display = 'flex';
   if(sec === 'secVoice') showSettingsPane('voice');
   else if(sec === 'secModelCenter') showSettingsPane('models');
-  else if(sec === 'secCloud') showSettingsPane('cloud');
   // v1.4.65：Whisper 台词模型也在「模型中心」那一栏，切过去才滚得到；
   // 否则弹窗停在「配音·音色」，用户点了「去设置」却看不到要改的那个下拉。
   else if(sec === 'secWhisper') showSettingsPane('models');
@@ -2528,19 +2635,6 @@ function openSettings(sec){
   }
   fetch('/api/ai/config').then(r => r.json()).then(d => {
     const c = d.config || {};
-    // 【v1.4.98 云端模式】回填（key 不回显，留空=不改）
-    const _cl = c.cloud || {};
-    $('setCloudEnabled').checked = !!_cl.enabled;
-    $('setCloudProvider').value = _cl.provider || 'siliconflow';
-    $('setCloudProviderHint').textContent = (_CLOUD_PRESETS[_cl.provider || 'siliconflow'] || {}).hint || '';
-    $('setCloudBase').value = _cl.base_url || 'https://api.siliconflow.cn/v1';
-    const _cm = _cl.models || {};
-    $('setCloudLlm').value = _cm.llm || '';
-    $('setCloudVlm').value = _cm.vlm || '';
-    $('setCloudTts').value = _cm.tts || '';
-    $('setCloudVoice').value = _cl.voice || '';
-    $('setCloudKey').value = '';
-    $('setCloudKey').placeholder = _cl.api_key ? '已配置（不改请留空）' : 'sk-…（注册送额度）';
     $('setVisBase').value = (c.vision || {}).base_url || '';
     // 【2026-11-10 修数据丢失】以前只读 c.vision.model，而运行时真正生效的是 c.vlm.model。
     // 主人真机上 vision.model="" 而 vlm.model 才是实际值 → 输入框显示空白 →
@@ -2601,20 +2695,6 @@ $('settingsSave').addEventListener('click', async () => {
   // 「下载哪个模型」的选择器。这就是「换了模型但识别结果没变」的根源。
   const _wm = (($('setWhisperModel') || {}).value || '').trim();
   if(_wm) payload.whisper = {model: _wm};
-  // 【v1.4.98 云端模式】cloud 节整段收进配置；key 留空 = 不修改
-  payload.cloud = {
-    enabled: $('setCloudEnabled').checked,
-    provider: $('setCloudProvider').value,
-    base_url: $('setCloudBase').value.trim() || 'https://api.siliconflow.cn/v1',
-    models: {
-      llm: $('setCloudLlm').value.trim(),
-      vlm: $('setCloudVlm').value.trim(),
-      tts: $('setCloudTts').value.trim()
-    },
-    voice: $('setCloudVoice').value.trim()
-  };
-  if($('setCloudKey').value.trim()) payload.cloud.api_key = $('setCloudKey').value.trim();
-  // 云端启用但没有 key 时不拦：可能已有 key 在配置里（本次没动），后端 cloud_cfg 自己判
   try {
     const r = await fetch('/api/ai/config', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});

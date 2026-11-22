@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>一帧成片</title>
-<link rel="stylesheet" href="desktop.css?v=77">
+<link rel="stylesheet" href="desktop.css?v=78">
 </head>
 <body>
 <!-- SVG 图标库（线性 · currentColor 跟随变色） -->
@@ -87,6 +87,7 @@
   <div class="mode-sw" id="modeSw" title="解说管线：本地模型（免费·占本机显存）或云端模型（不占显存·按量计费）">
     <button type="button" id="modeLocal" class="on">💻 本地</button>
     <button type="button" id="modeCloud">☁ 云端</button>
+    <button type="button" id="modeCfg" title="云端配置页（服务商 / key / 模型 / 测试）">⚙</button>
   </div>
   <button class="tb-btn" id="tbSettings" title="AI 配置：Key / 模型 / 配音音色 / Whisper 下载"><svg class="ic"><use href="#i-settings"/></svg>设置</button>
 </div>
@@ -218,6 +219,41 @@
     </main>
   </div>
 </div>
+
+
+  <!-- ☁ 云端模式页（v1.4.98）：独立全页——服务商卡片 → key → 测试 → 一键启用 -->
+  <div class="cloudpg" id="cloudPage" style="display:none">
+    <div class="clp-card">
+      <div class="clp-head">
+        <button class="mini-btn" id="cloudPgBack">← 返回</button>
+        <span class="tb-flex"></span>
+        <span class="clp-state" id="cloudPgState">当前：💻 本地管线</span>
+      </div>
+      <div class="np-logo">☁</div>
+      <div class="clp-title">云端模式</div>
+      <div class="clp-sub">不装任何模型——一把 API key 跑全部：<b>写稿、剧情理解、画面理解、配音</b>走云端大模型，本机显存解放；<b>台词识别仍在本地</b>（免费、带时间戳、音频不出机器）。开启即表示理解：视频抽帧与文案会发送给你选择的云服务商。</div>
+      <div class="clp-provs" id="cloudProvs"></div>
+      <div class="hint" id="cloudProvHint" style="margin:8px 0 4px"></div>
+      <div class="clp-grid">
+        <div class="field"><label>API Key <a id="cloudKeyLink" href="https://www.siliconflow.cn/pricing" target="_blank" style="color:var(--acc)">获取 key ↗</a></label>
+          <input type="password" id="cloudPgKey" placeholder="sk-…（注册送额度，已配置则留空）"></div>
+        <div class="field"><label>API 地址</label><input type="text" id="cloudPgBase"></div>
+        <div class="field"><label>文本模型（写稿 / 剧情理解 / 对齐）</label><input type="text" id="cloudPgLlm"></div>
+        <div class="field"><label>视觉模型（画面理解 / 镜头卡）</label><input type="text" id="cloudPgVlm"></div>
+        <div class="field"><label>语音模型（配音）</label><input type="text" id="cloudPgTts"></div>
+        <div class="field"><label>配音音色</label><input type="text" id="cloudPgVoice"></div>
+      </div>
+      <div class="clp-tests">
+        <button class="mini-btn" id="cloudPgTestLlm">测文本</button>
+        <button class="mini-btn" id="cloudPgTestVlm">测视觉</button>
+        <button class="mini-btn" id="cloudPgTestTts">测语音</button>
+        <span class="hint" id="cloudPgTestOut" style="flex:1;margin:0"></span>
+      </div>
+      <button class="btn primary big" id="cloudPgApply">☁ 保存并启用云端管线</button>
+      <button class="btn big" id="cloudPgDisable" style="display:none;margin-top:8px">💻 停用云端，回到本地管线</button>
+      <div class="np-hint" id="cloudPgHint">流程：点一个服务商卡片 → 填 key → 三个测试通过 → 启用。参考费用：13 句稿一轮约 ¥0.1~0.3（按服务商价目）</div>
+    </div>
+  </div>
 
   <!-- 直播切片（方案 A：本地录像 → 自动高光 → N 条原声独立 mp4） -->
   <div class="newproj" id="liveClip" style="display:none">
@@ -453,7 +489,6 @@
     <div class="set-tabs" id="setTabs">
       <button type="button" class="set-tab active" data-set-tab="voice">① 配音与音色</button>
       <button type="button" class="set-tab" data-set-tab="models">② 模型中心</button>
-      <button type="button" class="set-tab" data-set-tab="cloud">☁ 云端模式</button>
       <button type="button" class="set-tab" data-set-tab="advanced">③ 高级 · 可选</button>
       <div class="set-theme">🎨 外观
         <select id="setTheme">
@@ -628,54 +663,6 @@
         </div>
       </div>
 
-      <!-- ☁ 云端模式：一把 key 跑全部（v1.4.98） -->
-      <div class="set-pane" data-set-pane="cloud" style="display:none">
-        <div class="set-sec" id="secCloud">
-          <div class="set-h">☁ 云端模式 —— 本机不部署大模型，一把 API key 跑全部</div>
-          <div class="hint" style="line-height:1.7">
-            开启后<b>写稿、剧情理解、画面理解、配音</b>走云端大模型（写稿画面都不占本机显存）；
-            <b>台词识别仍在本地</b>（免费、带时间戳、视频音频不出机器）。推荐
-            <b>硅基流动</b>：注册送额度、支付宝充值，一家 key 覆盖全部角色，13 句稿子
-            一轮约 <b>¥0.1~0.3</b>。开启即表示理解：视频抽帧与文案会发送给你选择的云服务商处理。
-          </div>
-          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px">
-            <input type="checkbox" id="setCloudEnabled"> 启用云端模式（关闭 = 全部走本地）
-          </label>
-          <label>服务商</label>
-          <select id="setCloudProvider">
-            <option value="siliconflow">硅基流动 SiliconFlow（推荐 · 一把 key 全包 · 支付宝）</option>
-            <option value="dashscope">阿里百炼 DashScope（通义/Qwen-VL/CosyVoice 全包）</option>
-            <option value="zhipu">智谱 BigModel（GLM 系列 · 文本+视觉，配音走本地）</option>
-            <option value="deepseek">DeepSeek 官方（超值文本 · 无视觉/配音）</option>
-            <option value="openrouter">OpenRouter（国际聚合 · 需外币卡）</option>
-            <option value="custom">自定义（任意 OpenAI 兼容端点）</option>
-          </select>
-          <div class="hint" id="setCloudProviderHint" style="margin-top:-2px"></div>
-          <label>API Key</label>
-          <input type="password" id="setCloudKey" placeholder="已配置则留空">
-          <div class="hint" id="setCloudKeyHint" style="margin-top:-2px"></div>
-          <label>API 地址（自定义服务商时改，默认硅基流动）</label>
-          <input type="text" id="setCloudBase" placeholder="https://api.siliconflow.cn/v1">
-          <label>文本模型（写稿 / 剧情理解 / 对齐）</label>
-          <input type="text" id="setCloudLlm" placeholder="Qwen/Qwen3.5-9B（¥0.5/M，与本地同款）">
-          <label>视觉模型（画面理解 / 镜头卡）</label>
-          <input type="text" id="setCloudVlm" placeholder="Qwen/Qwen2.5-VL-32B-Instruct（¥1.89/M）">
-          <label>语音模型（配音）</label>
-          <input type="text" id="setCloudTts" placeholder="FunAudioLLM/CosyVoice2-0.5B（¥0.05/千字符）">
-          <label>配音音色（CosyVoice 音色名）</label>
-          <input type="text" id="setCloudVoice" placeholder="FunAudioLLM/CosyVoice2-0.5B:alex（可改 :bella/:anna…）">
-          <div class="set-row wrap" style="margin-top:10px">
-            <button class="mini-btn" id="cloudTestLlm">测文本</button>
-            <button class="mini-btn" id="cloudTestVlm">测视觉</button>
-            <button class="mini-btn" id="cloudTestTts">测语音</button>
-            <span class="hint" id="cloudTestOut" style="flex:1;margin:0"></span>
-          </div>
-          <div class="hint" style="margin-top:8px">
-            开关在保存后立即生效；「不烧录字幕」成片模式与云端模式互相独立。
-            SiliconFlow 充值与模型价目：<a href="https://www.siliconflow.cn/pricing" target="_blank">官网价目页</a>
-          </div>
-        </div>
-      </div>
       <!-- ③ 高级：整页可跳过 -->
       <div class="set-pane" data-set-pane="advanced" style="display:none">
         <div class="set-sec">
@@ -820,6 +807,6 @@
   </div>
 </div>
 
-<script src="desktop.js?v=77"></script>
+<script src="desktop.js?v=78"></script>
 </body>
 </html>
