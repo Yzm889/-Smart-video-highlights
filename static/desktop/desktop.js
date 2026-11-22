@@ -2515,6 +2515,14 @@ async function showCloudPage(from){
   $('cloudPgTestOut').textContent = '';
   _cloudPgRenderProvs();
   _cloudPgLoadRoles();
+  // 【自动预填】本地没存过模型时，按当前服务商的推荐直接填上——
+  // 主人实测：填了 key 还被要求手填模型名=被卡在第二步
+  const _pr = _CLOUD_PRESETS[_cloudPgProv] || _CLOUD_PRESETS.custom;
+  if(!$('cloudPgBase').value.trim() && _pr.base) $('cloudPgBase').value = _pr.base;
+  if(!$('cloudPgLlm').value.trim() && _pr.llm) $('cloudPgLlm').value = _pr.llm;
+  if(!$('cloudPgVlm').value.trim() && _pr.vlm) $('cloudPgVlm').value = _pr.vlm;
+  if(!$('cloudPgTts').value.trim() && _pr.tts) $('cloudPgTts').value = _pr.tts;
+  if(!$('cloudPgVoice').value.trim() && _pr.voice) $('cloudPgVoice').value = _pr.voice;
   const on = !!c.enabled && _cloudReady2(c);
   $('cloudPgApply').style.display = on ? 'none' : '';
   $('cloudPgDisable').style.display = on ? '' : 'none';
