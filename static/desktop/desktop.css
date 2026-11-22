@@ -164,6 +164,18 @@ button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outli
     radial-gradient(1100px 500px at 50% -100px,color-mix(in srgb,var(--acc) 13%,transparent),transparent 70%),
     radial-gradient(700px 380px at 12% 108%,color-mix(in srgb,var(--acc2) 5%,transparent),transparent 70%),var(--bg)}
 /* 直播切片视图共用 .newproj 骨架：卡片超出视口时在容器内滚（不是页面滚） */
+
+/* ── 环境检查独立视图：env-view 时只显示环境卡（解说表单/最近/品牌栏让位） ── */
+.newproj.env-view .np-hero,.newproj.env-view .np-main .np-card,
+.newproj.env-view .np-recent{display:none}
+.newproj.env-view .np-main{justify-content:center;overflow-y:auto}
+.newproj.env-view .np-main-env{width:100%;max-width:880px;margin:0 auto;flex:1;overflow-y:auto;
+  padding:22px 26px;border-radius:18px}
+.newproj.env-view .env-head{font-size:14px;font-weight:700;color:var(--txt)}
+.newproj.env-view .env-rows{gap:9px}
+.newproj.env-view .env-row{padding:12px 15px;border-radius:13px}
+.newproj.env-view .env-row .en-name{font-size:13.5px}
+
 #liveClip{overflow-y:auto;display:flex;justify-content:center}
 .np-wrap{width:min(1180px,96vw);margin:auto;height:100%;display:grid;
   grid-template-columns:400px minmax(0,1fr);gap:20px;align-items:stretch}

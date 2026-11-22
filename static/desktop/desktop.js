@@ -4667,6 +4667,11 @@ function showNewProj(){
   if(lc) lc.style.display = 'none';
   if(np) np.style.display = 'flex';
   if(_lcPollTimer){ stopHandle(_lcPollTimer); _lcPollTimer = null; }
+  if(np && np.classList.contains('env-view')){
+    np.classList.remove('env-view');
+    _envOpen = false;
+    if($('envCard')) $('envCard').style.display = 'none';
+  }
   updateLiveClip();
   _setEntryActive('tbNarrate');
 }
@@ -4681,9 +4686,12 @@ $('tbEnvCheck').addEventListener('click', () => {
   const card = $('envCard');
   const opening = card.style.display === 'none';
   if(opening){
-    _envOpen = true;
     if($('editor').style.display !== 'none') showEditor(false);
     showNewProj();
+    // 【v1.4.98 环境独立视图】环境检查页只显示环境卡——解说表单/最近项目/品牌栏全部让位
+    // （showNewProj 会清 env-view 态与 _envOpen，置位必须在它之后）
+    $('newProj').classList.add('env-view');
+    _envOpen = true;
     card.style.display = '';
     try{ card.scrollIntoView({ block: 'nearest' }); }catch(e){}
     refreshEnv();
@@ -4691,6 +4699,7 @@ $('tbEnvCheck').addEventListener('click', () => {
   } else {
     _envOpen = false;
     card.style.display = 'none';
+    $('newProj').classList.remove('env-view');
     _setEntryActive('tbNarrate');
   }
 });
@@ -4698,6 +4707,7 @@ $('tbEnvCheck').addEventListener('click', () => {
 $('envHide').addEventListener('click', () => {
   _envOpen = false;
   $('envCard').style.display = 'none';
+  $('newProj').classList.remove('env-view');
   _setEntryActive('tbNarrate');
 });
 
