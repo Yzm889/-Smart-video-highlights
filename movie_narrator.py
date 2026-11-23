@@ -5740,6 +5740,14 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         # [P0-1] 状态文件必须原子写：写到一半被打断（断电/kill/磁盘满）会留半截 JSON，
         # 下次 json.load 抛异常 → 进度文件报废、用户白跑。已有 _atomic_json_dump 帮手。
         _atomic_json_dump(os.path.join(run_dir, 'tts_state.json'), tts_state)
+        # 【plan.json 立项】一等公民方案层：两步路径状态 → plan v1（纯新增，
+        # 旧路径零变化；消费方是迁移第 3 步——双路径改读 plan——的对接面）
+        try:
+            import plan_schema as _PS
+            _plan = _PS.plan_from_tts_state(tts_state, is_blank=is_white_line)
+            _PS.save_plan(os.path.join(run_dir, 'plan.json'), _plan)
+        except Exception as _pe:
+            _log.info('[DIAG] plan.json 生成失败(不影响主流程): %s' % str(_pe)[:120])
         if progress:
             progress['pct'] = 100
             if not tts_results:
@@ -5987,6 +5995,13 @@ def narrate_movie(movie_name, plot, video_path, params, run_dir, progress=None, 
         }
         # [P0-1] 增量状态原子写：长视频增量重生成路径若写到一半打断，下一次会从空状态重启
         _atomic_json_dump(os.path.join(run_dir, 'state.json'), _state)
+        # 【plan.json 立项】一步直出状态 → plan v1（out 轴；src 宁缺勿错）
+        try:
+            import plan_schema as _PS
+            _plan = _PS.plan_from_final_state(_state, is_blank=is_white_line)
+            _PS.save_plan(os.path.join(run_dir, 'plan.json'), _plan)
+        except Exception as _pe:
+            _log.info('[DIAG] plan.json 生成失败(不影响主流程): %s' % str(_pe)[:120])
         _log.info(f'[DIAG] 增量状态已保存: {len(narr)}段')
     except Exception as _e:
         _log.info(f'[DIAG] 增量状态保存失败: {_e}')
