@@ -5049,13 +5049,17 @@ def _voice_tail(params):
 
 
 def _verify_final_alignment(final_path, segs, progress=None):
-    """v1.4.89 出片后自动逐句验证对齐——主人不再当测试器。
+    """出片后自动逐句验证对齐——主人不再当测试器。
 
-    对每句解说（有配音的）：从成片的输出窗口抽 2 帧 → VLM 描述「画面正在演的
-    事件」→ 与解说句比对（match=同一事件 / related=场景沾边 / wrong=完全无关）。
-    刻度基线（run-065419 实测）：match 19% / related 85% / wrong 4 句——
-    升级目标 match 50%+、wrong 清零。任何失败都静默跳过（验证是附赠物，
-    绝不影响成片交付）。"""
+    v1.4.99 修尺子（judge=v2-nosub-5f）：每句从成片窗口抽 5 帧均匀网格、
+    裁掉底部 12% 字幕带、提示词禁读画面文字——修掉「判官读到烧录的解说词
+    自己 → 自证 match」的致命缺陷。旧报告无 judge 字段，数字（19%/48%）
+    一律作废，见 BASELINE.md 陷阱⑦。
+
+    对每句解说（有配音的）：VLM 描述「画面正在演的事件」→ 与解说句比对
+    （match=同一事件 / related=场景沾边 / wrong=完全无关）。
+    任何失败都静默跳过（验证是附赠物，绝不影响成片交付）。
+    注意：本判官仍需人工校准（与主人肉眼判定对比出准确率）才算可信。"""
     import tempfile
     import shutil
     vdir = tempfile.mkdtemp(prefix='fcv_')
@@ -5069,12 +5073,20 @@ def _verify_final_alignment(final_path, segs, progress=None):
         total += 1
         o0, o1 = float(s_.get('out_start') or 0), float(s_.get('out_end') or 0)
         frames = []
-        for k, frac in (('m', 0.5), ('l', 0.8)):
+        # 【v1.4.99 判官可信化】三处修尺子（见 BASELINE.md 陷阱⑦）：
+        #  ① 裁掉画面底部 12% 字幕带——成片若烧了解说字幕，判官读到的是解说词自己，
+        #     「字幕与解说一致→match」永远成立，属自证不是验证（trunc 保偶数供 scale）。
+        #  ② 2 帧（0.5/0.8）改 5 帧均匀网格——一个 5-10 秒窗口内多镜头，两帧易撞转场。
+        #  ③ 描述 prompt 明说忽略画面文字/字幕——模型层再堵一道自证。
+        # judge 版本写进报告，compare_align 可识别「两份报告尺子不同」。
+        _judge_fracs = (0.1, 0.3, 0.5, 0.7, 0.9)
+        for k, frac in enumerate(_judge_fracs):
             fp = os.path.join(vdir, 'v_%d_%s.jpg' % (i, k))
             try:
                 _w.ffmpeg_run(['-y', '-ss', '%.2f' % (o0 + (o1 - o0) * frac),
                                '-i', final_path, '-frames:v', '1',
-                               '-vf', 'scale=768:-2', '-q:v', '4', '-an', fp])
+                               '-vf', 'crop=iw:trunc(ih*0.88/2)*2:0:0,scale=768:-2',
+                               '-q:v', '4', '-an', fp])
                 if os.path.exists(fp) and os.path.getsize(fp) > 1000:
                     frames.append(fp)
             except Exception:
@@ -5082,7 +5094,9 @@ def _verify_final_alignment(final_path, segs, progress=None):
         descs = []
         for fp in frames:
             try:
-                d = (_w.vlm_chat(fp, '一句话描述这段画面里正在发生的事件（谁、做什么、动作与结果）。',
+                d = (_w.vlm_chat(fp, '只描述画面里人物正在做的动作和事件（谁、做什么、动作与结果）。'
+                                 '忽略画面中的任何文字、字幕、台词、水印——它们与判断无关，'
+                                 '不要抄录它们。',
                                  timeout=120, keep_alive='30m') or '').strip()
                 if d:
                     descs.append(d[:120])
@@ -5102,11 +5116,13 @@ def _verify_final_alignment(final_path, segs, progress=None):
                     _kind_note = ('\n注意：这句是开场钩子/过渡句，本身不描述具体事件——'
                                   '画面只要是情绪或主题相符的引子/承接画面就判 related 或 match，'
                                   '不要因为「画面没有具象动作」判 wrong。')
-                prompt = ('【解说词】' + narr + '\n\n【画面事件描述】' + ' / '.join(descs) + '\n\n'
+                prompt = ('【解说词】' + narr + '\n\n【画面事件描述（已裁掉字幕带，不含画面文字）】'
+                          + ' / '.join(descs) + '\n\n'
                           '判断：画面正在演的事，与这句解说描述的事，是否是同一件事？\n'
                           '输出 JSON：{"verdict": "match|related|wrong", "why": "一句话"}\n'
                           'match=同一事件（同一动作/同一时刻）；related=沾边但不是同一动作或时刻；'
-                          'wrong=完全无关。严格按画面证据判断。' + _kind_note)
+                          'wrong=完全无关。严格按画面人物的动作与场景判断；'
+                          '不要把文字/字幕当成画面证据。' + _kind_note)
                 r = _w.vlm_text(prompt, system='你是剪辑对齐质检员，只输出 JSON。', timeout=120) or ''
                 m = _re.search(r'\{[^}]*\}', r, _re.S)
                 if m:
@@ -5123,6 +5139,7 @@ def _verify_final_alignment(final_path, segs, progress=None):
             progress['phase'] = '成片对齐验证 %d 句…' % total
     shutil.rmtree(vdir, ignore_errors=True)
     n['total'] = total
+    n['judge'] = 'v2-nosub-5f'   # v1.4.99 修尺子后；旧报告无此字段=坏尺子，数字作废
     return report, n
 
 

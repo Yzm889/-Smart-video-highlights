@@ -68,6 +68,12 @@ def compare(old_path, new_path, show_all=False):
         print('        (报告自带 summary: %s)' % new_sum)
     if no != nn:
         print('⚠ 分母不同（%d vs %d）：百分比不可直接相减，以下按解说文本逐句配对。' % (no, nn))
+    jo = (old_sum or {}).get('judge') if isinstance(old_sum, dict) else None
+    jn = (new_sum or {}).get('judge') if isinstance(new_sum, dict) else None
+    if jo != jn:
+        print('⚠ 判官版本不同（%s vs %s）：%s' % (
+            jo or '旧尺子(无标记,数字作废)', jn or '旧尺子(无标记,数字作废)',
+            '这是两把尺子量出来的，verdict 变化仅供参考，不得当作质量提升的证据。'))
     print('=' * 74)
 
     a = [norm(r.get('narr')) for r in old]
