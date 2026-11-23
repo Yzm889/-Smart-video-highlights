@@ -2709,6 +2709,91 @@ async function cloudPgPullModels(silent){
 $('cloudPgPull').addEventListener('click', () => cloudPgPullModels(false));
 $('cloudPgKey').addEventListener('change', () => cloudPgPullModels(false));
 
+/* ── 【费用估算】价目基准：硅基流动官方价目页 2026-11 记录。
+   键=模型 id 小写子串匹配；值=[输入¥/M, 输出¥/M, 是否推断]。
+   语音按千字符计。未匹配到的模型显示「以官网为准」。 ── */
+const _CLOUD_PRICE = {
+  'qwen3.5-35b-a3b': [0.4, 3.2, 0],
+  'qwen3.5-9b': [0.5, 4.0, 0],
+  'qwen3.5-27b': [0.6, 4.8, 0],
+  'qwen3.6-35b-a3b': [1.8, 10.8, 0],
+  'qwen3.8-27b': [3, 12, 0],
+  'deepseek-v3.2': [4, 6, 0],
+  'deepseek-v3.1': [4, 12, 0],
+  'glm-5.3': [8, 28, 0],
+  'qwen3-vl-30b-a3b': [0.7, 2.8, 1],
+  'qwen3-vl-8b': [1.8, 5.4, 1],
+  'qwen2.5-vl-32b': [1.89, 4.8, 1]
+};
+const _CLOUD_PRICE_TTS = {'cosyvoice2': 0.05};   // ¥/千字符
+// 用量基准（10 分钟素材/13 句稿实测轮）
+const _COST_BASIS = {llmIn: 30, llmOut: 5, vlmIn: 185, vlmOut: 20, ttsChars: 449};
+
+function _priceOf(modelId){
+  const k = String(modelId || '').toLowerCase();
+  for(const key in _CLOUD_PRICE){
+    if(k.includes(key)) return _CLOUD_PRICE[key];
+  }
+  return null;
+}
+function _cloudPgCostRender(){
+  const body = $('cloudCostBody');
+  if(!body) return;
+  const cfg = _cloudPgCollect();
+  const provName = pv => ({siliconflow:'硅基流动', dashscope:'百炼', zhipu:'智谱',
+    deepseek:'DeepSeek', openrouter:'OpenRouter', custom:'自定义'}[pv] || pv);
+  const rows = [];
+  let total = 0, unknown = false;
+  // 文本
+  const pl = _priceOf(cfg.models.llm);
+  if(pl){
+    const c = (pl[0]*_COST_BASIS.llmIn + pl[1]*_COST_BASIS.llmOut)/1000;
+    total += c;
+    rows.push(['📝 文本', cfg.models.llm, '¥' + c.toFixed(3),
+               pl[2] ? '推断价' : pl[0] + '/' + pl[1] + ' ¥每百万']);
+  } else if(cfg.models.llm){
+    rows.push(['📝 文本', cfg.models.llm, '—', '该模型价格以官网价目页为准']);
+    unknown = true;
+  } else {
+    rows.push(['📝 文本', '（本地）', '¥0', '']);
+  }
+  // 视觉
+  const pv = _priceOf(cfg.models.vlm);
+  if(pv){
+    const c = (pv[0]*_COST_BASIS.vlmIn + pv[1]*_COST_BASIS.vlmOut)/1000;
+    total += c;
+    rows.push(['👁 视觉', cfg.models.vlm, '¥' + c.toFixed(3),
+               pv[2] ? '推断价' : pv[0] + '/' + pv[1] + ' ¥每百万']);
+  } else if(cfg.models.vlm){
+    rows.push(['👁 视觉', cfg.models.vlm, '—', '该模型价格以官网价目页为准']);
+    unknown = true;
+  } else {
+    rows.push(['👁 视觉', '（本地）', '¥0', '']);
+  }
+  // 语音
+  const pt = Object.keys(_CLOUD_PRICE_TTS).find(k => String(cfg.models.tts || '').toLowerCase().includes(k));
+  if(cfg.models.tts && pt){
+    const c = _CLOUD_PRICE_TTS[pt] * _COST_BASIS.ttsChars / 1000;
+    total += c;
+    rows.push(['🎙 配音', cfg.models.tts, '¥' + c.toFixed(3), '¥' + _CLOUD_PRICE_TTS[pt] + '/千字符']);
+  } else if(cfg.models.tts){
+    rows.push(['🎙 配音', cfg.models.tts, '—', '该模型价格以官网价目页为准']);
+    unknown = true;
+  } else {
+    rows.push(['🎙 配音', '（本地 IndexTTS2）', '¥0', '克隆音色']);
+  }
+  const prov = (cfg.provider === 'siliconflow' && !unknown)
+    ? '' : ' · 未标价模型请查服务商价目页';
+  body.innerHTML = '<table class="clp-cost-t">'
+    + '<tr><th>角色</th><th>模型</th><th>单轮估算</th><th>价目</th></tr>'
+    + rows.map(r => '<tr><td>' + r[0] + '</td><td class="clp-cost-m">' + r[1]
+        + '</td><td><b>' + r[2] + '</b></td><td class="clp-cost-p">' + r[3] + '</td></tr>').join('')
+    + '<tr class="clp-cost-sum"><td>合计</td><td></td><td colspan="2"><b>≈ ¥'
+    + total.toFixed(2) + ' / 轮</b>' + prov + '</td></tr></table>'
+    + '<div class="hint" style="margin-top:6px">估算基准：10 分钟素材、13 句稿 449 字、'
+    + '文本 3 万入/5 千出、视觉 18.5 万图片入/2 万出。图片 token 是大头——视觉模型选档对费用影响最大。</div>';
+}
+
 function _cloudPgRouteRender(){
   const el = $('cloudPgRoute');
   if(!el) return;
@@ -2723,6 +2808,7 @@ function _cloudPgRouteRender(){
     return nm + '：💻 本地';
   });
   el.textContent = '生效路线 → ' + rows.join(' · ');
+  _cloudPgCostRender();
 }
 ['cloudPgKey','cloudPgBase','cloudPgLlm','cloudPgVlm','cloudPgTts','cloudPgVoice']
   .forEach(id => { const el = $(id); if(el) el.addEventListener('input', _cloudPgRouteRender); });
